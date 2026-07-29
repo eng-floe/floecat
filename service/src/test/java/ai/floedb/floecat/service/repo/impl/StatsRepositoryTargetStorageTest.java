@@ -1661,6 +1661,43 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void generationGcKeepsTheActiveIndexGenerationWhenStatsHaveAdvanced() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 779L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String indexManifest =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String indexGeneration =
+        indexManifest.substring(indexManifest.lastIndexOf('/') + 1, indexManifest.length() - 3);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String activeIndexPointer =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    assertThat(
+            pointerStore.compareAndSet(
+                activeIndexPointer,
+                0L,
+                Pointer.newBuilder()
+                    .setKey(activeIndexPointer)
+                    .setBlobUri(indexGeneration)
+                    .setVersion(1L)
+                    .build()))
+        .isTrue();
+
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed).isZero();
+    assertThat(blobStore.get(indexManifest)).isNotNull();
+  }
+
+  @Test
   void generationGcBoundsBlobDeletesAndResumesAcrossPasses() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -2500,6 +2537,19 @@ class StatsRepositoryTargetStorageTest {
         Keys.snapshotTargetStatsGenerationPrefix(
             TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
     assertThat(pointers.countByPrefix(targetPrefix)).isEqualTo(2);
+    String inheritedTablePointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            StatsTargetIdentity.storageId(tableRecord.getTarget()));
+    long inheritedVersion = pointers.get(inheritedTablePointer).orElseThrow().getVersion();
+
+    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
+
+    assertThat(pointers.get(inheritedTablePointer).orElseThrow().getVersion())
+        .isEqualTo(inheritedVersion);
     assertThat(
             pointers
                 .get(

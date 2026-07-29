@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
@@ -49,9 +50,12 @@ import jakarta.inject.Inject;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -511,9 +515,17 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     String generationId = "full-rescan-" + lease.parentJobId;
     boolean inheritPriorStats = mayInheritPriorStats(lease, snapshotTask);
     Set<String> fileGroups = new HashSet<>();
+    Map<String, ReconcileFileGroupResultDescriptor> storedFileGroups =
+        succeededFileGroupDescriptors(lease);
+    if (storedFileGroups.size() != manifest.getFileGroupsCount()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not match the succeeded file-group children");
+    }
     int declaredFileStats = 0;
     int declaredIndexArtifacts = 0;
     for (var fileGroup : manifest.getFileGroupsList()) {
+      ReconcileFileGroupResultDescriptor stored =
+          storedFileGroups.remove(fileGroup.getFileGroupJobId());
       String expectedStatsPrefix =
           Keys.reconcileFileGroupStatsObjectPrefix(
               tableId.getAccountId(),
@@ -522,7 +534,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
               lease.parentJobId,
               fileGroup.getFileGroupJobId(),
               fileGroup.getLeaseEpoch());
-      if (fileGroup.getFormatVersion() != 1
+      if (stored == null
+          || !storedDescriptorMatches(fileGroup, stored)
+          || fileGroup.getFormatVersion() != 1
           || !manifest.getAccountId().equals(fileGroup.getAccountId())
           || !manifest.getConnectorId().equals(fileGroup.getConnectorId())
           || !lease.parentJobId.equals(fileGroup.getParentJobId())
@@ -551,7 +565,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       declaredFileStats += fileGroup.getFileStatsRecordCount();
       declaredIndexArtifacts += fileGroup.getIndexArtifactCount();
     }
-    if (declaredFileStats != manifest.getFileStatsRecordCount()
+    if (!storedFileGroups.isEmpty()
+        || declaredFileStats != manifest.getFileStatsRecordCount()
         || declaredIndexArtifacts != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot file-group artifact count mismatch");
     }
@@ -620,6 +635,87 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
+  }
+
+  private Map<String, ReconcileFileGroupResultDescriptor> succeededFileGroupDescriptors(
+      ReconcileJobStore.LeasedJob lease) {
+    Map<String, ReconcileFileGroupResultDescriptor> descriptors = new LinkedHashMap<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.FileGroupResultDescriptorPage page =
+          jobs.childFileGroupResultDescriptorsPage(
+              lease.accountId, lease.parentJobId, 500, pageToken);
+      for (ReconcileFileGroupResultDescriptor descriptor : page.descriptors) {
+        if (descriptors.putIfAbsent(descriptor.fileGroupJobId(), descriptor) != null) {
+          throw new IllegalArgumentException("duplicate succeeded file-group child descriptor");
+        }
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken != null && !pageToken.isBlank());
+    return descriptors;
+  }
+
+  private static boolean storedDescriptorMatches(
+      ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor submitted,
+      ReconcileFileGroupResultDescriptor stored) {
+    return submitted.getFormatVersion() == stored.formatVersion()
+        && submitted.getAccountId().equals(stored.accountId())
+        && submitted.getConnectorId().equals(stored.connectorId())
+        && submitted.getParentJobId().equals(stored.parentJobId())
+        && submitted.getFileGroupJobId().equals(stored.fileGroupJobId())
+        && submitted.getPlanId().equals(stored.planId())
+        && submitted.getGroupId().equals(stored.groupId())
+        && submitted.getTableId().equals(stored.tableId())
+        && submitted.getSnapshotId() == stored.snapshotId()
+        && submitted.getLeaseEpoch().equals(stored.leaseEpoch())
+        && submitted.getResultId().equals(stored.resultId())
+        && submitted.getPayloadUri().equals(stored.payloadUri())
+        && submitted.getPayloadBytes() == stored.payloadBytes()
+        && Base64.getEncoder()
+            .encodeToString(submitted.getPayloadSha256().toByteArray())
+            .equals(stored.payloadSha256())
+        && submitted.getPlannedFileCount() == stored.plannedFileCount()
+        && submitted.getSucceededFileCount() == stored.succeededFileCount()
+        && submitted.getFailedFileCount() == stored.failedFileCount()
+        && submitted.getSkippedFileCount() == stored.skippedFileCount()
+        && submitted.getPartialAggregateRecordCount() == stored.partialAggregateRecordCount()
+        && submitted.getStatsObjectPrefix().equals(stored.statsObjectPrefix())
+        && submitted.getFileStatsRecordCount() == stored.fileStatsRecordCount()
+        && submitted.getIndexArtifactCount() == stored.indexArtifactCount()
+        && HexFormat.of()
+            .formatHex(submitted.getArtifactReferencesSha256().toByteArray())
+            .equalsIgnoreCase(stored.artifactReferencesSha256())
+        && submittedCreatedAtMatches(submitted, stored)
+        && storedIndexPredecessorMatches(submitted, stored);
+  }
+
+  private static boolean submittedCreatedAtMatches(
+      ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor submitted,
+      ReconcileFileGroupResultDescriptor stored) {
+    return submitted.hasCreatedAt()
+        ? com.google.protobuf.util.Timestamps.toMillis(submitted.getCreatedAt())
+            == stored.createdAtMs()
+        : stored.createdAtMs() == 0L;
+  }
+
+  private static boolean storedIndexPredecessorMatches(
+      ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor submitted,
+      ReconcileFileGroupResultDescriptor stored) {
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor =
+        stored.indexPredecessor();
+    if (!submitted.hasIndexPredecessor()) {
+      return predecessor == null;
+    }
+    return predecessor != null
+        && submitted.getIndexPredecessor().getGenerationId().equals(predecessor.generationId())
+        && submitted.getIndexPredecessor().getActivePointerVersion()
+            == predecessor.activePointerVersion()
+        && submitted
+            .getIndexPredecessor()
+            .getCaptureManifestUri()
+            .equals(predecessor.captureManifestUri())
+        && submitted.getIndexPredecessor().getCaptureManifestPointerVersion()
+            == predecessor.captureManifestPointerVersion();
   }
 
   private boolean mayInheritPriorStats(

@@ -1198,7 +1198,10 @@ public abstract class IcebergConnector implements FloecatConnector {
       throw new IllegalArgumentException("snapshot is required");
     }
     Integer schemaId = snapshot.schemaId();
-    if (schemaId == null || schemaId < 0) {
+    if (schemaId == null) {
+      return table.schema();
+    }
+    if (schemaId < 0) {
       throw new IllegalStateException(
           "Snapshot " + snapshot.snapshotId() + " does not declare a valid schema ID");
     }

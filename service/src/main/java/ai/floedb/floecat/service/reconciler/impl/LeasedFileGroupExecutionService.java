@@ -297,7 +297,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       List<StatsObjectDescriptor> indexArtifacts) {
     String corr = principalContext.getCorrelationId();
     String requiredResultId = requireResultId(resultId);
-    ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
+    ReconcileJobStore.ReconcileJob existing = jobs.getLeaseView(jobId).orElse(null);
     if (existing != null
         && ("JS_SUCCEEDED".equals(existing.state) || "JS_CANCELLED".equals(existing.state))) {
       boolean replayed =

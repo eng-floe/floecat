@@ -18,15 +18,8 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -34,12 +27,9 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileProjecti
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -130,165 +120,6 @@ class ReconcileMaintenanceServicesTest {
     service.runLeaseMaintenanceOnce(200L);
 
     assertEquals(1, leaseStore.expiryQueries.get());
-  }
-
-  @Test
-  void readyIndexMaintenanceCommitsRepairsInWriteItemChunks() {
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    List<StoredReconcileJob> queued = new ArrayList<>();
-    for (int i = 0; i < 26; i++) {
-      StoredReconcileJob record = new StoredReconcileJob();
-      record.accountId = "acct";
-      record.jobId = "job-" + i;
-      record.state = "JS_QUEUED";
-      record.canonicalPointerKey = "canonical-" + i;
-      queued.add(record);
-      CanonicalPointerSnapshot snapshot =
-          new CanonicalPointerSnapshot(record.canonicalPointerKey, "blob-" + i, 1L);
-      when(jobIndexStore.loadCanonicalSnapshot(record.canonicalPointerKey))
-          .thenReturn(Optional.of(snapshot));
-      when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(record));
-      when(readyQueueStore.readyPointerKeys(record))
-          .thenReturn(
-              List.of(
-                  "ready/global/" + i, "ready/class/" + i, "ready/kind/" + i, "ready/lane/" + i));
-    }
-    when(jobIndexStore.cloneStoredRecord(
-            org.mockito.ArgumentMatchers.any(StoredReconcileJob.class)))
-        .thenAnswer(
-            invocation -> {
-              StoredReconcileJob source = invocation.getArgument(0);
-              StoredReconcileJob copy = new StoredReconcileJob();
-              copy.accountId = source.accountId;
-              copy.jobId = source.jobId;
-              copy.state = source.state;
-              copy.canonicalPointerKey = source.canonicalPointerKey;
-              copy.readyIndexVersion = source.readyIndexVersion;
-              return copy;
-            });
-    ReconcileJobIndexStore.JobIndexWriteBatch repairMutationBatch =
-        new ReconcileJobIndexStore.JobIndexWriteBatch(
-            List.of(
-                new ReconcileJobIndexStore.JobIndexUpsert(
-                    "canonical", 1L, "blob", PointerReferenceKind.PRK_INLINE_JSON),
-                new ReconcileJobIndexStore.JobIndexUpsert(
-                    "lookup", 1L, "canonical", PointerReferenceKind.PRK_POINTER_KEY)),
-            new ReconcileJobIndexStore.ReadyQueueMutation(
-                List.of(
-                    new ReconcileJobIndexStore.ReadyQueueWrite(
-                        "ready/new", "canonical", PointerReferenceKind.PRK_POINTER_KEY)),
-                List.of("ready/old")));
-    when(jobIndexStore.buildJobIndexWriteBatch(
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.any()))
-        .thenReturn(repairMutationBatch);
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 128, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(queued, ""));
-    NativeReconcileJobIndexStore batching = new NativeReconcileJobIndexStore();
-    when(jobIndexStore.maxWriteItemsPerBatch()).thenReturn(batching.maxWriteItemsPerBatch());
-    when(jobIndexStore.writeItemCount(any(), anyList()))
-        .thenAnswer(
-            invocation ->
-                batching.writeItemCount(invocation.getArgument(0), invocation.getArgument(1)));
-    when(jobIndexStore.combineWriteBatches(anyList()))
-        .thenAnswer(invocation -> batching.combineWriteBatches(invocation.getArgument(0)));
-    when(jobIndexStore.chunkJobWritePlans(anyList()))
-        .thenAnswer(invocation -> batching.chunkJobWritePlans(invocation.getArgument(0)));
-    List<Integer> chunkSizes = new ArrayList<>();
-    when(jobIndexStore.compareAndSetBatchWithPointerOps(any(), anyList()))
-        .thenAnswer(
-            invocation -> {
-              chunkSizes.add(
-                  batching.writeItemCount(invocation.getArgument(0), invocation.getArgument(1)));
-              return true;
-            });
-
-    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, null, null, 128);
-
-    service.runReadyIndexMaintenanceOnce(1_000L);
-
-    assertEquals(List.of(98, 98, 98, 70), chunkSizes);
-  }
-
-  @Test
-  void readyIndexMaintenanceSkipsCurrentVersionJobs() {
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    StoredReconcileJob record = new StoredReconcileJob();
-    record.accountId = "acct";
-    record.jobId = "job-current";
-    record.state = "JS_QUEUED";
-    record.canonicalPointerKey = "canonical-current";
-    record.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
-
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 128, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(record), ""));
-
-    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, null, null, 128);
-
-    service.runReadyIndexMaintenanceOnce(1_000L);
-
-    verify(jobIndexStore, never()).chunkJobWritePlans(anyList());
-  }
-
-  @Test
-  void readyIndexMaintenanceResumesQueuedRepairOnePagePerTick() {
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    StoredReconcileJob record = new StoredReconcileJob();
-    record.state = "JS_QUEUED";
-    record.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(record), "next"));
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, "next"))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
-
-    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, null, null, 1);
-
-    service.runReadyIndexMaintenanceOnce(1_000L);
-    verify(jobIndexStore, never()).listStoredJobsInState("JS_QUEUED", 1, "next");
-
-    service.runReadyIndexMaintenanceOnce(1_000L);
-    verify(jobIndexStore).listStoredJobsInState("JS_QUEUED", 1, "next");
-  }
-
-  @Test
-  void readyIndexMaintenancePrunesOrphanRowsInBoundedPages() {
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    TestReadyQueueBackend backend = new TestReadyQueueBackend();
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
-
-    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, backend, ignored -> false, 1);
-
-    service.runReadyIndexMaintenanceOnce(1_000L);
-
-    assertEquals(List.of("rp-orphan"), backend.deleted);
-    assertEquals(1, backend.lastPageSize);
-  }
-
-  @Test
-  void readyIndexMaintenanceCanPruneMultiplePagesPerTick() {
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    TestReadyQueueBackend backend = new TestReadyQueueBackend();
-    backend.twoPages = true;
-    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
-
-    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, backend, ignored -> false, 1);
-
-    service.runReadyIndexMaintenanceOnce(1_000L, 2);
-
-    assertEquals(List.of("rp-orphan-1", "rp-orphan-2"), backend.deleted);
   }
 
   @Test
@@ -762,65 +593,6 @@ class ReconcileMaintenanceServicesTest {
     @Override
     public boolean isEmpty() {
       return pointers.isEmpty();
-    }
-  }
-
-  private static final class TestReadyQueueBackend implements ReconcileReadyQueueBackend {
-    final List<String> deleted = new ArrayList<>();
-    int lastPageSize;
-    String readyPointerKey = "rp-orphan";
-    String canonicalPointerKey = "cp-orphan";
-    Optional<CanonicalPointerSnapshot> snapshot = Optional.empty();
-    boolean twoPages;
-
-    @Override
-    public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-        ReadyQueueSlice slice,
-        int pageSize,
-        String pageToken,
-        ReconcileReadyQueueStore.LeaseScanStats scanStats) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      lastPageSize = pageSize;
-      if (pageToken != null && !pageToken.isBlank() && !twoPages) {
-        return new ReadyQueueScanPage(List.of(), "");
-      }
-      if (twoPages) {
-        boolean second = pageToken != null && !pageToken.isBlank();
-        return new ReadyQueueScanPage(
-            List.of(orphan(readyPointerKey + (second ? "-2" : "-1"))), second ? "" : "next");
-      }
-      return new ReadyQueueScanPage(List.of(orphan(readyPointerKey)), "");
-    }
-
-    private ReconcileReadyQueueStore.ReadyQueueEntry orphan(String pointerKey) {
-      ReconcileReadyQueueStore.ReadyQueueEntry orphan =
-          new ReconcileReadyQueueStore.ReadyQueueEntry(
-              pointerKey,
-              canonicalPointerKey,
-              "acct",
-              "job",
-              1L,
-              ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
-              "");
-      return orphan;
-    }
-
-    @Override
-    public boolean deleteReadyEntry(
-        ReconcileReadyQueueStore.ReadyQueueEntry expected,
-        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
-      deleted.add(expected.readyPointerKey());
-      return true;
-    }
-
-    @Override
-    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
-        String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
-      return snapshot;
     }
   }
 

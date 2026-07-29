@@ -132,52 +132,6 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   @Override
-  public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-    QueryRequest.Builder query =
-        QueryRequest.builder()
-            .tableName(table)
-            .consistentRead(true)
-            .limit(Math.max(1, pageSize))
-            .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
-            .keyConditionExpression("#pk = :pk")
-            .expressionAttributeValues(
-                Map.of(
-                    ":pk",
-                    AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey())));
-    String token = ReadyQueueBackendSupport.stripLeadingSlash(pageToken);
-    if (!token.isBlank()) {
-      query.exclusiveStartKey(
-          Map.of(
-              ATTR_PARTITION_KEY,
-                  AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey()),
-              ATTR_SORT_KEY, AttributeValue.fromS(token)));
-    }
-    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build()));
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
-    for (var item : response.items()) {
-      try {
-        entries.add(
-            new ReconcileReadyQueueStore.ReadyQueueEntry(
-                stringAttr(item, ATTR_READY_POINTER_KEY),
-                stringAttr(item, ATTR_CANONICAL_POINTER_KEY),
-                stringAttr(item, ATTR_ACCOUNT_ID),
-                stringAttr(item, ATTR_JOB_ID),
-                longAttr(item, ATTR_DUE_AT_MS),
-                ReconcileReadyQueueStore.ReadyIndexType.valueOf(stringAttr(item, ATTR_INDEX_TYPE)),
-                stringAttr(item, ATTR_FILTER_VALUE)));
-      } catch (IllegalArgumentException ignored) {
-        // Corrupt maintenance rows are removed through normal storage repair/TTL rather than
-        // being presented as a different ready index type.
-      }
-    }
-    String next = "";
-    if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
-      next = "/" + response.lastEvaluatedKey().get(ATTR_SORT_KEY).s();
-    }
-    return new ReadyQueueScanPage(List.copyOf(entries), next);
-  }
-
-  @Override
   public boolean deleteReadyEntry(
       ReconcileReadyQueueStore.ReadyQueueEntry expected,
       CanonicalPointerSnapshot expectedCanonicalSnapshot) {
@@ -245,23 +199,7 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
                           TransactWriteItem.builder()
                               .conditionCheck(canonicalCheck.build())
                               .build(),
-                          TransactWriteItem.builder().delete(readyDelete).build(),
-                          TransactWriteItem.builder()
-                              .delete(
-                                  Delete.builder()
-                                      .tableName(table)
-                                      .key(
-                                          Map.of(
-                                              ATTR_PARTITION_KEY,
-                                              AttributeValue.fromS(
-                                                  ReadyQueueBackendSupport
-                                                      .maintenancePartitionKey()),
-                                              ATTR_SORT_KEY,
-                                              AttributeValue.fromS(
-                                                  ReadyQueueBackendSupport.maintenanceSortKey(
-                                                      row))))
-                                      .build())
-                              .build())
+                          TransactWriteItem.builder().delete(readyDelete).build())
                       .build()));
       return true;
     } catch (TransactionCanceledException ignored) {

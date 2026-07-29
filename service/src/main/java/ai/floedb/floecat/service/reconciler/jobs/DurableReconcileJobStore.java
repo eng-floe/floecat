@@ -51,7 +51,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobEnque
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileLeaseMaintenanceService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileProjectionMaintenanceService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileProjectionMaintenanceService.RefreshResult;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileReadyIndexMaintenanceService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobDetailLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
@@ -195,7 +194,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileLeaseMaintenanceService leaseMaintenanceService;
   @Inject ReconcileProjectionMaintenanceService projectionMaintenanceService;
   @Inject ReconcileCancellationMaintenanceService cancellationMaintenanceService;
-  @Inject ReconcileReadyIndexMaintenanceService readyIndexMaintenanceService;
   @Inject ReconcileReadyQueueStore readyQueueStore;
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
   @Inject ConnectorRepository connectorRepo;
@@ -504,20 +502,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         this::isObsoleteCancellationCleanupRoot,
         readyScanLimit);
     return cancellationMaintenanceService;
-  }
-
-  private ReconcileReadyIndexMaintenanceService readyIndexMaintenance() {
-    if (readyIndexMaintenanceService == null) {
-      readyIndexMaintenanceService = new ReconcileReadyIndexMaintenanceService();
-    }
-    ReconcileReadyQueueStore readyQueue = readyQueue();
-    readyIndexMaintenanceService.bind(
-        jobIndexStore(),
-        readyQueue,
-        readyQueueBackend,
-        this::isBlockedByAncestorCancellation,
-        readyScanLimit);
-    return readyIndexMaintenanceService;
   }
 
   @PostConstruct
@@ -1772,14 +1756,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   public void runCancellationMaintenanceOnce(long maxMillis) {
     cancellationMaintenance().runCancellationMaintenanceOnce(maxMillis);
-  }
-
-  public void runReadyIndexMaintenanceOnce(long maxMillis) {
-    readyIndexMaintenance().runReadyIndexMaintenanceOnce(maxMillis);
-  }
-
-  public void runReadyIndexMaintenanceOnce(long maxMillis, int maxPages) {
-    readyIndexMaintenance().runReadyIndexMaintenanceOnce(maxMillis, maxPages);
   }
 
   @Override
@@ -5161,7 +5137,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || job == null
         || job.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
         || !job.fullRescan
-        || !job.childrenFinalized
+        || !abandonedStatsCleanupReady(job)
         || !failedOrCancelled(job.state)
         || STATS_CLEANUP_COMPLETED.equals(blankToEmpty(job.statsCleanupState))
         || blankToEmpty(job.snapshotTaskTableId).isBlank()
@@ -5303,13 +5279,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return job != null
         && job.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && job.fullRescan
-        && job.childrenFinalized
+        && abandonedStatsCleanupReady(job)
         && failedOrCancelled(job.state)
         && !STATS_CLEANUP_COMPLETED.equals(blankToEmpty(job.statsCleanupState))
         && !blankToEmpty(job.snapshotTaskTableId).isBlank()
         && job.snapshotTaskSnapshotId >= 0L
         && !blankToEmpty(job.accountId).isBlank()
         && !blankToEmpty(job.jobId).isBlank();
+  }
+
+  private static boolean abandonedStatsCleanupReady(StoredReconcileJob job) {
+    return job != null && (job.childrenFinalized || job.expectedDirectChildren <= 0L);
   }
 
   private void markStatsCleanupPendingIfRequired(StoredReconcileJob job, long now) {

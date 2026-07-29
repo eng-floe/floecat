@@ -210,7 +210,7 @@ public class CasBlobGcScheduler {
           // A clean, fully-reached sweep resets this account's backlog age.
           lastCleanSweepMs.put(accountId, System.currentTimeMillis());
         }
-        if (!result.deletesUnsupported()) {
+        if (!result.deletesUnsupported() && !result.poisoned()) {
           storageUsageMetrics
               .get()
               .recordGcEstimate(

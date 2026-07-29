@@ -659,8 +659,10 @@ message LeasedSnapshotFinalizeInput {
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
+  reserved 10;
+  reserved "snapshot_task";
   // Immutable snapshot plan object. File-group results are obtained from the paged descriptor RPC.
-  string snapshot_plan_uri = 10;
+  string snapshot_plan_uri = 19;
   bool full_rescan = 11;
   uint32 file_group_count = 12;
   // Server-allocated immutable prefix for this fenced finalizer's individual stats objects.

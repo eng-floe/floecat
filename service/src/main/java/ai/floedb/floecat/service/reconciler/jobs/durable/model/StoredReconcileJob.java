@@ -124,7 +124,6 @@ public class StoredReconcileJob {
   public String laneKey;
   public String dedupeKeyHash;
   public String readyPointerKey;
-  public int readyIndexVersion;
   public String connectorIndexPointerKey;
   public String canonicalPointerKey;
   public long createdAtMs;

@@ -327,6 +327,10 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/namespaces/by-id/" + encode(nid);
   }
 
+  public static String casGcGenerationCursorPointer(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/gc/cas/generation-cursor";
+  }
+
   public static String namespacePointerByIdPrefix(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/namespaces/by-id/";

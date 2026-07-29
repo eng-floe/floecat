@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
@@ -44,8 +45,12 @@ public final class ArtifactReferenceDigest {
             .stream()
                 .filter(java.util.Objects::nonNull)
                 .sorted(
-                    Comparator.comparing(StatsObjectDescriptor::getTargetStorageId)
-                        .thenComparing(StatsObjectDescriptor::getPayloadUri)
+                    Comparator.comparing(
+                            StatsObjectDescriptor::getTargetStorageId,
+                            ArtifactReferenceDigest::compareUtf8)
+                        .thenComparing(
+                            StatsObjectDescriptor::getPayloadUri,
+                            ArtifactReferenceDigest::compareUtf8)
                         .thenComparingLong(StatsObjectDescriptor::getPayloadBytes)
                         .thenComparing(
                             value ->
@@ -64,6 +69,11 @@ public final class ArtifactReferenceDigest {
   private static void updateBytes(MessageDigest digest, byte[] bytes) {
     updateInt(digest, bytes.length);
     digest.update(bytes);
+  }
+
+  private static int compareUtf8(String left, String right) {
+    return Arrays.compareUnsigned(
+        left.getBytes(StandardCharsets.UTF_8), right.getBytes(StandardCharsets.UTF_8));
   }
 
   private static void updateInt(MessageDigest digest, int value) {

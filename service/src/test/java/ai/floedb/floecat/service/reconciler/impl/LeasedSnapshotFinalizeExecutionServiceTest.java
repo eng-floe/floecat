@@ -61,6 +61,7 @@ import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import java.security.MessageDigest;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
@@ -166,6 +167,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             any(), anyLong(), anyString(), any(), any(), any()))
         .thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
+    when(jobs.childFileGroupResultDescriptorsPage(anyString(), anyString(), anyInt(), anyString()))
+        .thenReturn(new ReconcileJobStore.FileGroupResultDescriptorPage(List.of(), ""));
     when(jobs.completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
             eq(LEASE_EPOCH),
@@ -244,6 +247,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setPayloadUri(payloadUri)
             .setPayloadBytes(payloadBytes.length)
             .setPayloadSha256(ByteString.copyFrom(sha256(payloadBytes)))
+            .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1234L))
             .setStatsObjectPrefix(statsPrefix)
             .setPlannedFileCount(1)
             .setSucceededFileCount(1)
@@ -274,6 +278,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             new SnapshotFinalizeChildStateService.ChildState(
                 1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
     when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, "parent-job", 500, ""))
+        .thenReturn(
+            new ReconcileJobStore.FileGroupResultDescriptorPage(
+                List.of(storedDescriptor(fileGroup)), ""));
 
     service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
 
@@ -337,6 +345,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             new SnapshotFinalizeChildStateService.ChildState(
                 1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
     when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, "parent-job", 500, ""))
+        .thenReturn(
+            new ReconcileJobStore.FileGroupResultDescriptorPage(
+                List.of(storedDescriptor(fileGroup)), ""));
     when(service.statsStore.isPreparedFileGroup(
             any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
         .thenReturn(false);
@@ -684,6 +696,38 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {
     byte[] manifest = manifestBytes();
     return descriptor(uri, manifest, 0, 0, 0);
+  }
+
+  private static ReconcileFileGroupResultDescriptor storedDescriptor(
+      FileGroupResultDescriptor descriptor) {
+    return new ReconcileFileGroupResultDescriptor(
+        descriptor.getFormatVersion(),
+        descriptor.getAccountId(),
+        descriptor.getConnectorId(),
+        descriptor.getParentJobId(),
+        descriptor.getFileGroupJobId(),
+        descriptor.getPlanId(),
+        descriptor.getGroupId(),
+        descriptor.getTableId(),
+        descriptor.getSnapshotId(),
+        descriptor.getLeaseEpoch(),
+        descriptor.getResultId(),
+        descriptor.getPayloadUri(),
+        descriptor.getPayloadBytes(),
+        Base64.getEncoder().encodeToString(descriptor.getPayloadSha256().toByteArray()),
+        descriptor.getPlannedFileCount(),
+        descriptor.getSucceededFileCount(),
+        descriptor.getFailedFileCount(),
+        descriptor.getSkippedFileCount(),
+        descriptor.getPartialAggregateRecordCount(),
+        descriptor.getIndexArtifactCount(),
+        descriptor.getStatsObjectPrefix(),
+        descriptor.getFileStatsRecordCount(),
+        HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray()),
+        null,
+        descriptor.hasCreatedAt()
+            ? com.google.protobuf.util.Timestamps.toMillis(descriptor.getCreatedAt())
+            : 0L);
   }
 
   private static SnapshotCaptureManifestDescriptor descriptor(

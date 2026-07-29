@@ -32,6 +32,7 @@ import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -90,6 +91,7 @@ public class CasBlobGc {
   private static final Logger LOG = Logger.getLogger(CasBlobGc.class);
   private static final int CHAIN_READ_ATTEMPTS = 3;
   private static final String SEG_WORKER_UPLOADS = "/worker-uploads/";
+  private static final String SEG_FINALIZER_OUTPUTS = "/finalizer-outputs/";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
@@ -253,6 +255,15 @@ public class CasBlobGc {
     int tablesScanned = 0;
     int generationBlobsDeleted = 0;
     boolean generationCleanupPending = false;
+    if (!tableIds.isEmpty()) {
+      String cursor = generationCursor(accountId);
+      int start = cursor.isBlank() ? 0 : tableIds.indexOf(cursor);
+      if (start < 0) {
+        start = 0;
+      }
+      Collections.rotate(tableIds, -start);
+    }
+    boolean generationDeadlineGraceAvailable = deadlineMs != Long.MAX_VALUE;
     for (String tableId : tableIds) {
       tablesScanned++;
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
@@ -284,6 +295,16 @@ public class CasBlobGc {
               .setId(tableId)
               .setKind(ResourceKind.RK_TABLE)
               .build();
+      long generationDeadlineMs = deadlineMs;
+      long generationStartedAtMs = System.currentTimeMillis();
+      if (generationDeadlineGraceAvailable) {
+        generationDeadlineGraceAvailable = false;
+        long graceDeadlineMs =
+            generationStartedAtMs >= Long.MAX_VALUE - 250L
+                ? Long.MAX_VALUE
+                : generationStartedAtMs + 250L;
+        generationDeadlineMs = Math.max(deadlineMs, graceDeadlineMs);
+      }
       StatsRepository.GenerationGcResult generationGc =
           statsRepository.deleteUnreferencedGenerations(
               rid,
@@ -301,11 +322,16 @@ public class CasBlobGc {
               nowMs,
               minAgeMs,
               remainingGenerationBlobDeletes,
-              deadlineMs);
+              generationDeadlineMs);
       remainingGenerationBlobDeletes =
           Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
       generationBlobsDeleted += generationGc.blobsDeleted();
       generationCleanupPending |= generationGc.pending();
+      if (tablesScanned == 1 && tableIds.size() > 1) {
+        advanceGenerationCursor(accountId, tableIds.get(1));
+      } else if (tablesScanned == 1) {
+        advanceGenerationCursor(accountId, tableIds.getFirst());
+      }
 
       String snapshotsRoot = Keys.snapshotRootPrefix(accountId, tableId);
       pointersScanned +=
@@ -438,7 +464,9 @@ public class CasBlobGc {
                     // Worker uploads are reclaimed as a whole by stats-generation cleanup. They
                     // must not be swept individually: a worker can spend longer than min-age
                     // uploading a batch before the service can install protection pointers.
-                    || (key.contains(Keys.SEG_TARGET_STATS) && !key.contains(SEG_WORKER_UPLOADS))
+                    || (key.contains(Keys.SEG_TARGET_STATS)
+                        && !key.contains(SEG_WORKER_UPLOADS)
+                        && !key.contains(SEG_FINALIZER_OUTPUTS))
                     || key.contains(Keys.SEG_CONSTRAINTS)
                     || key.contains(Keys.SEG_INDEX_CAPTURE_MANIFESTS)
                     || key.contains(Keys.SEG_TABLE_ROOT),
@@ -595,6 +623,29 @@ public class CasBlobGc {
         walkFailures[0] > 0 || remarkFailures > 0,
         false,
         generationCleanupPending);
+  }
+
+  private String generationCursor(String accountId) {
+    return pointerStore
+        .get(Keys.casGcGenerationCursorPointer(accountId))
+        .map(Pointer::getBlobUri)
+        .orElse("");
+  }
+
+  private void advanceGenerationCursor(String accountId, String nextTableId) {
+    String key = Keys.casGcGenerationCursorPointer(accountId);
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      Pointer current = pointerStore.get(key).orElse(null);
+      long expectedVersion = current == null ? 0L : current.getVersion();
+      if (pointerStore.compareAndSet(
+          key,
+          expectedVersion,
+          PointerReferences.opaqueMarkerPointer(key, nextTableId, expectedVersion + 1L))) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "exhausted CAS attempts advancing CAS GC generation cursor for account " + accountId);
   }
 
   /**

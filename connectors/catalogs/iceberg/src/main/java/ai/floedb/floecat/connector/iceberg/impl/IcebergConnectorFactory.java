@@ -225,6 +225,7 @@ final class IcebergConnectorFactory {
     if (baseProps != null && !baseProps.isEmpty()) {
       props.putAll(baseProps);
     }
+    rejectUnscopedSigV4Activation(props);
     String catalogProviderId =
         props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
     props.remove(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
@@ -242,6 +243,17 @@ final class IcebergConnectorFactory {
       props.remove("rest.session-token");
     }
     return props;
+  }
+
+  private static void rejectUnscopedSigV4Activation(Map<String, String> props) {
+    String authType = props.get("rest.auth.type");
+    if (Boolean.parseBoolean(props.getOrDefault("rest.sigv4-enabled", "false").trim())
+        || (authType != null
+            && ("sigv4".equalsIgnoreCase(authType.trim())
+                || authType.contains("SigV4AuthManager")))) {
+      throw new IllegalArgumentException(
+          "SigV4 catalog authentication must be configured with auth scheme aws-sigv4");
+    }
   }
 
   static Map<String, String> buildStorageProperties(
@@ -271,16 +283,6 @@ final class IcebergConnectorFactory {
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
-        boolean hasCatalogProvider =
-            !isBlank(
-                props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
-        boolean hasCatalogAccessKey = !isBlank(props.get("rest.access-key-id"));
-        boolean hasCatalogSecretKey = !isBlank(props.get("rest.secret-access-key"));
-        if (!hasCatalogProvider && !(hasCatalogAccessKey && hasCatalogSecretKey)) {
-          throw new IllegalArgumentException(
-              "aws-sigv4 catalog authentication requires both rest.access-key-id and "
-                  + "rest.secret-access-key, or CATALOG_OPTION_PROVIDER_ID");
-        }
         props.remove("rest.sigv4-enabled");
         String signingName = safeAuthProps.getOrDefault("signing-name", "glue");
         String signingRegion =

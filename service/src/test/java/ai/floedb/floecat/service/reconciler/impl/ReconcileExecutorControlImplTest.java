@@ -49,6 +49,7 @@ import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
 import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
@@ -71,6 +72,19 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class ReconcileExecutorControlImplTest {
+
+  @Test
+  void snapshotFinalizeInputKeepsFieldTenReservedAndUsesFieldNineteenForPlanUri() {
+    var descriptor = LeasedSnapshotFinalizeInput.getDescriptor();
+
+    assertEquals(null, descriptor.findFieldByNumber(10));
+    assertEquals(19, descriptor.findFieldByName("snapshot_plan_uri").getNumber());
+    assertTrue(descriptor.toProto().getReservedNameList().contains("snapshot_task"));
+    assertTrue(
+        descriptor.toProto().getReservedRangeList().stream()
+            .anyMatch(range -> range.getStart() == 10 && range.getEnd() == 11));
+  }
+
   private ReconcileExecutorControlImpl service;
 
   @BeforeEach

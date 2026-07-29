@@ -134,6 +134,34 @@ class IcebergConnectorIssuesTest {
   }
 
   @Test
+  void snapshotWithoutSchemaIdUsesTheCurrentTableSchema() {
+    Schema currentSchema =
+        new Schema(20, List.of(Types.NestedField.optional(3, "new_col", Types.IntegerType.get())));
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> currentSchema;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    assertEquals(currentSchema, IcebergConnector.schemaForSnapshot(table, snapshot));
+  }
+
+  @Test
   void enumerateSnapshotsAcceptsSchemaIdZeroAndUsesManifestSpecIdsWithoutScanning() {
     Schema schema =
         new Schema(

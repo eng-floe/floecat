@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
@@ -79,82 +78,6 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   @Override
-  public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-    List<ReadyScanScope> scopes = new ArrayList<>(14);
-    for (char digit = '0'; digit <= '9'; digit++) {
-      scopes.add(
-          new ReadyScanScope(
-              Keys.reconcileReadyPointerPrefix() + digit,
-              ReconcileReadyQueueStore.ReadyIndexType.GLOBAL));
-    }
-    scopes.add(
-        new ReadyScanScope(
-            Keys.reconcileReadyByExecutionClassPointerPrefix(),
-            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS));
-    scopes.add(
-        new ReadyScanScope(
-            Keys.reconcileReadyByExecutionLanePointerPrefix(),
-            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE));
-    scopes.add(
-        new ReadyScanScope(
-            Keys.reconcileReadyByPinnedExecutorPointerPrefix(),
-            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR));
-    scopes.add(
-        new ReadyScanScope(
-            Keys.reconcileReadyByJobKindPointerPrefix(),
-            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND));
-    int prefixIndex = 0;
-    String pointerToken = "";
-    if (pageToken != null && !pageToken.isBlank()) {
-      int split = pageToken.indexOf('\t');
-      if (split > 0) {
-        try {
-          prefixIndex = Integer.parseInt(pageToken.substring(0, split));
-          pointerToken = pageToken.substring(split + 1);
-        } catch (NumberFormatException ignored) {
-          prefixIndex = 0;
-          pointerToken = "";
-        }
-      }
-    }
-    if (prefixIndex < 0 || prefixIndex >= scopes.size()) {
-      prefixIndex = 0;
-      pointerToken = "";
-    } else if (!pointerToken.isBlank()
-        && !pointerToken.startsWith(scopes.get(prefixIndex).prefix())) {
-      pointerToken = "";
-    }
-    int limit = Math.max(1, pageSize);
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(limit);
-    while (prefixIndex < scopes.size() && entries.size() < limit) {
-      ReadyScanScope scope = scopes.get(prefixIndex);
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(
-              scope.prefix(), limit - entries.size(), pointerToken, next);
-      for (Pointer pointer : pointers) {
-        ReadyQueueSlice slice = ReadyQueueBackendSupport.sliceForReadyPointerKey(pointer.getKey());
-        if (slice == null || slice.indexType() != scope.indexType()) {
-          continue;
-        }
-        var decoded =
-            ReadyQueueBackendSupport.decodeReadyQueueEntry(
-                pointer.getKey(), pointer.getBlobUri(), slice);
-        if (decoded != null) {
-          entries.add(decoded);
-        }
-      }
-      if (!next.isEmpty()) {
-        return new ReadyQueueScanPage(entries, prefixIndex + "\t" + next);
-      }
-      prefixIndex++;
-      pointerToken = "";
-    }
-    String next = prefixIndex >= scopes.size() ? "" : prefixIndex + "\t";
-    return new ReadyQueueScanPage(entries, next);
-  }
-
-  @Override
   public boolean deleteReadyEntry(
       ReconcileReadyQueueStore.ReadyQueueEntry expected,
       CanonicalPointerSnapshot expectedCanonicalSnapshot) {
@@ -199,6 +122,4 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
   }
-
-  private record ReadyScanScope(String prefix, ReconcileReadyQueueStore.ReadyIndexType indexType) {}
 }

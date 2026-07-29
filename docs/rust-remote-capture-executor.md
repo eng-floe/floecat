@@ -345,9 +345,9 @@ The worker is responsible for ensuring:
   its column name, so content-state deduplication can recognize later requests using either form
 - `realized_index_selectors` is the sorted, distinct selector set represented by the file group's
   index wrappers; omit it only when page-index output was not requested
-- explicit selectors need not appear verbatim when the persisted artifacts use a different or
-  unknown selector alias; an explicit field-ID request may therefore report only a name alias or
-  no known realized selector
+- explicit selectors need not appear verbatim when the persisted artifacts use an equivalent
+  alias; an explicit field-ID request may therefore report its resolved name alias, but page-index
+  capture for a non-empty group must still report at least one realized selector
 - default index selection resolves to a non-empty selector set for non-empty snapshots, uses the
   same set for every file in the group, and does not exceed `max_default_columns` for `FIRST_N`
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
@@ -367,7 +367,8 @@ Compute `artifact_references_sha256` by feeding the following canonical bytes to
 2. For each group, write its one-byte kind (`1` for file stats or `2` for index artifacts), followed
    by its descriptor count as an unsigned 32-bit big-endian integer.
 3. Sort descriptors by target storage ID, payload URI, payload byte count, then lowercase payload
-   SHA-256 hex.
+   SHA-256 hex. Compare the two string fields lexicographically as unsigned UTF-8 bytes; do not
+   use UTF-16 code-unit ordering.
 4. For each descriptor, write the UTF-8 target storage ID and payload URI as a 32-bit big-endian
    byte length followed by the bytes, write the payload byte count as a 64-bit big-endian integer,
    then write the binary payload SHA-256 as a 32-bit big-endian byte length followed by the bytes.
@@ -392,12 +393,13 @@ deployment.
 
 ## Snapshot Finalizer Implications
 
-The snapshot finalizer still reads and SHA-verifies each file-group result payload and each
-referenced stats object to calculate snapshot-wide aggregates. That worker-side workload remains
-proportional to the snapshot's data and delete-file count. For each successful group it must derive
-the exact expected stats-target set from the immutable `file_execution_plans`: successful data
-files, attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra
-targets are invalid.
+The snapshot finalizer reads and SHA-verifies each bounded file-group result payload. It validates
+the referenced stats and index descriptors but does not download their immutable objects. Its
+worker-side workload is therefore proportional to planned-file, descriptor, and partial-aggregate
+counts rather than to the referenced objects' byte volume. For each successful group it derives the
+exact expected stats-target set from the immutable `file_execution_plans`: successful data files,
+attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra targets
+are invalid.
 
 An Iceberg delete file may be referenced by data files in different groups. Repeated references to
 that target are execution overhead rather than additional logical files: a finalizer should verify

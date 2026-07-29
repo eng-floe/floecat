@@ -207,8 +207,16 @@ public class ReconcileJobGc {
     int retentionScanned = 0;
     int quarantineScanned = 0;
 
+    // Blob deletion has an independent, deliberately small slice so a steady stream of terminal
+    // jobs cannot starve it, while slow object-store cleanup cannot consume the full retention
+    // budget. Markers created below are picked up on the next account slice.
+    long blobCleanupBudgetMs = Math.max(1L, Math.min(250L, Math.max(1L, sliceMillis / 4L)));
+    long blobCleanupDeadline =
+        nowMs >= Long.MAX_VALUE - blobCleanupBudgetMs
+            ? deadline
+            : Math.min(deadline, nowMs + blobCleanupBudgetMs);
     BlobCleanupResult blobCleanup =
-        cleanupJobBlobMarkers(accountId, deadline, Math.max(1, blobPrefixesPerSlice));
+        cleanupJobBlobMarkers(accountId, blobCleanupDeadline, Math.max(1, blobPrefixesPerSlice));
     blobDeleted += blobCleanup.deleted();
 
     List<ReconcileJobIndexStore.JobWritePlan<String>> deletePlans = new ArrayList<>();
@@ -395,7 +403,7 @@ public class ReconcileJobGc {
         scanned++;
         quarantineScanned++;
         preparedInPage++;
-        lastPreparedQuarantineToken = marker.getKey();
+        lastPreparedQuarantineToken = pointerStore.pageTokenAfterKey(marker.getKey());
         if (quarantineMarkersCreatedThisSlice.contains(marker.getKey())) {
           continue;
         }

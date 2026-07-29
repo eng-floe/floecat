@@ -487,7 +487,7 @@ class LeasedFileGroupExecutionServiceTest {
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
     ReconcileJobStore.ReconcileJob terminal = terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED");
-    when(jobs.getCompactLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
 
     assertTrue(
         service.persistSuccess(
@@ -523,7 +523,7 @@ class LeasedFileGroupExecutionServiceTest {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    when(jobs.getCompactLeaseView(CHILD_JOB_ID))
+    when(jobs.getLeaseView(CHILD_JOB_ID))
         .thenReturn(Optional.of(terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED")));
     when(jobs.completeFileGroupSuccess(
             anyString(),

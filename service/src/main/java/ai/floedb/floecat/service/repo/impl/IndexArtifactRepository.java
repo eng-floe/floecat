@@ -39,7 +39,9 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -51,6 +53,7 @@ import java.util.Set;
 public class IndexArtifactRepository {
   private static final int MAX_POINTER_BATCH_SIZE = 100;
   private static final String DIRECT_GENERATION = "direct";
+  private static final String LIST_TOKEN_PREFIX = "v1.";
 
   public record PrewrittenIndexArtifactReference(
       String targetStorageId, String blobUri, long blobBytes, byte[] blobSha256) {}
@@ -281,7 +284,9 @@ public class IndexArtifactRepository {
         && manifest != null
         && captureManifestUri.equals(manifest.getBlobUri())) {
       return new PreparedActivation(
-          new ActivationFence(activePointerKey, generationId, active.getVersion()), null, false);
+          new ActivationFence(activePointerKey, generationId, active.getVersion()),
+          null,
+          DIRECT_GENERATION.equals(predecessor.generationId()));
     }
     if (!matches(active, predecessor.generationId(), predecessor.activePointerVersion())
         || !matches(
@@ -572,15 +577,60 @@ public class IndexArtifactRepository {
       }
       return List.of();
     }
+    IndexListToken token = decodeIndexListToken(pageToken);
+    if (token != null && !generationId.get().equals(token.generationId())) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "index artifact generation changed while listing snapshot " + snapshotId);
+    }
+    String backendToken = token == null ? "" : token.backendToken();
+    StringBuilder backendNext = new StringBuilder();
     List<Pointer> pointers =
         pointerStore.listPointersByPrefix(
             Keys.snapshotIndexArtifactGenerationPrefix(
                 tableId.getAccountId(), tableId.getId(), snapshotId, generationId.get()),
             Math.max(1, limit),
-            pageToken == null ? "" : pageToken,
-            nextOut);
+            backendToken,
+            backendNext);
+    if (nextOut != null) {
+      nextOut.setLength(0);
+      if (!backendNext.isEmpty()) {
+        nextOut.append(encodeIndexListToken(generationId.get(), backendNext.toString()));
+      }
+    }
     return pointers.stream().map(this::readRecord).toList();
   }
+
+  private static String encodeIndexListToken(String generationId, String backendToken) {
+    String payload = generationId + "\n" + backendToken;
+    return LIST_TOKEN_PREFIX
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static IndexListToken decodeIndexListToken(String token) {
+    if (token == null || token.isBlank()) {
+      return null;
+    }
+    if (!token.startsWith(LIST_TOKEN_PREFIX)) {
+      throw new IllegalArgumentException("invalid index artifact page token");
+    }
+    try {
+      String payload =
+          new String(
+              Base64.getUrlDecoder().decode(token.substring(LIST_TOKEN_PREFIX.length())),
+              StandardCharsets.UTF_8);
+      int split = payload.indexOf('\n');
+      if (split <= 0 || split == payload.length() - 1) {
+        throw new IllegalArgumentException("invalid index artifact page token");
+      }
+      return new IndexListToken(payload.substring(0, split), payload.substring(split + 1));
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("invalid index artifact page token", e);
+    }
+  }
+
+  private record IndexListToken(String generationId, String backendToken) {}
 
   public int countIndexArtifacts(ResourceId tableId, long snapshotId) {
     return activeGeneration(tableId, snapshotId)

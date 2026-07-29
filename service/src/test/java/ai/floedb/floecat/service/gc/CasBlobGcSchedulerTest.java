@@ -20,8 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -82,6 +85,31 @@ class CasBlobGcSchedulerTest {
             .longValue());
   }
 
+  @Test
+  void poisonedSweepDoesNotPublishATruncatedStorageEstimate() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of(account("acct-a")));
+    RecordingGc gc = new RecordingGc();
+    gc.poisonAccountId = "acct-a";
+    StorageUsageMetrics storageUsageMetrics = mock(StorageUsageMetrics.class);
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    scheduler.observability = new TestObservability();
+    scheduler.storageUsageMetrics = () -> storageUsageMetrics;
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    verify(storageUsageMetrics, never())
+        .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -93,12 +121,16 @@ class CasBlobGcSchedulerTest {
   private static final class RecordingGc extends CasBlobGc {
     private final List<String> accountIds = new ArrayList<>();
     private String failAccountId;
+    private String poisonAccountId;
 
     @Override
     public Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
+      }
+      if (accountId.equals(poisonAccountId)) {
+        return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
       }
       return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
     }

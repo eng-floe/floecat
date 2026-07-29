@@ -515,11 +515,6 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
     public boolean deleteReadyEntry(
         ReconcileReadyQueueStore.ReadyQueueEntry expected,
         CanonicalPointerSnapshot expectedCanonicalSnapshot) {
@@ -583,11 +578,6 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
     public boolean deleteReadyEntry(
         ReconcileReadyQueueStore.ReadyQueueEntry expected,
         CanonicalPointerSnapshot expectedCanonicalSnapshot) {
@@ -615,11 +605,6 @@ class NativeReconcileReadyQueueStoreBudgetTest {
       slices.add(slice);
       pageSizes.add(pageSize);
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
-    }
-
-    @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
     }
 
     @Override
@@ -657,11 +642,6 @@ class NativeReconcileReadyQueueStoreBudgetTest {
               ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
               "");
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(orphan), "next-page");
-    }
-
-    @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
     }
 
     @Override
@@ -703,11 +683,6 @@ class NativeReconcileReadyQueueStoreBudgetTest {
               ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
               "");
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(orphan), "next-page");
-    }
-
-    @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
     }
 
     @Override

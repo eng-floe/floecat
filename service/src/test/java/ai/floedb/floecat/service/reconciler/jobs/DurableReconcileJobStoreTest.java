@@ -53,7 +53,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileAncestorRollupService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileCancellationMaintenanceService;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
@@ -62,7 +61,6 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -4093,6 +4091,41 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void failedFullRescanSnapshotWithoutChildrenCleansDraftStats() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    Mockito.doReturn(UnpublishedGenerationDeleteResult.DELETED)
+        .when(statsStore)
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+    var lease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, lease.leaseEpoch, 50L, "executor");
+
+    store.markFailedTerminal(
+        snapshotJobId, lease.leaseEpoch, 100L, "failed", 0L, 0L, 0L, 0L, 1L, 0L, 0L);
+    runStatsCleanupMaintenance();
+
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+  }
+
+  @Test
   void fullRescanSnapshotCancellationRetriesDraftStatsCleanupAfterTransientFailure() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     store.statsStore = statsStore;
@@ -7080,25 +7113,11 @@ class DurableReconcileJobStoreTest {
   }
 
   private boolean findAndDeleteReadyEntry(String readyPointerKey) {
-    assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
-    String token = "";
-    do {
-      ReconcileReadyQueueBackend.ReadyQueueScanPage page =
-          store.readyQueueBackend.scanAllReadyEntries(128, token);
-      for (ReconcileReadyQueueStore.ReadyQueueEntry entry : page.entries()) {
-        if (readyPointerKey.equals(entry.readyPointerKey())) {
-          CanonicalPointerSnapshot snapshot =
-              store
-                  .readyQueueBackend
-                  .loadCanonicalSnapshot(
-                      entry.canonicalPointerKey(), new ReconcileReadyQueueStore.LeaseScanStats())
-                  .orElse(null);
-          return store.readyQueueBackend.deleteReadyEntry(entry, snapshot);
-        }
-      }
-      token = page.nextPageToken();
-    } while (token != null && !token.isBlank());
-    return false;
+    if (store.pointerStore.get(readyPointerKey).isEmpty()) {
+      return false;
+    }
+    store.pointerStore.delete(readyPointerKey);
+    return true;
   }
 
   private ReconcileLeaseStore leaseManager() {

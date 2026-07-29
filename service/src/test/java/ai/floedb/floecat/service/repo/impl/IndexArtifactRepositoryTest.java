@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -406,6 +407,124 @@ class IndexArtifactRepositoryTest {
                 .predecessor()
                 .captureManifestUri())
         .isNotEqualTo(predecessor.captureManifestUri());
+  }
+
+  @Test
+  void idempotentActivationRetryStillDeletesTheDirectPredecessor() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 723L;
+    repository.putIndexArtifact(indexRecord(snapshotId, "s3://source/direct.parquet"));
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
+    byte[] manifest = captureManifest(snapshotId, 1, 1, "#1").toByteArray();
+    IndexArtifactRepository.PreparedActivation prepared =
+        repository.prepareGenerationActivation(
+            TABLE_ID, snapshotId, "generation-one", manifest, predecessor, false);
+    assertThat(
+            pointers.compareAndSetBatch(
+                prepared.publicationFence().pointerUpdates().stream()
+                    .map(
+                        update ->
+                            (PointerStore.CasOp)
+                                new PointerStore.CasUpsert(
+                                    update.pointerKey(), update.expectedVersion(), update.next()))
+                    .toList()))
+        .isTrue();
+
+    IndexArtifactRepository.PreparedActivation retry =
+        repository.prepareGenerationActivation(
+            TABLE_ID, snapshotId, "generation-one", manifest, predecessor, false);
+    repository.completePreparedGenerationActivation(TABLE_ID, snapshotId, retry);
+
+    assertThat(retry.deleteDirectPredecessor()).isTrue();
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "direct")))
+        .isZero();
+  }
+
+  @Test
+  void pagedIndexListFailsRetryablyWhenTheActiveGenerationChanges() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 724L;
+    registerArtifact(repository, blobs, snapshotId, "generation-one", "s3://source/a.parquet");
+    registerArtifact(repository, blobs, snapshotId, "generation-one", "s3://source/b.parquet");
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        "generation-one",
+        captureManifest(snapshotId, 2, 2, "#1").toByteArray());
+    StringBuilder next = new StringBuilder();
+
+    assertThat(repository.listIndexArtifacts(TABLE_ID, snapshotId, 1, "", next)).hasSize(1);
+    assertThat(next).isNotEmpty();
+
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
+    registerArtifact(repository, blobs, snapshotId, "generation-two", "s3://source/c.parquet");
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        "generation-two",
+        captureManifest(snapshotId, 1, 1, "#2").toBuilder()
+            .setParentJobId("next")
+            .build()
+            .toByteArray(),
+        predecessor,
+        false);
+
+    assertThatThrownBy(
+            () ->
+                repository.listIndexArtifacts(
+                    TABLE_ID, snapshotId, 1, next.toString(), new StringBuilder()))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("generation changed");
+  }
+
+  private static void registerArtifact(
+      IndexArtifactRepository repository,
+      InMemoryBlobStore blobs,
+      long snapshotId,
+      String generationId,
+      String filePath) {
+    IndexArtifactRecord record = indexRecord(snapshotId, filePath);
+    byte[] wrapper = record.toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(wrapper));
+    String targetStorageId = "file:" + filePath;
+    String prefix = "/worker-output/" + generationId + "/index-artifacts/";
+    String wrapperUri =
+        prefix
+            + Hashing.sha256Hex(targetStorageId)
+            + "/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobs.put(wrapperUri, wrapper, "application/x-protobuf");
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        prefix,
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                targetStorageId, wrapperUri, wrapper.length, digest)));
+  }
+
+  private static IndexArtifactRecord indexRecord(long snapshotId, String filePath) {
+    return IndexArtifactRecord.newBuilder()
+        .setTableId(TABLE_ID)
+        .setSnapshotId(snapshotId)
+        .setTarget(
+            IndexTarget.newBuilder().setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
+        .setArtifactUri("s3://indexes/" + Hashing.sha256Hex(filePath) + ".parquet")
+        .setArtifactFormat("parquet")
+        .setArtifactFormatVersion(1)
+        .setState(IndexArtifactState.IAS_READY)
+        .build();
   }
 
   private static SnapshotCaptureManifest captureManifest(

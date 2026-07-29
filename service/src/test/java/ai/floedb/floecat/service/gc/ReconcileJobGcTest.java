@@ -880,6 +880,69 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void deadlineInterruptedQuarantinePageResumesAfterLastConsumedRetainedMarker() {
+    System.setProperty("floecat.gc.reconcile-jobs.page-size", "2");
+    System.setProperty("floecat.gc.reconcile-jobs.slice-millis", "1");
+    java.util.ArrayList<String> markerKeys = new java.util.ArrayList<>();
+    for (int i = 0; i < 2; i++) {
+      String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "retained-" + i);
+      String markerKey =
+          Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+      markerKeys.add(markerKey);
+      pointers.compareAndSet(
+          canonicalKey,
+          0L,
+          PointerReferences.inlineJsonPointer(canonicalKey, "inline:reconcile-job:not-valid", 1L));
+      putQuarantineMarker(markerKey, canonicalKey, 1L, "inline:reconcile-job:not-valid");
+    }
+    java.util.Collections.sort(markerKeys);
+    java.util.concurrent.atomic.AtomicInteger clockCalls =
+        new java.util.concurrent.atomic.AtomicInteger();
+    gc.clock = () -> clockCalls.incrementAndGet() < 4 ? 0L : 1L;
+
+    var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, first.quarantineScanned());
+    assertEquals(
+        pointers.pageTokenAfterKey(markerKeys.getFirst()), first.nextCanonicalQuarantineToken());
+    assertTrue(pointers.get(markerKeys.getFirst()).isPresent());
+    gc.clock = System::currentTimeMillis;
+
+    var second = gc.runAccountSlice(ACCOUNT_ID, "", first.nextCanonicalQuarantineToken());
+
+    assertEquals(1, second.quarantineScanned());
+  }
+
+  @Test
+  void blobCleanupRunsEvenWhenTheSameSliceExpiresTerminalJobs() {
+    String cleanupJobId = "job-existing-cleanup";
+    String blobPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, cleanupJobId);
+    String blobUri = blobPrefix + "history";
+    blobs.put(blobUri, new byte[] {1}, "application/octet-stream");
+    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, cleanupJobId);
+    pointers.compareAndSet(
+        markerKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            markerKey, ReconcileJobGc.encodeBlobCleanupMarker(blobPrefix, ""), 1L));
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "1");
+    putNativeJobIndexRows(
+        storedJob(
+            "job-expired-alongside-cleanup",
+            "JS_SUCCEEDED",
+            System.currentTimeMillis() - 10_000L,
+            "",
+            "",
+            ""));
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.expired());
+    assertEquals(1, result.blobDeleted());
+    assertTrue(blobs.head(blobUri).isEmpty());
+  }
+
+  @Test
   void accountSlicePurgesUnreadableCanonicalPointersAfterQuarantineRetention() {
     System.setProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", "0");
     System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "1");

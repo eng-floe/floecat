@@ -513,7 +513,6 @@ public class ReconcileJobEnqueuer {
     rec.laneKey = laneKey;
     rec.dedupeKeyHash = dedupeKeyHash;
     rec.readyPointerKey = readyPointerKey;
-    rec.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
     rec.connectorIndexPointerKey = connectorIndexPointerKey;
     rec.createdAtMs = now;
     rec.updatedAtMs = now;

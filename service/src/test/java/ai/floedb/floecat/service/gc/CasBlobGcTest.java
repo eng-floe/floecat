@@ -124,6 +124,97 @@ class CasBlobGcTest {
   }
 
   @Test
+  void keepsUnreferencedFinalizerOutputForGenerationPublication() {
+    String finalizerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "finalizer-outputs/finalize-job/lease/target/stats.pb";
+    blobs.put(finalizerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(finalizerObject).isPresent(),
+        "finalizer outputs are owned and reclaimed by stats-generation cleanup");
+  }
+
+  @Test
+  void givesGenerationCleanupABoundedSliceAfterTheAccountDeadline() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    java.util.concurrent.atomic.AtomicLong observedDeadline =
+        new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs) {
+            observedDeadline.set(deadlineMs);
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    long startedAt = System.currentTimeMillis();
+
+    gc.runForAccount(ACCOUNT_ID, 0L);
+
+    assertTrue(
+        observedDeadline.get() > startedAt,
+        "the rotated first table must receive generation-cleanup time even after the main deadline");
+  }
+
+  @Test
+  void generationCleanupCursorSurvivesGcRecreation() {
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-a"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-a", "sha-a"));
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-b"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-b", "sha-b"));
+    java.util.ArrayList<String> visited = new java.util.ArrayList<>();
+    ai.floedb.floecat.service.repo.impl.StatsRepository recordingStats =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs) {
+            visited.add(tableId.getId());
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    gc.statsRepository = recordingStats;
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 1_000L);
+    assertEquals(
+        "tbl-b",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+
+    CasBlobGc recreated = new CasBlobGc();
+    recreated.pointerStore = pointers;
+    recreated.blobStore = blobs;
+    recreated.queryContextStore = queryContextStore;
+    recreated.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    recreated.statsRepository = recordingStats;
+    visited.clear();
+
+    recreated.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 1_000L);
+
+    assertEquals("tbl-b", visited.getFirst());
+  }
+
+  @Test
   void keyWithoutADerivableOwnerIsNeverDeletedInANonDeferringPass() {
     // A candidate that passes a family's segment filter but whose key shape yields no owner
     // pointer (malformed/blank rid) must NOT take the unconditional-delete path in the

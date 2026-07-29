@@ -27,7 +27,6 @@ final class ReadyQueueBackendSupport {
   private static final String READY_EXECUTION_LANE_PARTITION = "reconcile-ready#execution-lane#";
   private static final String READY_PINNED_EXECUTOR_PARTITION = "reconcile-ready#pinned-executor#";
   private static final String READY_JOB_KIND_PARTITION = "reconcile-ready#job-kind#";
-  private static final String READY_MAINTENANCE_PARTITION = "reconcile-ready#maintenance";
 
   private ReadyQueueBackendSupport() {}
 
@@ -223,14 +222,6 @@ final class ReadyQueueBackendSupport {
       case PINNED_EXECUTOR -> READY_PINNED_EXECUTOR_PARTITION + filterValue;
       case JOB_KIND -> READY_JOB_KIND_PARTITION + filterValue;
     };
-  }
-
-  static String maintenancePartitionKey() {
-    return READY_MAINTENANCE_PARTITION;
-  }
-
-  static String maintenanceSortKey(ReadyQueueRow row) {
-    return row == null ? "" : normalizePointerKey(row.entry().readyPointerKey());
   }
 
   static ReconcileReadyQueueBackend.ReadyQueueSlice sliceForReadyPointerKey(

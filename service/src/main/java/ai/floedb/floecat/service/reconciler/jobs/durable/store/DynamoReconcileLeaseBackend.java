@@ -187,7 +187,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                 readyUpsert.readyPointerKey(), readyUpsert.canonicalPointerKey());
         if (row != null) {
           tx.add(buildReadyUpsert(row));
-          tx.add(buildReadyMaintenanceUpsert(row));
         }
       }
       for (String readyDeleteKey : jobIndexBatch.readyMutation().deletes()) {
@@ -199,7 +198,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
             ReadyQueueBackendSupport.toReadyQueueRow(readyDeleteKey);
         if (row != null) {
           tx.add(buildReadyDelete(row));
-          tx.add(buildReadyMaintenanceDelete(row));
         }
       }
     }
@@ -784,55 +782,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                     Map.of(
                         ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
                         ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
-                .build())
-        .build();
-  }
-
-  private TransactWriteItem buildReadyMaintenanceUpsert(
-      ReadyQueueBackendSupport.ReadyQueueRow row) {
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(
-        ATTR_PARTITION_KEY,
-        AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey()));
-    item.put(ATTR_SORT_KEY, AttributeValue.fromS(ReadyQueueBackendSupport.maintenanceSortKey(row)));
-    item.put(ATTR_KIND, AttributeValue.fromS(DynamoReconcileReadyQueueBackend.KIND_READY_ENTRY));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY,
-        AttributeValue.fromS(row.entry().readyPointerKey()));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_CANONICAL_POINTER_KEY,
-        AttributeValue.fromS(row.entry().canonicalPointerKey()));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_ACCOUNT_ID,
-        AttributeValue.fromS(row.entry().accountId()));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_JOB_ID, AttributeValue.fromS(row.entry().jobId()));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_DUE_AT_MS,
-        AttributeValue.fromN(Long.toString(row.entry().dueAtMs())));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_INDEX_TYPE,
-        AttributeValue.fromS(row.entry().indexType().name()));
-    item.put(
-        DynamoReconcileReadyQueueBackend.ATTR_FILTER_VALUE,
-        AttributeValue.fromS(row.entry().filterValue()));
-    return TransactWriteItem.builder()
-        .put(Put.builder().tableName(table).item(item).build())
-        .build();
-  }
-
-  private TransactWriteItem buildReadyMaintenanceDelete(
-      ReadyQueueBackendSupport.ReadyQueueRow row) {
-    return TransactWriteItem.builder()
-        .delete(
-            Delete.builder()
-                .tableName(table)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey()),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(ReadyQueueBackendSupport.maintenanceSortKey(row))))
                 .build())
         .build();
   }

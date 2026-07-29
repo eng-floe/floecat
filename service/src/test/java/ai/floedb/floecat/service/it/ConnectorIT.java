@@ -2671,7 +2671,6 @@ public class ConnectorIT {
     if (maxMillis <= 0L) {
       return;
     }
-    durableJobs.runReadyIndexMaintenanceOnce(maxMillis);
     durableJobs.runLeaseMaintenanceOnce(maxMillis);
     durableJobs.runCancellationMaintenanceOnce(maxMillis);
     reconcileExecutorPoller.drainAndAwaitIdle(maxMillis);

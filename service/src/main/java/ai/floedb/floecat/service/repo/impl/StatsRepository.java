@@ -514,6 +514,14 @@ public class StatsRepository implements StatsStore {
       if (destination != null && destination.getBlobUri().startsWith(capturedBlobPrefix)) {
         return;
       }
+      if (destination != null
+          && destination.getBlobUri().equals(source.getBlobUri())
+          && destination.hasReferencedObjectSizeBytes() == source.hasReferencedObjectSizeBytes()
+          && (!source.hasReferencedObjectSizeBytes()
+              || destination.getReferencedObjectSizeBytes()
+                  == source.getReferencedObjectSizeBytes())) {
+        return;
+      }
       long expectedVersion = destination == null ? 0L : destination.getVersion();
       long referencedBytes =
           source.hasReferencedObjectSizeBytes() ? source.getReferencedObjectSizeBytes() : 0L;
@@ -2082,6 +2090,9 @@ public class StatsRepository implements StatsStore {
       if (isProtectedManifestUri.test(manifestUri)) {
         continue;
       }
+      if (isActiveIndexGeneration(tableId, snapshotId, generationId)) {
+        continue;
+      }
       String liveActive = activeStatsGeneration(tableId, snapshotId).orElse("");
       if (manifestUri.equals(liveActive)) {
         continue; // creation-window safeguard: active pointer target survives regardless of roots
@@ -2090,7 +2101,8 @@ public class StatsRepository implements StatsStore {
         continue;
       }
       if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
-          || isProtectedManifestUri.test(manifestUri)) {
+          || isProtectedManifestUri.test(manifestUri)
+          || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
         restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
         continue;
       }
@@ -2113,6 +2125,17 @@ public class StatsRepository implements StatsStore {
       reclaimed++;
     }
     return new GenerationGcResult(reclaimed, deleteAttempts, blobsDeleted, pending);
+  }
+
+  private boolean isActiveIndexGeneration(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return pointerStore
+        .get(
+            Keys.snapshotIndexArtifactActiveGenerationPointer(
+                tableId.getAccountId(), tableId.getId(), snapshotId))
+        .map(Pointer::getBlobUri)
+        .filter(generationId::equals)
+        .isPresent();
   }
 
   private record GenerationBlobDeleteResult(int attempts, int deleted, boolean pending) {}

@@ -16,27 +16,16 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileReadyQueueBackend {
   record ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType indexType, String filterValue) {}
-
-  record ReadyQueueScanPage(
-      List<ReconcileReadyQueueStore.ReadyQueueEntry> entries, String nextPageToken) {}
 
   ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
       ReadyQueueSlice slice,
       int pageSize,
       String pageToken,
       ReconcileReadyQueueStore.LeaseScanStats scanStats);
-
-  /**
-   * Scans bounded ready-row maintenance representatives. Backends with redundant secondary ready
-   * indexes may return only the canonical global row for each queued job; filtered queue reads
-   * conditionally self-prune stale secondary rows.
-   */
-  ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken);
 
   boolean deleteReadyEntry(
       ReconcileReadyQueueStore.ReadyQueueEntry expected,

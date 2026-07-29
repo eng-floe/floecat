@@ -961,7 +961,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.laneKey = source.laneKey;
     copy.dedupeKeyHash = source.dedupeKeyHash;
     copy.readyPointerKey = source.readyPointerKey;
-    copy.readyIndexVersion = source.readyIndexVersion;
     copy.connectorIndexPointerKey = source.connectorIndexPointerKey;
     copy.canonicalPointerKey = source.canonicalPointerKey;
     copy.createdAtMs = source.createdAtMs;
