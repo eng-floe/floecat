@@ -170,12 +170,14 @@ enum ResolutionStatus {
  * resolved view.
  *
  * `input_index` ties requested results back to the planner’s reference list. An eagerly emitted
- * base relation uses the synthetic index `-1`, because it has no corresponding request entry.
+ * base relation uses the synthetic index `UINT32_MAX` (`4294967295`), because it has no
+ * corresponding request entry. Java exposes that wire value as signed `-1`.
  */
 message RelationResolution {
   /**
    * Index into `request.tables[]` so the planner can correlate requested responses. Eager base
-   * relations emitted for a view use `-1` (`0xffffffff` on the uint32 wire) as a synthetic index.
+   * relations emitted for a view use `UINT32_MAX` (`4294967295`, `0xffffffff`) as a synthetic
+   * index. Java getters expose this unsigned wire value as `-1`.
    */
   uint32 input_index = 1;
 

@@ -212,7 +212,7 @@ public interface CatalogOverlay {
    * explicit-context {@link #resolveName(String, NameRef, EngineContext)}; overlays backed by
    * per-name storage reads should override so names sharing a catalog/namespace resolve their scope
    * once per batch. The default preserves compatibility for overlays that resolve names without
-   * engine context; override to enable engine-specific resolution.
+   * engine context; override it to enable engine-specific resolution.
    */
   default java.util.Map<NameRef, Optional<ResourceId>> resolveNames(
       String correlationId, List<NameRef> refs, EngineContext engineContext) {

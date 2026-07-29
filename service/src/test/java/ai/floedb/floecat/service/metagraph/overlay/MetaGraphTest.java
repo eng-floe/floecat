@@ -131,6 +131,27 @@ class MetaGraphTest {
   }
 
   @Test
+  void batchNameResolutionUsesTheExplicitEngineContext() {
+    EngineContext explicit = EngineContext.of("explicit-engine", "2");
+    NameRef systemRef = NameRef.newBuilder().setCatalog("sys").setName("table").build();
+    NameRef userRef = NameRef.newBuilder().setCatalog("user").setName("table").build();
+    when(system.resolveName(systemRef, explicit)).thenReturn(Optional.of(sysTable));
+    when(system.resolveName(userRef, explicit)).thenReturn(Optional.empty());
+    when(user.resolveNames("cid", List.of(userRef)))
+        .thenReturn(Map.of(userRef, Optional.of(usrTable)));
+
+    Map<NameRef, Optional<ResourceId>> resolved =
+        meta.resolveNames("cid", List.of(systemRef, userRef), explicit);
+
+    assertThat(resolved).containsEntry(systemRef, Optional.of(sysTable));
+    assertThat(resolved).containsEntry(userRef, Optional.of(usrTable));
+    verify(system).resolveName(systemRef, explicit);
+    verify(system).resolveName(userRef, explicit);
+    verify(user).resolveNames("cid", List.of(userRef));
+    verify(system, never()).resolveName(any(NameRef.class), same(context));
+  }
+
+  @Test
   void unresolvedThrowsError_table() {
     NameRef ref = NameRef.newBuilder().setName("x").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.empty());
