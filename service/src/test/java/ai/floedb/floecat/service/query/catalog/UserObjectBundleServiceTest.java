@@ -51,6 +51,7 @@ import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CollectingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
@@ -1226,6 +1227,63 @@ class UserObjectBundleServiceTest {
     UserObjectsBundleChunk resolutionChunk = subscriber.items().get(1);
     assertThat(resolutionChunk.hasResolutions()).isTrue();
     assertThat(queryStore.updateCount()).isEqualTo(1);
+  }
+
+  @Test
+  void cancellationAfterPinResolutionReleasesTransientRoots() {
+    class CancelAfterResolutionSubscriber extends CollectingSubscriber {
+      void cancelNow() {
+        subscription.cancel();
+        completeSuccessfully();
+      }
+    }
+
+    AtomicReference<CancelAfterResolutionSubscriber> subscriberRef = new AtomicReference<>();
+    QueryInputResolver cancellingResolver =
+        new QueryInputResolver(null) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics,
+              java.util.function.BooleanSupplier cancelled) {
+            RelationPinSet pins =
+                SnapshotTestSupport.relationPins(
+                    SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
+            queryStore.registerResolvingPinBlobs(queryId, QueryPins.gcRootUris(pins));
+            subscriberRef.get().cancelNow();
+            return new ResolutionResult(List.of(TABLE_A), pins, null);
+          }
+        };
+    service =
+        new UserObjectBundleService(
+            overlay,
+            cancellingResolver,
+            queryStore,
+            statsFactory,
+            decoratorProvider,
+            engineContextProvider,
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    CancelAfterResolutionSubscriber subscriber = new CancelAfterResolutionSubscriber();
+    subscriberRef.set(subscriber);
+
+    service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
+    subscriber.await();
+
+    assertThat(queryStore.resolvingPinBlobUris()).isEmpty();
+    assertThat(queryStore.updateCount()).isZero();
   }
 
   @Test

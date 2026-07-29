@@ -395,11 +395,19 @@ public class UserObjectBundleService {
             diagnostics,
             cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
-    throwIfCancelled(cancelled);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
-    diagnostics.add("pin.output_pins", pins.getPinsCount());
-    return pins;
+    boolean handedOff = false;
+    try {
+      throwIfCancelled(cancelled);
+      diagnostics.add("pin.output_pins", pins.getPinsCount());
+      handedOff = true;
+      return pins;
+    } finally {
+      if (!handedOff) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(pins));
+      }
+    }
   }
 
   private UserObjectsBundleChunk headerChunk(String queryId, int seq) {
@@ -1736,12 +1744,21 @@ public class UserObjectBundleService {
                   currentSnapshotPinCache,
                   diagnostics,
                   this::isCancelled);
-          throwIfCancelled(this::isCancelled);
-          long accumulateStartNs = System.nanoTime();
+          boolean pinsAccumulated = false;
           try {
-            accumulateChunkPins(chunkPins);
+            throwIfCancelled(this::isCancelled);
+            long accumulateStartNs = System.nanoTime();
+            try {
+              accumulateChunkPins(chunkPins);
+              pinsAccumulated = true;
+            } finally {
+              diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+            }
           } finally {
-            diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+            if (!pinsAccumulated) {
+              queryStore.releaseResolvingPinBlobs(
+                  ctx.getQueryId(), QueryPins.gcRootUris(chunkPins));
+            }
           }
         } finally {
           pinCollectNanos += System.nanoTime() - pinStartNs;
@@ -2303,12 +2320,7 @@ public class UserObjectBundleService {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
         return;
       }
-      try {
-        pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
-      } catch (RuntimeException | Error e) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
-        throw e;
-      }
+      pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
     }
 
     private void commitChunkPins() {

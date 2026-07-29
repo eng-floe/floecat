@@ -99,7 +99,9 @@ public final class BoundedFanout {
    * As {@link #mapOrdered(List, int, Executor, Function)}, but {@code cancelled} is polled so a
    * cancelled stream interrupts every submitted task and returns without waiting for a slow task's
    * completion. Tasks must cooperate with interruption while blocked in downstream calls. The
-   * permit wait is interruptible for the same reason.
+   * permit wait is interruptible for the same reason. A non-cancellation task failure waits for
+   * every already-submitted sibling before surfacing, so its latency is bounded by the slowest
+   * sibling; this completion guarantee lets callers safely release task-owned resources.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items,
@@ -164,7 +166,9 @@ public final class BoundedFanout {
 
   /**
    * Cancellation-aware ordered result consumption. A consumer failure has the same ordered
-   * precedence as a task failure, while submitted work is cancelled promptly when requested.
+   * precedence as a task failure, while submitted work is cancelled promptly when requested. A
+   * non-cancellation failure waits for already-submitted siblings before it surfaces, preserving
+   * the task-resource completion guarantee at the cost of slowest-sibling failure latency.
    */
   public static <I, O> void forEachOrdered(
       List<I> items,

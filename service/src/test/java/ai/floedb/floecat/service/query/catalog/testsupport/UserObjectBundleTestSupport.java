@@ -458,6 +458,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, QueryContext> contexts = new HashMap<>();
     private final List<QueryContext> updates = new ArrayList<>();
     private final Map<String, ScanSession> scanSessions = new HashMap<>();
+    private final Set<String> resolvingPinBlobUris = ConcurrentHashMap.newKeySet();
 
     public void seed(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
@@ -465,6 +466,10 @@ public final class UserObjectBundleTestSupport {
 
     public int updateCount() {
       return updates.size();
+    }
+
+    public Set<String> resolvingPinBlobUris() {
+      return Set.copyOf(resolvingPinBlobUris);
     }
 
     @Override
@@ -514,12 +519,12 @@ public final class UserObjectBundleTestSupport {
     @Override
     public void registerResolvingPinBlobs(
         String correlationId, java.util.Collection<String> blobUris) {
-      // no-op: this fake does not model GC roots
+      resolvingPinBlobUris.addAll(blobUris);
     }
 
     @Override
     public void releaseResolvingPinBlobs(String queryId, java.util.Collection<String> blobUris) {
-      // no-op: this fake does not model GC roots
+      resolvingPinBlobUris.removeAll(blobUris);
     }
 
     @Override

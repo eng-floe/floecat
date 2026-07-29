@@ -56,6 +56,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -96,6 +98,10 @@ import org.jboss.logging.Logger;
 public class QueryInputResolver {
 
   private static final Logger LOG = Logger.getLogger(QueryInputResolver.class);
+  private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
+  private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
+  private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
+  private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
@@ -103,6 +109,11 @@ public class QueryInputResolver {
   // via ConfigProvider (not a @ConfigProperty ctor param) so the new-constructed test call sites
   // keep compiling while production still honors config.
   private final int maxParallelInputResolutions;
+
+  // Bounds metadata I/O across every request handled by this application-scoped resolver. The
+  // request-local BoundedFanout limit avoids one request monopolizing this capacity; this limiter
+  // prevents many requests from multiplying store pressure.
+  private final Semaphore concurrentInputResolutionPermits;
 
   private final CatalogOverlay metadataGraph;
 
@@ -119,23 +130,43 @@ public class QueryInputResolver {
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
+    this(
+        metadataGraph,
+        queryStore,
+        configuredMaxParallelInputResolutions(),
+        MAX_CONCURRENT_INPUT_RESOLUTIONS);
+  }
+
+  QueryInputResolver(
+      CatalogOverlay metadataGraph,
+      QueryContextStore queryStore,
+      int maxParallelInputResolutions,
+      int maxConcurrentInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
-    int configuredMaxParallelResolutions =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.catalog.bundle.max_parallel_relations", Integer.class)
-            .orElse(8);
-    if (configuredMaxParallelResolutions < 1) {
-      LOG.warnf(
-          "floecat.catalog.bundle.max_parallel_relations must be >= 1; using 1 instead of %d",
-          configuredMaxParallelResolutions);
-    }
-    this.maxParallelInputResolutions = Math.max(1, configuredMaxParallelResolutions);
+    this.maxParallelInputResolutions = maxParallelInputResolutions;
+    this.concurrentInputResolutionPermits =
+        new Semaphore(maxConcurrentInputResolutions, true /* fair across requests */);
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
   public QueryInputResolver(CatalogOverlay metadataGraph) {
     this(metadataGraph, null);
+  }
+
+  private static int configuredMaxParallelInputResolutions() {
+    int configured =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.catalog.bundle.max_parallel_relations", Integer.class)
+            .orElse(DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS);
+    int clamped = Math.max(1, Math.min(MAX_PARALLEL_INPUT_RESOLUTIONS, configured));
+    if (configured != clamped) {
+      LOG.warnf(
+          "floecat.catalog.bundle.max_parallel_relations must be between 1 and %d; using %d"
+              + " instead of %d",
+          MAX_PARALLEL_INPUT_RESOLUTIONS, clamped, configured);
+    }
+    return clamped;
   }
 
   /** Stop accepting fan-out work and wait for any in-flight resolution tasks during shutdown. */
@@ -416,8 +447,14 @@ public class QueryInputResolver {
       long defaultCatalogStartNs = System.nanoTime();
       try {
         defaultCatalog =
-            withMetadataGraph(
-                () -> metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName));
+            withInputResolutionPermit(
+                cancelled,
+                () ->
+                    withMetadataGraph(
+                        () ->
+                            metadataGraph
+                                .catalog(defaultCatalogId.get())
+                                .map(CatalogNode::displayName)));
       } finally {
         diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
       }
@@ -445,7 +482,11 @@ public class QueryInputResolver {
       Map<NameRef, Optional<ResourceId>> resolvedNames =
           nameInputs.isEmpty()
               ? Map.of()
-              : withMetadataGraph(() -> metadataGraph.resolveNames(correlationId, nameInputs));
+              : withInputResolutionPermit(
+                  cancelled,
+                  () ->
+                      withMetadataGraph(
+                          () -> metadataGraph.resolveNames(correlationId, nameInputs)));
       throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
@@ -512,7 +553,7 @@ public class QueryInputResolver {
       BooleanSupplier cancelled) {
     for (QueryInput in : inputs) {
       throwIfCancelled(cancelled);
-      mergePlan(state, planInput(state, in, resolvedNames));
+      mergePlan(state, planInputWithPermit(state, in, resolvedNames, cancelled));
     }
   }
 
@@ -540,7 +581,7 @@ public class QueryInputResolver {
           inputs,
           maxParallelInputResolutions,
           blockingExecutor,
-          in -> planInput(taskState, in, resolvedNames),
+          in -> planInputWithPermit(taskState, in, resolvedNames, cancelled),
           plan -> mergePlan(state, plan),
           cancelled);
     } finally {
@@ -556,18 +597,43 @@ public class QueryInputResolver {
     }
   }
 
+  /** Run a metadata-resolution plan while holding the service-wide store-I/O capacity. */
+  private InputPlan planInputWithPermit(
+      ResolutionState state,
+      QueryInput input,
+      Map<NameRef, Optional<ResourceId>> resolvedNames,
+      BooleanSupplier cancelled) {
+    return withInputResolutionPermit(cancelled, () -> planInput(state, input, resolvedNames));
+  }
+
+  private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
+    boolean acquired = false;
+    try {
+      while (!acquired) {
+        throwIfCancelled(cancelled);
+        acquired =
+            concurrentInputResolutionPermits.tryAcquire(
+                GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+      }
+      throwIfCancelled(cancelled);
+      return operation.get();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException("interrupted while awaiting resolver I/O capacity");
+    } finally {
+      if (acquired) {
+        concurrentInputResolutionPermits.release();
+      }
+    }
+  }
+
   /**
-   * CatalogOverlay callbacks are direct when the overlay opts into concurrent resolution. The
-   * serial planning path keeps all callbacks on the request thread for overlays that opt out; the
-   * synchronization here also protects the up-front catalog and name-resolution callbacks.
+   * The serial planning path keeps callbacks on the request thread for overlays that opt out.
+   * Synchronizing on an application-scoped overlay would incorrectly serialize independent
+   * requests, so the concurrency capability governs scheduling rather than a shared mutex.
    */
   private <T> T withMetadataGraph(Supplier<T> operation) {
-    if (metadataGraph.supportsConcurrentResolution()) {
-      return operation.get();
-    }
-    synchronized (metadataGraph) {
-      return operation.get();
-    }
+    return operation.get();
   }
 
   /**

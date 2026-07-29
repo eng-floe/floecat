@@ -49,6 +49,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -199,6 +200,35 @@ public class QueryInputResolverTest {
         Optional.empty());
 
     assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
+  }
+
+  @Test
+  void boundsMetadataPinResolutionAcrossConcurrentRequests() throws Exception {
+    var graph = new GloballyLimitedPinGraph();
+    var globallyLimitedResolver = new QueryInputResolver(graph, null, 2, 2);
+    List<QueryInput> inputs =
+        List.of(
+            QueryInput.newBuilder().setTableId(rid("ONE")).build(),
+            QueryInput.newBuilder().setTableId(rid("TWO")).build());
+
+    CompletableFuture<?>[] requests =
+        java.util.stream.IntStream.range(0, 3)
+            .mapToObj(
+                ignored ->
+                    CompletableFuture.runAsync(
+                        () ->
+                            globallyLimitedResolver.resolveInputs(
+                                "cid", inputs, Optional.empty(), Optional.empty())))
+            .toArray(CompletableFuture[]::new);
+
+    try {
+      assertTrue(graph.twoPinLookupsStarted.await(1, TimeUnit.SECONDS));
+      assertEquals(2, graph.peakPinLookups.get());
+    } finally {
+      graph.allowPinLookups.countDown();
+      CompletableFuture.allOf(requests).join();
+      globallyLimitedResolver.closeBlockingExecutor();
+    }
   }
 
   /** A failed parallel plan releases every provisional root it constructed. */
@@ -1518,6 +1548,36 @@ public class QueryInputResolverTest {
 
     List<Thread> planningThreads() {
       return planningThreads;
+    }
+  }
+
+  /** Blocks pin lookups so the test can observe the resolver's process-wide I/O ceiling. */
+  static final class GloballyLimitedPinGraph extends FakeGraph {
+    final CountDownLatch twoPinLookupsStarted = new CountDownLatch(2);
+    final CountDownLatch allowPinLookups = new CountDownLatch(1);
+    final AtomicInteger inFlightPinLookups = new AtomicInteger();
+    final AtomicInteger peakPinLookups = new AtomicInteger();
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      int inFlight = inFlightPinLookups.incrementAndGet();
+      peakPinLookups.accumulateAndGet(inFlight, Math::max);
+      twoPinLookupsStarted.countDown();
+      try {
+        if (!allowPinLookups.await(1, TimeUnit.SECONDS)) {
+          throw new AssertionError("test did not release the pin lookups");
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("pin lookup interrupted", e);
+      } finally {
+        inFlightPinLookups.decrementAndGet();
+      }
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
     }
   }
 
