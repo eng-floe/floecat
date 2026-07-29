@@ -50,13 +50,19 @@ public interface KvStore {
    *   <li>{@code kind} is a small discriminator (useful for debugging)
    *   <li>{@code value} is raw bytes (protobuf bytes for canonical entities; usually empty for
    *       pointer/index items)
-   *   <li>{@code attrs} are small string attributes for pointers/indexes/metadata
+   *   <li>{@code attrs} are small typed attributes for pointers/indexes/metadata (see {@link
+   *       AttrValue})
    *   <li>{@code version} is the monotonically increasing optimistic-concurrency version
    * </ul>
    */
-  record Record(Key key, String kind, byte[] value, Map<String, String> attrs, long version) {
+  record Record(Key key, String kind, byte[] value, Map<String, AttrValue> attrs, long version) {
     public Record {
       attrs = (attrs == null) ? Map.of() : Map.copyOf(attrs);
+      for (var name : attrs.keySet()) {
+        if (KvAttributes.RESERVED_ATTRS.contains(name)) {
+          throw new IllegalArgumentException("attr name is reserved by the backend: " + name);
+        }
+      }
       value = (value == null) ? new byte[0] : value;
       if (version < 0) throw new IllegalArgumentException("version must be >= 0");
     }
@@ -102,6 +108,7 @@ public interface KvStore {
    * <p>On success, the backend should store {@code record.version} as the new ver attribute.
    *
    * @return true if write succeeded; false if the condition failed
+   * @throws IllegalArgumentException if the record's attrs break {@link AttrWriteRules}
    */
   Uni<Boolean> putCas(Record record, long expectedVersion);
 
@@ -111,6 +118,34 @@ public interface KvStore {
    * @return true if deleted; false if the condition failed
    */
   Uni<Boolean> deleteCas(Key key, long expectedVersion);
+
+  /**
+   * Atomically updates metadata attributes on an <em>existing</em> record and advances its version,
+   * in a single request — the one write here that is not a whole-record CAS, so concurrent bumps
+   * cannot lose each other.
+   *
+   * <ul>
+   *   <li>{@code sets} replaces attribute values.
+   *   <li>{@code increments} adds a delta to a numeric attribute, creating it at the delta if
+   *       absent. Incrementing a string-valued attribute, or past the range of {@code long}, fails
+   *       the {@link Uni} with a store-specific error; neither overwrites nor wraps.
+   *   <li>The version advances by one; a missing stored version counts as 0.
+   *   <li>The record is never created as a side effect.
+   *   <li>A record carrying a {@code value} payload is refused, since the payload embeds its own
+   *       copy of the version and this update does not rewrite it.
+   * </ul>
+   *
+   * @param sets attribute values to replace; must not name a {@link KvAttributes#RESERVED_ATTRS}
+   *     attribute, nor {@link KvAttributes#ATTR_EXPIRES_AT}, which only a whole-record write may
+   *     touch
+   * @param increments deltas to add to numeric attributes; must not overlap {@code sets}
+   * @return the new version, or empty if the record was absent or refused for carrying a value. A
+   *     failed increment arrives as a failed {@link Uni}, never as empty.
+   * @throws IllegalArgumentException if both maps are empty, or an attribute name is reserved, the
+   *     expiry stamp, blank, or present in both maps
+   */
+  Uni<Optional<Long>> updateMetadataAttrsIfExists(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments);
 
   /**
    * Query within a partition key, ordered by sk, with a prefix constraint. This is the

@@ -19,9 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvStore;
 import io.smallrye.mutiny.Uni;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -74,6 +76,12 @@ class KvPointerStoreTest {
 
     @Override
     public Uni<Boolean> deleteCas(Key key, long expectedVersion) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
       throw new UnsupportedOperationException();
     }
 

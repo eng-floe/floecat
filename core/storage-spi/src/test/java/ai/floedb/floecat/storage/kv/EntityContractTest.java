@@ -154,7 +154,60 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             .isPresent());
 
     KvStore.Record rec = kv.records.get(key("pk", "sk1"));
-    assertEquals("2", rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+    assertEquals(AttrValue.of("2"), rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+  }
+
+  @Test
+  void decode_reads_expires_at_from_either_attribute_form() {
+    // Rows written before the attribute was retyped hold the stamp as a string; both must decode.
+    for (AttrValue stamp : List.of(AttrValue.of("2"), AttrValue.of(2L))) {
+      Pointer decoded =
+          entity.decodeForTest(
+              record(
+                  "pk",
+                  "sk1",
+                  TestEntity.KIND,
+                  pointerBytes("k1"),
+                  Map.of(KvAttributes.ATTR_EXPIRES_AT, stamp),
+                  1L));
+      assertEquals(2000L, Timestamps.toMillis(decoded.getExpiresAt()));
+    }
+  }
+
+  @Test
+  void decode_throws_on_malformed_expires_at() {
+    // Fail loud: silently reading a corrupt stamp as "no expiry" would make the record immortal.
+    KvStore.Record rec =
+        record(
+            "pk",
+            "sk1",
+            TestEntity.KIND,
+            pointerBytes("k1"),
+            Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("not-a-timestamp")),
+            1L);
+
+    assertThrows(NumberFormatException.class, () -> entity.decodeForTest(rec));
+  }
+
+  @Test
+  void fake_kv_delivers_increment_of_string_attr_as_a_failed_uni() {
+    // Both real stores surface this as a failed Uni; a fake that threw synchronously would let a
+    // test that awaits the Uni pass here and fail in production.
+    KvStore.Key key = key("pk", "sk-meta");
+    kv.records.put(
+        key,
+        record(
+            "pk",
+            "sk-meta",
+            TestEntity.KIND,
+            new byte[0],
+            Map.of("note", AttrValue.of("text")),
+            1L));
+
+    Uni<Optional<Long>> update =
+        assertDoesNotThrow(() -> kv.updateMetadataAttrsIfExists(key, Map.of(), Map.of("note", 1L)));
+
+    assertThrows(IllegalStateException.class, () -> update.await().indefinitely());
   }
 
   @Test
@@ -194,7 +247,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "ptr",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "ts"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("ts")),
             1L));
     kv.records.put(
         targetKey, record("tp", "ts", TestEntity.KIND, pointerBytes("target"), Map.of(), 1L));
@@ -214,7 +271,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "Pointer",
             new byte[0],
             Map.of(
-                KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "missing"),
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("missing")),
             1L));
 
     assertTrue(entity.getViaPointerForTest(ptrKey).await().indefinitely().isEmpty());
@@ -229,7 +289,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p1",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t1"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t1")),
             1L));
     kv.records.put(
         key("ptr", "p2"),
@@ -238,7 +302,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p2",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t2"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t2")),
             1L));
 
     kv.records.put(
@@ -279,7 +347,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p1",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t1"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t1")),
             1L));
     kv.records.put(
         key("ptr", "p2"),
@@ -289,7 +361,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "Pointer",
             new byte[0],
             Map.of(
-                KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "missing"),
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("missing")),
             1L));
     kv.records.put(
         key("tp", "t1"), record("tp", "t1", TestEntity.KIND, pointerBytes("t1"), Map.of(), 1L));
@@ -308,7 +383,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
   }
 
   private static KvStore.Record record(
-      String pk, String sk, String kind, byte[] value, Map<String, String> attrs, long version) {
+      String pk, String sk, String kind, byte[] value, Map<String, AttrValue> attrs, long version) {
     return new KvStore.Record(new KvStore.Key(pk, sk), kind, value, attrs, version);
   }
 
@@ -324,7 +399,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
     }
 
     private Uni<Optional<Pointer>> putCanonicalCasForTest(
-        KvStore.Key key, Pointer pointer, Map<String, String> attrs, long expectedVersion) {
+        KvStore.Key key, Pointer pointer, Map<String, AttrValue> attrs, long expectedVersion) {
       return putCanonicalCas(key, KIND, pointer, attrs, expectedVersion);
     }
 
@@ -343,6 +418,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
 
     private static long nextVersionForTest(long expectedVersion) {
       return nextVersion(expectedVersion);
+    }
+
+    private Pointer decodeForTest(KvStore.Record r) {
+      return decode(r);
     }
 
     @Override
@@ -399,6 +478,55 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
         return Uni.createFrom().item(true);
       }
       return Uni.createFrom().item(false);
+    }
+
+    @Override
+    public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      MetadataAttrUpdates.validate(key, sets, increments);
+
+      // Applied eagerly (a Uni can be subscribed more than once), with the failure delivered as a
+      // failed Uni rather than a synchronous throw — matching InMemoryKvStore.
+      Optional<Long> newVersion;
+      try {
+        newVersion = applyMetadataAttrUpdates(key, sets, increments);
+      } catch (RuntimeException failure) {
+        return Uni.createFrom().failure(failure);
+      }
+      return Uni.createFrom().item(newVersion);
+    }
+
+    private Optional<Long> applyMetadataAttrUpdates(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      Record existing = records.get(key);
+      if (existing == null || existing.value().length > 0) {
+        return Optional.empty();
+      }
+
+      var attrs = new HashMap<>(existing.attrs());
+      attrs.putAll(sets);
+      for (var increment : increments.entrySet()) {
+        var name = increment.getKey();
+        var current = attrs.get(name);
+        // Rejected on the type, not parseability: DynamoDB's ADD rejects any S-typed attribute,
+        // numeric-looking ones like "42" included.
+        if (current != null && !(current instanceof AttrValue.NumberValue)) {
+          throw new IllegalStateException(
+              "cannot increment attr "
+                  + name
+                  + " on "
+                  + key
+                  + ": it currently holds a string value");
+        }
+        long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
+        // addExact, not +: a wrapped sum would report success while storing a wildly wrong value.
+        attrs.put(name, AttrValue.of(Math.addExact(base, increment.getValue())));
+      }
+
+      long newVersion = existing.version() + 1;
+      records.put(
+          key, new Record(existing.key(), existing.kind(), existing.value(), attrs, newVersion));
+      return Optional.of(newVersion);
     }
 
     @Override
