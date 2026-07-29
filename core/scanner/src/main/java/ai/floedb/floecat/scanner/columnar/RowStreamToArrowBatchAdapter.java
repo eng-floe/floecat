@@ -22,6 +22,8 @@ import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.utils.ArrowConversion;
+import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -169,9 +171,20 @@ public final class RowStreamToArrowBatchAdapter {
   }
 
   private static boolean isArrayType(String logicalType) {
-    if (logicalType == null) {
+    if (logicalType == null || logicalType.isBlank()) {
       return false;
     }
-    return logicalType.contains("[]");
+    // Legacy spelling with a bracket suffix (e.g. "VARCHAR[]").
+    if (logicalType.contains("[]")) {
+      return true;
+    }
+    // Canonical spelling: bare "ARRAY" or parameterised "ARRAY<...>". This is what schema mappers
+    // actually emit — without this check array columns fell through to ArrowSchemaUtil, which
+    // rejects complex kinds, instead of being stringified here.
+    try {
+      return LogicalTypeFormat.parse(logicalType).kind() == LogicalKind.ARRAY;
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
   }
 }

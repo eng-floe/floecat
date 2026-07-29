@@ -80,4 +80,43 @@ class RowStreamToArrowBatchAdapterTest {
       }
     }
   }
+
+  @Test
+  void stringifiesCanonicalArrayColumns() {
+    // Schema mappers emit "ARRAY" / "ARRAY<...>" (never a "[]" suffix); those columns must be
+    // stringified rather than falling through to ArrowSchemaUtil, which rejects complex kinds.
+    List<SchemaColumn> schema =
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("tags")
+                .setLogicalType("ARRAY")
+                .setLogicalTypeFull("ARRAY<STRING>")
+                .setNullable(true)
+                .build(),
+            SchemaColumn.newBuilder()
+                .setName("counts")
+                .setLogicalType("ARRAY<INT>")
+                .setNullable(true)
+                .build());
+
+    List<SystemObjectRow> rows =
+        List.of(new SystemObjectRow(new Object[] {new String[] {"a", "b"}, new int[] {1, 2, 3}}));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      RowStreamToArrowBatchAdapter adapter = new RowStreamToArrowBatchAdapter(allocator, schema, 2);
+      List<ColumnarBatch> batches = adapter.adapt(rows.stream()).toList();
+
+      assert batches.size() == 1;
+      try (ColumnarBatch batch = batches.get(0)) {
+        VectorSchemaRoot root = batch.root();
+        assert root.getRowCount() == 1;
+
+        VarCharVector tagsVector = (VarCharVector) root.getVector(0);
+        assert new String(tagsVector.get(0), StandardCharsets.UTF_8).equals("[a, b]");
+
+        VarCharVector countsVector = (VarCharVector) root.getVector(1);
+        assert new String(countsVector.get(0), StandardCharsets.UTF_8).equals("[1, 2, 3]");
+      }
+    }
+  }
 }
