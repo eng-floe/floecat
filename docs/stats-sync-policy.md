@@ -28,8 +28,10 @@ resolve(StatsCaptureRequest)
        │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
        │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
        │
-       └─ otherwise (ASYNC mode / no budget / sync disabled)
-               └────────────────────────────────────── SKIPPED  (async job enqueued)
+       ├─ sync enabled, but ASYNC mode / no budget
+       │       └────────────────────────────────────── SKIPPED  (async job enqueued)
+       │
+       └─ sync disabled ─────────────────────────────── SKIPPED  (no capture enqueued)
 ```
 
 ## Outcome reference
@@ -41,7 +43,7 @@ resolve(StatsCaptureRequest)
 | `PARTIAL`  | no            | yes             | Sync capture succeeded but record not yet visible |
 | `TIMEOUT`  | no            | yes             | Sync capture exceeded latency budget              |
 | `FAILED`   | no            | yes             | Sync capture error or no upstream connector       |
-| `SKIPPED`  | no            | yes             | ASYNC mode, no budget, or sync disabled           |
+| `SKIPPED`  | no            | conditional     | Async fallback, or query capture disabled         |
 
 Query-driven column requests are stats-only and do not implicitly request Parquet page indexes.
 Request origin is not part of capture coverage identity. Existing equivalent snapshot coverage
@@ -53,7 +55,7 @@ connector cannot satisfy the request directly.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `floecat.stats.sync.enabled` | `true` | Master switch for sync-first resolution |
+| `floecat.stats.sync.enabled` | `false` | Master switch for all query-driven capture |
 | `floecat.stats.sync.latency-budget` | `1s` | Per-request sync capture budget |
 | `floecat.stats.sync.max-latency-budget` | `10s` | Hard ceiling applied to any request budget |
 
@@ -63,9 +65,8 @@ Environment variable overrides follow the pattern `FLOECAT_STATS_SYNC_ENABLED`,
 ## Planner integration
 
 `StatsProviderFactory` reads `floecat.stats.sync.enabled` and `floecat.stats.sync.latency-budget`
-at startup and sets `executionMode(SYNC)` + `latencyBudget(...)` on every
-`StatsCaptureRequest` it creates for query-time resolution. Set `enabled=false` to revert to
-async-only for all queries without changing other behavior.
+at startup and sets `executionMode(SYNC)` + `latencyBudget(...)` on query-time requests only when
+enabled. With `enabled=false`, query-time resolution is store-only and enqueues no capture work.
 
 `PlannerStatsBundleService` maps `StatsResolutionResult` outcomes to planner quality:
 
@@ -100,7 +101,7 @@ non-connected tables.
 **Disabling sync globally**
 
 Set `floecat.stats.sync.enabled=false` (or `FLOECAT_STATS_SYNC_ENABLED=false`). All queries
-fall back to `SKIPPED` + async enqueue, which matches the pre-sync-policy behavior.
+fall back to store-only resolution; misses return `SKIPPED` and enqueue no capture work.
 
 **Verifying counters**
 

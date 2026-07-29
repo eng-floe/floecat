@@ -117,13 +117,14 @@ Returns a `StatsResolutionResult` carrying an outcome enum and optional stats pa
    - On success, re-reads the store → **CAPTURED**: returns stats + schedules no follow-up.
    - On timeout (budget exceeded) → **TIMEOUT**: enqueues async follow-up, returns empty.
    - On failure (no connector, job error) → **FAILED**: enqueues async follow-up, returns empty.
-3. Otherwise (ASYNC mode, no budget, or sync disabled) → **SKIPPED**: enqueues async reconcile job
-   and returns empty.
+3. With sync enabled, ASYNC mode or no budget → **SKIPPED**: enqueues an async reconcile job and
+   returns empty. With sync disabled, query resolution is store-only and enqueues no capture work.
 
 `StatsOrchestrator.resolveBatch(batchRequest)`:
 
 Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
-Each item is a store read; misses fall back to async enqueue with `SKIPPED` outcome.
+Each item is a store read. With sync enabled, misses fall back to async enqueue with `SKIPPED`
+outcome; with sync disabled, misses return `SKIPPED` without capture.
 
 Async enqueue policy:
 
