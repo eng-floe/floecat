@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
@@ -46,6 +47,8 @@ import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -106,12 +109,16 @@ final class DeltaSchemaMapper {
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
       boolean isPartition = partitionKeys.contains(name) || partitionKeys.contains(physical);
 
+      LogicalType logicalType = toLogicalType(dataType);
+
       sb.addColumns(
           ColumnIdComputer.withComputedId(
               cid_algo,
               SchemaColumn.newBuilder()
                   .setName(name)
-                  .setLogicalType(LogicalTypeFormat.format(toLogicalType(dataType)))
+                  .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
+                  .setLogicalTypeFull(
+                      logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
                   .setFieldId(extractFieldId(field.getMetadata()))
                   .setNullable(field.isNullable())
                   .setPhysicalPath(physical)
@@ -167,9 +174,24 @@ final class DeltaSchemaMapper {
     if (dataType instanceof DateType) return LogicalType.of(LogicalKind.DATE);
     if (dataType instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
     if (dataType instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
-    if (dataType instanceof ArrayType) return LogicalType.of(LogicalKind.ARRAY);
-    if (dataType instanceof MapType) return LogicalType.of(LogicalKind.MAP);
-    if (dataType instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
+    if (dataType instanceof ArrayType arrayType) {
+      return LogicalType.array(toLogicalType(arrayType.getElementType()), arrayType.containsNull());
+    }
+    if (dataType instanceof MapType mapType) {
+      return LogicalType.map(
+          toLogicalType(mapType.getKeyType()),
+          toLogicalType(mapType.getValueType()),
+          mapType.isValueContainsNull());
+    }
+    if (dataType instanceof StructType structType) {
+      List<LogicalField> fields =
+          structType.fields().stream()
+              .map(
+                  f ->
+                      new LogicalField(f.getName(), f.isNullable(), toLogicalType(f.getDataType())))
+              .toList();
+      return fields.isEmpty() ? LogicalType.of(LogicalKind.STRUCT) : LogicalType.struct(fields);
+    }
     if (dataType instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
     if (dataType instanceof DecimalType decimalType) {
       LogicalType logicalType =
@@ -202,12 +224,16 @@ final class DeltaSchemaMapper {
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
       boolean isPartition = partitionKeys.contains(name) || partitionKeys.contains(physical);
 
+      LogicalType logicalType = fallbackLogicalType(typeNode);
+
       sb.addColumns(
           ColumnIdComputer.withComputedId(
               cid_algo,
               SchemaColumn.newBuilder()
                   .setName(name)
-                  .setLogicalType(deltaTypeToCanonical(typeNode))
+                  .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
+                  .setLogicalTypeFull(
+                      logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
                   .setFieldId(fallbackFieldId(field))
                   .setNullable(field.path("nullable").asBoolean(true))
                   .setPhysicalPath(physical)
@@ -261,16 +287,37 @@ final class DeltaSchemaMapper {
     return Math.max(fieldId, 0);
   }
 
-  private static String deltaTypeToCanonical(JsonNode typeNode) {
+  private static LogicalType fallbackLogicalType(JsonNode typeNode) {
     if (typeNode == null) {
       throw new IllegalArgumentException("Delta field type is missing");
     }
     if (typeNode.isObject()) {
       return switch (typeNode.path("type").asText("")) {
-        case "struct" -> "STRUCT";
-        case "array" -> "ARRAY";
-        case "map" -> "MAP";
-        case "variant" -> "VARIANT";
+        case "struct" -> {
+          JsonNode fields = typeNode.get("fields");
+          if (fields == null || !fields.isArray() || fields.isEmpty()) {
+            yield LogicalType.of(LogicalKind.STRUCT);
+          }
+          List<LogicalField> structFields = new ArrayList<>();
+          for (JsonNode f : fields) {
+            structFields.add(
+                new LogicalField(
+                    f.path("name").asText(),
+                    f.path("nullable").asBoolean(true),
+                    fallbackLogicalType(f.get("type"))));
+          }
+          yield LogicalType.struct(structFields);
+        }
+        case "array" ->
+            LogicalType.array(
+                fallbackLogicalType(typeNode.get("elementType")),
+                typeNode.path("containsNull").asBoolean(true));
+        case "map" ->
+            LogicalType.map(
+                fallbackLogicalType(typeNode.get("keyType")),
+                fallbackLogicalType(typeNode.get("valueType")),
+                typeNode.path("valueContainsNull").asBoolean(true));
+        case "variant" -> LogicalType.of(LogicalKind.VARIANT);
         default ->
             throw new IllegalArgumentException(
                 "Unrecognized Delta complex type: '" + typeNode.path("type").asText("") + "'");
@@ -280,17 +327,18 @@ final class DeltaSchemaMapper {
     String raw = typeNode.asText("");
     String lowerRaw = raw.toLowerCase(java.util.Locale.ROOT);
     return switch (lowerRaw) {
-      case "boolean" -> "BOOLEAN";
-      case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" -> "INT";
-      case "float" -> "FLOAT";
-      case "double" -> "DOUBLE";
-      case "string" -> "STRING";
-      case "binary" -> "BINARY";
-      case "date" -> "DATE";
-      case "timestamp" -> "TIMESTAMPTZ";
-      case "timestamp_ntz" -> "TIMESTAMP";
-      case "interval" -> "INTERVAL";
-      case "variant" -> "VARIANT";
+      case "boolean" -> LogicalType.of(LogicalKind.BOOLEAN);
+      case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" ->
+          LogicalType.of(LogicalKind.INT);
+      case "float" -> LogicalType.of(LogicalKind.FLOAT);
+      case "double" -> LogicalType.of(LogicalKind.DOUBLE);
+      case "string" -> LogicalType.of(LogicalKind.STRING);
+      case "binary" -> LogicalType.of(LogicalKind.BINARY);
+      case "date" -> LogicalType.of(LogicalKind.DATE);
+      case "timestamp" -> LogicalType.of(LogicalKind.TIMESTAMPTZ);
+      case "timestamp_ntz" -> LogicalType.of(LogicalKind.TIMESTAMP);
+      case "interval" -> LogicalType.of(LogicalKind.INTERVAL);
+      case "variant" -> LogicalType.of(LogicalKind.VARIANT);
       default -> {
         if (lowerRaw.startsWith("decimal")) {
           yield canonicalDeltaDecimal(raw);
@@ -300,7 +348,7 @@ final class DeltaSchemaMapper {
     };
   }
 
-  private static String canonicalDeltaDecimal(String raw) {
+  private static LogicalType canonicalDeltaDecimal(String raw) {
     final LogicalType logicalType;
     try {
       logicalType = LogicalTypeFormat.parse(raw);
@@ -309,6 +357,6 @@ final class DeltaSchemaMapper {
     }
     DecimalPrecisionConstraints.validateDecimalPrecision(
         logicalType, "Delta", raw, MAX_DECIMAL_PRECISION);
-    return LogicalTypeFormat.format(logicalType);
+    return logicalType;
   }
 }

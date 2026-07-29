@@ -225,6 +225,61 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
+  void arrayOfPrimitiveCarriesElementTypeInFullType() {
+    String json =
+        """
+        {"fields":[
+          {"name":"items","type":{"type":"array","elementType":"string","containsNull":true},
+           "nullable":true}
+        ]}
+        """;
+    SchemaColumn col = firstColumn(json);
+    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
+    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRING>");
+  }
+
+  @Test
+  void mapCarriesKeyAndValueTypesInFullType() {
+    String json =
+        """
+        {"fields":[
+          {"name":"props","type":{"type":"map","keyType":"string",
+           "valueType":{"type":"array","elementType":"integer","containsNull":false},
+           "valueContainsNull":true},"nullable":true}
+        ]}
+        """;
+    SchemaColumn col = firstColumn(json);
+    assertThat(col.getLogicalType()).isEqualTo("MAP");
+    assertThat(col.getLogicalTypeFull()).isEqualTo("MAP<STRING, ARRAY<INT>>");
+  }
+
+  @Test
+  void arrayOfStructCarriesFieldsInFullType() {
+    String json =
+        """
+        {"type":"struct","fields":[
+          {"name":"events","type":{"type":"array","elementType":{"type":"struct","fields":[
+            {"name":"name","type":"string","nullable":false},
+            {"name":"ts","type":"timestamp","nullable":true}
+          ]},"containsNull":true},"nullable":true}
+        ]}
+        """;
+    SchemaColumn col = firstColumn(json);
+    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRUCT<name: STRING, ts: TIMESTAMPTZ>>");
+  }
+
+  @Test
+  void scalarColumnHasNoFullType() {
+    String json =
+        """
+        {"fields":[
+          {"name":"n","type":"integer","nullable":true}
+        ]}
+        """;
+    assertThat(firstColumn(json).getLogicalTypeFull()).isEmpty();
+  }
+
+  @Test
   void variantObjectNodeMapsToVariantAndIsLeaf() {
     String json =
         """
