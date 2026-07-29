@@ -24,7 +24,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -55,22 +55,25 @@ public final class CancellableCallRunner {
     acquire(permits, cancelled, cancellationMessage, interruptionMessage);
     PropagatedContext context = PropagatedContext.capture();
     CompletableFuture<T> result = new CompletableFuture<>();
-    AtomicReference<Thread> worker = new AtomicReference<>();
+    CallLifecycle lifecycle = new CallLifecycle();
     FutureTask<Void> submitted =
         new FutureTask<>(
             () -> {
-              worker.set(Thread.currentThread());
+              lifecycle.operationStarted.set(true);
               try {
+                if (lifecycle.cancellationRequested.get()) {
+                  throw new CancellationException(cancellationMessage);
+                }
                 throwIfCancelled(cancelled, cancellationMessage);
                 result.complete(context.supply(operation));
               } catch (Throwable failure) {
                 result.completeExceptionally(failure);
               } finally {
-                worker.set(null);
                 permits.release();
               }
             },
             null);
+    lifecycle.task = submitted;
     try {
       // An explicit FutureTask prevents ForkJoinPool from help-running a submitted lambda inline
       // on the caller, which would bypass this method's cancellation polling loop.
@@ -82,7 +85,7 @@ public final class CancellableCallRunner {
     try {
       while (true) {
         if (cancelled.getAsBoolean()) {
-          interrupt(worker);
+          lifecycle.cancel();
           throw new CancellationException(cancellationMessage);
         }
         try {
@@ -90,7 +93,7 @@ public final class CancellableCallRunner {
         } catch (TimeoutException ignored) {
           // A bounded wait lets the caller interrupt a stalled operation on cancellation.
         } catch (InterruptedException e) {
-          interrupt(worker);
+          lifecycle.cancel();
           Thread.currentThread().interrupt();
           throw new CancellationException(interruptionMessage);
         } catch (ExecutionException e) {
@@ -98,7 +101,7 @@ public final class CancellableCallRunner {
         }
       }
     } catch (CancellationException e) {
-      interrupt(worker);
+      lifecycle.cancel();
       throw e;
     }
   }
@@ -127,10 +130,19 @@ public final class CancellableCallRunner {
     }
   }
 
-  private static void interrupt(AtomicReference<Thread> worker) {
-    Thread active = worker.get();
-    if (active != null) {
-      active.interrupt();
+  /** Owns cancellation state for one submitted callable. */
+  private static final class CallLifecycle {
+    private final AtomicBoolean operationStarted = new AtomicBoolean();
+    private final AtomicBoolean cancellationRequested = new AtomicBoolean();
+    private volatile FutureTask<?> task;
+
+    void cancel() {
+      cancellationRequested.set(true);
+      // FutureTask atomically owns its runner while it is executing. Its cancellation path cannot
+      // interrupt a platform thread after that task has completed and been returned to the pool.
+      if (operationStarted.get()) {
+        task.cancel(true);
+      }
     }
   }
 
