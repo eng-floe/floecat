@@ -58,8 +58,8 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.concurrent.CancellableCallRunner;
 import ai.floedb.floecat.service.context.EngineContextProvider;
-import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -100,16 +100,11 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -123,23 +118,12 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final int MAX_CONCURRENT_METADATA_LOOKUPS = 64;
-  private static final long CANCELLATION_POLL_MILLIS = 10;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
       throw new CancellationException("GetUserObjects stream cancelled");
     }
-  }
-
-  private static void rethrowAsyncFailure(Throwable failure) {
-    if (failure instanceof RuntimeException runtime) {
-      throw runtime;
-    }
-    if (failure instanceof Error error) {
-      throw error;
-    }
-    throw new IllegalStateException("unexpected checked exception from metadata lookup", failure);
   }
 
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
@@ -1836,75 +1820,13 @@ public class UserObjectBundleService {
      * when the subscriber cancels, even if the downstream client ignores interruption.
      */
     private <T> T awaitCancellableMetadataLookup(Supplier<T> lookup) {
-      acquireMetadataLookupPermit();
-      PropagatedContext context = PropagatedContext.capture();
-      CompletableFuture<T> result = new CompletableFuture<>();
-      AtomicReference<Thread> worker = new AtomicReference<>();
-      FutureTask<Void> submitted =
-          new FutureTask<>(
-              () -> {
-                worker.set(Thread.currentThread());
-                try {
-                  throwIfCancelled(this::isCancelled);
-                  result.complete(context.supply(lookup));
-                } catch (Throwable failure) {
-                  result.completeExceptionally(failure);
-                } finally {
-                  worker.set(null);
-                  metadataLookupPermits.release();
-                }
-              },
-              null);
-      try {
-        metadataLookupExecutor.execute(submitted);
-      } catch (RuntimeException | Error submissionFailure) {
-        metadataLookupPermits.release();
-        throw submissionFailure;
-      }
-      try {
-        while (true) {
-          if (isCancelled()) {
-            interruptMetadataLookup(worker);
-            throw new CancellationException("GetUserObjects stream cancelled");
-          }
-          try {
-            return result.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
-          } catch (TimeoutException ignored) {
-            // A bounded wait lets the producer interrupt a stalled lookup on cancellation.
-          } catch (InterruptedException e) {
-            interruptMetadataLookup(worker);
-            Thread.currentThread().interrupt();
-            throw new CancellationException("GetUserObjects metadata lookup interrupted");
-          } catch (ExecutionException e) {
-            rethrowAsyncFailure(e.getCause());
-          }
-        }
-      } catch (CancellationException e) {
-        interruptMetadataLookup(worker);
-        throw e;
-      }
-    }
-
-    /** Wait for global lookup capacity without holding a stream producer after cancellation. */
-    private void acquireMetadataLookupPermit() {
-      try {
-        while (true) {
-          throwIfCancelled(this::isCancelled);
-          if (metadataLookupPermits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
-            return;
-          }
-        }
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new CancellationException("GetUserObjects metadata lookup interrupted");
-      }
-    }
-
-    private static void interruptMetadataLookup(AtomicReference<Thread> worker) {
-      Thread active = worker.get();
-      if (active != null) {
-        active.interrupt();
-      }
+      return CancellableCallRunner.call(
+          metadataLookupExecutor,
+          metadataLookupPermits,
+          this::isCancelled,
+          lookup,
+          "GetUserObjects stream cancelled",
+          "GetUserObjects metadata lookup interrupted");
     }
 
     private void cancel() {

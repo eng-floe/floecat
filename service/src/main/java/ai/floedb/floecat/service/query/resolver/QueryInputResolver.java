@@ -31,8 +31,8 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.concurrent.BoundedFanout;
+import ai.floedb.floecat.service.concurrent.CancellableCallRunner;
 import ai.floedb.floecat.service.concurrent.Futures;
-import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -61,12 +61,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -637,63 +635,13 @@ public class QueryInputResolver {
     if (cancelled == NEVER_CANCELLED) {
       return withInputResolutionPermitSynchronously(operation);
     }
-
-    acquireInputResolutionPermit(cancelled);
-    PropagatedContext context = PropagatedContext.capture();
-    CompletableFuture<T> result = new CompletableFuture<>();
-    AtomicReference<Thread> worker = new AtomicReference<>();
-    FutureTask<Void> submitted =
-        new FutureTask<>(
-            () -> {
-              worker.set(Thread.currentThread());
-              try {
-                throwIfCancelled(cancelled);
-                result.complete(context.supply(operation));
-              } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-              } finally {
-                worker.set(null);
-                concurrentInputResolutionPermits.release();
-              }
-            },
-            null);
-    try {
-      // Do not use ExecutorService.submit here: ForkJoinPool may help-run its ForkJoinTask inline
-      // while this thread waits, preventing the cancellation poll below from ever running.
-      metadataIoExecutor.execute(submitted);
-    } catch (RuntimeException | Error submissionFailure) {
-      concurrentInputResolutionPermits.release();
-      throw submissionFailure;
-    }
-    try {
-      while (true) {
-        if (cancelled.getAsBoolean()) {
-          interrupt(worker);
-          throw new CancellationException("input resolution cancelled");
-        }
-        try {
-          return result.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException ignored) {
-          // A bounded wait lets the caller interrupt a metadata operation as soon as it cancels.
-        } catch (InterruptedException e) {
-          interrupt(worker);
-          Thread.currentThread().interrupt();
-          throw new CancellationException("interrupted while awaiting resolver I/O");
-        } catch (ExecutionException e) {
-          rethrowAsyncFailure(e.getCause());
-        }
-      }
-    } catch (CancellationException e) {
-      interrupt(worker);
-      throw e;
-    }
-  }
-
-  private static void interrupt(AtomicReference<Thread> worker) {
-    Thread active = worker.get();
-    if (active != null) {
-      active.interrupt();
-    }
+    return CancellableCallRunner.call(
+        metadataIoExecutor,
+        concurrentInputResolutionPermits,
+        cancelled,
+        operation,
+        "input resolution cancelled",
+        "interrupted while awaiting resolver I/O");
   }
 
   /** Acquires the global store-I/O slot and runs an uncancellable legacy call on the caller. */
