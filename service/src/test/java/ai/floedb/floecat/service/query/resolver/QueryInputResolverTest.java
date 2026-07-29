@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -99,6 +100,39 @@ public class QueryInputResolverTest {
             org.mockito.ArgumentMatchers.eq("q1"),
             org.mockito.ArgumentMatchers.argThat(
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
+  }
+
+  @Test
+  void rootsCompletedPinsBeforePlanningLaterInputs() {
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(metadataGraph, store);
+    ResourceId first = rid("ROOTED_FIRST");
+    ResourceId second = rid("LATER_INPUT");
+    boolean[] observedBeforeLaterPlan = {false};
+    metadataGraph.beforeTablePin(
+        tableId -> {
+          if (tableId.equals(second)) {
+            org.mockito.Mockito.verify(store)
+                .registerResolvingPinBlobs(
+                    org.mockito.ArgumentMatchers.eq("q1"),
+                    org.mockito.ArgumentMatchers.argThat(
+                        uris -> uris.contains("s3://ROOTED_FIRST/table.pb")));
+            observedBeforeLaterPlan[0] = true;
+          }
+        });
+
+    withStore.resolveInputs(
+        "q1",
+        "cid",
+        List.of(
+            QueryInput.newBuilder().setTableId(first).build(),
+            QueryInput.newBuilder().setTableId(second).build()),
+        Optional.empty(),
+        Optional.empty(),
+        new java.util.LinkedHashMap<>(),
+        null);
+
+    assertTrue(observedBeforeLaterPlan[0]);
   }
 
   /** Resolving a name that maps only to a table should return the table id. */
@@ -864,6 +898,32 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void earlier_pin_conflict_precedes_a_later_malformed_input() {
+    ResourceId table = rid("CONFLICT_PRECEDENCE");
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                resolver.resolveInputs(
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder()
+                            .setTableId(table)
+                            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                            .build(),
+                        QueryInput.newBuilder()
+                            .setTableId(table)
+                            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(999))
+                            .build(),
+                        QueryInput.getDefaultInstance()),
+                    Optional.empty(),
+                    Optional.empty()));
+
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
+  }
+
+  @Test
   void conflicting_asof_and_explicit_snapshot_for_same_table_fail() {
     // An AS_OF reference resolves to a concrete snapshot; if a later explicit-snapshot reference to
     // the same table names a different snapshot, the two temporal intents conflict and planning
@@ -1044,6 +1104,7 @@ public class QueryInputResolverTest {
     private final Map<String, Long> asOfSnapshots = new HashMap<>();
     private final List<PinCall> pinCalls = new ArrayList<>();
     private final Map<ResourceId, String> catalogNames = new HashMap<>();
+    private Consumer<ResourceId> beforeTablePin = ignored -> {};
 
     FakeGraph() {}
 
@@ -1092,6 +1153,7 @@ public class QueryInputResolverTest {
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
 
+      beforeTablePin.accept(tableId);
       pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
 
       TablePin.Builder builder =
@@ -1139,6 +1201,10 @@ public class QueryInputResolverTest {
 
     void setAsOfSnapshot(ResourceId id, long snapshotId) {
       asOfSnapshots.put(id.getId(), snapshotId);
+    }
+
+    void beforeTablePin(Consumer<ResourceId> callback) {
+      beforeTablePin = callback;
     }
 
     List<PinCall> pinCalls() {

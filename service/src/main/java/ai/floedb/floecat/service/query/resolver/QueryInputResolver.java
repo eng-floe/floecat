@@ -40,6 +40,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -133,6 +134,8 @@ public class QueryInputResolver {
     final Map<ResourceId, TablePin> pinByTableId = new LinkedHashMap<>();
     // Request-local cache for current-snapshot table pins (no override, no as-of).
     final Map<ResourceId, TablePin> currentSnapshotPinCache;
+    // Transient roots owned by this resolution attempt until the pins are committed or discarded.
+    final ResolvingPinRoots resolvingPinRoots;
     final PhaseDiagnostics diagnostics;
 
     ResolutionState(
@@ -141,13 +144,63 @@ public class QueryInputResolver {
         Optional<Timestamp> asOfDefault,
         Optional<String> defaultCatalog,
         Map<ResourceId, TablePin> currentSnapshotPinCache,
+        ResolvingPinRoots resolvingPinRoots,
         PhaseDiagnostics diagnostics) {
       this.queryId = queryId;
       this.correlationId = correlationId;
       this.asOfDefault = asOfDefault;
       this.defaultCatalog = defaultCatalog;
       this.currentSnapshotPinCache = currentSnapshotPinCache;
+      this.resolvingPinRoots = resolvingPinRoots;
       this.diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    }
+  }
+
+  /**
+   * Owns transient registrations made while one resolution attempt constructs pins. Retained pins
+   * remain rooted until their query context is committed; compatible duplicates and failed
+   * resolutions release only the roots registered by this attempt.
+   */
+  private static final class ResolvingPinRoots {
+    private final QueryContextStore queryStore;
+    private final String queryId;
+    private final Map<TablePin, List<String>> rootsByPin = new IdentityHashMap<>();
+
+    ResolvingPinRoots(QueryContextStore queryStore, String queryId) {
+      this.queryStore = queryStore;
+      this.queryId = queryId;
+    }
+
+    synchronized void register(TablePin pin) {
+      if (queryStore == null || queryId == null || queryId.isEmpty() || pin == null) {
+        return;
+      }
+      if (rootsByPin.containsKey(pin)) {
+        return;
+      }
+      List<String> roots = QueryPins.gcRootUris(pin);
+      if (roots.isEmpty()) {
+        return;
+      }
+      queryStore.registerResolvingPinBlobs(queryId, roots);
+      rootsByPin.put(pin, roots);
+    }
+
+    synchronized void discard(TablePin pin) {
+      List<String> roots = rootsByPin.get(pin);
+      if (roots != null) {
+        queryStore.releaseResolvingPinBlobs(queryId, roots);
+        rootsByPin.remove(pin);
+      }
+    }
+
+    synchronized void releaseAll() {
+      var iterator = rootsByPin.entrySet().iterator();
+      while (iterator.hasNext()) {
+        Map.Entry<TablePin, List<String>> entry = iterator.next();
+        queryStore.releaseResolvingPinBlobs(queryId, entry.getValue());
+        iterator.remove();
+      }
     }
   }
 
@@ -210,46 +263,46 @@ public class QueryInputResolver {
 
     var state =
         new ResolutionState(
-            queryId, correlationId, asOfDefault, defaultCatalog, currentSnapshotPinCache, diag);
+            queryId,
+            correlationId,
+            asOfDefault,
+            defaultCatalog,
+            currentSnapshotPinCache,
+            new ResolvingPinRoots(queryStore, queryId),
+            diag);
 
-    // Batch-resolve all NAME inputs up front: names sharing a catalog/namespace resolve their
-    // scope once instead of once per input.
-    List<NameRef> nameInputs =
-        inputs.stream()
-            .filter(in -> in.getTargetCase() == QueryInput.TargetCase.NAME)
-            .map(QueryInput::getName)
-            .toList();
-    Map<NameRef, Optional<ResourceId>> resolvedNames =
-        nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
+    try {
+      // Batch-resolve all NAME inputs up front: names sharing a catalog/namespace resolve their
+      // scope once instead of once per input.
+      List<NameRef> nameInputs =
+          inputs.stream()
+              .filter(in -> in.getTargetCase() == QueryInput.TargetCase.NAME)
+              .map(QueryInput::getName)
+              .toList();
+      Map<NameRef, Optional<ResourceId>> resolvedNames =
+          nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
 
-    // Resolve each input to its id and the table pins it contributes (a table yields its own pin; a
-    // view yields its base tables' pins). planInput reads the metadata graph and the shared
-    // current-snapshot cache; it does not touch `resolved` or `pinByTableId`.
-    List<InputPlan> plans = new ArrayList<>(inputs.size());
-    for (QueryInput in : inputs) {
-      plans.add(planInput(state, in, resolvedNames));
-    }
-
-    // Merge the plans into the pin set in input order. Order decides two things: `resolved` mirrors
-    // the request order, and mergePin keeps the first pin seen for a table (rooting its blobs)
-    // while
-    // raising QUERY_TABLE_PIN_CONFLICT when a later reference pins the same table with an
-    // incompatible snapshot/as-of. Every kept pin is GC-rooted here, before resolveInputs returns
-    // and therefore before the caller reads any schema/stats or persists the context.
-    for (InputPlan plan : plans) {
-      state.resolved.add(plan.resolvedId());
-      for (TablePin pin : plan.pins()) {
-        mergePin(state.pinByTableId, pin, state.queryId, state.correlationId);
+      // Resolve and merge in input order. A later malformed input must not mask a conflict that
+      // was already established by an earlier pair.
+      for (QueryInput in : inputs) {
+        mergePlan(state, planInput(state, in, resolvedNames));
       }
-    }
 
-    RelationPinSet relationPinSet =
-        RelationPinSet.newBuilder()
-            .addAllPins(state.pinByTableId.values().stream().map(QueryPins::ofTable).toList())
-            .build();
-    diag.add("pin.resolver_output_pins", relationPinSet.getPinsCount());
-    return new ResolutionResult(
-        state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
+      RelationPinSet relationPinSet =
+          RelationPinSet.newBuilder()
+              .addAllPins(state.pinByTableId.values().stream().map(QueryPins::ofTable).toList())
+              .build();
+      diag.add("pin.resolver_output_pins", relationPinSet.getPinsCount());
+      return new ResolutionResult(
+          state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
+    } catch (RuntimeException | Error e) {
+      try {
+        state.resolvingPinRoots.releaseAll();
+      } catch (RuntimeException | Error cleanupFailure) {
+        e.addSuppressed(cleanupFailure);
+      }
+      throw e;
+    }
   }
 
   // =============================================================================
@@ -262,6 +315,13 @@ public class QueryInputResolver {
    * its own single pin.
    */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins) {}
+
+  private void mergePlan(ResolutionState state, InputPlan plan) {
+    state.resolved.add(plan.resolvedId());
+    for (TablePin pin : plan.pins()) {
+      mergePin(state, pin);
+    }
+  }
 
   /**
    * Resolve one input to its {@link InputPlan}, reading the metadata graph and the shared
@@ -345,6 +405,7 @@ public class QueryInputResolver {
       TablePin cached = state.currentSnapshotPinCache.get(rid);
       if (cached != null) {
         state.diagnostics.count("pin.current_snapshot_cache_hits");
+        state.resolvingPinRoots.register(cached);
         return cached;
       }
       state.diagnostics.count("pin.current_snapshot_cache_misses");
@@ -353,6 +414,7 @@ public class QueryInputResolver {
           metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
       state.diagnostics.count("pin.snapshot_calls");
       state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+      state.resolvingPinRoots.register(resolved);
       state.currentSnapshotPinCache.put(rid, resolved);
       return resolved;
     }
@@ -387,6 +449,7 @@ public class QueryInputResolver {
     TablePin resolved = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+    state.resolvingPinRoots.register(resolved);
     return resolved;
   }
 
@@ -491,34 +554,18 @@ public class QueryInputResolver {
         });
   }
 
-  private void mergePin(
-      Map<ResourceId, TablePin> pinByTableId, TablePin pin, String queryId, String correlationId) {
+  private void mergePin(ResolutionState state, TablePin pin) {
     if (pin == null) {
       return;
     }
-    TablePin existing = pinByTableId.get(pin.getTableId());
+    TablePin existing = state.pinByTableId.get(pin.getTableId());
     if (existing == null) {
-      // First touch: this is the pin the context will store. Root its blobs as a transient GC root
-      // the instant it is constructed — before any downstream expansion/obligations/schema/stats or
-      // persistence — so a concurrent table change plus blob GC cannot delete a just-resolved blob.
-      // Keyed by the stable query id so the committing RPC releases it by the same key regardless
-      // of
-      // which RPC's correlation id resolved. Registering only the kept pin (not a compatible
-      // incoming
-      // pin that reconcile then discards) avoids rooting a discarded pin's possibly-different table
-      // blob, which the commit — comparing against the kept pin — would never unroot.
-      if (queryStore != null) {
-        // The SAME uri set the committed context will root (QueryPins.gcRootUris) — critically
-        // including the pinned ROOT, whose chain expansion is what protects the manifest pages;
-        // omitting it left the whole chain sweepable during the resolving window.
-        queryStore.registerResolvingPinBlobs(queryId, QueryPins.gcRootUris(pin));
-      }
-      pinByTableId.put(pin.getTableId(), pin);
+      state.pinByTableId.put(pin.getTableId(), pin);
       return;
     }
-    // First-touch wins: reuse the existing (already-rooted) pin when compatible; conflicting
-    // temporal
-    // intents for the same table fail planning rather than silently depending on resolution order.
-    QueryPins.reconcile(existing, pin, correlationId);
+    QueryPins.reconcile(existing, pin, state.correlationId);
+    if (existing != pin) {
+      state.resolvingPinRoots.discard(pin);
+    }
   }
 }
