@@ -63,9 +63,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -109,8 +111,10 @@ public class QueryInputResolver {
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
+  private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
   private static final BooleanSupplier NEVER_CANCELLED = () -> false;
+  private static final AtomicInteger METADATA_IO_THREAD_SEQUENCE = new AtomicInteger();
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
@@ -196,6 +200,7 @@ public class QueryInputResolver {
             0L,
             TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<>(MAX_CONCURRENT_INPUT_RESOLUTIONS),
+            daemonMetadataIoThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
     ownedBlockingExecutor = planningExecutor;
     ownedMetadataIoExecutor = ioExecutor;
@@ -210,6 +215,31 @@ public class QueryInputResolver {
     }
     if (ownedMetadataIoExecutor != null) {
       CancellableCallRunner.cancelDiscardedTasks(ownedMetadataIoExecutor.shutdownNow());
+      awaitMetadataIoTermination(ownedMetadataIoExecutor);
+    }
+  }
+
+  private static ThreadFactory daemonMetadataIoThreadFactory() {
+    return runnable -> {
+      Thread thread =
+          new Thread(
+              runnable,
+              "floecat-query-input-metadata-" + METADATA_IO_THREAD_SEQUENCE.incrementAndGet());
+      thread.setDaemon(true);
+      return thread;
+    };
+  }
+
+  /**
+   * Bound shutdown while daemon workers let an interruption-insensitive store call be abandoned.
+   */
+  private static void awaitMetadataIoTermination(ExecutorService executor) {
+    try {
+      if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+        LOG.warn("resolver metadata I/O executor did not terminate before shutdown timeout");
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -634,11 +664,19 @@ public class QueryInputResolver {
   }
 
   private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
-    if (cancelled == NEVER_CANCELLED || !metadataGraph.supportsConcurrentResolution()) {
+    if (!metadataGraph.supportsConcurrentResolution()) {
       // An overlay can opt out because it owns request-thread-confined state. Preserve that
       // contract even for a cancellable caller; it can cancel while awaiting admission, but an
       // active callback remains on the request thread until the overlay returns.
       return withInputResolutionPermitSynchronously(cancelled, operation);
+    }
+    if (cancelled == NEVER_CANCELLED) {
+      return CancellableCallRunner.callUncancellable(
+          metadataIoExecutor,
+          concurrentInputResolutionPermits,
+          operation,
+          "resolver metadata I/O executor shut down",
+          "interrupted while awaiting resolver I/O");
     }
     return CancellableCallRunner.call(
         metadataIoExecutor,

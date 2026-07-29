@@ -112,6 +112,64 @@ public final class CancellableCallRunner {
   }
 
   /**
+   * Run an uncancellable call on {@code executor}, blocking for fair admission and its result.
+   *
+   * <p>This keeps potentially carrier-pinning store calls off a virtual planning thread while
+   * preserving the legacy caller's synchronous completion semantics.
+   */
+  public static <T> T callUncancellable(
+      Executor executor,
+      Semaphore permits,
+      Supplier<T> operation,
+      String cancellationMessage,
+      String interruptionMessage) {
+    try {
+      permits.acquire();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException(interruptionMessage);
+    }
+
+    PropagatedContext context = PropagatedContext.capture();
+    CompletableFuture<T> result = new CompletableFuture<>();
+    CallLifecycle lifecycle = new CallLifecycle();
+    PermitLease permitLease = new PermitLease(permits);
+    SubmittedCall submitted =
+        new SubmittedCall(
+            () -> {
+              lifecycle.operationStarted.set(true);
+              try {
+                result.complete(context.supply(operation));
+              } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+              } finally {
+                permitLease.release();
+              }
+            },
+            result,
+            lifecycle,
+            permitLease,
+            cancellationMessage);
+    lifecycle.task = submitted;
+    try {
+      executor.execute(submitted);
+    } catch (RuntimeException | Error submissionFailure) {
+      permitLease.release();
+      throw submissionFailure;
+    }
+    try {
+      return result.get();
+    } catch (InterruptedException e) {
+      lifecycle.cancel();
+      Thread.currentThread().interrupt();
+      throw new CancellationException(interruptionMessage);
+    } catch (ExecutionException e) {
+      rethrow(e.getCause());
+      throw new AssertionError("rethrow must not return");
+    }
+  }
+
+  /**
    * Complete and release calls returned from {@link
    * java.util.concurrent.ExecutorService#shutdownNow}.
    *

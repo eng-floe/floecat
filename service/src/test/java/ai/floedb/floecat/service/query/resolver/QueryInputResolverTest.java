@@ -391,6 +391,32 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void uncancellableConcurrentPlanningUsesDaemonMetadataIoThreads() {
+    var graph = new MetadataIoThreadGraph();
+    var resolverWithDedicatedExecutor = new QueryInputResolver(graph, null, 2, 2);
+    resolverWithDedicatedExecutor.postConstruct();
+    try {
+      resolverWithDedicatedExecutor.resolveInputs(
+          "cid",
+          List.of(
+              QueryInput.newBuilder().setTableId(rid("ONE")).build(),
+              QueryInput.newBuilder().setTableId(rid("TWO")).build()),
+          Optional.empty(),
+          Optional.empty());
+
+      assertEquals(2, graph.metadataThreads().size());
+      assertTrue(
+          graph.metadataThreads().stream()
+              .allMatch(
+                  thread ->
+                      thread.isDaemon()
+                          && thread.getName().startsWith("floecat-query-input-metadata-")));
+    } finally {
+      resolverWithDedicatedExecutor.closeBlockingExecutor();
+    }
+  }
+
+  @Test
   void cancellationDoesNotQueueMetadataWorkBehindStalledCalls() throws Exception {
     int capacity = 64;
     var graph = new SaturatedPinGraph(capacity);
@@ -1920,6 +1946,26 @@ public class QueryInputResolverTest {
 
     List<Thread> planningThreads() {
       return planningThreads;
+    }
+  }
+
+  /** Records callbacks to verify planning never runs store I/O directly on virtual threads. */
+  static final class MetadataIoThreadGraph extends FakeGraph {
+    private final List<Thread> metadataThreads =
+        java.util.Collections.synchronizedList(new ArrayList<>());
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      metadataThreads.add(Thread.currentThread());
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+
+    List<Thread> metadataThreads() {
+      return metadataThreads;
     }
   }
 
