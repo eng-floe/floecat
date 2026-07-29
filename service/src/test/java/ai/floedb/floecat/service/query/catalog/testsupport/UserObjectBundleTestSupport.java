@@ -71,7 +71,7 @@ public final class UserObjectBundleTestSupport {
             .build());
   }
 
-  public static final class FakeCatalogOverlay implements CatalogOverlay {
+  public static class FakeCatalogOverlay implements CatalogOverlay {
     private final Map<String, GraphNode> nodes = new HashMap<>();
     private final Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> schemas =
         new HashMap<>();

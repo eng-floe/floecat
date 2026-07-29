@@ -59,6 +59,7 @@ import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -99,9 +100,13 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -115,12 +120,23 @@ import org.jboss.logging.Logger;
 public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
+  private static final long CANCELLATION_POLL_MILLIS = 10;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
       throw new CancellationException("GetUserObjects stream cancelled");
     }
+  }
+
+  private static void rethrowAsyncFailure(Throwable failure) {
+    if (failure instanceof RuntimeException runtime) {
+      throw runtime;
+    }
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    throw new IllegalStateException("unexpected checked exception from metadata lookup", failure);
   }
 
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
@@ -148,11 +164,16 @@ public class UserObjectBundleService {
   // virtual-thread executor instead of blocking that termination callback.
   private final ExecutorService cancellationTeardownExecutor =
       Executors.newVirtualThreadPerTaskExecutor();
+  // Candidate resolution can call repository-backed overlay operations. Keep those calls off the
+  // stream producer so cancellation can interrupt them without waiting for a stalled store client.
+  private final ExecutorService metadataLookupExecutor =
+      Executors.newVirtualThreadPerTaskExecutor();
 
   @Inject Observability observability;
 
   @PreDestroy
   void closeCancellationTeardownExecutor() {
+    metadataLookupExecutor.shutdownNow();
     cancellationTeardownExecutor.close();
   }
 
@@ -1803,6 +1824,39 @@ public class UserObjectBundleService {
       return cancelled.get();
     }
 
+    /**
+     * Runs one repository-backed overlay lookup away from the stream producer and returns promptly
+     * when the subscriber cancels, even if the downstream client ignores interruption.
+     */
+    private <T> T awaitCancellableMetadataLookup(Supplier<T> lookup) {
+      throwIfCancelled(this::isCancelled);
+      PropagatedContext context = PropagatedContext.capture();
+      FutureTask<T> submitted = new FutureTask<>(() -> context.supply(lookup));
+      metadataLookupExecutor.execute(submitted);
+      try {
+        while (true) {
+          if (isCancelled()) {
+            submitted.cancel(true);
+            throw new CancellationException("GetUserObjects stream cancelled");
+          }
+          try {
+            return submitted.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+          } catch (TimeoutException ignored) {
+            // A bounded wait lets the producer interrupt a stalled lookup on cancellation.
+          } catch (InterruptedException e) {
+            submitted.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new CancellationException("GetUserObjects metadata lookup interrupted");
+          } catch (ExecutionException e) {
+            rethrowAsyncFailure(e.getCause());
+          }
+        }
+      } catch (CancellationException e) {
+        submitted.cancel(true);
+        throw e;
+      }
+    }
+
     private void cancel() {
       if (cancelled.compareAndSet(false, true)) {
         RelationPinSet toRelease;
@@ -2283,7 +2337,8 @@ public class UserObjectBundleService {
         long startNs = System.nanoTime();
         try {
           defaultCatalogName =
-              overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+              awaitCancellableMetadataLookup(
+                  () -> overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse(""));
           defaultCatalogResolved = true;
           defaultCatalogLookups++;
         } finally {
@@ -2311,7 +2366,8 @@ public class UserObjectBundleService {
         // context per lookup is fragile across executor hops, and an empty engine silently
         // un-resolves engine-gated system objects (eng-floe/floecat#361).
         Optional<ResourceId> resolved =
-            overlay.resolveName(correlationId, ref, resolutionContext.engineContext());
+            awaitCancellableMetadataLookup(
+                () -> overlay.resolveName(correlationId, ref, resolutionContext.engineContext()));
         nameResolutionCache.put(key, resolved);
         nameResolutionCacheMisses++;
         return resolved;
@@ -2331,7 +2387,9 @@ public class UserObjectBundleService {
       try {
         // Pass the engine captured at iterator construction: re-reading it from the request
         // context per lookup is fragile across executor hops (eng-floe/floecat#361).
-        Optional<GraphNode> resolved = overlay.resolve(id, resolutionContext.engineContext());
+        Optional<GraphNode> resolved =
+            awaitCancellableMetadataLookup(
+                () -> overlay.resolve(id, resolutionContext.engineContext()));
         nodeResolutionCache.put(id, resolved);
         nodeResolutionCacheMisses++;
         return resolved;

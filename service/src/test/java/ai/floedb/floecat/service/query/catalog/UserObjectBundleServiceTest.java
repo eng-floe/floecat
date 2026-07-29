@@ -80,6 +80,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow.Subscriber;
+import java.util.concurrent.Flow.Subscription;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -1227,6 +1231,44 @@ class UserObjectBundleServiceTest {
     UserObjectsBundleChunk resolutionChunk = subscriber.items().get(1);
     assertThat(resolutionChunk.hasResolutions()).isTrue();
     assertThat(queryStore.updateCount()).isEqualTo(1);
+  }
+
+  @Test
+  void cancellationInterruptsBlockedCandidateNameLookup() throws Exception {
+    BlockingLookupOverlay blockingOverlay = new BlockingLookupOverlay(BlockingLookup.NAME);
+    service = serviceWith(blockingOverlay);
+
+    assertCancellationReturnsWhileCandidateLookupBlocks(
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setName(NameRef.newBuilder().setCatalog("cat").setName("a")))
+            .build(),
+        blockingOverlay.blocker);
+  }
+
+  @Test
+  void cancellationInterruptsBlockedCandidateNodeLookup() throws Exception {
+    BlockingLookupOverlay blockingOverlay = new BlockingLookupOverlay(BlockingLookup.NODE);
+    service = serviceWith(blockingOverlay);
+
+    assertCancellationReturnsWhileCandidateLookupBlocks(
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build(),
+        blockingOverlay.blocker);
+  }
+
+  @Test
+  void cancellationInterruptsBlockedDefaultCatalogLookup() throws Exception {
+    BlockingLookupOverlay blockingOverlay = new BlockingLookupOverlay(BlockingLookup.CATALOG);
+    service = serviceWith(blockingOverlay);
+
+    assertCancellationReturnsWhileCandidateLookupBlocks(
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setName(NameRef.newBuilder().setName("a")))
+            .build(),
+        blockingOverlay.blocker);
   }
 
   @Test
@@ -2458,5 +2500,138 @@ class UserObjectBundleServiceTest {
                 .count())
         .isEqualTo(1);
     assertThat(allResolutions.stream().filter(r -> r.getInputIndex() == -1).count()).isEqualTo(30);
+  }
+
+  private UserObjectBundleService serviceWith(FakeCatalogOverlay testOverlay) {
+    testOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    testOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    return new UserObjectBundleService(
+        testOverlay,
+        resolver,
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContextProvider,
+        false,
+        "localhost",
+        47470,
+        false,
+        "test");
+  }
+
+  private void assertCancellationReturnsWhileCandidateLookupBlocks(
+      TableReferenceCandidate candidate, UninterruptibleBlocker blocker) throws Exception {
+    DemandSubscriber subscriber = new DemandSubscriber();
+    service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
+    assertThat(subscriber.awaitSubscription()).isTrue();
+    subscriber.request(1); // header
+    CompletableFuture<Void> resolutionRequest =
+        CompletableFuture.runAsync(() -> subscriber.request(1));
+    try {
+      assertThat(blocker.started.await(1, TimeUnit.SECONDS)).isTrue();
+      subscriber.cancel();
+      assertThat(resolutionRequest.get(250, TimeUnit.MILLISECONDS)).isNull();
+      assertThat(blocker.interrupted.await(1, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      blocker.release.countDown();
+    }
+  }
+
+  private enum BlockingLookup {
+    CATALOG,
+    NAME,
+    NODE
+  }
+
+  /** A catalog overlay whose selected metadata operation blocks even after interruption. */
+  private static final class BlockingLookupOverlay extends FakeCatalogOverlay {
+    private final BlockingLookup blockedLookup;
+    final UninterruptibleBlocker blocker = new UninterruptibleBlocker();
+
+    private BlockingLookupOverlay(BlockingLookup blockedLookup) {
+      this.blockedLookup = blockedLookup;
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+      if (blockedLookup == BlockingLookup.CATALOG) {
+        blocker.await();
+      }
+      return super.catalog(id);
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      if (blockedLookup == BlockingLookup.NAME) {
+        blocker.await();
+      }
+      return super.resolveName(correlationId, ref, engineContext);
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(ResourceId id) {
+      if (blockedLookup == BlockingLookup.NODE) {
+        blocker.await();
+      }
+      return super.resolve(id);
+    }
+  }
+
+  /**
+   * Simulates a downstream metadata client that records but does not immediately obey interrupts.
+   */
+  private static final class UninterruptibleBlocker {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch interrupted = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    void await() {
+      started.countDown();
+      while (true) {
+        try {
+          release.await();
+          return;
+        } catch (InterruptedException ignored) {
+          interrupted.countDown();
+        }
+      }
+    }
+  }
+
+  /** Requests stream items explicitly so cancellation can race one active iterator step. */
+  private static final class DemandSubscriber implements Subscriber<UserObjectsBundleChunk> {
+    private final CountDownLatch subscribed = new CountDownLatch(1);
+    private volatile Subscription subscription;
+
+    @Override
+    public void onSubscribe(Subscription subscription) {
+      this.subscription = subscription;
+      subscribed.countDown();
+    }
+
+    @Override
+    public void onNext(UserObjectsBundleChunk ignored) {}
+
+    @Override
+    public void onError(Throwable ignored) {}
+
+    @Override
+    public void onComplete() {}
+
+    boolean awaitSubscription() throws InterruptedException {
+      return subscribed.await(1, TimeUnit.SECONDS);
+    }
+
+    void request(long count) {
+      subscription.request(count);
+    }
+
+    void cancel() {
+      subscription.cancel();
+    }
   }
 }
