@@ -76,6 +76,29 @@ class ReconcileSnapshotContentStateTest {
   }
 
   @Test
+  void statsCoverageFromIndexCaptureSatisfiesStatsOnlyRequest() {
+    ReconcileCapturePolicy materialized =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("a", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileCapturePolicy requested =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("a", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+
+    List<String> materializedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(materialized));
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(requested));
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(requestedCoverage, materializedCoverage))
+        .isEmpty();
+  }
+
+  @Test
   void narrowedScopePreservesRequestedColumnsForRecapture() {
     ReconcileScope requested = scope(policy("a", "b", "c"));
     List<String> all = ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, requested);

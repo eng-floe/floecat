@@ -161,11 +161,10 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     opaque properties map.
   - snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
     columns, and properties exactly; the control plane rejects policy drift.
-  - query-driven stats requests are marked with `floecat.stats.query-driven=true` and request
-    stats without implicitly requesting Parquet page indexes.
-  - when connector-native direct stats are unavailable for a marked stats-only request, snapshot
-    planning records an empty direct result instead of creating file-group jobs. This guard does
-    not change explicit control-plane capture fallback behavior.
+  - query-driven stats requests do not implicitly request Parquet page indexes and do not encode
+    their request origin in capture-policy properties.
+  - content-state coverage is checked before execution. Missing coverage attempts connector-native
+    direct stats first and uses file-group capture when direct stats cannot satisfy the request.
 - **Connector security boundary**: all upstream I/O remains inside `FloecatConnector`.
   `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.
@@ -194,7 +193,7 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     file-group results, direct stats, per-file-group stats)
   - projection/root-summary state mirrors canonical parent rollups for eventual-consistent
     observability (root-job list summaries and tree/list aggregate counters)
-- **Query-driven enqueue coalescing**: active marked `CAPTURE_ONLY` root jobs use a normalized
+- **Stats-only enqueue coalescing**: active stats-only `CAPTURE_ONLY` root jobs use a normalized
   capture identity containing the account, connector, table/snapshot pairs, requested outputs, and
   capture-policy properties, in addition to the normal root-job identity fields. Column target and
   selector differences therefore do not create parallel roots for overlapping requests against the

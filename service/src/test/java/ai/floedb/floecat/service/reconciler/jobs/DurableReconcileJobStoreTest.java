@@ -412,22 +412,22 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueueCoalescesOverlappingQueryDrivenStatsForSameTableSnapshotAndOutput() {
+  void enqueueCoalescesOverlappingStatsOnlyCaptureForSameTableSnapshotAndOutput() {
     ReconcileScope firstScope =
         resolvedCaptureScope(
             List.of(captureRequest("tbl", 101L, "column:11")),
-            queryDrivenCapturePolicy("#11"),
+            statsOnlyCapturePolicy("#11"),
             ReconcileSnapshotSelection.current());
     ReconcileScope overlappingScope =
         resolvedCaptureScope(
             List.of(
                 captureRequest("tbl", 101L, "column:11"), captureRequest("tbl", 101L, "column:22")),
-            queryDrivenCapturePolicy("#11", "#22"),
+            statsOnlyCapturePolicy("#11", "#22"),
             ReconcileSnapshotSelection.current());
     ReconcileScope otherSnapshot =
         resolvedCaptureScope(
             List.of(captureRequest("tbl", 202L, "column:11")),
-            queryDrivenCapturePolicy("#11"),
+            statsOnlyCapturePolicy("#11"),
             ReconcileSnapshotSelection.current());
 
     String first =
@@ -5677,6 +5677,51 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void snapshotContentStateSkipsStatsOnlyWorkCoveredByEarlierIndexCapture() {
+    ReconcileScope.ScopedCaptureRequest request =
+        new ReconcileScope.ScopedCaptureRequest("table-1", 55L, "column:11", List.of());
+    ReconcileScope indexCaptureScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(request), capturePolicy("#11"));
+    List<String> materializedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.METADATA_AND_CAPTURE, indexCaptureScope);
+    publishFinalizedContent(
+        CaptureMode.METADATA_AND_CAPTURE,
+        indexCaptureScope,
+        contentTask("revision-1", "metadata-1", materializedCoverage),
+        100L,
+        200L);
+
+    ReconcileScope statsOnlyScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(request), statsOnlyCapturePolicy("#11"));
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, statsOnlyScope);
+    String statsOnlyJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            statsOnlyScope,
+            contentTask("revision-1", "", requestedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertTrue(store.leaseNext().isEmpty());
+    ReconcileJob completed = store.get(ACCOUNT_ID, statsOnlyJob).orElseThrow();
+    assertEquals("JS_SUCCEEDED", completed.state);
+    assertEquals(0L, completed.snapshotsProcessed);
+    assertTrue(
+        ReconcileSnapshotContentState.missingCoverage(
+                requestedCoverage,
+                store
+                    .getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L)
+                    .orElseThrow()
+                    .captureCoverage)
+            .isEmpty());
+  }
+
+  @Test
   void sameRevisionIndexRecaptureIncludesPreviouslyMaterializedColumns() {
     ReconcileCapturePolicy materializedPolicy =
         ReconcileCapturePolicy.of(
@@ -7423,15 +7468,14 @@ class DurableReconcileJobStoreTest {
         properties);
   }
 
-  private static ReconcileCapturePolicy queryDrivenCapturePolicy(String... selectors) {
+  private static ReconcileCapturePolicy statsOnlyCapturePolicy(String... selectors) {
     return ReconcileCapturePolicy.of(
         java.util.Arrays.stream(selectors)
             .map(selector -> new ReconcileCapturePolicy.Column(selector, true, false))
             .toList(),
         Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
         ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
-        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
-        Map.of(ReconcileCapturePolicy.QUERY_DRIVEN_STATS_PROPERTY, "true"));
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
   }
 
   private static ResourceId connectorResourceId() {

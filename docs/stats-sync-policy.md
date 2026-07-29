@@ -44,11 +44,10 @@ resolve(StatsCaptureRequest)
 | `SKIPPED`  | no            | yes             | ASYNC mode, no budget, or sync disabled           |
 
 Query-driven column requests are stats-only and do not implicitly request Parquet page indexes.
-The reconciler first attempts connector-native direct stats. If direct stats are unavailable, the
-query-driven job records empty direct coverage without creating file-group jobs. A sync request can
-therefore return `PARTIAL` when no record was produced; its async follow-up is subject to durable
-active-job and content-state deduplication and does not reintroduce file-group fan-out. Explicit
-capture-control requests retain their normal file-group fallback.
+Request origin is not part of capture coverage identity. Existing equivalent snapshot coverage
+therefore satisfies query requests without new execution. When coverage is genuinely missing, the
+reconciler attempts connector-native direct stats and falls back to file-group capture only when the
+connector cannot satisfy the request directly.
 
 ## Configuration
 

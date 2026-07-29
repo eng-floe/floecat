@@ -33,11 +33,10 @@ If you only need file-group capture replacement, you do not need to replace the 
 workers. `PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_VIEW`, and `PLAN_SNAPSHOT` can remain in the
 existing JVM control plane or executor fleet.
 
-Query-driven stats-only work is marked with `floecat.stats.query-driven=true`. The JVM snapshot
-planner attempts connector-native direct stats for that work and, when direct stats are unavailable,
-records an empty direct result without creating `EXEC_FILE_GROUP` jobs. A Rust file-group worker
-should therefore never receive this guarded query-driven fallback. Explicit capture-control jobs
-continue to use file-group fallback and remain part of the worker contract described below.
+Query-driven stats-only work does not carry a request-origin marker. Content-state coverage decides
+whether execution is required. For genuinely missing coverage, the JVM snapshot planner attempts
+connector-native direct stats first and can enqueue `EXEC_FILE_GROUP` jobs when the connector cannot
+satisfy the request directly.
 
 If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the leased snapshot task's
 `source_revision`, `metadata_fingerprint`, and complete `requested_coverage` in its successful

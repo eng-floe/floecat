@@ -411,31 +411,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (directSnapshotTask.isPresent()) {
       return directSnapshotTask.get();
     }
-    if (suppressQueryDrivenFileGroupFallback(payload, task)) {
-      LOG.warnf(
-          "Suppressing query-driven stats file-group fallback jobId=%s tableId=%s snapshotId=%d",
-          lease.jobId, task.tableId(), task.snapshotId());
-      return PlannedSnapshotCapture.direct(
-          ReconcileSnapshotTask.of(
-              task.tableId(),
-              task.snapshotId(),
-              task.sourceNamespace(),
-              task.sourceTable(),
-              List.of(),
-              true,
-              ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
-              "",
-              0,
-              0,
-              "",
-              0,
-              task.sourceRevision(),
-              task.metadataFingerprint(),
-              ReconcileSnapshotContentState.materializedCoverage(
-                  task.requestedCoverage(), List.of(), List.of()),
-              task.indexPredecessor()),
-          List.of());
-    }
     List<ReconcileFileGroupTask> fileGroupTasks = buildFileGroupTasks(lease, task);
     return PlannedSnapshotCapture.fileGroups(
         ReconcileSnapshotTask.of(
@@ -456,19 +431,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             task.requestedCoverage(),
             task.indexPredecessor()),
         fileGroupTasks);
-  }
-
-  private static boolean suppressQueryDrivenFileGroupFallback(
-      StandalonePlanSnapshotPayload payload, ReconcileSnapshotTask task) {
-    if (payload.captureMode() != ReconcilerService.CaptureMode.CAPTURE_ONLY) {
-      return false;
-    }
-    ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
-    ReconcileCapturePolicy capturePolicy =
-        scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
-    return capturePolicy.isQueryDrivenStats()
-        && capturePolicy.requestsStats()
-        && !capturePolicy.requestsIndexes();
   }
 
   private Optional<PlannedSnapshotCapture> tryDirectStatsCapture(

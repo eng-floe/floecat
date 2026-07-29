@@ -828,14 +828,11 @@ public class StatsOrchestrator {
         columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, !queryDriven));
       }
     }
-    Map<String, String> properties =
-        queryDriven ? Map.of(ReconcileCapturePolicy.QUERY_DRIVEN_STATS_PROPERTY, "true") : Map.of();
     return ReconcileCapturePolicy.of(
         List.copyOf(columns.values()),
         Set.copyOf(outputs),
         ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
-        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
-        properties);
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
   }
 
   private record IndexedRequest(int index, StatsCaptureRequest request) {}

@@ -218,7 +218,7 @@ class StatsOrchestratorTest {
         .containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForIndex()).isEmpty();
-    assertThat(scope.capturePolicy().isQueryDrivenStats()).isTrue();
+    assertThat(scope.capturePolicy().properties()).isEmpty();
   }
 
   @Test

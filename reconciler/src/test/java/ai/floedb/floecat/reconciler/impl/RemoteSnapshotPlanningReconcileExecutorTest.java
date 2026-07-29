@@ -210,51 +210,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void executeSuppressesQueryDrivenFileGroupsWhenDirectStatsAreUnavailable() {
-    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
-    var workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
-    var executor =
-        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
-
-    ReconcileJobStore.LeasedJob lease = lease(queryDrivenStatsOnlyScope());
-    when(workerClient.getPlanSnapshotInput(any()))
-        .thenReturn(
-            new StandalonePlanSnapshotPayload(
-                lease.jobId,
-                lease.leaseEpoch,
-                "",
-                connectorId(),
-                ReconcilerService.CaptureMode.CAPTURE_ONLY,
-                false,
-                queryDrivenStatsOnlyScope(),
-                snapshotTask()));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.empty());
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
-
-    ReconcileExecutor.ExecutionResult result =
-        executor.execute(
-            new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
-
-    assertTrue(result.success());
-    verify(backend).captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any());
-    verify(backend, never()).fetchSnapshotFilePlan(any(), any(), eq(55L));
-    verify(workerClient)
-        .submitPlanSnapshotSuccess(
-            any(),
-            argThat(
-                planned ->
-                    planned.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS
-                        && planned.fileGroups().isEmpty()
-                        && planned.directStatsRecordCount() == 0),
-            argThat(List::isEmpty),
-            argThat(List::isEmpty));
-  }
-
-  @Test
-  void executeRetainsFileGroupFallbackForExplicitStatsCapture() {
+  void executeFallsBackToFileGroupsWhenDirectStatsAreUnavailable() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
@@ -699,19 +655,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
         List.of(),
         ReconcileCapturePolicy.of(
             List.of(), EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
-  }
-
-  private static ReconcileScope queryDrivenStatsOnlyScope() {
-    return ReconcileScope.of(
-        List.of(),
-        "table-1",
-        List.of(),
-        ReconcileCapturePolicy.of(
-            List.of(),
-            EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
-            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
-            ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
-            java.util.Map.of(ReconcileCapturePolicy.QUERY_DRIVEN_STATS_PROPERTY, "true")));
   }
 
   private static ReconcileScope pageIndexScope() {
