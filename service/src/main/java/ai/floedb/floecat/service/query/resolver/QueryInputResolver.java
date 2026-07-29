@@ -380,8 +380,9 @@ public class QueryInputResolver {
   }
 
   /**
-   * Compatibility bridge for callers that adopted the concurrent single-flight map before the
-   * cache became a domain type.
+   * Compatibility overload for callers compiled against the original exposed single-flight map. The
+   * supplied map remains the cache owner; this method only wraps its placeholder convention in the
+   * typed cache API.
    */
   public ResolutionResult resolveInputs(
       String queryId,

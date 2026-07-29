@@ -386,6 +386,9 @@ public class UserObjectBundleService {
     private final LongAdder baseInjectNanos = new LongAdder();
     private final LongAdder pinCollectNanos = new LongAdder();
     private final LongAdder pinCommitNanos = new LongAdder();
+    // Wall-clock elapsed time of parallel relation builds; unlike per-task timings it is safe to
+    // subtract from request elapsed time when deriving the scheduling residual.
+    private final LongAdder buildFanoutNanos = new LongAdder();
     private final LongAdder relationBuildNanos = new LongAdder();
     private final LongAdder decorationNanos = new LongAdder();
     // Driver-only: wall-clock of the chunk's batch stats WARM pass. Kept distinct from
@@ -474,6 +477,10 @@ public class UserObjectBundleService {
 
     void addPinCollectNanos(long nanos) {
       pinCollectNanos.add(nanos);
+    }
+
+    void addBuildFanoutNanos(long nanos) {
+      buildFanoutNanos.add(nanos);
     }
 
     void addPinCommitNanos(long nanos) {
@@ -578,9 +585,7 @@ public class UserObjectBundleService {
               - baseInjectNanos.sum()
               - pinCollectNanos.sum()
               - pinCommitNanos.sum()
-              - relationBuildNanos.sum()
-              - decorationNanos.sum()
-              - statsLookupNanos.sum()
+              - buildFanoutNanos.sum()
               - statsWarmNanos.sum());
     }
 
@@ -1339,6 +1344,7 @@ public class UserObjectBundleService {
       // Build the remaining relations concurrently; each task times itself into its own
       // accumulator so the summary math needs no shared-counter deltas.
       List<Integer> indices = java.util.stream.IntStream.range(0, toBuild.size()).boxed().toList();
+      long buildFanoutStartNs = System.nanoTime();
       List<BuildOutcome> outcomes =
           BoundedFanout.mapOrdered(
               indices,
@@ -1346,6 +1352,7 @@ public class UserObjectBundleService {
               blockingExecutor,
               j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)),
               this::isCancelled);
+      timings.addBuildFanoutNanos(System.nanoTime() - buildFanoutStartNs);
 
       // Driver gather: fold each task's timings in, cache full payloads, and place resolutions in
       // chunk order. A build that failed becomes an ERROR for that one relation (it was counted

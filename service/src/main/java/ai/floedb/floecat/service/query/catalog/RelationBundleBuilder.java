@@ -170,10 +170,38 @@ final class RelationBundleBuilder {
     UserObjectBundleService.TimingAccumulator timings =
         new UserObjectBundleService.TimingAccumulator();
     try {
-      RelationInfo info =
-          buildRelation(
-              correlationId, relation, liveCtx, resolutionContext, stats, timings, scopedIdentity);
+      EngineContext engine = resolutionContext.engineContext();
+      Optional<EngineMetadataDecorator> decorator = currentDecorator(engine);
+      RelationInfo info;
+      if (decorator.isPresent()) {
+        // Providers historically return an application-lifetime decorator. Preserve the SPI's
+        // thread-safety expectations while builds fan out by serializing one instance's complete
+        // per-relation lifecycle, including relation, column, view, and completion callbacks.
+        synchronized (decorator.get()) {
+          info =
+              buildRelation(
+                  correlationId,
+                  relation,
+                  liveCtx,
+                  resolutionContext,
+                  stats,
+                  timings,
+                  scopedIdentity);
+        }
+      } else {
+        info =
+            buildRelation(
+                correlationId,
+                relation,
+                liveCtx,
+                resolutionContext,
+                stats,
+                timings,
+                scopedIdentity);
+      }
       return BuildResult.success(info, timings);
+    } catch (java.util.concurrent.CancellationException e) {
+      throw e;
     } catch (StatusRuntimeException e) {
       // A structured gRPC error carries a specific code and diagnostic fields — notably
       // pinValidator.validate on genuine catalog-integrity breakage (QUERY_PINNED_ROOT_MISSING,
