@@ -158,8 +158,7 @@ public class QueryInputResolver {
       this(new ConcurrentHashMap<>());
     }
 
-    private CurrentSnapshotPinCache(
-        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
+    private CurrentSnapshotPinCache(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
       this.pins = pins;
     }
 

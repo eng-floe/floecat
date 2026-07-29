@@ -274,8 +274,6 @@ public class UserObjectBundleService {
                   new UserObjectBundleIterator(correlationId, ctx, candidates, knownBlobVersions);
               return Multi.createFrom()
                   .iterable(() -> iterator)
-                  .onCancellation()
-                  .invoke(iterator::markCancelled)
                   .onFailure()
                   .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
                   .onCancellation()
@@ -784,20 +782,11 @@ public class UserObjectBundleService {
     // well-defined value, so a cancelled stream reports partial-but-not-torn telemetry.
     private volatile int emittedResolutionChunks = 0;
     private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
-    private final AtomicBoolean cancelled = new AtomicBoolean(false);
-    private boolean defaultCatalogResolved = false;
-    private String defaultCatalogName = "";
     // Set when the subscriber cancels; polled by the select/build fan-outs so a cancelled stream
     // stops draining in-flight tasks promptly instead of running the whole chunk to completion.
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
-
-    void markCancelled() {
-      cancelled.set(true);
-    }
-
-    boolean isCancelled() {
-      return cancelled.get();
-    }
+    private boolean defaultCatalogResolved = false;
+    private String defaultCatalogName = "";
 
     UserObjectBundleIterator(
         String correlationId,

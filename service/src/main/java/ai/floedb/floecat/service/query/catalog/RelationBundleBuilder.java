@@ -186,7 +186,8 @@ final class RelationBundleBuilder {
                   resolutionContext,
                   stats,
                   timings,
-                  scopedIdentity);
+                  scopedIdentity,
+                  decorator);
         }
       } else {
         info =
@@ -197,7 +198,8 @@ final class RelationBundleBuilder {
                 resolutionContext,
                 stats,
                 timings,
-                scopedIdentity);
+                scopedIdentity,
+                decorator);
       }
       return BuildResult.success(info, timings);
     } catch (java.util.concurrent.CancellationException e) {
@@ -252,7 +254,8 @@ final class RelationBundleBuilder {
       MetadataResolutionContext resolutionContext,
       StatsProvider statsProvider,
       UserObjectBundleService.TimingAccumulator timings,
-      Optional<RelationPinIdentity> scopedIdentity) {
+      Optional<RelationPinIdentity> scopedIdentity,
+      Optional<EngineMetadataDecorator> decorator) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -319,7 +322,6 @@ final class RelationBundleBuilder {
     // skip engine-specific decoration with no log line (eng-floe/floecat#361).
     EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
-    Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;
     boolean relationDecorationSucceeded = true;
     // Per-phase payload-decoration success, tracked separately from
@@ -348,6 +350,8 @@ final class RelationBundleBuilder {
         } finally {
           timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
         }
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         relationDecorationSucceeded = false;
         LOG.debugf(
@@ -373,6 +377,8 @@ final class RelationBundleBuilder {
           } finally {
             timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
           }
+        } catch (java.util.concurrent.CancellationException e) {
+          throw e;
         } catch (RuntimeException e) {
           viewDecorationSucceeded = false;
           LOG.debugf(
@@ -430,6 +436,8 @@ final class RelationBundleBuilder {
           timings.addDecoratePersistColumnsNanos(
               decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
         }
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         completeRelationSucceeded = false;
         LOG.debugf(
@@ -754,6 +762,8 @@ final class RelationBundleBuilder {
                       "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
                       "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
         }
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         ColumnFailure failure = mapFailure(e, ctx);
         LOG.debugf(
