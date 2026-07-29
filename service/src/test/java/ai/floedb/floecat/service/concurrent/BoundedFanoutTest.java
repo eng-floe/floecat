@@ -81,6 +81,43 @@ class BoundedFanoutTest {
   }
 
   @Test
+  void submitsOnlyTheRollingWindowWhileTheFirstResultIsBlocked() throws Exception {
+    CountDownLatch firstStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirst = new CountDownLatch(1);
+    AtomicInteger submissions = new AtomicInteger();
+    Executor countingExecutor =
+        command -> {
+          submissions.incrementAndGet();
+          CompletableFuture.runAsync(command);
+        };
+
+    CompletableFuture<List<Integer>> result =
+        CompletableFuture.supplyAsync(
+            () ->
+                BoundedFanout.mapOrdered(
+                    IntStream.range(0, 100).boxed().toList(),
+                    3,
+                    countingExecutor,
+                    value -> {
+                      if (value == 0) {
+                        firstStarted.countDown();
+                        try {
+                          releaseFirst.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError(e);
+                        }
+                      }
+                      return value;
+                    }));
+
+    assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    assertThat(submissions.get()).isEqualTo(3);
+    releaseFirst.countDown();
+    assertThat(result.get(1, TimeUnit.SECONDS)).hasSize(100);
+  }
+
+  @Test
   void taskFailureSurfacesUnwrapped() {
     assertThatThrownBy(
             () ->

@@ -94,10 +94,12 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
@@ -110,6 +112,13 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
+
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if (cancelled.getAsBoolean()) {
+      throw new CancellationException("GetUserObjects stream cancelled");
+    }
+  }
+
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
   private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
   private static final String RELATION_HINT_PERSIST_NANOS_KEY =
@@ -270,7 +279,7 @@ public class UserObjectBundleService {
                   .onFailure()
                   .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
                   .onTermination()
-                  .invoke(() -> iterator.publishStreamTelemetry("cancelled"));
+                  .invoke(iterator::cancel);
             });
   }
 
@@ -351,7 +360,9 @@ public class UserObjectBundleService {
       QueryContext ctx,
       List<ResolvedRelation> relations,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    throwIfCancelled(cancelled);
     if (relations == null || relations.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
     }
@@ -381,8 +392,10 @@ public class UserObjectBundleService {
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
             currentSnapshotPinCache,
-            diagnostics);
+            diagnostics,
+            cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
+    throwIfCancelled(cancelled);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
     diagnostics.add("pin.output_pins", pins.getPinsCount());
@@ -1610,6 +1623,7 @@ public class UserObjectBundleService {
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
     private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
     private long resolveNanos = 0L;
@@ -1666,6 +1680,7 @@ public class UserObjectBundleService {
 
     @Override
     public UserObjectsBundleChunk next() {
+      throwIfCancelled(this::isCancelled);
       if (!headerEmitted) {
         headerEmitted = true;
         if (LOG.isDebugEnabled()) {
@@ -1714,7 +1729,14 @@ public class UserObjectBundleService {
         long pinStartNs = System.nanoTime();
         try {
           RelationPinSet chunkPins =
-              collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache, diagnostics);
+              collectChunkPins(
+                  correlationId,
+                  ctx,
+                  toPin,
+                  currentSnapshotPinCache,
+                  diagnostics,
+                  this::isCancelled);
+          throwIfCancelled(this::isCancelled);
           long accumulateStartNs = System.nanoTime();
           try {
             accumulateChunkPins(chunkPins);
@@ -1725,6 +1747,15 @@ public class UserObjectBundleService {
           pinCollectNanos += System.nanoTime() - pinStartNs;
         }
       }
+    }
+
+    private boolean isCancelled() {
+      return cancelled.get();
+    }
+
+    private void cancel() {
+      cancelled.set(true);
+      publishStreamTelemetry("cancelled");
     }
 
     /**
