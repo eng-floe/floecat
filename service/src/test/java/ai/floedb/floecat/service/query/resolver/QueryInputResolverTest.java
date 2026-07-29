@@ -83,6 +83,36 @@ public class QueryInputResolverTest {
     return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
   }
 
+  /** Runs a cancellable resolution without coupling the test to the caller's executor. */
+  private static CompletableFuture<Throwable> resolveCancellable(Runnable resolution) {
+    return CompletableFuture.supplyAsync(
+        () -> {
+          try {
+            resolution.run();
+            return null;
+          } catch (Throwable failure) {
+            return failure;
+          }
+        });
+  }
+
+  /** Verifies cancellation returns promptly even when the active metadata operation ignores it. */
+  private static void assertCancellationReturnsWhileBlocked(
+      CompletableFuture<Throwable> resolution,
+      java.util.concurrent.atomic.AtomicBoolean cancelled,
+      UninterruptibleBlocker blocker)
+      throws Exception {
+    try {
+      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+      cancelled.set(true);
+      assertTrue(
+          resolution.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+    } finally {
+      blocker.release.countDown();
+    }
+  }
+
   /**
    * As each pin is constructed, the resolver registers its blobs as transient GC roots — the single
    * transparent seam that protects a resolved-but-not-yet-persisted blob on every resolve path.
@@ -185,6 +215,77 @@ public class QueryInputResolverTest {
     } finally {
       blockingGraph.allowSlowPin.countDown();
     }
+  }
+
+  @Test
+  void cancellationReturnsWhileSingleInputPinLookupIgnoresInterrupts() throws Exception {
+    var blockingGraph = new BlockingPinGraph("SLOW");
+    var withStore = new QueryInputResolver(blockingGraph);
+    var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        resolveCancellable(
+            () ->
+                withStore.resolveInputs(
+                    "q-cancel-single-pin",
+                    "cid",
+                    List.of(QueryInput.newBuilder().setTableId(rid("SLOW")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    null,
+                    cancelled::get));
+
+    assertCancellationReturnsWhileBlocked(resolution, cancelled, blockingGraph.slowPinBlocker);
+  }
+
+  @Test
+  void cancellationReturnsWhileDefaultCatalogLookupIgnoresInterrupts() throws Exception {
+    var blockingGraph = new BlockingCatalogGraph();
+    var withStore = new QueryInputResolver(blockingGraph);
+    var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+    ResourceId catalogId =
+        ResourceId.newBuilder().setId("CAT").setKind(ResourceKind.RK_CATALOG).build();
+    blockingGraph.setCatalogName(catalogId, "catalog");
+
+    CompletableFuture<Throwable> resolution =
+        resolveCancellable(
+            () ->
+                withStore.resolveInputs(
+                    "q-cancel-catalog",
+                    "cid",
+                    List.of(QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                    Optional.empty(),
+                    Optional.of(catalogId),
+                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    null,
+                    cancelled::get));
+
+    assertCancellationReturnsWhileBlocked(resolution, cancelled, blockingGraph.catalogBlocker);
+  }
+
+  @Test
+  void cancellationReturnsWhileBatchedNameLookupIgnoresInterrupts() throws Exception {
+    var blockingGraph = new BlockingNameGraph();
+    var withStore = new QueryInputResolver(blockingGraph);
+    var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+    NameRef input = name("c", "ns", "t");
+    blockingGraph.bind(input, rid("TABLE"));
+
+    CompletableFuture<Throwable> resolution =
+        resolveCancellable(
+            () ->
+                withStore.resolveInputs(
+                    "q-cancel-names",
+                    "cid",
+                    List.of(QueryInput.newBuilder().setName(input).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    null,
+                    cancelled::get));
+
+    assertCancellationReturnsWhileBlocked(resolution, cancelled, blockingGraph.namesBlocker);
   }
 
   @Test
@@ -1554,8 +1655,9 @@ public class QueryInputResolverTest {
   /** Blocks one table-pin lookup until the test releases it. */
   static final class BlockingPinGraph extends FakeGraph {
     private final String blockedTableId;
-    final CountDownLatch slowPinStarted = new CountDownLatch(1);
-    final CountDownLatch allowSlowPin = new CountDownLatch(1);
+    final UninterruptibleBlocker slowPinBlocker = new UninterruptibleBlocker();
+    final CountDownLatch slowPinStarted = slowPinBlocker.started;
+    final CountDownLatch allowSlowPin = slowPinBlocker.release;
 
     BlockingPinGraph(String blockedTableId) {
       this.blockedTableId = blockedTableId;
@@ -1568,17 +1670,54 @@ public class QueryInputResolverTest {
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
       if (blockedTableId.equals(tableId.getId())) {
-        slowPinStarted.countDown();
-        try {
-          if (!allowSlowPin.await(1, TimeUnit.SECONDS)) {
-            throw new AssertionError("test did not release the slow pin lookup");
-          }
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new AssertionError("slow pin lookup interrupted", e);
-        }
+        slowPinBlocker.await();
       }
       return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+  }
+
+  /** Blocks the default-catalog lookup to exercise cancellation before fan-out starts. */
+  static final class BlockingCatalogGraph extends FakeGraph {
+    final UninterruptibleBlocker catalogBlocker = new UninterruptibleBlocker();
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+      catalogBlocker.await();
+      return super.catalog(id);
+    }
+  }
+
+  /** Blocks batched name resolution to exercise cancellation before input planning starts. */
+  static final class BlockingNameGraph extends FakeGraph {
+    final UninterruptibleBlocker namesBlocker = new UninterruptibleBlocker();
+
+    @Override
+    public Map<NameRef, Optional<ResourceId>> resolveNames(
+        String correlationId, List<NameRef> refs) {
+      namesBlocker.await();
+      Map<NameRef, Optional<ResourceId>> resolved = new HashMap<>();
+      for (NameRef ref : refs) {
+        resolved.put(ref, resolveName(correlationId, ref));
+      }
+      return resolved;
+    }
+  }
+
+  /** A deliberately interruption-insensitive metadata call used to prove prompt caller teardown. */
+  static final class UninterruptibleBlocker {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+
+    void await() {
+      started.countDown();
+      while (true) {
+        try {
+          release.await();
+          return;
+        } catch (InterruptedException ignored) {
+          // Simulate a downstream client that cannot abort an in-flight store call.
+        }
+      }
     }
   }
 

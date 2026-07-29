@@ -32,6 +32,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.Futures;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -59,6 +60,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -106,6 +108,7 @@ public class QueryInputResolver {
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
+  private static final BooleanSupplier NEVER_CANCELLED = () -> false;
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
@@ -131,6 +134,12 @@ public class QueryInputResolver {
   // pool fallback until CDI invokes postConstruct().
   private volatile ExecutorService blockingExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedBlockingExecutor;
+
+  // Metadata calls run separately from the bounded planning pool so cancellation can interrupt the
+  // active store call and release its planning worker without waiting for a non-cooperating client.
+  // The global semaphore remains held until that call actually exits, preserving the store-I/O cap.
+  private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
+  private ExecutorService ownedMetadataIoExecutor;
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -175,15 +184,21 @@ public class QueryInputResolver {
 
   @PostConstruct
   void postConstruct() {
-    ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLEL_INPUT_RESOLUTIONS);
-    ownedBlockingExecutor = executor;
-    blockingExecutor = executor;
+    ExecutorService planningExecutor = Executors.newFixedThreadPool(MAX_PARALLEL_INPUT_RESOLUTIONS);
+    ExecutorService ioExecutor = Executors.newFixedThreadPool(MAX_CONCURRENT_INPUT_RESOLUTIONS);
+    ownedBlockingExecutor = planningExecutor;
+    ownedMetadataIoExecutor = ioExecutor;
+    blockingExecutor = planningExecutor;
+    metadataIoExecutor = ioExecutor;
   }
 
   @PreDestroy
   void closeBlockingExecutor() {
     if (ownedBlockingExecutor != null) {
       ownedBlockingExecutor.close();
+    }
+    if (ownedMetadataIoExecutor != null) {
+      ownedMetadataIoExecutor.close();
     }
   }
 
@@ -391,7 +406,7 @@ public class QueryInputResolver {
         defaultCatalogId,
         currentSnapshotPinCache,
         diagnostics,
-        () -> false);
+        NEVER_CANCELLED);
   }
 
   /**
@@ -608,6 +623,47 @@ public class QueryInputResolver {
   }
 
   private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
+    if (cancelled == NEVER_CANCELLED) {
+      return withInputResolutionPermitSynchronously(operation);
+    }
+
+    PropagatedContext context = PropagatedContext.capture();
+    Future<T> submitted =
+        metadataIoExecutor.submit(
+            () ->
+                context.supply(() -> withInputResolutionPermitSynchronously(cancelled, operation)));
+    try {
+      while (true) {
+        if (cancelled.getAsBoolean()) {
+          submitted.cancel(true);
+          throw new CancellationException("input resolution cancelled");
+        }
+        try {
+          return submitted.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ignored) {
+          // A bounded wait lets the caller interrupt a metadata operation as soon as it cancels.
+        } catch (InterruptedException e) {
+          submitted.cancel(true);
+          Thread.currentThread().interrupt();
+          throw new CancellationException("interrupted while awaiting resolver I/O");
+        } catch (ExecutionException e) {
+          rethrowAsyncFailure(e.getCause());
+        }
+      }
+    } catch (CancellationException e) {
+      submitted.cancel(true);
+      throw e;
+    }
+  }
+
+  /** Acquires the global store-I/O slot and runs an uncancellable legacy call on the caller. */
+  private <T> T withInputResolutionPermitSynchronously(Supplier<T> operation) {
+    return withInputResolutionPermitSynchronously(NEVER_CANCELLED, operation);
+  }
+
+  /** Runs one metadata operation while retaining its global permit until the call truly returns. */
+  private <T> T withInputResolutionPermitSynchronously(
+      BooleanSupplier cancelled, Supplier<T> operation) {
     boolean acquired = false;
     try {
       throwIfCancelled(cancelled);
