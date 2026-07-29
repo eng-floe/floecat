@@ -50,6 +50,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
@@ -443,7 +444,7 @@ public class QueryInputResolverTest {
     var graph = new TurnoverPinGraph(capacity);
     var resolverWithTurnover = new QueryInputResolver(graph, null, 1, capacity);
     resolverWithTurnover.postConstruct();
-    List<CompletableFuture<?>> activeRequests =
+    List<CompletableFuture<Void>> activeRequests =
         java.util.stream.IntStream.range(0, capacity)
             .mapToObj(
                 index ->
