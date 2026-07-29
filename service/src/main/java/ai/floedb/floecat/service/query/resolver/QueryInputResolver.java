@@ -39,6 +39,7 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -58,6 +59,7 @@ import java.util.concurrent.Executors;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 /**
  * QueryInputResolver
@@ -93,12 +95,13 @@ import org.eclipse.microprofile.config.ConfigProvider;
 @ApplicationScoped
 public class QueryInputResolver {
 
+  private static final Logger LOG = Logger.getLogger(QueryInputResolver.class);
+
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
-  // store reads; a small fan-out overlaps their round-trips without flooding the store. Shared with
-  // the catalog bundle's relation fan-out via the same config property. Per-request bound only: the
-  // virtual-thread executor has no shared-pool ceiling. Read once here via ConfigProvider (not a
-  // @ConfigProperty ctor param) so the new-constructed test call sites keep compiling while prod
-  // still honors config.
+  // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
+  // per-request bound only: the virtual-thread executor has no shared-pool ceiling. Read once here
+  // via ConfigProvider (not a @ConfigProperty ctor param) so the new-constructed test call sites
+  // keep compiling while production still honors config.
   private final int maxParallelInputResolutions;
 
   private final CatalogOverlay metadataGraph;
@@ -118,20 +121,27 @@ public class QueryInputResolver {
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
-    // Clamp to >=1: a 0/negative permit count would wedge the fan-out's permit wait forever.
-    // UserObjectBundleService warns on this same config key; clamp silently here to avoid a
-    // duplicate warning.
-    this.maxParallelInputResolutions =
-        Math.max(
-            1,
-            ConfigProvider.getConfig()
-                .getOptionalValue("floecat.catalog.bundle.max_parallel_relations", Integer.class)
-                .orElse(8));
+    int configuredMaxParallelResolutions =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.catalog.bundle.max_parallel_relations", Integer.class)
+            .orElse(8);
+    if (configuredMaxParallelResolutions < 1) {
+      LOG.warnf(
+          "floecat.catalog.bundle.max_parallel_relations must be >= 1; using 1 instead of %d",
+          configuredMaxParallelResolutions);
+    }
+    this.maxParallelInputResolutions = Math.max(1, configuredMaxParallelResolutions);
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
   public QueryInputResolver(CatalogOverlay metadataGraph) {
     this(metadataGraph, null);
+  }
+
+  /** Stop accepting fan-out work and wait for any in-flight resolution tasks during shutdown. */
+  @PreDestroy
+  void closeBlockingExecutor() {
+    blockingExecutor.close();
   }
 
   // =============================================================================
@@ -441,9 +451,10 @@ public class QueryInputResolver {
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
       // a view yields its base tables' pins). planInput reads the metadata graph and the shared
       // current-snapshot cache; it does not touch `resolved` or `pinByTableId`. Inputs resolve
-      // independently, so with more than one they are fanned out; the results are gathered in input
-      // order for the merge below.
-      if (inputs.size() > 1) {
+      // independently, so overlays that explicitly support concurrent resolution fan them out. An
+      // overlay that opts out may retain request-thread-confined lifecycle state, so its entire
+      // planning loop remains on the caller thread. Results always merge in input order below.
+      if (inputs.size() > 1 && metadataGraph.supportsConcurrentResolution()) {
         planInputsConcurrently(state, inputs, resolvedNames, cancelled);
       } else {
         planInputsSerially(state, inputs, resolvedNames, cancelled);
@@ -514,9 +525,8 @@ public class QueryInputResolver {
    * measured by the caller around this call regardless. One task state is shared by all tasks
    * because everything they touch is immutable or thread-safe (the current-snapshot cache and the
    * accumulator). Keep off-thread diagnostics to counters and durations only; one-shot put/emit
-   * values must stay on the request thread because the accumulator intentionally drops them.
-   * Gathering plans in input order keeps the caller's merge deterministic (first-touch-wins,
-   * conflict detection).
+   * values must stay on the request thread because the accumulator rejects them. Gathering plans in
+   * input order keeps the caller's merge deterministic (first-touch-wins, conflict detection).
    */
   private void planInputsConcurrently(
       ResolutionState state,
@@ -547,9 +557,9 @@ public class QueryInputResolver {
   }
 
   /**
-   * CatalogOverlay predates parallel resolution and does not require implementations to be
-   * thread-safe. Keep its callbacks serialized while allowing the rest of input planning to run
-   * concurrently.
+   * CatalogOverlay callbacks are direct when the overlay opts into concurrent resolution. The
+   * serial planning path keeps all callbacks on the request thread for overlays that opt out; the
+   * synchronization here also protects the up-front catalog and name-resolution callbacks.
    */
   private <T> T withMetadataGraph(Supplier<T> operation) {
     if (metadataGraph.supportsConcurrentResolution()) {

@@ -56,6 +56,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 
 public final class UserObjectBundleTestSupport {
@@ -412,9 +413,30 @@ public final class UserObjectBundleTestSupport {
         java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
             currentSnapshotPinCache,
         PhaseDiagnostics diagnostics) {
+      return resolveInputs(inputs, () -> false);
+    }
+
+    @Override
+    public ResolutionResult resolveInputs(
+        String queryId,
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId,
+        java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
+            currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics,
+        BooleanSupplier cancelled) {
+      return resolveInputs(inputs, cancelled);
+    }
+
+    private ResolutionResult resolveInputs(List<QueryInput> inputs, BooleanSupplier cancelled) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       for (QueryInput input : inputs) {
+        if (cancelled.getAsBoolean()) {
+          throw new java.util.concurrent.CancellationException("input resolution cancelled");
+        }
         calls.add(List.of(input));
         switch (input.getTargetCase()) {
           case TABLE_ID -> {

@@ -31,6 +31,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /** Runs independent, mostly-blocking tasks on a shared executor with a concurrency bound. */
 public final class BoundedFanout {
@@ -55,16 +56,13 @@ public final class BoundedFanout {
     PropagatedContext context = PropagatedContext.capture();
     List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
     int nextItem = 0;
-    try {
-      while (nextItem < items.size() && futures.size() < permits) {
-        I item = items.get(nextItem++);
-        futures.add(
-            CompletableFuture.supplyAsync(
-                () -> runTask(gate, context, task, item, () -> false), executor));
-      }
-    } catch (RuntimeException | Error submissionFailure) {
-      awaitCompletedFutures(futures);
-      throw submissionFailure;
+    while (nextItem < items.size() && futures.size() < permits) {
+      I item = items.get(nextItem++);
+      submitCompletionFuture(
+          futures,
+          () ->
+              CompletableFuture.supplyAsync(
+                  () -> runTask(gate, context, task, item, () -> false), executor));
     }
     return collectCompletedFutures(futures, items, nextItem, gate, context, executor, task);
   }
@@ -86,16 +84,13 @@ public final class BoundedFanout {
     PropagatedContext context = PropagatedContext.capture();
     List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
     int nextItem = 0;
-    try {
-      while (nextItem < items.size() && futures.size() < permits) {
-        I item = items.get(nextItem++);
-        futures.add(
-            CompletableFuture.supplyAsync(
-                () -> runTask(gate, context, task, item, () -> false), executor));
-      }
-    } catch (RuntimeException | Error submissionFailure) {
-      awaitCompletedFutures(futures);
-      throw submissionFailure;
+    while (nextItem < items.size() && futures.size() < permits) {
+      I item = items.get(nextItem++);
+      submitCompletionFuture(
+          futures,
+          () ->
+              CompletableFuture.supplyAsync(
+                  () -> runTask(gate, context, task, item, () -> false), executor));
     }
     consumeCompletedFutures(futures, items, nextItem, gate, context, executor, task, consumer);
   }
@@ -124,14 +119,12 @@ public final class BoundedFanout {
           throw cancelled();
         }
         I item = items.get(nextItem++);
-        futures.add(executor.submit(() -> runTask(gate, context, task, item, cancelled)));
+        submitTask(
+            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     } catch (CancellationException cancellationFailure) {
       cancelSubmittedTasks(futures);
       throw cancellationFailure;
-    } catch (RuntimeException | Error submissionFailure) {
-      awaitSubmittedTasks(futures);
-      throw submissionFailure;
     }
 
     List<O> results = new ArrayList<>(items.size());
@@ -156,7 +149,8 @@ public final class BoundedFanout {
           throw cancelled();
         }
         I item = items.get(nextItem++);
-        futures.add(executor.submit(() -> runTask(gate, context, task, item, cancelled)));
+        submitTask(
+            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -191,14 +185,12 @@ public final class BoundedFanout {
           throw cancelled();
         }
         I item = items.get(nextItem++);
-        futures.add(executor.submit(() -> runTask(gate, context, task, item, cancelled)));
+        submitTask(
+            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     } catch (CancellationException cancellationFailure) {
       cancelSubmittedTasks(futures);
       throw cancellationFailure;
-    } catch (RuntimeException | Error submissionFailure) {
-      awaitSubmittedTasks(futures);
-      throw submissionFailure;
     }
 
     RuntimeException firstRuntimeFailure = null;
@@ -225,7 +217,8 @@ public final class BoundedFanout {
           throw cancelled();
         }
         I item = items.get(nextItem++);
-        futures.add(executor.submit(() -> runTask(gate, context, task, item, cancelled)));
+        submitTask(
+            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -284,9 +277,11 @@ public final class BoundedFanout {
       }
       if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
         I item = items.get(nextItem++);
-        futures.add(
-            CompletableFuture.supplyAsync(
-                () -> runTask(gate, context, task, item, () -> false), executor));
+        submitCompletionFuture(
+            futures,
+            () ->
+                CompletableFuture.supplyAsync(
+                    () -> runTask(gate, context, task, item, () -> false), executor));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -328,9 +323,11 @@ public final class BoundedFanout {
       }
       if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
         I item = items.get(nextItem++);
-        futures.add(
-            CompletableFuture.supplyAsync(
-                () -> runTask(gate, context, task, item, () -> false), executor));
+        submitCompletionFuture(
+            futures,
+            () ->
+                CompletableFuture.supplyAsync(
+                    () -> runTask(gate, context, task, item, () -> false), executor));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -338,6 +335,27 @@ public final class BoundedFanout {
     }
     if (firstErrorFailure != null) {
       throw firstErrorFailure;
+    }
+  }
+
+  /** Await each already-submitted completion future after a submission failure. */
+  private static <O> void submitCompletionFuture(
+      List<CompletableFuture<O>> futures, Supplier<CompletableFuture<O>> submission) {
+    try {
+      futures.add(submission.get());
+    } catch (RuntimeException | Error submissionFailure) {
+      awaitCompletedFutures(futures);
+      throw submissionFailure;
+    }
+  }
+
+  /** Await each already-submitted task after an executor submission failure. */
+  private static <O> void submitTask(List<Future<O>> futures, Supplier<Future<O>> submission) {
+    try {
+      futures.add(submission.get());
+    } catch (RuntimeException | Error submissionFailure) {
+      awaitSubmittedTasks(futures);
+      throw submissionFailure;
     }
   }
 

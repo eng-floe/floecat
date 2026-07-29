@@ -16,6 +16,7 @@
 package ai.floedb.floecat.telemetry;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -84,17 +85,17 @@ class AggregatingPhaseDiagnosticsTest {
   }
 
   @Test
-  void oneShotAndEmitAreDropped() {
+  void oneShotAndEmitFailLoudly() {
     AggregatingPhaseDiagnostics agg = new AggregatingPhaseDiagnostics();
-    agg.put("k", "v");
-    agg.put("n", 1L);
-    agg.emit("event");
-
-    CapturingDiagnostics target = new CapturingDiagnostics();
-    agg.flushInto(target);
-
-    assertThat(target.added).isEmpty();
-    assertThat(target.nanos).isEmpty();
+    assertThatThrownBy(() -> agg.put("k", "v"))
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageContaining("record it on the request thread");
+    assertThatThrownBy(() -> agg.put("n", 1L)).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> agg.put("ratio", 1.0d))
+        .isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> agg.put("enabled", true))
+        .isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> agg.emit("event")).isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test

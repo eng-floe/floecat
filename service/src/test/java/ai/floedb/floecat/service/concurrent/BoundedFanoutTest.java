@@ -185,6 +185,57 @@ class BoundedFanoutTest {
   }
 
   @Test
+  void refillSubmissionFailureWaitsForAlreadySubmittedTasks() throws Exception {
+    CountDownLatch blockingTaskStarted = new CountDownLatch(1);
+    CountDownLatch allowBlockingTaskCompletion = new CountDownLatch(1);
+    CountDownLatch mapReturned = new CountDownLatch(1);
+    AtomicInteger submissions = new AtomicInteger();
+    Executor rejectRefillSubmission =
+        command -> {
+          if (submissions.getAndIncrement() < 2) {
+            CompletableFuture.runAsync(command);
+            return;
+          }
+          throw new RejectedExecutionException("executor saturated during refill");
+        };
+
+    CompletableFuture<Throwable> result =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                BoundedFanout.mapOrdered(
+                    List.of(1, 2, 3),
+                    2,
+                    rejectRefillSubmission,
+                    value -> {
+                      if (value == 2) {
+                        blockingTaskStarted.countDown();
+                        try {
+                          allowBlockingTaskCompletion.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError("task interrupted", e);
+                        }
+                      }
+                      return value;
+                    });
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              } finally {
+                mapReturned.countDown();
+              }
+            });
+
+    assertThat(blockingTaskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    assertThat(mapReturned.await(100, TimeUnit.MILLISECONDS)).isFalse();
+    allowBlockingTaskCompletion.countDown();
+    assertThat(result.join())
+        .isInstanceOf(RejectedExecutionException.class)
+        .hasMessage("executor saturated during refill");
+  }
+
+  @Test
   void cancellationInterruptsRunningTaskAndReturnsWithoutWaitingForIt() throws Exception {
     CountDownLatch taskStarted = new CountDownLatch(1);
     CountDownLatch taskInterrupted = new CountDownLatch(1);

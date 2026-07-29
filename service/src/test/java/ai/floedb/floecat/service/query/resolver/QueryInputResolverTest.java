@@ -184,6 +184,23 @@ public class QueryInputResolverTest {
     }
   }
 
+  @Test
+  void serialPlanningStaysOnTheCallerThreadWhenOverlayOptsOutOfConcurrency() {
+    Thread callerThread = Thread.currentThread();
+    var threadConfinedGraph = new CallerThreadOnlyGraph(callerThread);
+    var threadConfinedResolver = new QueryInputResolver(threadConfinedGraph);
+
+    threadConfinedResolver.resolveInputs(
+        "cid",
+        List.of(
+            QueryInput.newBuilder().setTableId(rid("ONE")).build(),
+            QueryInput.newBuilder().setTableId(rid("TWO")).build()),
+        Optional.empty(),
+        Optional.empty());
+
+    assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
+  }
+
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
@@ -1469,6 +1486,38 @@ public class QueryInputResolverTest {
         }
       }
       return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+  }
+
+  /** Fails if a planning callback runs off the thread that began the request. */
+  static final class CallerThreadOnlyGraph extends FakeGraph {
+    private final Thread callerThread;
+    private final List<Thread> planningThreads = new ArrayList<>();
+
+    CallerThreadOnlyGraph(Thread callerThread) {
+      this.callerThread = callerThread;
+    }
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return false;
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if (Thread.currentThread() != callerThread) {
+        throw new AssertionError("planning callback escaped the request thread");
+      }
+      planningThreads.add(Thread.currentThread());
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+
+    List<Thread> planningThreads() {
+      return planningThreads;
     }
   }
 
