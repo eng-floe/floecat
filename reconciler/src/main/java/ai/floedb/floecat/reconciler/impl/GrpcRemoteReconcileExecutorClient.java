@@ -1405,8 +1405,8 @@ class GrpcRemoteReconcileExecutorClient
         stableFileGroups.stream()
             .mapToInt(ReconcileFileGroupResultDescriptor::fileStatsRecordCount)
             .sum();
-    if (declaredFileStats != stableFileStats.size()) {
-      throw new IllegalArgumentException("file stats do not match file-group descriptor counts");
+    if (declaredFileStats < stableFileStats.size()) {
+      throw new IllegalArgumentException("unique file stats exceed file-group descriptor counts");
     }
     for (StatsObjectDescriptor statsObject : stableFileStats) {
       if (statsObject == null) {
@@ -1750,16 +1750,6 @@ class GrpcRemoteReconcileExecutorClient
   private static byte[] sha256(byte[] bytes) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is unavailable", e);
-    }
-  }
-
-  private static byte[] sha256(byte[] bytes, int offset, int length) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      digest.update(bytes, offset, length);
-      return digest.digest();
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
     }

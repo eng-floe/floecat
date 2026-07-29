@@ -46,7 +46,7 @@ class StorageUsageMetricsTest {
   }
 
   @Test
-  void emptyBlobPointerSetHasFullCoverageAndNegativeInputsClampToZero() {
+  void emptyBlobPointerSetHasUnknownCoverageAndNegativeInputsClampToZero() {
     TestObservability observability = new TestObservability();
     StorageUsageMetrics metrics = new StorageUsageMetrics();
     metrics.observability = observability;
@@ -57,7 +57,7 @@ class StorageUsageMetricsTest {
         0L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_POINTERS).get());
     assertEquals(0L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_BYTES).get());
     assertEquals(
-        1.0d,
+        0.0d,
         observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE).get().doubleValue());
   }
 }

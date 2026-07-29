@@ -206,11 +206,11 @@ class ReconcileMaintenanceServicesTest {
             });
 
     ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, 128);
+    service.bind(jobIndexStore, readyQueueStore, null, null, 128);
 
     service.runReadyIndexMaintenanceOnce(1_000L);
 
-    assertEquals(List.of(96, 96, 16), chunkSizes);
+    assertEquals(List.of(98, 98, 98, 70), chunkSizes);
   }
 
   @Test
@@ -228,11 +228,67 @@ class ReconcileMaintenanceServicesTest {
         .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(record), ""));
 
     ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
-    service.bind(jobIndexStore, readyQueueStore, 128);
+    service.bind(jobIndexStore, readyQueueStore, null, null, 128);
 
     service.runReadyIndexMaintenanceOnce(1_000L);
 
     verify(jobIndexStore, never()).chunkJobWritePlans(anyList());
+  }
+
+  @Test
+  void readyIndexMaintenanceResumesQueuedRepairOnePagePerTick() {
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
+    StoredReconcileJob record = new StoredReconcileJob();
+    record.state = "JS_QUEUED";
+    record.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
+    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(record), "next"));
+    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, "next"))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+
+    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
+    service.bind(jobIndexStore, readyQueueStore, null, null, 1);
+
+    service.runReadyIndexMaintenanceOnce(1_000L);
+    verify(jobIndexStore, never()).listStoredJobsInState("JS_QUEUED", 1, "next");
+
+    service.runReadyIndexMaintenanceOnce(1_000L);
+    verify(jobIndexStore).listStoredJobsInState("JS_QUEUED", 1, "next");
+  }
+
+  @Test
+  void readyIndexMaintenancePrunesOrphanRowsInBoundedPages() {
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
+    TestReadyQueueBackend backend = new TestReadyQueueBackend();
+    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+
+    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
+    service.bind(jobIndexStore, readyQueueStore, backend, ignored -> false, 1);
+
+    service.runReadyIndexMaintenanceOnce(1_000L);
+
+    assertEquals(List.of("rp-orphan"), backend.deleted);
+    assertEquals(1, backend.lastPageSize);
+  }
+
+  @Test
+  void readyIndexMaintenanceCanPruneMultiplePagesPerTick() {
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
+    TestReadyQueueBackend backend = new TestReadyQueueBackend();
+    backend.twoPages = true;
+    when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 1, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+
+    ReconcileReadyIndexMaintenanceService service = new ReconcileReadyIndexMaintenanceService();
+    service.bind(jobIndexStore, readyQueueStore, backend, ignored -> false, 1);
+
+    service.runReadyIndexMaintenanceOnce(1_000L, 2);
+
+    assertEquals(List.of("rp-orphan-1", "rp-orphan-2"), backend.deleted);
   }
 
   @Test
@@ -413,6 +469,23 @@ class ReconcileMaintenanceServicesTest {
 
     service.signalWork();
     service.runProjectionMaintenanceOnce(200L);
+    assertEquals(2, pointerStore.prefixReads.get());
+  }
+
+  @Test
+  void projectionMaintenanceRecoveryIntervalIsConfigurable() {
+    TestPointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    service.configureIdleRecoveryMillis(1L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    sleepUnchecked(5L);
+    service.runProjectionMaintenanceOnce(200L);
+
     assertEquals(2, pointerStore.prefixReads.get());
   }
 
@@ -694,9 +767,11 @@ class ReconcileMaintenanceServicesTest {
 
   private static final class TestReadyQueueBackend implements ReconcileReadyQueueBackend {
     final List<String> deleted = new ArrayList<>();
+    int lastPageSize;
     String readyPointerKey = "rp-orphan";
     String canonicalPointerKey = "cp-orphan";
     Optional<CanonicalPointerSnapshot> snapshot = Optional.empty();
+    boolean twoPages;
 
     @Override
     public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
@@ -709,24 +784,36 @@ class ReconcileMaintenanceServicesTest {
 
     @Override
     public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      if (pageToken != null && !pageToken.isBlank()) {
+      lastPageSize = pageSize;
+      if (pageToken != null && !pageToken.isBlank() && !twoPages) {
         return new ReadyQueueScanPage(List.of(), "");
       }
+      if (twoPages) {
+        boolean second = pageToken != null && !pageToken.isBlank();
+        return new ReadyQueueScanPage(
+            List.of(orphan(readyPointerKey + (second ? "-2" : "-1"))), second ? "" : "next");
+      }
+      return new ReadyQueueScanPage(List.of(orphan(readyPointerKey)), "");
+    }
+
+    private ReconcileReadyQueueStore.ReadyQueueEntry orphan(String pointerKey) {
       ReconcileReadyQueueStore.ReadyQueueEntry orphan =
           new ReconcileReadyQueueStore.ReadyQueueEntry(
-              readyPointerKey,
+              pointerKey,
               canonicalPointerKey,
               "acct",
               "job",
               1L,
               ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
               "");
-      return new ReadyQueueScanPage(List.of(orphan), "");
+      return orphan;
     }
 
     @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
-      deleted.add(readyPointerKey);
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+      deleted.add(expected.readyPointerKey());
       return true;
     }
 

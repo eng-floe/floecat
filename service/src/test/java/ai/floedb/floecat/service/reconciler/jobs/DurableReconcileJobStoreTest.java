@@ -53,6 +53,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobRootSummaryStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileAncestorRollupService;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileCancellationMaintenanceService;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
@@ -61,6 +62,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -3567,7 +3569,7 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      assertTrue(deleteReadyEntry(readyKey));
+      assertTrue(findAndDeleteReadyEntry(readyKey));
     }
 
     var filteredLease =
@@ -6443,8 +6445,7 @@ class DurableReconcileJobStoreTest {
             1L,
             0L,
             0L));
-    StoredReconcileJob retrying =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJob retrying = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     assertEquals("JS_QUEUED", retrying.state);
     assertEquals(1, retrying.attempt);
 
@@ -6929,6 +6930,33 @@ class DurableReconcileJobStoreTest {
         .withContentState(sourceRevision, metadataFingerprint, requestedCoverage);
   }
 
+  @Test
+  void snapshotPlanPersistenceRejectsFileGroupsAboveServerCeiling() {
+    List<String> filePaths =
+        java.util.stream.IntStream.range(0, 129)
+            .mapToObj(index -> "s3://bucket/data/file-" + index + ".parquet")
+            .toList();
+    ReconcileFileGroupTask fileGroup =
+        ReconcileFileGroupTask.of("plan-1", "group-1", "table-1", 55L, filePaths);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(fileGroup),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> store.persistSnapshotPlanManifest(ACCOUNT_ID, "job-oversized", snapshotTask));
+
+    assertTrue(failure.getMessage().contains("exceeds server ceiling"), failure::getMessage);
+  }
+
   private void publishFinalizedContent(
       CaptureMode captureMode,
       ReconcileScope scope,
@@ -7009,9 +7037,26 @@ class DurableReconcileJobStoreTest {
         .anyMatch(upsert -> canonicalPointerKey.equals(upsert.pointerKey()));
   }
 
-  private boolean deleteReadyEntry(String readyPointerKey) {
+  private boolean findAndDeleteReadyEntry(String readyPointerKey) {
     assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
-    return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
+    String token = "";
+    do {
+      ReconcileReadyQueueBackend.ReadyQueueScanPage page =
+          store.readyQueueBackend.scanAllReadyEntries(128, token);
+      for (ReconcileReadyQueueStore.ReadyQueueEntry entry : page.entries()) {
+        if (readyPointerKey.equals(entry.readyPointerKey())) {
+          CanonicalPointerSnapshot snapshot =
+              store
+                  .readyQueueBackend
+                  .loadCanonicalSnapshot(
+                      entry.canonicalPointerKey(), new ReconcileReadyQueueStore.LeaseScanStats())
+                  .orElse(null);
+          return store.readyQueueBackend.deleteReadyEntry(entry, snapshot);
+        }
+      }
+      token = page.nextPageToken();
+    } while (token != null && !token.isBlank());
+    return false;
   }
 
   private ReconcileLeaseStore leaseManager() {

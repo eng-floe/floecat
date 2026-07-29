@@ -60,6 +60,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
@@ -67,6 +68,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -313,6 +315,44 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
+  }
+
+  @Test
+  void snapshotFinalizeManifestCountsUniqueStatsTargetsAcrossGroups() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    byte[] payloadSha256 = new byte[32];
+    payloadSha256[0] = 1;
+    StatsObjectDescriptor sharedDeleteStats =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("file-delete")
+            .setPayloadUri("/stats/delete.pb")
+            .setPayloadBytes(12L)
+            .setPayloadSha256(ByteString.copyFrom(payloadSha256))
+            .build();
+
+    client.prepareSnapshotFinalizeSuccess(
+        remoteSnapshotFinalizeLease(2),
+        "result-1",
+        "/stats/",
+        "/manifest.pb",
+        2,
+        List.of(
+            fileGroupResultDescriptor("group-a", 1, null),
+            fileGroupResultDescriptor("group-b", 1, null)),
+        List.of(sharedDeleteStats),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        null);
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.getFileStatsRecordCount()).isEqualTo(1);
+    assertThat(manifest.getFileGroupsList())
+        .allMatch(group -> group.getFileStatsRecordCount() == 1);
   }
 
   @Test
@@ -1462,19 +1502,26 @@ class GrpcRemoteReconcileExecutorClientTest {
 
   private static ReconcileFileGroupResultDescriptor fileGroupResultDescriptor(
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return fileGroupResultDescriptor("group-1", 0, predecessor);
+  }
+
+  private static ReconcileFileGroupResultDescriptor fileGroupResultDescriptor(
+      String groupId,
+      int fileStatsRecordCount,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
     return new ReconcileFileGroupResultDescriptor(
         1,
         "acct",
         "connector-1",
         "snapshot-job",
-        "file-group-job",
+        "file-group-job-" + groupId,
         "plan-1",
-        "group-1",
+        groupId,
         "table-1",
         55L,
-        "file-group-lease",
-        "file-group-result",
-        "/result.pb",
+        "file-group-lease-" + groupId,
+        "file-group-result-" + groupId,
+        "/result-" + groupId + ".pb",
         1L,
         java.util.Base64.getEncoder().encodeToString(new byte[32]),
         1,
@@ -1484,7 +1531,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         0,
         0,
         "/stats/",
-        0,
+        fileStatsRecordCount,
         ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest.sha256(List.of(), List.of()),
         predecessor,
         1L);

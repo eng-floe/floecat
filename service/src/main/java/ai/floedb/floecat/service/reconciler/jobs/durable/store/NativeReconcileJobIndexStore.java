@@ -207,8 +207,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (record.isEmpty()) {
       return Optional.empty();
     }
-    if (!isDedupeActiveState(record.get().state)
-        && retainsLogicalSnapshotFinalizer(record.get())) {
+    if (!isDedupeActiveState(record.get().state) && retainsLogicalSnapshotFinalizer(record.get())) {
       return record;
     }
     if (!isDedupeActiveState(record.get().state)
@@ -1584,7 +1583,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (batch == null) {
       return 0;
     }
-    int count = batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size();
+    // Dynamo stores one maintenance representative beside every physical ready row so secondary
+    // orphans remain discoverable. Count both items when chunking; memory uses the same
+    // conservative
+    // bound to keep backend semantics aligned.
+    int count =
+        2 * (batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size());
     for (JobIndexWriteOp write : batch.writes()) {
       count += physicalWriteItemCount(write);
     }

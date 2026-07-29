@@ -28,13 +28,12 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
@@ -46,12 +45,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotFinalizeReconcileExecutorTest {
 
@@ -130,6 +130,79 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void expectedFileStatsIncludeOnDiskDeltaDeletionVectorAttachedToSuccessfulDataFile() {
+    String dataPath = "s3://bucket/data.parquet";
+    String deletionVectorPath = "s3://bucket/deletion-vector.bin";
+    ReconcileFileExecutionPlan executionPlan =
+        ReconcileFileExecutionPlan.of(
+            dataPath,
+            100L,
+            "",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector("p", deletionVectorPath, 4, 16, 2),
+            "PARQUET",
+            0,
+            List.of());
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan",
+            "group",
+            tableId().getId(),
+            55L,
+            1,
+            "",
+            0,
+            List.of(dataPath),
+            List.of(),
+            List.of(),
+            "{}",
+            List.of(executionPlan));
+
+    Set<String> targets =
+        RemoteSnapshotFinalizeReconcileExecutor.expectedFileStatsTargets(group, Set.of(dataPath));
+
+    assertEquals(2, targets.size());
+    assertTrue(
+        targets.contains(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(
+                    deletionVectorPath))));
+  }
+
+  @Test
+  void deduplicatesMatchingSnapshotFileStatsTargetsWithoutReadingObjects() {
+    byte[] sha256 = new byte[32];
+    sha256[0] = 1;
+    StatsObjectDescriptor laterUri = statsDescriptor("file-delete", "/stats/z.pb", sha256);
+    StatsObjectDescriptor earlierUri = statsDescriptor("file-delete", "/stats/a.pb", sha256);
+
+    List<StatsObjectDescriptor> deduplicated =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotFileStats(
+            List.of(laterUri, earlierUri));
+
+    assertEquals(1, deduplicated.size());
+    assertEquals("/stats/a.pb", deduplicated.getFirst().getPayloadUri());
+  }
+
+  @Test
+  void rejectsConflictingSnapshotFileStatsForTheSameTarget() {
+    byte[] firstSha256 = new byte[32];
+    firstSha256[0] = 1;
+    byte[] secondSha256 = new byte[32];
+    secondSha256[0] = 2;
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotFileStats(
+                    List.of(
+                        statsDescriptor("file-delete", "/stats/a.pb", firstSha256),
+                        statsDescriptor("file-delete", "/stats/b.pb", secondSha256))));
+
+    assertTrue(error.getMessage().contains("conflicting snapshot file stats"));
+  }
+
+  @Test
   void acceptsEmptyFileGroupWithoutStatsPartials() {
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -191,7 +264,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void finalizesExplicitEmptySnapshotRemotely() {
+  void doesNotSupportExplicitEmptySnapshot() {
     RemoteSnapshotFinalizeWorkerClient workerClient =
         mock(RemoteSnapshotFinalizeWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -199,79 +272,10 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     RemoteSnapshotFinalizeReconcileExecutor executor =
         new RemoteSnapshotFinalizeReconcileExecutor(
             workerClient, blobStore, snapshotPlanBlobStore, true);
-    ReconcileScope scope =
-        ReconcileScope.of(
-            List.of(),
-            "table-1",
-            List.of(),
-            ReconcileCapturePolicy.of(
-                List.of(),
-                Set.of(
-                    ReconcileCapturePolicy.Output.TABLE_STATS,
-                    ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
-    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, scope);
-    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
-    var predecessor =
-        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
-            "generation-1", 7L, "/capture-1.pb", 9L);
-    StandaloneSnapshotFinalizeExecutionPayload input =
-        new StandaloneSnapshotFinalizeExecutionPayload(
-            "finalize-job",
-            "lease-1",
-            "snapshot-job",
-            tableId(),
-            55L,
-            true,
-            0,
-            "",
-            0,
-            "/final-stats.pb",
-            "/capture-manifest.pb",
-            predecessor);
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
 
-    when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
-    RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
-        preparedSnapshotFinalizeSuccess();
-    when(workerClient.prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), any()))
-        .thenReturn(prepared);
-    when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
-
-    assertTrue(executor.supports(lease));
-    ReconcileExecutor.ExecutionResult result =
-        executor.execute(
-            new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
-
-    assertTrue(result.ok());
-    assertEquals(1L, result.statsProcessed);
-    verify(snapshotPlanBlobStore, never()).loadFileGroupsByUri(any());
-    verify(workerClient, never()).listSnapshotFileGroupResults(any());
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<TargetStatsRecord>> finalStats = ArgumentCaptor.forClass(List.class);
-    ArgumentCaptor<ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor> indexPredecessor =
-        ArgumentCaptor.forClass(
-            ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor.class);
-    verify(workerClient)
-        .prepareSnapshotFinalizeSuccess(
-            any(),
-            any(),
-            any(),
-            any(),
-            anyInt(),
-            anyList(),
-            anyList(),
-            finalStats.capture(),
-            anyList(),
-            anyList(),
-            anyList(),
-            indexPredecessor.capture());
-    verify(workerClient).submitSnapshotFinalizeSuccess(remoteLease, prepared);
-    assertEquals(1, finalStats.getValue().size());
-    assertTrue(finalStats.getValue().get(0).hasTable());
-    assertEquals(0L, finalStats.getValue().get(0).getTable().getRowCount());
-    assertEquals(predecessor, indexPredecessor.getValue());
+    assertFalse(executor.supports(lease));
+    verifyNoInteractions(workerClient, blobStore, snapshotPlanBlobStore);
   }
 
   @Test
@@ -330,7 +334,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     RemoteSnapshotFinalizeReconcileExecutor executor =
         new RemoteSnapshotFinalizeReconcileExecutor(
             workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
-    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(1, ReconcileScope.empty());
     StandaloneSnapshotFinalizeExecutionPayload input = emptyFinalizeInput();
     AtomicBoolean submissionStarted = new AtomicBoolean();
 
@@ -364,7 +368,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     RemoteSnapshotFinalizeReconcileExecutor executor =
         new RemoteSnapshotFinalizeReconcileExecutor(
             workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
-    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(1, ReconcileScope.empty());
     AtomicBoolean submissionStarted = new AtomicBoolean();
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
@@ -394,7 +398,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     RemoteSnapshotFinalizeReconcileExecutor executor =
         new RemoteSnapshotFinalizeReconcileExecutor(
             workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
-    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(1, ReconcileScope.empty());
     ReconcileFailureException uncertain =
         new ReconcileFailureException(
             ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
@@ -486,6 +490,16 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .setAccountId("acct")
         .setKind(ResourceKind.RK_TABLE)
         .setId("table-1")
+        .build();
+  }
+
+  private static StatsObjectDescriptor statsDescriptor(
+      String targetStorageId, String payloadUri, byte[] sha256) {
+    return StatsObjectDescriptor.newBuilder()
+        .setTargetStorageId(targetStorageId)
+        .setPayloadUri(payloadUri)
+        .setPayloadBytes(12L)
+        .setPayloadSha256(ByteString.copyFrom(sha256))
         .build();
   }
 

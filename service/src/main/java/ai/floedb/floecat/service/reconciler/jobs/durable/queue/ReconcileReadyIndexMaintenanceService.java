@@ -19,13 +19,16 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueuePruneSupport;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -38,27 +41,90 @@ public class ReconcileReadyIndexMaintenanceService {
 
   private ReconcileJobIndexStore jobIndexStore;
   private ReconcileReadyQueueStore readyQueueStore;
+  private ReconcileReadyQueueBackend readyQueueBackend;
+  private Predicate<StoredReconcileJob> blockedByCancellation;
   private int readyScanLimit;
 
   private volatile String queuedStateScanToken = "";
+  private volatile String readyRowScanToken = "";
 
   public void bind(
       ReconcileJobIndexStore jobIndexStore,
       ReconcileReadyQueueStore readyQueueStore,
+      ReconcileReadyQueueBackend readyQueueBackend,
+      Predicate<StoredReconcileJob> blockedByCancellation,
       int readyScanLimit) {
     this.jobIndexStore = jobIndexStore;
     this.readyQueueStore = readyQueueStore;
+    this.readyQueueBackend = readyQueueBackend;
+    this.blockedByCancellation = blockedByCancellation;
     this.readyScanLimit = Math.max(1, readyScanLimit);
   }
 
   public void runReadyIndexMaintenanceOnce(long maxMillis) {
-    long startedAtMs = System.currentTimeMillis();
-    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
-    ReadyIndexRepairStats stats = repairQueuedReadyIndexes(deadlineMs);
-    logMaintenanceSummary(startedAtMs, stats);
+    runReadyIndexMaintenanceOnce(maxMillis, 1);
   }
 
-  private ReadyIndexRepairStats repairQueuedReadyIndexes(long deadlineMs) {
+  public void runReadyIndexMaintenanceOnce(long maxMillis, int maxPages) {
+    long startedAtMs = System.currentTimeMillis();
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    int boundedPages = Math.max(1, maxPages);
+    ReadyRowPruneStats pruneStats = pruneReadyRows(deadlineMs, boundedPages);
+    ReadyIndexRepairStats stats = repairQueuedReadyIndexes(deadlineMs, boundedPages);
+    logMaintenanceSummary(startedAtMs, stats);
+    if (pruneStats.deleted() > 0) {
+      LOG.infof(
+          "Reconcile ready-row prune scanned=%d deleted=%d",
+          Integer.valueOf(pruneStats.scanned()), Integer.valueOf(pruneStats.deleted()));
+    } else if (pruneStats.scanned() > 0) {
+      LOG.debugf(
+          "Reconcile ready-row prune scanned=%d deleted=0", Integer.valueOf(pruneStats.scanned()));
+    }
+  }
+
+  private ReadyRowPruneStats pruneReadyRows(long deadlineMs, int maxPages) {
+    if (readyQueueBackend == null
+        || jobIndexStore == null
+        || readyQueueStore == null
+        || System.currentTimeMillis() > deadlineMs) {
+      return ReadyRowPruneStats.empty();
+    }
+    String token = blankToEmpty(readyRowScanToken);
+    ReconcileReadyQueueStore.LeaseScanStats scanStats =
+        new ReconcileReadyQueueStore.LeaseScanStats();
+    int scanned = 0;
+    int deleted = 0;
+    for (int pageNumber = 0;
+        pageNumber < maxPages && System.currentTimeMillis() <= deadlineMs;
+        pageNumber++) {
+      ReconcileReadyQueueBackend.ReadyQueueScanPage page =
+          readyQueueBackend.scanAllReadyEntries(readyScanLimit, token);
+      for (ReconcileReadyQueueStore.ReadyQueueEntry entry : page.entries()) {
+        scanned++;
+        ReadyQueuePruneSupport.ReadyEntryPruneDecision decision =
+            ReadyQueuePruneSupport.readyEntryPruneDecision(
+                entry,
+                readyQueueBackend,
+                readyQueueStore,
+                jobIndexStore,
+                blockedByCancellation,
+                scanStats);
+        if (decision.reason() != ReadyQueuePruneSupport.ReadyEntryPruneReason.NONE
+            && readyQueueBackend.deleteReadyEntry(entry, decision.canonicalSnapshot())) {
+          deleted++;
+        }
+      }
+      String nextToken = blankToEmpty(page.nextPageToken());
+      readyRowScanToken = nextToken.equals(token) ? "" : nextToken;
+      if (nextToken.isBlank() || nextToken.equals(token)) {
+        break;
+      }
+      token = nextToken;
+    }
+    return new ReadyRowPruneStats(scanned, deleted);
+  }
+
+  private ReadyIndexRepairStats repairQueuedReadyIndexes(long deadlineMs, int maxPages) {
     if (jobIndexStore == null || readyQueueStore == null) {
       return ReadyIndexRepairStats.empty();
     }
@@ -140,11 +206,9 @@ public class ReconcileReadyIndexMaintenanceService {
       queuedStateScanToken = nextToken;
       token = nextToken;
       pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile ready-index repair pagination hit safety page cap; aborting scan");
-        queuedStateScanToken = "";
+      if (pages >= maxPages) {
         return new ReadyIndexRepairStats(
-            true, pages, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
+            false, pages, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
     }
   }
@@ -418,6 +482,12 @@ public class ReconcileReadyIndexMaintenanceService {
 
     private boolean active() {
       return scanned > 0 || readyWrites > 0 || chunks > 0 || failedChunks > 0;
+    }
+  }
+
+  private record ReadyRowPruneStats(int scanned, int deleted) {
+    private static ReadyRowPruneStats empty() {
+      return new ReadyRowPruneStats(0, 0);
     }
   }
 

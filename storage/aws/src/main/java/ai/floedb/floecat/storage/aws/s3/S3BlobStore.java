@@ -383,7 +383,10 @@ public class S3BlobStore implements BlobStore {
         var resp = s3.call(c -> c.listObjectsV2(req));
 
         if (!resp.contents().isEmpty()) {
-          var objs = resp.contents();
+          var objs =
+              p.endsWith("/")
+                  ? resp.contents().stream().filter(object -> !p.equals(object.key())).toList()
+                  : resp.contents();
           for (int i = 0; i < objs.size(); i += 1000) {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =

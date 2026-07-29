@@ -188,12 +188,10 @@ public class ReconcileJobIndexes {
         || blank(record.jobId)) {
       return "";
     }
-    long terminalAtMs =
-        Math.max(
-            0L,
-            record.updatedAtMs > 0L
-                ? record.updatedAtMs
-                : record.finishedAtMs > 0L ? record.finishedAtMs : record.createdAtMs);
+    if (record.finishedAtMs <= 0L) {
+      return "";
+    }
+    long terminalAtMs = record.finishedAtMs;
     return Keys.reconcileTerminalRetentionPointer(record.accountId, terminalAtMs, record.jobId);
   }
 

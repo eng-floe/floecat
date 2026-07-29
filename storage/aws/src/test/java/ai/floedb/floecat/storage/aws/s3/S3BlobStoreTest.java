@@ -289,6 +289,43 @@ class S3BlobStoreTest {
     assertEquals(0, store.deletePrefix("prefix/"));
   }
 
+  @Test
+  void deletePrefixDoesNotCountOrBatchDeleteDirectoryMarker() {
+    List<String> batchKeys = new ArrayList<>();
+    List<String> markerDeletes = new ArrayList<>();
+    var client =
+        new FakeS3Client() {
+          @Override
+          public ListObjectsV2Response listObjectsV2(ListObjectsV2Request request) {
+            return ListObjectsV2Response.builder()
+                .contents(
+                    S3Object.builder().key("prefix/").build(),
+                    S3Object.builder().key("prefix/file").build())
+                .isTruncated(false)
+                .build();
+          }
+
+          @Override
+          public DeleteObjectsResponse deleteObjects(DeleteObjectsRequest request) {
+            request.delete().objects().forEach(object -> batchKeys.add(object.key()));
+            return DeleteObjectsResponse.builder()
+                .deleted(DeletedObject.builder().key("prefix/file").build())
+                .build();
+          }
+
+          @Override
+          public DeleteObjectResponse deleteObject(DeleteObjectRequest request) {
+            markerDeletes.add(request.key());
+            return DeleteObjectResponse.builder().build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertEquals(1, store.deletePrefix("prefix/"));
+    assertEquals(List.of("prefix/file"), batchKeys);
+    assertEquals(List.of("prefix/"), markerDeletes);
+  }
+
   private static S3BlobStore closedPoolStore() {
     return new S3BlobStore(
         new S3BlobStore.S3Caller() {

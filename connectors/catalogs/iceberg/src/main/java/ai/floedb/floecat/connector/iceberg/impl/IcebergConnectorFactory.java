@@ -271,6 +271,16 @@ final class IcebergConnectorFactory {
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
+        boolean hasCatalogProvider =
+            !isBlank(
+                props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+        boolean hasCatalogAccessKey = !isBlank(props.get("rest.access-key-id"));
+        boolean hasCatalogSecretKey = !isBlank(props.get("rest.secret-access-key"));
+        if (!hasCatalogProvider && !(hasCatalogAccessKey && hasCatalogSecretKey)) {
+          throw new IllegalArgumentException(
+              "aws-sigv4 catalog authentication requires both rest.access-key-id and "
+                  + "rest.secret-access-key, or CATALOG_OPTION_PROVIDER_ID");
+        }
         props.remove("rest.sigv4-enabled");
         String signingName = safeAuthProps.getOrDefault("signing-name", "glue");
         String signingRegion =

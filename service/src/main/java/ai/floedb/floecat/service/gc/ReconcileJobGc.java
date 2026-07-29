@@ -44,6 +44,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -53,6 +55,7 @@ public class ReconcileJobGc {
   private static final Logger LOG = Logger.getLogger(ReconcileJobGc.class);
 
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
+  private static final String BLOB_CLEANUP_MARKER_PREFIX = "cleanup-v1:";
   private static final Set<String> TERMINAL_STATES =
       Set.of("JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED");
   private static final long INVALID_ORDERED_POINTER_MS = Long.MIN_VALUE;
@@ -66,6 +69,8 @@ public class ReconcileJobGc {
   @Inject PointerStore pointerStore;
   @Inject Instance<DurableReconcileJobStore> durableJobStore;
   java.util.function.LongSupplier clock = System::currentTimeMillis;
+  private final AtomicLong cleanupMarkerVersion =
+      new AtomicLong(ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE - 1L));
 
   @PostConstruct
   void initializeDurableJobStore() {
@@ -212,8 +217,8 @@ public class ReconcileJobGc {
     String cleanupRetryToken = null;
     long retentionCutoffMs = nowMs - retentionMs;
     long retentionStartedNanos = System.nanoTime();
-    while (scanned < batchLimit && clock.getAsLong() < deadline) {
-      int limit = Math.min(pageSize, batchLimit - scanned);
+    while (retentionScanned < batchLimit && clock.getAsLong() < deadline) {
+      int limit = Math.min(pageSize, batchLimit - retentionScanned);
       String jobPageStartToken = jobToken;
       var page =
           jobIndexBackend.listTerminalRetentionEntries(
@@ -225,6 +230,7 @@ public class ReconcileJobGc {
         break;
       }
       boolean partialPage = false;
+      boolean resetRetentionCursor = false;
       int preparedInPage = 0;
       String lastPreparedJobToken = jobPageStartToken;
       for (var retentionEntry : pointers) {
@@ -241,11 +247,12 @@ public class ReconcileJobGc {
         if (terminalAtMs > retentionCutoffMs) {
           // The index is ordered by terminal time. No later row can be due, and the empty cursor
           // intentionally starts the next tick at the oldest entry again.
-          jobToken = "";
+          resetRetentionCursor = true;
           partialPage = true;
           break;
         }
-        if (scanned >= batchLimit || (preparedInPage > 0 && clock.getAsLong() >= deadline)) {
+        if (retentionScanned >= batchLimit
+            || (preparedInPage > 0 && clock.getAsLong() >= deadline)) {
           partialPage = true;
           break;
         }
@@ -328,7 +335,7 @@ public class ReconcileJobGc {
         // interrupts preparation mid-page, resume after the last entry actually prepared so the
         // unvisited suffix is not skipped. Both native backends accept a canonical pointer key as
         // an exclusive-start token. A failed cleanup below still pins the cursor to the page start.
-        jobToken = lastPreparedJobToken;
+        jobToken = resetRetentionCursor ? "" : lastPreparedJobToken;
         break;
       }
       if (partialPage || jobToken.isBlank()) {
@@ -360,8 +367,10 @@ public class ReconcileJobGc {
     long quarantineStartedNanos = System.nanoTime();
     List<ReconcileJobIndexStore.JobWritePlan<String>> quarantineMarkerDeletePlans =
         new ArrayList<>();
-    while (scanned < batchLimit && clock.getAsLong() < deadline && pointerStore != null) {
-      int limit = Math.min(pageSize, batchLimit - scanned);
+    String quarantineCleanupRetryToken = null;
+    while (quarantineScanned < batchLimit && clock.getAsLong() < deadline && pointerStore != null) {
+      int limit = Math.min(pageSize, batchLimit - quarantineScanned);
+      String quarantinePageStartToken = canonicalQuarantineToken;
       StringBuilder next = new StringBuilder();
       var markers =
           pointerStore.listPointersByPrefix(
@@ -371,14 +380,22 @@ public class ReconcileJobGc {
               next);
       canonicalQuarantineToken = next.toString();
       if (markers.isEmpty()) {
+        canonicalQuarantineToken = "";
         break;
       }
+      boolean partialPage = false;
+      int preparedInPage = 0;
+      String lastPreparedQuarantineToken = quarantinePageStartToken;
       for (Pointer marker : markers) {
-        if (scanned >= batchLimit) {
+        if (quarantineScanned >= batchLimit
+            || (preparedInPage > 0 && clock.getAsLong() >= deadline)) {
+          partialPage = true;
           break;
         }
         scanned++;
         quarantineScanned++;
+        preparedInPage++;
+        lastPreparedQuarantineToken = marker.getKey();
         if (quarantineMarkersCreatedThisSlice.contains(marker.getKey())) {
           continue;
         }
@@ -406,22 +423,33 @@ public class ReconcileJobGc {
                     accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs);
         if (deletePlan != null) {
           quarantineMarkerDeletePlans.add(deletePlan);
+          if (quarantineCleanupRetryToken == null) {
+            quarantineCleanupRetryToken = quarantinePageStartToken;
+          }
         } else {
           canonicalQuarantined++;
         }
+      }
+      if (partialPage) {
+        canonicalQuarantineToken = lastPreparedQuarantineToken;
+        break;
       }
       if (canonicalQuarantineToken.isBlank()) {
         break;
       }
     }
+    CleanupWriteBudget quarantineCleanupWriteBudget = new CleanupWriteBudget();
     JobCleanupResult markerCleanup =
         deleteCanonicalFootprints(
-            accountId, quarantineMarkerDeletePlans, deadline, cleanupWriteBudget);
+            accountId, quarantineMarkerDeletePlans, deadline, quarantineCleanupWriteBudget);
     expired += markerCleanup.expired();
     ptrDeleted += markerCleanup.ptrDeleted();
     blobDeleted += markerCleanup.blobDeleted();
     readyDeleted += markerCleanup.readyDeleted();
     canonicalQuarantined += markerCleanup.failed();
+    if (markerCleanup.failed() > 0 && quarantineCleanupRetryToken != null) {
+      canonicalQuarantineToken = quarantineCleanupRetryToken;
+    }
     long quarantineNanos = System.nanoTime() - quarantineStartedNanos;
 
     return new AccountResult(
@@ -853,7 +881,9 @@ public class ReconcileJobGc {
     String markerKey = Keys.reconcileJobBlobCleanupPointer(accountId, jobId);
     Pointer marker =
         PointerReferences.opaqueMarkerPointer(
-            markerKey, Keys.reconcileJobBlobPrefix(accountId, jobId), 1L);
+            markerKey,
+            encodeBlobCleanupMarker(Keys.reconcileJobBlobPrefix(accountId, jobId), ""),
+            cleanupMarkerVersion.incrementAndGet());
     // Queue blob cleanup in the same transaction that makes the job unreachable. S3 deletion is
     // deliberately performed by a later bounded slice so a successful metadata batch cannot run
     // past its deadline while deleting every job prefix serially.
@@ -874,25 +904,93 @@ public class ReconcileJobGc {
     int scanned = 0;
     int deleted = 0;
     for (Pointer marker : markers) {
-      if (scanned > 0 && clock.getAsLong() >= deadline) {
+      if (clock.getAsLong() >= deadline) {
         break;
       }
       scanned++;
-      String blobPrefix = marker == null ? "" : marker.getBlobUri();
-      if (blobPrefix == null || blobPrefix.isBlank()) {
+      BlobCleanupMarker cleanupMarker =
+          marker == null ? null : decodeBlobCleanupMarker(marker.getBlobUri());
+      if (cleanupMarker == null) {
         if (marker != null) {
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
         }
         continue;
       }
-      int deletedObjects = blobStore.deletePrefix(blobPrefix);
-      if (pointerStore.compareAndDelete(marker.getKey(), marker.getVersion())
-          && deletedObjects > 0) {
-        deleted++;
+      String blobPrefix = cleanupMarker.blobPrefix();
+      try {
+        BlobStore.Page page = blobStore.list(blobPrefix, 100, cleanupMarker.pageToken());
+        boolean completedPage = true;
+        for (String key : page.keys()) {
+          if (clock.getAsLong() >= deadline) {
+            completedPage = false;
+            break;
+          }
+          if (blobStore.delete(key)) {
+            deleted++;
+          }
+        }
+        if (completedPage) {
+          String nextToken = blankToEmpty(page.nextToken());
+          if (nextToken.isBlank()) {
+            if (blobStore.list(blobPrefix, 1, "").keys().isEmpty()) {
+              pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
+            } else {
+              advanceBlobCleanupMarker(marker, blobPrefix, "");
+            }
+          } else {
+            advanceBlobCleanupMarker(marker, blobPrefix, nextToken);
+          }
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Reconcile job blob cleanup marker failed; continuing account slice"
+                + " accountId=%s marker=%s prefix=%s",
+            accountId,
+            marker.getKey(),
+            blobPrefix);
       }
     }
     return new BlobCleanupResult(scanned, deleted);
   }
+
+  private void advanceBlobCleanupMarker(Pointer current, String blobPrefix, String pageToken) {
+    Pointer next =
+        PointerReferences.opaqueMarkerPointer(
+            current.getKey(),
+            encodeBlobCleanupMarker(blobPrefix, pageToken),
+            current.getVersion() + 1L);
+    pointerStore.compareAndSet(current.getKey(), current.getVersion(), next);
+  }
+
+  static String encodeBlobCleanupMarker(String blobPrefix, String pageToken) {
+    Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+    return BLOB_CLEANUP_MARKER_PREFIX
+        + encoder.encodeToString(blankToEmpty(blobPrefix).getBytes(StandardCharsets.UTF_8))
+        + ":"
+        + encoder.encodeToString(blankToEmpty(pageToken).getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static BlobCleanupMarker decodeBlobCleanupMarker(String payload) {
+    String normalized = blankToEmpty(payload);
+    if (!normalized.startsWith(BLOB_CLEANUP_MARKER_PREFIX)) {
+      return null;
+    }
+    String[] parts = normalized.substring(BLOB_CLEANUP_MARKER_PREFIX.length()).split(":", -1);
+    if (parts.length != 2) {
+      return null;
+    }
+    try {
+      Base64.Decoder decoder = Base64.getUrlDecoder();
+      String blobPrefix = new String(decoder.decode(parts[0]), StandardCharsets.UTF_8);
+      String pageToken = new String(decoder.decode(parts[1]), StandardCharsets.UTF_8);
+      return blobPrefix.isBlank() ? null : new BlobCleanupMarker(blobPrefix, pageToken);
+    } catch (IllegalArgumentException ignored) {
+      return null;
+    }
+  }
+
+  private record BlobCleanupMarker(String blobPrefix, String pageToken) {}
 
   private StoredReconcileJob storedJob(JsonNode record) {
     if (record == null) {
@@ -906,6 +1004,7 @@ public class ReconcileJobGc {
     stored.state = text(record, "state");
     stored.createdAtMs = longValue(record, "createdAtMs", 0L);
     stored.updatedAtMs = longValue(record, "updatedAtMs", 0L);
+    stored.finishedAtMs = longValue(record, "finishedAtMs", 0L);
     stored.nextAttemptAtMs = longValue(record, "nextAttemptAtMs", 0L);
     stored.laneKey = text(record, "laneKey");
     stored.executionClass = text(record, "executionClass");
@@ -923,6 +1022,10 @@ public class ReconcileJobGc {
     } catch (RuntimeException ignored) {
       return defaultValue;
     }
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value.trim();
   }
 
   private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {

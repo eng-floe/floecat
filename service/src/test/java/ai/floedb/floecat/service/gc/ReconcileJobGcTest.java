@@ -136,6 +136,104 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void blobCleanupMarkerResumesAfterBoundedPage() {
+    String jobId = "job-many-blobs";
+    String blobPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, jobId);
+    for (int i = 0; i < 101; i++) {
+      blobs.put(blobPrefix + "object-" + i, new byte[] {(byte) i}, "application/octet-stream");
+    }
+    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId);
+    pointers.compareAndSet(
+        markerKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            markerKey, ReconcileJobGc.encodeBlobCleanupMarker(blobPrefix, ""), 1L));
+
+    var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(100, first.blobDeleted());
+    assertTrue(pointers.get(markerKey).isPresent());
+    assertEquals(1, blobs.list(blobPrefix, 200, "").keys().size());
+
+    var second = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, second.blobDeleted());
+    assertTrue(pointers.get(markerKey).isEmpty());
+    assertTrue(blobs.list(blobPrefix, 1, "").keys().isEmpty());
+  }
+
+  @Test
+  void blobCleanupContinuationAdvancesPastAnUndeletableObject() {
+    String jobId = "job-stuck-first-object";
+    String blobPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, jobId);
+    String stuckKey = blobPrefix + "object-000";
+    blobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean delete(String uri) {
+            return !uri.endsWith("/object-000") && super.delete(uri);
+          }
+        };
+    gc.blobStore = blobs;
+    for (int i = 0; i < 101; i++) {
+      blobs.put(
+          blobPrefix + String.format("object-%03d", i),
+          new byte[] {(byte) i},
+          "application/octet-stream");
+    }
+    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId);
+    pointers.compareAndSet(
+        markerKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            markerKey, ReconcileJobGc.encodeBlobCleanupMarker(blobPrefix, ""), 1L));
+
+    var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
+    var second = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(100, first.blobDeleted() + second.blobDeleted());
+    assertTrue(blobs.head(stuckKey).isPresent());
+    assertTrue(blobs.head(blobPrefix + "object-100").isEmpty());
+    assertTrue(pointers.get(markerKey).isPresent());
+  }
+
+  @Test
+  void failedBlobCleanupMarkerDoesNotBlockTheNextMarker() {
+    String failingPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, "job-a-failing");
+    String healthyPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, "job-b-healthy");
+    blobs =
+        new InMemoryBlobStore() {
+          @Override
+          public BlobStore.Page list(String prefix, int limit, String pageToken) {
+            if (failingPrefix.equals(prefix)) {
+              throw new IllegalStateException("injected list failure");
+            }
+            return super.list(prefix, limit, pageToken);
+          }
+        };
+    gc.blobStore = blobs;
+    blobs.put(healthyPrefix + "object", new byte[] {1}, "application/octet-stream");
+    String failingMarker = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, "job-a-failing");
+    String healthyMarker = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, "job-b-healthy");
+    pointers.compareAndSet(
+        failingMarker,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            failingMarker, ReconcileJobGc.encodeBlobCleanupMarker(failingPrefix, ""), 1L));
+    pointers.compareAndSet(
+        healthyMarker,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            healthyMarker, ReconcileJobGc.encodeBlobCleanupMarker(healthyPrefix, ""), 1L));
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.blobDeleted());
+    assertTrue(pointers.get(failingMarker).isPresent());
+    assertTrue(pointers.get(healthyMarker).isEmpty());
+  }
+
+  @Test
   void terminalFileGroupIsRetainedWhileParentIsNonterminal() {
     System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
     long old = System.currentTimeMillis() - 10_000L;
@@ -247,6 +345,43 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, record.jobId))
             .isPresent());
+  }
+
+  @Test
+  void retentionCursorResetsAfterDueRowsReachFirstNonDueRow() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "1000");
+    long now = System.currentTimeMillis();
+    putNativeJobIndexRows(storedJob("job-due", "JS_SUCCEEDED", now - 10_000L, "", "", ""));
+    putNativeJobIndexRows(storedJob("job-not-due", "JS_SUCCEEDED", now, "", "", ""));
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.expired());
+    assertEquals("", result.nextJobToken());
+  }
+
+  @Test
+  void quarantineSweepHasIndependentScanBudget() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    System.setProperty("floecat.gc.reconcile-jobs.batch-limit", "1");
+    putNativeJobIndexRows(
+        storedJob(
+            "job-retention-budget",
+            "JS_SUCCEEDED",
+            System.currentTimeMillis() - 10_000L,
+            "",
+            "",
+            ""));
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-canonical");
+    String markerKey =
+        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+    putQuarantineMarker(markerKey, canonicalKey, 1L, "inline:reconcile-job:not-valid");
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.retentionScanned());
+    assertEquals(1, result.quarantineScanned());
+    assertTrue(pointers.get(markerKey).isEmpty());
   }
 
   @Test
@@ -1240,6 +1375,9 @@ class ReconcileJobGcTest {
     record.put("state", state);
     record.put("updatedAtMs", updatedAtMs);
     record.put("createdAtMs", updatedAtMs);
+    if (state.equals("JS_SUCCEEDED") || state.equals("JS_FAILED") || state.equals("JS_CANCELLED")) {
+      record.put("finishedAtMs", updatedAtMs);
+    }
     record.put("dedupeKeyHash", dedupeKeyHash);
     record.put("readyPointerKey", readyPointerKey);
     record.put("laneKey", laneKey);
@@ -1277,6 +1415,9 @@ class ReconcileJobGcTest {
     record.state = state;
     record.createdAtMs = createdAtMs;
     record.updatedAtMs = createdAtMs;
+    if (state.equals("JS_SUCCEEDED") || state.equals("JS_FAILED") || state.equals("JS_CANCELLED")) {
+      record.finishedAtMs = createdAtMs;
+    }
     record.dedupeKeyHash = dedupeKeyHash;
     record.readyPointerKey = readyPointerKey;
     record.laneKey = "lane-native";

@@ -103,12 +103,22 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     return kv.get(key).map(opt -> opt.map(this::decode));
   }
 
+  /**
+   * Decodes a batch using the same value contract as {@link #get}: missing or empty values are
+   * absent from the result, while a corrupt encoded value fails the entire read.
+   */
   protected Uni<Map<KvStore.Key, M>> getBatchRecords(List<KvStore.Key> keys) {
     return kv.getBatch(keys)
         .map(
             records -> {
               Map<KvStore.Key, M> out = new LinkedHashMap<>();
-              records.forEach((key, record) -> out.put(key, decode(record)));
+              records.forEach(
+                  (key, record) -> {
+                    M decoded = decode(record);
+                    if (decoded != null) {
+                      out.put(key, decoded);
+                    }
+                  });
               return Map.copyOf(out);
             });
   }

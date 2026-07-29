@@ -43,4 +43,20 @@ class SnapshotFinalizeChildStateServiceTest {
     verify(jobs, never()).childJobsPage("acct", "parent", 200, "");
     verify(jobs, never()).childFileGroupResultDescriptorsPage("acct", "parent", 200, "");
   }
+
+  @Test
+  void followsContinuationTokenFromEmptyPage() {
+    ReconcileJobStore jobs = mock(ReconcileJobStore.class);
+    SnapshotFinalizeChildStateService service = new SnapshotFinalizeChildStateService();
+    service.jobs = jobs;
+    ReconcileJobStore.ChildJobState childState =
+        new ReconcileJobStore.ChildJobState(mock(ReconcileJobStore.ReconcileJob.class), null);
+    when(jobs.childJobStatesPage("acct", "parent", 200, ""))
+        .thenReturn(new ReconcileJobStore.ChildJobStatePage(List.of(), "next"));
+    when(jobs.childJobStatesPage("acct", "parent", 200, "next"))
+        .thenReturn(new ReconcileJobStore.ChildJobStatePage(List.of(childState), ""));
+
+    assertEquals(List.of(childState), service.childStates("acct", "parent"));
+    verify(jobs).childJobStatesPage("acct", "parent", 200, "next");
+  }
 }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -67,6 +68,59 @@ class MemoryReconcileReadyQueueBackendTest {
         page.entries().stream()
             .filter(entry -> entry.indexType() == ReconcileReadyQueueStore.ReadyIndexType.GLOBAL)
             .count());
+  }
+
+  @Test
+  void conditionalDeleteRejectsCanonicalRefresh() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    String canonical = Keys.reconcileJobPointerById("acct", "job");
+    String ready = Keys.reconcileReadyPointerByDue(1L, "acct", "lane", "job");
+    put(pointers, canonical, "blob-v1");
+    put(pointers, ready, canonical);
+    MemoryReconcileReadyQueueBackend backend = new MemoryReconcileReadyQueueBackend(pointers);
+    var entry = backend.scanAllReadyEntries(1, "").entries().getFirst();
+    var snapshot = backend.loadCanonicalSnapshot(canonical, null).orElseThrow();
+    assertTrue(
+        pointers.compareAndSet(
+            canonical,
+            snapshot.version(),
+            Pointer.newBuilder().setKey(canonical).setBlobUri("blob-v2").build()));
+
+    assertFalse(backend.deleteReadyEntry(entry, snapshot));
+    assertTrue(pointers.get(ready).isPresent());
+  }
+
+  @Test
+  void conditionalDeleteRejectsCanonicalCreatedAfterMissingRead() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    String canonical = Keys.reconcileJobPointerById("acct", "job");
+    String ready = Keys.reconcileReadyPointerByDue(1L, "acct", "lane", "job");
+    put(pointers, ready, canonical);
+    MemoryReconcileReadyQueueBackend backend = new MemoryReconcileReadyQueueBackend(pointers);
+    var entry = backend.scanAllReadyEntries(1, "").entries().getFirst();
+    put(pointers, canonical, "blob-v1");
+
+    assertFalse(backend.deleteReadyEntry(entry, null));
+    assertTrue(pointers.get(ready).isPresent());
+  }
+
+  @Test
+  void allReadyScanDoesNotSkipTheNextRowWhenThePreviousPageIsDeleted() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    String canonicalOne = Keys.reconcileJobPointerById("acct", "job-1");
+    String canonicalTwo = Keys.reconcileJobPointerById("acct", "job-2");
+    String readyOne = Keys.reconcileReadyPointerByDue(1L, "acct", "lane", "job-1");
+    String readyTwo = Keys.reconcileReadyPointerByDue(2L, "acct", "lane", "job-2");
+    put(pointers, readyOne, canonicalOne);
+    put(pointers, readyTwo, canonicalTwo);
+    MemoryReconcileReadyQueueBackend backend = new MemoryReconcileReadyQueueBackend(pointers);
+
+    var first = backend.scanAllReadyEntries(1, "");
+    assertEquals(readyOne, first.entries().getFirst().readyPointerKey());
+    assertTrue(backend.deleteReadyEntry(first.entries().getFirst(), null));
+
+    var second = backend.scanAllReadyEntries(1, first.nextPageToken());
+    assertEquals(readyTwo, second.entries().getFirst().readyPointerKey());
   }
 
   private static void put(InMemoryPointerStore pointers, String key, String canonical) {

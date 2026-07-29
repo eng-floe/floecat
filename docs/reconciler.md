@@ -106,6 +106,17 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **File-group execution**:
   - `EXEC_FILE_GROUP` resolves the parent snapshot plan, captures file-target stats, and records
     per-file execution results on the child job payload.
+  - The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
+    groups publish one target for each planned data file, each distinct attached Iceberg
+    position/equality delete file, and each attached on-disk Delta deletion vector (`u` or `p`).
+    Inline Delta deletion vectors (`i`) remain unsupported. Auxiliary delete targets contribute to
+    file-stats descriptor counts but not planned/succeeded data-file counts, page-index coverage, or
+    table/column aggregate rollups.
+  - An Iceberg delete file can apply to data files in multiple groups. Repeated group-level
+    references are duplicate execution work, not additional logical files; snapshot publication
+    verifies matching descriptor payload sizes and SHA-256 values and retains one target without
+    reading or hashing delete-file content. File-group descriptors retain their group-level counts;
+    the snapshot manifest reports the deduplicated unique-target count.
   - Snapshot-wide aggregate outputs are intentionally deferred to
     `FINALIZE_SNAPSHOT_CAPTURE`, which acts as the barrier for complete snapshot capture.
   - Sidecar generation and artifact registration happen per source parquet file.
@@ -114,9 +125,9 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     snapshot finalization time.
   - `CommitLeasedFileGroupResult` requires `result_id` and a canonical
     `artifact_references_sha256` over its stats and index descriptors. The service first durably
-    accepts that immutable result, then idempotently protects its worker-written objects and stages
-    bounded generation-scoped pointer batches without reading their payloads. A metadata-only
-    prepared marker is written last. An exact retry of an accepted result resumes any incomplete
+    accepts the immutable result and completes the child job, then idempotently protects its
+    worker-written objects, stages bounded generation-scoped pointer batches without reading their
+    payloads, and writes a metadata-only prepared marker. An exact retry resumes any incomplete
     staging.
     `FINALIZE_SNAPSHOT_CAPTURE` requires the digest-bound prepared marker for every file group,
     stages only snapshot-wide aggregate pointers, and activates the prepared stats and index
@@ -126,11 +137,14 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     failure or cancellation.
   - Snapshot planning limits each file group to 128 files by default. The ceiling is configurable
     with `floecat.reconciler.snapshot-plan.max-files-per-group`; values are clamped to at least one.
-    The service enforces membership and counts against the resulting immutable planned group but
-    does not impose a separate absolute maximum. Raising the setting increases the descriptor
-    count, pointer-metadata work, request size, and resident metadata for one file-group commit.
+    The service rejects submitted plans containing a group above its configured ceiling and
+    enforces membership and counts against the resulting immutable planned group. Raising the
+    setting increases the descriptor count, pointer-metadata work, request size, and resident
+    metadata for one file-group commit.
   - The finalizer still reads and verifies file-group payloads and worker-written stats objects to
-    calculate snapshot-wide aggregates. Only the duplicate service-side reads were removed.
+    calculate snapshot-wide aggregates. It derives exact file-stats coverage from the immutable
+    data-file execution plans and their attached delete artifacts. Only the duplicate service-side
+    reads were removed.
     Finalize submission can race with pointer staging and must retry the exact same result when a
     prepared marker is not yet present.
   - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,

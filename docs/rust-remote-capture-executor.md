@@ -22,6 +22,12 @@ were materialized. That can cause a later request for equivalent coverage to be 
 An old worker also cannot complete default page-index capture because it cannot populate
 `FileGroupResultPayload.realized_index_selectors`.
 
+The file-group result contract also requires file stats for auxiliary delete artifacts recorded in
+`file_execution_plans`: Iceberg position/equality delete files and on-disk Delta deletion vectors.
+The protobuf fields are not new, but treating them as required stats coverage is a semantic contract
+change. A worker that publishes only the paths in `file_paths` can commit an incomplete result that
+is later rejected by snapshot finalization.
+
 The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:
 
 1. Leases eligible reconcile jobs from the control plane.
@@ -49,8 +55,8 @@ The current JVM path for file-group execution is:
 - `RemoteReconcileExecutorPoller` leases `EXEC_FILE_GROUP` jobs.
 - `RemoteFileGroupReconcileExecutor` fetches `LeasedFileGroupExecution`.
 - `StandaloneJavaFileGroupExecutionRunner` performs the actual parquet work.
-- `CommitLeasedFileGroupResult` durably accepts the immutable result, then stages its stats and
-  index-artifact pointer metadata and writes a prepared marker.
+- `CommitLeasedFileGroupResult` durably accepts the immutable result and completes the job, then
+  stages its stats and index-artifact pointer metadata and writes a prepared marker.
 
 A Rust worker replaces the execution portion of that flow. It should behave like an external
 implementation of the current worker contract, not like a new public API.
@@ -163,6 +169,8 @@ During execution:
 - `plan_id`
 - `group_id`
 - `file_paths`
+- `execution_schema_json`
+- `file_execution_plans`
 - `capture_policy`
 - `stats_object_prefix`
 
@@ -174,6 +182,19 @@ default column scope, maximum default-column count, and opaque `properties` map 
 to the worker. Engines may interpret property keys they own and should preserve unknown keys when
 passing the policy between worker components.
 
+`file_paths` contains the data files assigned to the group. `file_execution_plans` carries the
+per-data-file format metadata and any attached delete artifacts:
+
+- `iceberg_delete_files` contains Iceberg position/equality delete files. One delete file may be
+  attached to multiple data files and therefore may occur in more than one file group.
+- `deletion_vector` contains the Delta deletion vector attached to that data file. Storage types
+  `u` and `p` are on-disk vectors; use the exact `path_or_inline_dv` value as the file-stat target
+  path. Storage type `i` is inline and is not currently supported by the JVM capture path.
+
+The data-file paths remain the unit of execution progress and `ReconcileFileResult` reporting.
+Attached delete artifacts add stats objects, but do not add successful-file results and do not get
+page-index artifacts.
+
 ## Result Contract
 `CommitLeasedFileGroupResult` has two outcomes:
 
@@ -183,10 +204,10 @@ passing the policy between worker components.
 Both require `result_id`.
 
 The worker uploads immutable stats and index-artifact wrapper objects, then sends their compact
-descriptors with `success`. Floecat first durably accepts the immutable result and makes the
-file-group job terminal. It then idempotently protects the referenced objects, stages their
-generation-scoped pointer mappings without reading them, and writes a digest-bound prepared marker
-last. Completion and pointer staging are ordered, not one atomic storage transaction. The
+descriptors with `success`. Floecat durably accepts the immutable result and makes the file-group
+job terminal, then idempotently protects the referenced objects, stages their generation-scoped
+pointer mappings without reading them, and writes a digest-bound prepared marker. Completion and
+pointer staging are ordered, not one atomic storage transaction. The
 `artifact_uri` inside an index wrapper may name external storage; Floecat does not read, copy, or
 clean up that sidecar.
 
@@ -211,8 +232,10 @@ Success carries:
 
 Each `StatsObjectDescriptor` carries the immutable object's target storage ID, payload URI, byte
 length, and SHA-256. File-stats and index descriptors for the same source file may share a target
-storage ID; their payload URIs identify the distinct protected objects. For a file target,
-`target_storage_id` is `file:<source-file-path>`.
+path, but stats and index target storage IDs use different formats. A file-stats target is
+`file-<sha256>` where the digest is SHA-256 over the byte `F`, byte `0x1f`, and the UTF-8 bytes of
+the trimmed file path. A file index target is `file:<source-file-path>`. Their payload URIs identify
+the distinct protected objects.
 
 Failure carries:
 
@@ -248,8 +271,8 @@ The worker should assume the following:
 - `CommitLeasedFileGroupResult` is safe to retry only if the same `result_id` and the
   same descriptor and descriptor lists are reused.
 - success and failure are different outcomes and must not share a `result_id`.
-- a successful commit can mark the file-group job terminal before pointer staging and the prepared
-  marker are complete.
+- a successful commit does not mark the file-group job terminal until pointer staging and the
+  prepared marker are complete.
 - a retry of the exact success submission is required after a timeout, retryable error, or uncertain
   outcome, even when the job is already terminal. This is a replay of the accepted result, not a
   second logical completion.
@@ -300,6 +323,15 @@ The service expects the same logical outputs the Java runner currently produces:
 
 The worker is responsible for ensuring:
 
+- when stats are requested, `file_stats` contains exactly one target per planned data file plus one
+  target for every distinct attached Iceberg delete file and on-disk Delta deletion vector in the
+  group
+- duplicate auxiliary targets within a group are emitted only once; the same Iceberg delete file
+  may legitimately recur in different groups when it applies to data files in those groups
+- auxiliary delete stats carry `FC_POSITION_DELETES` or `FC_EQUALITY_DELETES` as appropriate and
+  are excluded from table/column aggregate partials
+- `file_results`, planned/succeeded file counts, and page-index coverage continue to count only the
+  planned data files, while file-stats descriptor counts include auxiliary delete targets
 - every planned file requested for page-index capture gets a matching artifact
 - artifact metadata matches the target file identity
 - every referenced stats object, sidecar, and index wrapper is committed before the success RPC
@@ -323,10 +355,11 @@ The worker is responsible for ensuring:
   and index-artifact descriptor sets
 - the result manifest size and SHA-256 match the uploaded payload
 
-`CommitLeasedFileGroupResult` can durably accept the result before all bounded pointer staging has
-finished. If the RPC outcome is uncertain or retryable, submit the exact same result ID, descriptor,
-and descriptor lists again. The service uses that exact retry to resume staging and writes a
-metadata-only prepared marker last; it does not re-read the worker objects.
+`CommitLeasedFileGroupResult` durably accepts the immutable result before staging its bounded
+pointers and metadata-only prepared marker. Snapshot finalization waits for that marker. If the RPC
+outcome is uncertain or retryable, submit the exact same result ID, descriptor, and descriptor lists
+again; exact replay resumes staging without allowing a rejected lease to mutate generation pointers
+and without re-reading the worker objects.
 
 Compute `artifact_references_sha256` by feeding the following canonical bytes to SHA-256:
 
@@ -349,21 +382,34 @@ floecat.reconciler.snapshot-plan.max-files-per-group=128
 ```
 
 The planner clamps the configured value to at least one and partitions the immutable snapshot plan
-accordingly. The service validates each submitted result against that planned group, so an executor
-cannot add files beyond its lease. There is no separate absolute service-side maximum: increasing
-this setting increases the maximum descriptor count, pointer-staging work, request size, and
-resident metadata for one `CommitLeasedFileGroupResult` call. Keep the value bounded to the RPC
-deadline and message-size limits of the worker deployment.
+accordingly. The service rejects submitted plans containing a group above the same configured
+ceiling and validates each submitted result against that planned group, so an executor cannot add
+files beyond its lease. Increasing this setting increases the maximum descriptor count,
+pointer-staging work, request size, and resident metadata for one `CommitLeasedFileGroupResult`
+call. Attached delete artifacts can make the file-stats descriptor count larger than the planned
+data-file count. Keep the value bounded to the RPC deadline and message-size limits of the worker
+deployment.
 
 ## Snapshot Finalizer Implications
 
 The snapshot finalizer still reads and SHA-verifies each file-group result payload and each
 referenced stats object to calculate snapshot-wide aggregates. That worker-side workload remains
-proportional to the snapshot's file count.
+proportional to the snapshot's data and delete-file count. For each successful group it must derive
+the exact expected stats-target set from the immutable `file_execution_plans`: successful data
+files, attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra
+targets are invalid.
+
+An Iceberg delete file may be referenced by data files in different groups. Repeated references to
+that target are execution overhead rather than additional logical files: a finalizer should verify
+that repeated descriptors identify identical stats content and retain one snapshot-level target.
+This comparison uses the descriptor's existing target ID, payload size, and payload SHA-256; it does
+not require reading or hashing the delete-file content.
 
 The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
 its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
+Data-file source/success counts do not include auxiliary delete artifacts; file-stats record counts
+do include their group-level descriptors.
 
 For column-stats capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the

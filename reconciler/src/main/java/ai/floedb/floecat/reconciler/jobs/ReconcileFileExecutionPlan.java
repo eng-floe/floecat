@@ -69,6 +69,10 @@ public record ReconcileFileExecutionPlan(
       sizeInBytes = Math.max(0, sizeInBytes);
       cardinality = Math.max(0L, cardinality);
     }
+
+    public boolean onDisk() {
+      return ("u".equals(storageType) || "p".equals(storageType)) && !pathOrInlineDv.isBlank();
+    }
   }
 
   public record IcebergDeleteFile(

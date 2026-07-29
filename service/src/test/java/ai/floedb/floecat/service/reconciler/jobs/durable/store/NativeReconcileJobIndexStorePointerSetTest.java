@@ -224,6 +224,7 @@ class NativeReconcileJobIndexStorePointerSetTest {
   void terminalTransitionMaintainsRetentionIndexInCanonicalBatch() {
     StoredReconcileJob running = record("JS_RUNNING");
     StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.finishedAtMs = 200L;
     terminal.updatedAtMs = running.updatedAtMs + 10L;
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
 
@@ -262,6 +263,29 @@ class NativeReconcileJobIndexStorePointerSetTest {
                 op ->
                     op instanceof ReconcileJobIndexStore.JobIndexDelete delete
                         && retentionKey.equals(delete.pointerKey())));
+  }
+
+  @Test
+  void terminalRetentionOrderingUsesStableFinishedTime() {
+    StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.finishedAtMs = 200L;
+    terminal.updatedAtMs = 300L;
+    String expected =
+        Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, terminal.finishedAtMs, JOB_ID);
+
+    assertEquals(expected, indexes.terminalRetentionPointerKey(terminal));
+
+    terminal.updatedAtMs = 400L;
+    assertEquals(expected, indexes.terminalRetentionPointerKey(terminal));
+  }
+
+  @Test
+  void terminalRetentionDoesNotFallBackToCreatedTime() {
+    StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.finishedAtMs = 0L;
+    terminal.createdAtMs = 100L;
+
+    assertEquals("", indexes.terminalRetentionPointerKey(terminal));
   }
 
   @Test
@@ -641,6 +665,9 @@ class NativeReconcileJobIndexStorePointerSetTest {
     record.state = state;
     record.createdAtMs = 100L;
     record.updatedAtMs = 100L;
+    if (state.equals("JS_SUCCEEDED") || state.equals("JS_FAILED") || state.equals("JS_CANCELLED")) {
+      record.finishedAtMs = 100L;
+    }
     record.dedupeKeyHash = "hash-1";
     record.connectorIndexPointerKey =
         Keys.reconcileJobByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, "token-1");

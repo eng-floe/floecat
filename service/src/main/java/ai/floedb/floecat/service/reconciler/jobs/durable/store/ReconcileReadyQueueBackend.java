@@ -31,9 +31,16 @@ public interface ReconcileReadyQueueBackend {
       String pageToken,
       ReconcileReadyQueueStore.LeaseScanStats scanStats);
 
+  /**
+   * Scans bounded ready-row maintenance representatives. Backends with redundant secondary ready
+   * indexes may return only the canonical global row for each queued job; filtered queue reads
+   * conditionally self-prune stale secondary rows.
+   */
   ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken);
 
-  boolean deleteReadyEntry(String readyPointerKey);
+  boolean deleteReadyEntry(
+      ReconcileReadyQueueStore.ReadyQueueEntry expected,
+      CanonicalPointerSnapshot expectedCanonicalSnapshot);
 
   Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
       String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats);

@@ -72,7 +72,7 @@ public class StorageUsageMetrics {
         Math.max(0L, referencedBytes));
     long coveragePpm =
         blobPointers <= 0L
-            ? 1_000_000L
+            ? 0L
             : Math.min(
                 1_000_000L,
                 Math.round(1_000_000.0d * Math.max(0L, sizedBlobPointers) / (double) blobPointers));

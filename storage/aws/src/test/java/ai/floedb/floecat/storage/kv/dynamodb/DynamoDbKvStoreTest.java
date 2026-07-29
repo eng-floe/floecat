@@ -78,6 +78,16 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 public class DynamoDbKvStoreTest {
 
   @Test
+  void batchGetRetryBackoffIsExponentiallyBounded() {
+    for (int attempt = 0; attempt < 12; attempt++) {
+      long delayMs = DynamoDbKvStore.batchGetRetryDelayMs(attempt);
+      long upperBound = Math.min(1000L, 25L * (1L << Math.min(attempt, 6)));
+      assertTrue(delayMs >= Math.max(1L, upperBound / 2L));
+      assertTrue(delayMs <= upperBound);
+    }
+  }
+
+  @Test
   void putCas_create_only_uses_attribute_not_exists_and_succeeds() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);

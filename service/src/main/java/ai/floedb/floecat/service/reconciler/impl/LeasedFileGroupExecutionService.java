@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -57,6 +58,7 @@ import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -298,6 +300,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
     if (existing != null
         && ("JS_SUCCEEDED".equals(existing.state) || "JS_CANCELLED".equals(existing.state))) {
+      boolean replayed =
+          jobs.completeFileGroupSuccess(
+              jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
+      requireAcceptedLeaseOutcome(replayed, jobId);
       StagedArtifactReferences staged =
           prepareArtifactReferences(
               existing.accountId,
@@ -309,10 +315,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               fileStats,
               indexArtifacts,
               publishesFileStats(existing.scope.capturePolicy()));
-      boolean replayed =
-          jobs.completeFileGroupSuccess(
-              jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
-      requireAcceptedLeaseOutcome(replayed, jobId);
       stageArtifactReferences(staged);
       return true;
     }
@@ -472,7 +474,34 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               object.getPayloadSha256().toByteArray()));
     }
     HashSet<String> statsTargets = new HashSet<>();
+    HashSet<String> plannedStatsTargets = new HashSet<>();
+    HashSet<String> plannedIndexTargets = new HashSet<>();
+    for (String filePath : plannedTask.filePaths()) {
+      plannedStatsTargets.add(
+          StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)));
+      plannedIndexTargets.add("file:" + filePath);
+    }
+    for (ReconcileFileExecutionPlan executionPlan : plannedTask.fileExecutionPlans()) {
+      ReconcileFileExecutionPlan.DeltaDeletionVector deletionVector =
+          executionPlan.deletionVector();
+      if (deletionVector != null && deletionVector.onDisk()) {
+        plannedStatsTargets.add(
+            StatsTargetIdentity.storageId(
+                StatsTargetIdentity.fileTarget(deletionVector.pathOrInlineDv())));
+      }
+      for (ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile :
+          executionPlan.icebergDeleteFiles()) {
+        if (deleteFile != null && !deleteFile.filePath().isBlank()) {
+          plannedStatsTargets.add(
+              StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(deleteFile.filePath())));
+        }
+      }
+    }
     for (StatsObjectDescriptor object : requiredFileStats) {
+      if (!plannedStatsTargets.contains(object.getTargetStorageId())) {
+        throw new IllegalArgumentException(
+            "file stats target is outside the leased file group: " + object.getTargetStorageId());
+      }
       if (!statsTargets.add(object.getTargetStorageId())) {
         throw new IllegalArgumentException(
             "duplicate file stats target: " + object.getTargetStorageId());
@@ -488,6 +517,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     }
     HashSet<String> indexTargets = new HashSet<>();
     for (StatsObjectDescriptor object : requiredIndexArtifacts) {
+      if (!plannedIndexTargets.contains(object.getTargetStorageId())) {
+        throw new IllegalArgumentException(
+            "index artifact target is outside the leased file group: "
+                + object.getTargetStorageId());
+      }
       if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)) {
         throw new IllegalArgumentException("invalid prewritten index artifact object prefix");
       }

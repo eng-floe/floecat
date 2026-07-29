@@ -483,6 +483,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (projectionMaintenanceService == null) {
       projectionMaintenanceService = new ReconcileProjectionMaintenanceService();
     }
+    projectionMaintenanceService.configureIdleRecoveryMillis(
+        config
+            .getOptionalValue(
+                "floecat.reconciler.job-store.projection-maintenance.recovery-interval-ms",
+                Long.class)
+            .orElse(60_000L));
     projectionMaintenanceService.bind(
         pointerStore, this::refreshProjectedParentAndAdvance, readyScanLimit);
     return projectionMaintenanceService;
@@ -504,7 +510,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (readyIndexMaintenanceService == null) {
       readyIndexMaintenanceService = new ReconcileReadyIndexMaintenanceService();
     }
-    readyIndexMaintenanceService.bind(jobIndexStore(), readyQueue(), readyScanLimit);
+    ReconcileReadyQueueStore readyQueue = readyQueue();
+    readyIndexMaintenanceService.bind(
+        jobIndexStore(),
+        readyQueue,
+        readyQueueBackend,
+        this::isBlockedByAncestorCancellation,
+        readyScanLimit);
     return readyIndexMaintenanceService;
   }
 
@@ -1766,6 +1778,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     readyIndexMaintenance().runReadyIndexMaintenanceOnce(maxMillis);
   }
 
+  public void runReadyIndexMaintenanceOnce(long maxMillis, int maxPages) {
+    readyIndexMaintenance().runReadyIndexMaintenanceOnce(maxMillis, maxPages);
+  }
+
   @Override
   public boolean renewLease(String jobId, String leaseEpoch) {
     var loaded = loadByAnyAccount(jobId);
@@ -1929,6 +1945,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       throw new IllegalStateException(
           "persistSnapshotPlanManifest requires a recorded file-group plan payload");
     }
+    validateSnapshotPlanFileGroupCeiling(plannedFileGroups);
     String effectiveAccountId = blankToEmpty(accountId);
     if (effectiveAccountId.isBlank()) {
       var loaded = loadByAnyAccount(jobId);
@@ -2118,6 +2135,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               + " actual="
               + plannedFileGroups.size());
     }
+    validateSnapshotPlanFileGroupCeiling(plannedFileGroups);
     for (ReconcileFileGroupTask fileGroup : plannedFileGroups) {
       if (fileGroup == null || fileGroup.isEmpty()) {
         throw new IllegalArgumentException("snapshot plan manifest contained an empty file group");
@@ -2138,6 +2156,37 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     return plannedFileGroups;
+  }
+
+  private void validateSnapshotPlanFileGroupCeiling(
+      List<ReconcileFileGroupTask> plannedFileGroups) {
+    int maxFilesPerGroup = snapshotPlanMaxFilesPerGroup();
+    for (ReconcileFileGroupTask fileGroup : plannedFileGroups) {
+      if (fileGroup == null) {
+        continue;
+      }
+      int fileGroupSize = Math.max(fileGroup.fileCount(), fileGroup.filePaths().size());
+      if (fileGroupSize > maxFilesPerGroup) {
+        throw new IllegalArgumentException(
+            "snapshot plan manifest file group exceeds server ceiling groupId="
+                + fileGroup.groupId()
+                + " files="
+                + fileGroupSize
+                + " max="
+                + maxFilesPerGroup);
+      }
+    }
+  }
+
+  private int snapshotPlanMaxFilesPerGroup() {
+    if (config == null) {
+      return 128;
+    }
+    return Math.max(
+        1,
+        config
+            .getOptionalValue("floecat.reconciler.snapshot-plan.max-files-per-group", Integer.class)
+            .orElse(128));
   }
 
   private void validateSnapshotPlanCanonicalIdentity(
@@ -2299,9 +2348,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           String completionMessage =
               completionKind == CompletionKind.CANCELLED && blank(message) ? "Cancelled" : message;
           long statsProcessed =
-              (long) effective.fileStatsRecordCount()
-                  + (long) effective.partialAggregateRecordCount();
-          long indexesProcessed = effective.indexArtifactCount();
+              completionKind == CompletionKind.SUCCEEDED
+                  ? (long) effective.fileStatsRecordCount()
+                      + (long) effective.partialAggregateRecordCount()
+                  : 0L;
+          long indexesProcessed =
+              completionKind == CompletionKind.SUCCEEDED ? effective.indexArtifactCount() : 0L;
           Optional<StoredEnvelope> updated =
               leaseManager()
                   .completeLeaseTransition(
@@ -2313,6 +2365,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         }
                         validateFileGroupResultDescriptorMatchesCanonical(existing, effective);
                         applyFileGroupResultDescriptor(existing, effective);
+                        if (completionKind == CompletionKind.CANCELLED) {
+                          existing.completedFileGroups = 0L;
+                          existing.failedFileGroups = 0L;
+                          existing.completedFiles = 0L;
+                          existing.failedFiles = 0L;
+                          existing.statsProcessed = 0L;
+                          existing.indexesProcessed = 0L;
+                        }
                         return applyLeaseOutcomeToRecord(
                             existing.canonicalPointerKey,
                             existing,
@@ -3389,6 +3449,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return null;
     }
     if ("JS_RUNNING".equals(state) && leaseManager().hasLiveLease(child, true, now)) {
+      return null;
+    }
+    if (child.snapshotFinalizeCommitStarted) {
       return null;
     }
     if ("JS_CANCELLING".equals(state) && leaseManager().hasLiveLease(child, true, now)) {
@@ -4854,6 +4917,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               indexesProcessed);
     }
     nextChild.updatedAtMs = System.currentTimeMillis();
+    markStatsCleanupPendingIfRequired(nextChild, nextChild.updatedAtMs);
     nextChild.canonicalPointerKey = canonicalPointerKey;
     return nextChild;
   }
@@ -5262,7 +5326,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return job != null
         && job.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && job.fullRescan
-        && job.childrenFinalized
         && failedOrCancelled(job.state)
         && !blankToEmpty(job.snapshotTaskTableId).isBlank()
         && job.snapshotTaskSnapshotId >= 0L

@@ -27,6 +27,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
@@ -447,28 +448,16 @@ class JavaConnectorCaptureEngineTest {
             eq("events"),
             eq(tableId),
             eq(55L),
-            eq(Set.of(fileOne)),
+            eq(Set.of(fileOne, fileTwo)),
             eq(Set.of("id")),
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
-                List.of(fileRecordWithColumnNdv(tableId, 55L, fileOne, ndvWithThetaSketch(1L, 2L))),
-                List.of()));
-    when(connector.capturePlannedFileGroup(
-            eq("db"),
-            eq("events"),
-            eq(tableId),
-            eq(55L),
-            eq(Set.of(fileTwo)),
-            eq(Set.of("id")),
-            eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
-            eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
-        .thenReturn(
-            FloecatConnector.FileGroupCaptureResult.of(
-                List.of(fileRecordWithColumnNdv(tableId, 55L, fileTwo, ndvWithThetaSketch(2L, 3L))),
+                List.of(
+                    fileRecordWithColumnNdv(tableId, 55L, fileOne, ndvWithThetaSketch(1L, 2L)),
+                    fileRecordWithColumnNdv(tableId, 55L, fileTwo, ndvWithThetaSketch(2L, 3L))),
                 List.of()));
 
     CaptureEngineRequest request =
@@ -513,7 +502,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureStopsBeforeStartingTheNextPlannedFile() {
+  void captureStopsAfterTheSingleGroupCaptureWhenCancellationIsRequested() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -557,18 +546,7 @@ class JavaConnectorCaptureEngineTest {
             any(),
             any(),
             anyLong(),
-            eq(Set.of("s3://bucket/path/file-1.parquet")),
-            any(),
-            any(),
-            anyBoolean(),
-            any());
-    verify(connector, never())
-        .capturePlannedFileGroup(
-            any(),
-            any(),
-            any(),
-            anyLong(),
-            eq(Set.of("s3://bucket/path/file-2.parquet")),
+            eq(Set.of("s3://bucket/path/file-1.parquet", "s3://bucket/path/file-2.parquet")),
             any(),
             any(),
             anyBoolean(),
@@ -937,7 +915,7 @@ class JavaConnectorCaptureEngineTest {
             eq("events"),
             eq(tableId),
             eq(55L),
-            eq(Set.of(fileOne)),
+            eq(Set.of(fileOne, fileTwo)),
             eq(Set.of()),
             eq(
                 Set.of(
@@ -946,22 +924,9 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
-        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecordOne), List.of()));
-    when(connector.capturePlannedFileGroup(
-            eq("db"),
-            eq("events"),
-            eq(tableId),
-            eq(55L),
-            eq(Set.of(fileTwo)),
-            eq(Set.of()),
-            eq(
-                Set.of(
-                    FloecatConnector.StatsTargetKind.TABLE,
-                    FloecatConnector.StatsTargetKind.COLUMN,
-                    FloecatConnector.StatsTargetKind.FILE)),
-            eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
-        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecordTwo), List.of()));
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(fileRecordOne, fileRecordTwo), List.of()));
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
@@ -1001,6 +966,61 @@ class JavaConnectorCaptureEngineTest {
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasFile())
         .isEmpty();
+  }
+
+  @Test
+  void capturePreservesAttachedIcebergDeleteFileStats() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String dataFile = "s3://bucket/path/data.parquet";
+    String deleteFile = "s3://bucket/path/delete.parquet";
+    TargetStatsRecord dataRecord =
+        fileRecordWithColumnNdv(tableId, 55L, dataFile, Ndv.newBuilder().build());
+    TargetStatsRecord.Builder deleteRecordBuilder =
+        fileRecordWithColumnNdv(tableId, 55L, deleteFile, Ndv.newBuilder().build()).toBuilder();
+    deleteRecordBuilder.getFileBuilder().setFileContent(FileContent.FC_POSITION_DELETES);
+    TargetStatsRecord deleteRecord = deleteRecordBuilder.build();
+    when(connector.capturePlannedFileGroup(
+            eq("db"),
+            eq("events"),
+            eq(tableId),
+            eq(55L),
+            eq(Set.of(dataFile)),
+            eq(Set.of()),
+            eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(dataRecord, deleteRecord), List.of()));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(dataFile),
+            Set.of(),
+            Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(FloecatConnector.StatsTargetKind.FILE),
+            false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.fileStats).containsExactly(dataRecord, deleteRecord);
   }
 
   private static final class CapturedFileOutputs {

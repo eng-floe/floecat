@@ -102,7 +102,9 @@ engine release.
   allows `SS_CURRENT`. Planner RPCs interpret `as_of` timestamps when enumerating snapshots.
 - **File-level stats** – `FileTargetStats` anchors counts and sketches to
   a file path. File stats are written as `TargetStatsRecord` values with `target.file` identity via
-  `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream.
+  `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream. Its
+  canonical target storage ID is `file-<sha256>` over `F`, `0x1f`, and the trimmed UTF-8 file path.
+  This differs from the `file:<source-file-path>` identity used by file index targets.
 - **Index artifact streams** – `PutIndexArtifacts` requires each client stream to target exactly one
   `table_id` and one `snapshot_id`. Multiple snapshots must be written through separate client
   streams.
@@ -110,7 +112,9 @@ engine release.
   require `result_id`. Success carries immutable stats/artifact pointers and an
   `artifact_references_sha256` binding those pointer mappings to the durable descriptor. The
   control plane first accepts the immutable result and completes the child job, then stages
-  generation-scoped mappings without reading their objects and writes a prepared marker last.
+  generation-scoped references without reading their objects and writes the prepared marker.
+  Snapshot finalization waits for that marker, so exact replay closes a crash gap without allowing
+  a rejected lease to mutate generation pointers.
   These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
   retryable error, or uncertain outcome requires an exact replay of the same success request, even
   when the child job is already terminal. Snapshot finalization carries only group descriptors,
@@ -127,10 +131,21 @@ engine release.
   but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
   `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat
   the leased capture policy exactly, including opaque properties.
+- **File-group delete artifacts** – `FileExecutionPlan` attaches Iceberg position/equality delete
+  files and Delta deletion vectors to a planned data file. When stats are requested, exact group
+  coverage includes the planned data files, each distinct attached Iceberg delete path, and each
+  on-disk Delta deletion vector (`storage_type` `u` or `p`). Inline Delta vectors (`i`) remain
+  unsupported. Auxiliary targets increase stats descriptor counts but do not increase data-file
+  progress counts or page-index coverage, and they are excluded from table/column aggregate
+  rollups. One Iceberg delete file may recur in multiple groups; those repeated references are
+  duplicate work rather than additional logical files. Snapshot finalization verifies their
+  existing descriptor sizes and SHA-256 values and retains one unique target without reading the
+  delete-file content. File-group descriptors retain group-level counts, while
+  `SnapshotCaptureManifest.file_stats_record_count` reports the deduplicated unique-target count.
 - **File-group planning ceiling** – snapshot planning uses at most 128 files per group by default.
   `floecat.reconciler.snapshot-plan.max-files-per-group` configures that ceiling and is clamped to
-  at least one. The service validates commits against the immutable planned group but does not
-  impose a separate absolute maximum.
+  at least one. The service rejects submitted plans containing a group above the same configured
+  ceiling and validates commits against the immutable planned group.
 - **Executor leasing filters** – `LeaseReconcileJobRequest` accepts execution class, lane, job kind,
   `executor_id`, and repeated `executor_ids` selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run.

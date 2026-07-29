@@ -133,7 +133,7 @@ public class SnapshotFinalizeChildStateService {
     do {
       ReconcileJobStore.ChildJobStatePage page =
           jobs.childJobStatesPage(accountId, parentJobId, 200, pageToken);
-      if (page == null || page.states().isEmpty()) {
+      if (page == null) {
         break;
       }
       out.addAll(page.states());

@@ -171,4 +171,43 @@ class TableMetadataBuilderTest {
     assertEquals(List.of(0, 1), metadata.schemas().stream().map(s -> s.get("schema-id")).toList());
     assertEquals(0, metadata.snapshots().get(0).get("schema-id"));
   }
+
+  @Test
+  void fromCatalogChoosesHighestSchemaIdWhenCurrentSchemaCannotBeResolved() {
+    Snapshot schemaFive =
+        Snapshot.newBuilder()
+            .setSnapshotId(100L)
+            .setSequenceNumber(1L)
+            .setSchemaId(5)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":5,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"}
+                ]}
+                """)
+            .build();
+    Snapshot schemaTwo =
+        Snapshot.newBuilder()
+            .setSnapshotId(200L)
+            .setSequenceNumber(2L)
+            .setSchemaId(2)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":2,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"}
+                ]}
+                """)
+            .build();
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            Table.newBuilder().setDisplayName("orders").build(),
+            new LinkedHashMap<>(),
+            List.of(schemaFive, schemaTwo),
+            "s3://warehouse/orders/metadata/00001.metadata.json",
+            999L);
+
+    assertEquals(5, metadata.currentSchemaId());
+  }
 }

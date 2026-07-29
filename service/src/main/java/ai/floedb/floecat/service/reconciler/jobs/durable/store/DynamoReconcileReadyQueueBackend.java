@@ -39,10 +39,13 @@ import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
 import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.ConditionCheck;
+import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
-import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
@@ -86,7 +89,7 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     QueryRequest.Builder query =
         QueryRequest.builder()
             .tableName(table)
-            .consistentRead(false)
+            .consistentRead(true)
             .limit(Math.max(1, pageSize))
             .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
             .keyConditionExpression("#pk = :pk")
@@ -130,79 +133,140 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
 
   @Override
   public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-    ScanRequest.Builder scan =
-        ScanRequest.builder()
+    QueryRequest.Builder query =
+        QueryRequest.builder()
             .tableName(table)
             .consistentRead(true)
             .limit(Math.max(1, pageSize))
             .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
-            .filterExpression("begins_with(#pk, :pk)")
-            .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS("reconcile-ready#")));
-
-    ReadyQueueBackendSupport.ReadyRowCursor cursor =
-        ReadyQueueBackendSupport.decodeCursor(blankToEmpty(pageToken));
-    if (cursor != null) {
-      scan.exclusiveStartKey(
+            .keyConditionExpression("#pk = :pk")
+            .expressionAttributeValues(
+                Map.of(
+                    ":pk",
+                    AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey())));
+    String token = ReadyQueueBackendSupport.stripLeadingSlash(pageToken);
+    if (!token.isBlank()) {
+      query.exclusiveStartKey(
           Map.of(
               ATTR_PARTITION_KEY,
-              AttributeValue.fromS(cursor.partitionKey()),
-              ATTR_SORT_KEY,
-              AttributeValue.fromS(cursor.sortKey())));
+                  AttributeValue.fromS(ReadyQueueBackendSupport.maintenancePartitionKey()),
+              ATTR_SORT_KEY, AttributeValue.fromS(token)));
     }
-
-    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
-        new ArrayList<>(response.items().size());
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build()));
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
     for (var item : response.items()) {
-      ReadyQueueBackendSupport.ReadyQueueRow row =
-          ReadyQueueBackendSupport.rowFromNativeReadyItem(
-              stringAttr(item, ATTR_READY_POINTER_KEY),
-              stringAttr(item, ATTR_CANONICAL_POINTER_KEY),
-              stringAttr(item, ATTR_PARTITION_KEY),
-              stringAttr(item, ATTR_SORT_KEY),
-              stringAttr(item, ATTR_FILTER_VALUE),
-              stringAttr(item, ATTR_INDEX_TYPE),
-              stringAttr(item, ATTR_ACCOUNT_ID),
-              stringAttr(item, ATTR_JOB_ID),
-              longAttr(item, ATTR_DUE_AT_MS));
-      if (row != null) {
-        entries.add(row.entry());
+      try {
+        entries.add(
+            new ReconcileReadyQueueStore.ReadyQueueEntry(
+                stringAttr(item, ATTR_READY_POINTER_KEY),
+                stringAttr(item, ATTR_CANONICAL_POINTER_KEY),
+                stringAttr(item, ATTR_ACCOUNT_ID),
+                stringAttr(item, ATTR_JOB_ID),
+                longAttr(item, ATTR_DUE_AT_MS),
+                ReconcileReadyQueueStore.ReadyIndexType.valueOf(stringAttr(item, ATTR_INDEX_TYPE)),
+                stringAttr(item, ATTR_FILTER_VALUE)));
+      } catch (IllegalArgumentException ignored) {
+        // Corrupt maintenance rows are removed through normal storage repair/TTL rather than
+        // being presented as a different ready index type.
       }
     }
-
-    String nextPageToken = "";
+    String next = "";
     if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
-      nextPageToken =
-          ReadyQueueBackendSupport.encodeCursor(
-              stringAttr(response.lastEvaluatedKey(), ATTR_PARTITION_KEY),
-              stringAttr(response.lastEvaluatedKey(), ATTR_SORT_KEY));
+      next = "/" + response.lastEvaluatedKey().get(ATTR_SORT_KEY).s();
     }
-    return new ReadyQueueScanPage(entries, nextPageToken);
+    return new ReadyQueueScanPage(List.copyOf(entries), next);
   }
 
   @Override
-  public boolean deleteReadyEntry(String readyPointerKey) {
-    // Resolve the primary key from the ready pointer alone. The canonical pointer key is a stored
-    // attribute, not part of the key, and a stale/leaked entry's canonical pointer is often already
-    // gone; passing a blank canonical here used to make decode reject the key, so this delete was a
-    // silent no-op for every caller (inline prune and ReconcileJobGc alike).
-    ReadyQueueBackendSupport.ReadyQueueRow row =
-        ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
-    if (row == null) {
+  public boolean deleteReadyEntry(
+      ReconcileReadyQueueStore.ReadyQueueEntry expected,
+      CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+    if (expected == null) {
       return false;
     }
-    dynamoCaller.callVoid(
-        dynamoDbClientManager,
-        client ->
-            client.deleteItem(
-                DeleteItemRequest.builder()
-                    .tableName(table)
-                    .key(
-                        Map.of(
-                            ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
-                            ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
-                    .build()));
-    return true;
+    if (expectedCanonicalSnapshot != null
+        && !java.util.Objects.equals(
+            expected.canonicalPointerKey(), expectedCanonicalSnapshot.canonicalPointerKey())) {
+      return false;
+    }
+    ReadyQueueBackendSupport.ReadyQueueRow row =
+        ReadyQueueBackendSupport.toReadyQueueRow(
+            expected.readyPointerKey(), expected.canonicalPointerKey());
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(expected.canonicalPointerKey());
+    if (row == null || canonicalKey == null) {
+      return false;
+    }
+    Map<String, AttributeValue> canonicalStorageKey =
+        Map.of(
+            ATTR_PARTITION_KEY,
+            AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(canonicalKey)),
+            ATTR_SORT_KEY,
+            AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(canonicalKey)));
+    ConditionCheck.Builder canonicalCheck =
+        ConditionCheck.builder().tableName(table).key(canonicalStorageKey);
+    if (expectedCanonicalSnapshot == null) {
+      canonicalCheck
+          .conditionExpression("attribute_not_exists(#pk)")
+          .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY));
+    } else {
+      canonicalCheck
+          .conditionExpression("#v = :v AND #ref = :ref")
+          .expressionAttributeNames(
+              Map.of("#v", ATTR_VERSION, "#ref", JobIndexBackendSupport.ATTR_BLOB_URI))
+          .expressionAttributeValues(
+              Map.of(
+                  ":v", AttributeValue.fromN(Long.toString(expectedCanonicalSnapshot.version())),
+                  ":ref", AttributeValue.fromS(expectedCanonicalSnapshot.blobUri())));
+    }
+    Delete readyDelete =
+        Delete.builder()
+            .tableName(table)
+            .key(
+                Map.of(
+                    ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
+                    ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
+            .conditionExpression("#ready = :ready AND #canonical = :canonical")
+            .expressionAttributeNames(
+                Map.of(
+                    "#ready", ATTR_READY_POINTER_KEY,
+                    "#canonical", ATTR_CANONICAL_POINTER_KEY))
+            .expressionAttributeValues(
+                Map.of(
+                    ":ready", AttributeValue.fromS(expected.readyPointerKey()),
+                    ":canonical", AttributeValue.fromS(expected.canonicalPointerKey())))
+            .build();
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder()
+                      .transactItems(
+                          TransactWriteItem.builder()
+                              .conditionCheck(canonicalCheck.build())
+                              .build(),
+                          TransactWriteItem.builder().delete(readyDelete).build(),
+                          TransactWriteItem.builder()
+                              .delete(
+                                  Delete.builder()
+                                      .tableName(table)
+                                      .key(
+                                          Map.of(
+                                              ATTR_PARTITION_KEY,
+                                              AttributeValue.fromS(
+                                                  ReadyQueueBackendSupport
+                                                      .maintenancePartitionKey()),
+                                              ATTR_SORT_KEY,
+                                              AttributeValue.fromS(
+                                                  ReadyQueueBackendSupport.maintenanceSortKey(
+                                                      row))))
+                                      .build())
+                              .build())
+                      .build()));
+      return true;
+    } catch (TransactionCanceledException ignored) {
+      return false;
+    }
   }
 
   @Override

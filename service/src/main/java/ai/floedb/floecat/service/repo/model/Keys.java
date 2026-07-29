@@ -671,10 +671,28 @@ public final class Keys {
   }
 
   public static String snapshotTargetStatsGenerationPreparedFileGroupPointer(
-      String accountId, String tableId, long snapshotId, String generationId, String jobId) {
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      String jobId,
+      String leaseEpoch) {
     return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
         + "prepared-file-groups/"
-        + encode(req("job_id", jobId));
+        + encode(req("job_id", jobId))
+        + "/"
+        + sha256Hex(req("lease_epoch", leaseEpoch));
+  }
+
+  public static String snapshotTargetStatsDeletedGenerationFencePointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return accountPointerById(accountId)
+        + "/reconcile/deleted-stats-generations/"
+        + encode(req("table_id", tableId))
+        + "/"
+        + snapshotId
+        + "/"
+        + encode(req("generation_id", generationId));
   }
 
   public static String snapshotTargetColumnStatsGenerationPrefix(

@@ -25,6 +25,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 
@@ -46,25 +47,59 @@ final class JavaConnectorFileGroupCaptureAdapter {
     Set<String> publishedFileTargets = new HashSet<>();
     Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     List<TargetStatsRecord> partialAggregates = List.of();
+    throwIfCancellationRequested(request);
+    FloecatConnector.FileGroupCaptureResult captured =
+        source.capturePlannedFileGroup(
+            request.sourceNamespace(),
+            request.sourceTable(),
+            request.tableId(),
+            request.snapshotId(),
+            new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+            request.statsColumns(),
+            request.requestedStatsTargetKinds(),
+            request.capturePageIndex(),
+            request.columnSelectorPolicy());
+    List<TargetStatsRecord> capturedFileStats =
+        uniqueFileStats(captured.statsRecords(), publishedFileTargets);
+    realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
+    List<FloecatConnector.ParquetPageIndexEntry> capturedPageIndexEntries =
+        filterPageIndexEntries(
+            captured.pageIndexEntries(), request.indexColumns(), request.columnSelectorPolicy());
+    Map<String, List<TargetStatsRecord>> statsByFile = new LinkedHashMap<>();
+    Map<String, List<FloecatConnector.ParquetPageIndexEntry>> indexesByFile = new LinkedHashMap<>();
+    Map<String, String> fileByStatsTarget = new java.util.HashMap<>();
+    for (String filePath : request.plannedFilePaths()) {
+      statsByFile.put(filePath, new java.util.ArrayList<>());
+      indexesByFile.put(filePath, new java.util.ArrayList<>());
+      fileByStatsTarget.put(
+          StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)), filePath);
+    }
+    List<TargetStatsRecord> auxiliaryFileStats = new java.util.ArrayList<>();
+    for (TargetStatsRecord fileStat : capturedFileStats) {
+      String filePath = fileByStatsTarget.get(StatsTargetIdentity.storageId(fileStat.getTarget()));
+      if (filePath != null) {
+        statsByFile.get(filePath).add(fileStat);
+      } else {
+        // Connectors may return file targets attached to a planned data file without listing those
+        // auxiliary files as independent plan entries. Iceberg position/equality delete files are
+        // the canonical example. Keep them in this file-group output; finalization validates their
+        // target identities against the immutable execution plan.
+        auxiliaryFileStats.add(fileStat);
+      }
+    }
+    if (!auxiliaryFileStats.isEmpty()) {
+      statsByFile.get(request.plannedFilePaths().getFirst()).addAll(auxiliaryFileStats);
+    }
+    for (FloecatConnector.ParquetPageIndexEntry entry : capturedPageIndexEntries) {
+      if (entry != null && indexesByFile.containsKey(entry.filePath())) {
+        indexesByFile.get(entry.filePath()).add(entry);
+      }
+    }
     for (String filePath : request.plannedFilePaths()) {
       throwIfCancellationRequested(request);
-      FloecatConnector.FileGroupCaptureResult captured =
-          source.capturePlannedFileGroup(
-              request.sourceNamespace(),
-              request.sourceTable(),
-              request.tableId(),
-              request.snapshotId(),
-              Set.of(filePath),
-              request.statsColumns(),
-              request.requestedStatsTargetKinds(),
-              request.capturePageIndex(),
-              request.columnSelectorPolicy());
-      List<TargetStatsRecord> fileStats =
-          uniqueFileStats(captured.statsRecords(), publishedFileTargets);
-      realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
+      List<TargetStatsRecord> fileStats = List.copyOf(statsByFile.get(filePath));
       List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
-          filterPageIndexEntries(
-              captured.pageIndexEntries(), request.indexColumns(), request.columnSelectorPolicy());
+          List.copyOf(indexesByFile.get(filePath));
       if (!fileStats.isEmpty()) {
         partialAggregates = mergePartialAggregates(request, partialAggregates, fileStats);
       }

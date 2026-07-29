@@ -145,7 +145,18 @@ public final class TableMetadataBuilder {
     if (!schemaList.isEmpty()) {
       Map<String, Object> currentSchema = schemaById(schemaList, currentSchemaId);
       if (currentSchema == null) {
-        currentSchema = schemaList.get(schemaList.size() - 1);
+        currentSchema = resolvedCurrentSchema(currentSnapshot, table, deltaTable, currentSchemaId);
+      }
+      if (currentSchema == null) {
+        currentSchema =
+            schemaList.stream()
+                .max(
+                    Comparator.comparingInt(
+                        schema -> {
+                          Integer schemaId = asInteger(schema.get("schema-id"));
+                          return schemaId == null ? Integer.MIN_VALUE : schemaId;
+                        }))
+                .orElse(null);
       }
       if (currentSchemaId == null) {
         currentSchemaId = asInteger(currentSchema.get("schema-id"));
@@ -319,6 +330,15 @@ public final class TableMetadataBuilder {
       }
     }
     return null;
+  }
+
+  private static Map<String, Object> resolvedCurrentSchema(
+      Snapshot currentSnapshot, Table table, boolean deltaTable, Integer currentSchemaId) {
+    List<Map<String, Object>> snapshotSchemas = schemasFromSnapshot(currentSnapshot, deltaTable);
+    if (!snapshotSchemas.isEmpty()) {
+      return snapshotSchemas.get(0);
+    }
+    return schemaFromTable(table, deltaTable, currentSchemaId);
   }
 
   private static List<Map<String, Object>> partitionSpecsFromSnapshot(Snapshot snapshot) {

@@ -20,6 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -53,5 +56,23 @@ class FileGroupExecutionSupportTest {
 
     assertThat(FileGroupExecutionSupport.requestedStatsTargetKinds(capturePolicy))
         .containsExactly(FloecatConnector.StatsTargetKind.TABLE);
+  }
+
+  @Test
+  void fileResultsMatchHashedStatsTargetIdentity() {
+    String filePath = "s3://bucket/data.parquet";
+    ReconcileFileGroupTask task =
+        ReconcileFileGroupTask.of("plan", "group", "table", 1L, List.of(filePath));
+    StatsObjectDescriptor descriptor =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId(
+                StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)))
+            .build();
+
+    assertThat(
+            FileGroupExecutionSupport.fileResultsForSuccess(task, List.of(descriptor), List.of()))
+        .singleElement()
+        .extracting(result -> result.statsProcessed())
+        .isEqualTo(1L);
   }
 }

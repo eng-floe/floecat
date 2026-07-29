@@ -804,7 +804,7 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
-  void physicalWriteItemCountCountsEachPointerMutationOnce() {
+  void physicalWriteItemCountIncludesReadyMaintenanceRepresentative() {
     var batch =
         new ReconcileJobIndexStore.JobIndexWriteBatch(
             List.of(
@@ -828,7 +828,7 @@ class DynamoReconcileJobIndexBackendTest {
                         PointerReferenceKind.PRK_POINTER_KEY)),
                 List.of()));
 
-    assertEquals(5, NativeReconcileJobIndexStore.physicalWriteItemCount(batch));
+    assertEquals(6, NativeReconcileJobIndexStore.physicalWriteItemCount(batch));
   }
 
   @Test

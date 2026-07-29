@@ -67,6 +67,10 @@ public class ReconcileProjectionMaintenanceService {
     this.readyScanLimit = readyScanLimit;
   }
 
+  public void configureIdleRecoveryMillis(long idleRecoveryMillis) {
+    this.idleRecoveryMillis = Math.max(1L, idleRecoveryMillis);
+  }
+
   public void runProjectionMaintenanceOnce(long maxMillis) {
     runProjectionMaintenanceOnce(maxMillis, maxMarkersPerTick);
   }

@@ -261,7 +261,9 @@ message ReconcileFileGroupTask {
 }
 
 message DeltaDeletionVector {
+  // Delta storage discriminator: `u` and `p` identify on-disk vectors; `i` is inline.
   string storage_type = 1;
+  // Exact file-stat target path for an on-disk vector, or encoded bytes for an inline vector.
   string path_or_inline_dv = 2;
   optional int32 offset = 3;
   uint32 size_in_bytes = 4;
@@ -269,12 +271,18 @@ message DeltaDeletionVector {
 }
 
 message FileExecutionPlan {
+  // Planned data file. This is also the unit of ReconcileFileResult progress reporting.
   string file_path = 1;
   uint64 file_size_in_bytes = 2;
   string partition_data_json = 3;
+  // Optional Delta vector attached to file_path. When stats are requested, on-disk vectors are
+  // additional file-stats targets but are not additional planned/succeeded files or index targets.
   DeltaDeletionVector deletion_vector = 4;
   string file_format = 5;
   int32 partition_spec_id = 6;
+  // Iceberg delete files attached to file_path. When stats are requested, distinct delete paths
+  // are additional file-stats targets but are not additional planned/succeeded files or index
+  // targets. One delete path may be attached to data files in multiple groups.
   repeated IcebergDeleteFile iceberg_delete_files = 7;
 }
 
@@ -304,6 +312,8 @@ message IcebergDeleteFile {
 
 // Compact reference to one immutable artifact record written directly by a worker.
 message StatsObjectDescriptor {
+  // Canonical opaque storage identity. File-stats targets use file-<sha256>; file index targets use
+  // file:<source-file-path>.
   string target_storage_id = 1;
   string payload_uri = 2;
   uint64 payload_bytes = 3;
@@ -327,6 +337,8 @@ message FileGroupResultPayload {
   repeated ReconcileFileResult file_results = 12;
   repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
   repeated StatsObjectDescriptor index_artifacts = 14;
+  // Exact group stats coverage: planned data files plus distinct attached Iceberg delete files and
+  // on-disk Delta deletion vectors when stats are requested.
   repeated StatsObjectDescriptor file_stats = 15;
   IndexGenerationPredecessor index_predecessor = 16;
   // Concrete column selectors present in this file group's published index artifacts.
@@ -354,6 +366,8 @@ message SnapshotCaptureManifest {
   repeated StatsObjectDescriptor final_stats = 12;
   reserved 13, 14;
   uint32 source_file_count = 15;
+  // Unique snapshot-level file-stats target count after deduplicating targets repeated across
+  // file groups.
   uint32 file_stats_record_count = 16;
   uint32 partial_aggregate_record_count = 17;
   uint32 final_stats_record_count = 18;
@@ -412,6 +426,7 @@ message FileGroupResultDescriptor {
   google.protobuf.Timestamp created_at = 21;
   string stats_object_prefix = 22;
   reserved 23, 24;
+  // Group-level descriptor count, including distinct auxiliary delete targets in this group.
   uint32 file_stats_record_count = 25;
   // SHA-256 over the canonical file-stats and index-artifact descriptor sets.
   // Binds the bounded commit-time mappings to this durable result descriptor.
@@ -931,10 +946,12 @@ message GetLeasedFileGroupExecutionResponse {
 }
 
 // A successful outcome first durably accepts the immutable result and completes the leased job,
-// then idempotently stages its object-pointer metadata and writes a prepared marker last. These
-// steps are ordered, not one atomic storage transaction. The service never reads the referenced
-// objects during this control-plane call. After an uncertain or retryable outcome, the worker must
-// replay the exact same result_id, descriptor, and descriptor lists even if the job is terminal.
+// then idempotently stages its object-pointer metadata and writes a prepared marker. These steps are
+// ordered, not one atomic storage transaction. Snapshot finalization waits for the prepared marker,
+// so a retry can safely finish staging after an uncertain response. The service never reads the
+// referenced objects during this control-plane call. After an uncertain or retryable outcome, the
+// worker must replay the exact same result_id, descriptor, and descriptor lists even if the job is
+// terminal.
 message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;

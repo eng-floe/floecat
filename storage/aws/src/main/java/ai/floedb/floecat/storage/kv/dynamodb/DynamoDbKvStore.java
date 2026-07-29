@@ -31,6 +31,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -309,8 +310,22 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               KeysAndAttributes unprocessed = response.unprocessedKeys().get(table);
               List<Map<String, AttributeValue>> remaining =
                   unprocessed == null ? List.of() : unprocessed.keys();
-              return batchGetAll(client, remaining, accumulated, attempt + 1);
+              if (remaining.isEmpty()) {
+                return CompletableFuture.completedFuture(Map.copyOf(accumulated));
+              }
+              long delayMs = batchGetRetryDelayMs(attempt);
+              return CompletableFuture.runAsync(
+                      () -> {}, CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS))
+                  .thenCompose(ignored -> batchGetAll(client, remaining, accumulated, attempt + 1));
             });
+  }
+
+  static long batchGetRetryDelayMs(int attempt) {
+    long baseMs = 25L;
+    long maxMs = 1000L;
+    long expMs = Math.min(maxMs, baseMs * (1L << Math.min(Math.max(0, attempt), 6)));
+    long jitterFloorMs = Math.max(1L, expMs / 2L);
+    return ThreadLocalRandom.current().nextLong(jitterFloorMs, expMs + 1L);
   }
 
   // ---- KvStore (CAS writes)

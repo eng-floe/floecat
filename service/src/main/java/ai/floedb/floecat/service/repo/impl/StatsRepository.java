@@ -37,6 +37,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -55,6 +56,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
@@ -63,6 +65,9 @@ public class StatsRepository implements StatsStore {
   private static final String GENERATION_PUBLISHING = "PUBLISHING";
   private static final String GENERATION_PUBLISHED = "PUBLISHED";
   private static final String GENERATION_DELETING = "DELETING";
+  private static final String GENERATION_DELETED = "DELETED";
+  private static final long DEFAULT_DELETED_GENERATION_FENCE_RETENTION_MS =
+      7L * 24L * 60L * 60L * 1000L;
 
   private enum GenerationDeleteClaim {
     CLAIMED,
@@ -256,7 +261,8 @@ public class StatsRepository implements StatsStore {
             tableId.getId(),
             snapshotId,
             effectiveGenerationId,
-            requireNonBlank(fileGroupJobId, "fileGroupJobId"));
+            requireNonBlank(fileGroupJobId, "fileGroupJobId"),
+            requireNonBlank(leaseEpoch, "leaseEpoch"));
     String marker =
         requireNonBlank(leaseEpoch, "leaseEpoch") + ":" + requireSha256(artifactReferencesSha256);
     for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
@@ -294,7 +300,8 @@ public class StatsRepository implements StatsStore {
                 tableId.getId(),
                 snapshotId,
                 requireGenerationId(generationId),
-                requireNonBlank(fileGroupJobId, "fileGroupJobId")))
+                requireNonBlank(fileGroupJobId, "fileGroupJobId"),
+                requireNonBlank(leaseEpoch, "leaseEpoch")))
         .filter(PointerReferences::isOpaqueMarkerPointer)
         .map(Pointer::getBlobUri)
         .filter(marker::equals)
@@ -1580,11 +1587,18 @@ public class StatsRepository implements StatsStore {
 
   private String generationLifecycleState(
       ResourceId tableId, long snapshotId, String generationId) {
+    Pointer lifecycle =
+        pointerStore
+            .get(generationLifecyclePointer(tableId, snapshotId, generationId))
+            .orElse(null);
+    if (lifecycle != null) {
+      return blankToEmpty(lifecycle.getBlobUri());
+    }
     return pointerStore
-        .get(generationLifecyclePointer(tableId, snapshotId, generationId))
-        .map(Pointer::getBlobUri)
-        .map(StatsRepository::blankToEmpty)
-        .orElse("");
+            .get(deletedGenerationFencePointer(tableId, snapshotId, generationId))
+            .isPresent()
+        ? GENERATION_DELETED
+        : "";
   }
 
   private void ensurePublicationIntent(
@@ -1640,7 +1654,12 @@ public class StatsRepository implements StatsStore {
 
   private void ensureWritableGeneration(ResourceId tableId, long snapshotId, String generationId) {
     String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    String deletedFencePointer = deletedGenerationFencePointer(tableId, snapshotId, generationId);
     for (int attempt = 0; attempt < 8; attempt++) {
+      if (pointerStore.get(deletedFencePointer).isPresent()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "target stats generation is not writable: " + generationId + " state=DELETED");
+      }
       Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
       if (current != null) {
         String state = blankToEmpty(current.getBlobUri());
@@ -1653,6 +1672,11 @@ public class StatsRepository implements StatsStore {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_WRITING, 1L);
       if (pointerStore.compareAndSet(lifecyclePointer, 0L, next)) {
+        if (pointerStore.get(deletedFencePointer).isPresent()) {
+          pointerStore.compareAndDelete(lifecyclePointer, next.getVersion());
+          throw new BaseResourceRepository.AbortRetryableException(
+              "target stats generation is not writable: " + generationId + " state=DELETED");
+        }
         return;
       }
     }
@@ -1747,6 +1771,12 @@ public class StatsRepository implements StatsStore {
   private static String generationLifecyclePointer(
       ResourceId tableId, long snapshotId, String generationId) {
     return Keys.snapshotTargetStatsGenerationLifecyclePointer(
+        tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+  }
+
+  private static String deletedGenerationFencePointer(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return Keys.snapshotTargetStatsDeletedGenerationFencePointer(
         tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
   }
 
@@ -1964,6 +1994,9 @@ public class StatsRepository implements StatsStore {
       long minAgeMs,
       int maxBlobDeleteAttempts,
       long deadlineMs) {
+    if (maxBlobDeleteAttempts <= 0) {
+      return new GenerationGcResult(0, 0, 0, true);
+    }
     String accountId = tableId.getAccountId();
     String prefix = Keys.snapshotRootPrefix(accountId, tableId.getId());
     var candidates = new java.util.LinkedHashSet<Keys.GenerationKey>();
@@ -2007,7 +2040,7 @@ public class StatsRepository implements StatsStore {
               .get(generationLifecyclePointer(tableId, snapshotId, generationId))
               .orElse(null);
       String lifecycleState = lifecycle == null ? "" : blankToEmpty(lifecycle.getBlobUri());
-      if (GENERATION_DELETING.equals(lifecycleState)) {
+      if (GENERATION_DELETING.equals(lifecycleState) || GENERATION_DELETED.equals(lifecycleState)) {
         GenerationBlobDeleteResult result =
             deleteGenerationBlobSlice(
                 accountId,
@@ -2023,7 +2056,7 @@ public class StatsRepository implements StatsStore {
           pending = true;
           break;
         }
-        deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId);
+        deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId, true);
         reclaimed++;
         continue;
       }
@@ -2076,7 +2109,7 @@ public class StatsRepository implements StatsStore {
         pending = true;
         break;
       }
-      deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId);
+      deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId, true);
       reclaimed++;
     }
     return new GenerationGcResult(reclaimed, deleteAttempts, blobsDeleted, pending);
@@ -2125,7 +2158,11 @@ public class StatsRepository implements StatsStore {
   }
 
   private void deleteGenerationPointers(
-      String accountId, String tableId, long snapshotId, String generationId) {
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      boolean retainDeletedTombstone) {
     pointerStore.deleteByPrefix(
         Keys.snapshotTargetStatsGenerationPrefix(accountId, tableId, snapshotId, generationId));
     pointerStore.deleteByPrefix(
@@ -2133,11 +2170,29 @@ public class StatsRepository implements StatsStore {
             accountId, tableId, snapshotId, generationId));
     pointerStore.deleteByPrefix(
         Keys.snapshotIndexArtifactGenerationPrefix(accountId, tableId, snapshotId, generationId));
+    pointerStore.deleteByPrefix(
+        Keys.snapshotTargetStatsGenerationPointerPrefix(
+                accountId, tableId, snapshotId, generationId)
+            + "prepared-file-groups/");
+    pointerStore.delete(
+        Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
+            accountId, tableId, snapshotId, generationId));
+    if (retainDeletedTombstone) {
+      markGenerationDeleted(resourceId(accountId, tableId), snapshotId, generationId);
+    } else {
+      pointerStore.delete(
+          Keys.snapshotTargetStatsGenerationLifecyclePointer(
+              accountId, tableId, snapshotId, generationId));
+      pointerStore.delete(
+          Keys.snapshotTargetStatsDeletedGenerationFencePointer(
+              accountId, tableId, snapshotId, generationId));
+    }
   }
 
   private void deleteGeneration(
       String accountId, String tableId, long snapshotId, String generationId) {
-    deleteQuietly(() -> deleteGenerationPointers(accountId, tableId, snapshotId, generationId));
+    deleteQuietly(
+        () -> deleteGenerationPointers(accountId, tableId, snapshotId, generationId, false));
     deleteQuietly(
         () ->
             blobStore.deletePrefix(
@@ -2194,6 +2249,56 @@ public class StatsRepository implements StatsStore {
         "stats generation GC claim restore conflicted repeatedly: " + generationId);
   }
 
+  private void markGenerationDeleted(ResourceId tableId, long snapshotId, String generationId) {
+    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    String deletedFencePointer = deletedGenerationFencePointer(tableId, snapshotId, generationId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
+      if (current == null) {
+        if (pointerStore.get(deletedFencePointer).isPresent()) {
+          return;
+        }
+        throw new StorageAbortRetryableException(
+            "stats generation lifecycle disappeared while marking deleted: " + generationId);
+      }
+      String state = blankToEmpty(current.getBlobUri());
+      if (!GENERATION_DELETING.equals(state) && !GENERATION_DELETED.equals(state)) {
+        throw new StorageAbortRetryableException(
+            "stats generation cannot be marked deleted: " + generationId + " state=" + state);
+      }
+      Pointer deletedFence =
+          PointerReferences.opaqueMarkerPointer(deletedFencePointer, GENERATION_DELETED, 1L)
+              .toBuilder()
+              .setExpiresAt(
+                  Timestamps.fromMillis(
+                      System.currentTimeMillis() + deletedGenerationFenceRetentionMs()))
+              .build();
+      Pointer existingFence = pointerStore.get(deletedFencePointer).orElse(null);
+      if (existingFence == null
+          && !pointerStore.compareAndSet(deletedFencePointer, 0L, deletedFence)) {
+        continue;
+      }
+      if (pointerStore.compareAndDelete(lifecyclePointer, current.getVersion())
+          || pointerStore.get(lifecyclePointer).isEmpty()) {
+        return;
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "stats generation deleted lifecycle update conflicted repeatedly: " + generationId);
+  }
+
+  private static long deletedGenerationFenceRetentionMs() {
+    long configured =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.gc.stats-generation-deleted-fence-retention-ms", Long.class)
+            .orElse(DEFAULT_DELETED_GENERATION_FENCE_RETENTION_MS);
+    long jobRetention =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
+            .orElse(24L * 60L * 60L * 1000L);
+    return Math.max(configured, jobRetention + 24L * 60L * 60L * 1000L);
+  }
+
   private void deleteGenerationStrict(
       String accountId, String tableId, long snapshotId, String generationId) {
     String targetPointerPrefix =
@@ -2203,6 +2308,13 @@ public class StatsRepository implements StatsStore {
             accountId, tableId, snapshotId, generationId);
     String indexPointerPrefix =
         Keys.snapshotIndexArtifactGenerationPrefix(accountId, tableId, snapshotId, generationId);
+    String preparedPointerPrefix =
+        Keys.snapshotTargetStatsGenerationPointerPrefix(
+                accountId, tableId, snapshotId, generationId)
+            + "prepared-file-groups/";
+    String publicationIntentPointer =
+        Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
+            accountId, tableId, snapshotId, generationId);
     String blobPrefix =
         Keys.snapshotTargetStatsBlobPrefix(accountId, tableId, snapshotId)
             + "generations/"
@@ -2217,20 +2329,22 @@ public class StatsRepository implements StatsStore {
     try {
       pointerStore.deleteByPrefix(protectionPointerPrefix);
     } catch (RuntimeException e) {
-      if (failure == null) {
-        failure = e;
-      } else {
-        failure.addSuppressed(e);
-      }
+      failure = accumulateFailure(failure, e);
     }
     try {
       pointerStore.deleteByPrefix(indexPointerPrefix);
     } catch (RuntimeException e) {
-      if (failure == null) {
-        failure = e;
-      } else {
-        failure.addSuppressed(e);
-      }
+      failure = accumulateFailure(failure, e);
+    }
+    try {
+      pointerStore.deleteByPrefix(preparedPointerPrefix);
+    } catch (RuntimeException e) {
+      failure = accumulateFailure(failure, e);
+    }
+    try {
+      pointerStore.delete(publicationIntentPointer);
+    } catch (RuntimeException e) {
+      failure = accumulateFailure(failure, e);
     }
     try {
       blobStore.deletePrefix(blobPrefix);
@@ -2247,10 +2361,30 @@ public class StatsRepository implements StatsStore {
     }
     if (pointerStore.countByPrefix(targetPointerPrefix) != 0
         || pointerStore.countByPrefix(protectionPointerPrefix) != 0
+        || pointerStore.countByPrefix(indexPointerPrefix) != 0
+        || pointerStore.countByPrefix(preparedPointerPrefix) != 0
+        || pointerStore.get(publicationIntentPointer).isPresent()
         || !blobStore.list(blobPrefix, 1, "").keys().isEmpty()) {
       throw new StorageAbortRetryableException(
           "target stats generation cleanup was incomplete: " + generationId);
     }
+  }
+
+  private static ResourceId resourceId(String accountId, String tableId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+        .setId(tableId)
+        .build();
+  }
+
+  private static RuntimeException accumulateFailure(
+      RuntimeException current, RuntimeException next) {
+    if (current == null) {
+      return next;
+    }
+    current.addSuppressed(next);
+    return current;
   }
 
   private static String newGenerationId() {

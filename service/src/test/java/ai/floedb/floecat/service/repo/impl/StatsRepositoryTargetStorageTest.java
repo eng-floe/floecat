@@ -1705,19 +1705,57 @@ class StatsRepositoryTargetStorageTest {
     assertThat(blobStore.get(supersededManifest)).isNotNull();
 
     int passes = 1;
+    int reclaimed = result.generationsReclaimed();
     while (result.pending() && passes < 10) {
       result =
           statsRepository.deleteUnreferencedGenerations(
               TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
       assertThat(result.blobDeleteAttempts()).isLessThanOrEqualTo(2);
+      reclaimed += result.generationsReclaimed();
       passes++;
     }
 
     assertThat(result.pending()).isFalse();
-    assertThat(result.generationsReclaimed()).isEqualTo(1);
+    assertThat(reclaimed).isEqualTo(1);
     assertThat(blobStore.get(supersededManifest)).isNull();
     assertThat(blobStore.get(indexWrapper)).isNull();
     assertThat(blobStore.list(generationBlobPrefix, 1, "").keys()).isEmpty();
+    String lifecyclePointer =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    String deletedFencePointer =
+        Keys.snapshotTargetStatsDeletedGenerationFencePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(pointerStore.get(lifecyclePointer)).isEmpty();
+    assertThat(pointerStore.get(deletedFencePointer).orElseThrow().getBlobUri())
+        .isEqualTo("DELETED");
+    assertThat(pointerStore.get(deletedFencePointer).orElseThrow().hasExpiresAt()).isTrue();
+    assertThatThrownBy(
+            () ->
+                statsRepository.protectPrewrittenStatsObjectsInGeneration(
+                    TABLE_ID, snapshotId, generationId, "late-terminal-replay", List.of()))
+        .hasMessageContaining("state=DELETED");
+
+    StatsRepository.GenerationGcResult repeat =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
+    assertThat(repeat.generationsReclaimed()).isZero();
+    assertThat(repeat.blobDeleteAttempts()).isZero();
+  }
+
+  @Test
+  void generationGcDoesNotScanWhenBlobDeleteBudgetIsZero() {
+    RepoTestPointerStores.CountingPrefixScanPointerStore pointerStore =
+        new RepoTestPointerStores.CountingPrefixScanPointerStore(new InMemoryPointerStore());
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+
+    StatsRepository.GenerationGcResult result =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 0, Long.MAX_VALUE);
+
+    assertThat(result.pending()).isTrue();
+    assertThat(result.blobDeleteAttempts()).isZero();
+    assertThat(pointerStore.listPointersByPrefixCalls()).isZero();
   }
 
   @Test
@@ -2307,8 +2345,8 @@ class StatsRepositoryTargetStorageTest {
 
     assertThat(batchCalls).hasValue(6);
     assertThat(batchReads).hasValue(3);
-    // The generation lifecycle check is a single point read; target pointers are batch-read.
-    assertThat(individualReads).hasValue(1);
+    // Lifecycle and deletion-fence checks are point reads; target pointers are batch-read.
+    assertThat(individualReads).hasValue(3);
     assertThat(
             pointerDelegate.countByPrefix(
                 Keys.snapshotTargetStatsGenerationDirectoryPointer(

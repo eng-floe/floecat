@@ -112,7 +112,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     ReconcileSnapshotTask task =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
     return task.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
-        && task.fileGroupPlanRecorded();
+        && task.fileGroupPlanRecorded()
+        && task.fileGroupCount() > 0;
   }
 
   @Override
@@ -248,6 +249,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
       }
+      List<StatsObjectDescriptor> uniqueFileStats = deduplicateSnapshotFileStats(fileStats);
       String resultId = resultId(lease, "success");
       RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
           workerClient.prepareSnapshotFinalizeSuccess(
@@ -257,7 +259,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
               input.captureManifestUri(),
               input.sourceFileCount(),
               descriptors,
-              fileStats,
+              uniqueFileStats,
               finalStats,
               indexArtifacts,
               List.copyOf(realizedStatsSelectors),
@@ -518,6 +520,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         if (!successful.contains(executionPlan.filePath())) {
           continue;
         }
+        var deletionVector = executionPlan.deletionVector();
+        if (deletionVector != null && deletionVector.onDisk()) {
+          expected.add(
+              StatsTargetIdentity.storageId(
+                  StatsTargetIdentity.fileTarget(deletionVector.pathOrInlineDv())));
+        }
         for (var deleteFile : executionPlan.icebergDeleteFiles()) {
           if (deleteFile != null && !deleteFile.filePath().isBlank()) {
             expected.add(
@@ -528,6 +536,35 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
     }
     return Set.copyOf(expected);
+  }
+
+  static List<StatsObjectDescriptor> deduplicateSnapshotFileStats(
+      List<StatsObjectDescriptor> descriptors) {
+    if (descriptors == null || descriptors.isEmpty()) {
+      return List.of();
+    }
+    Map<String, StatsObjectDescriptor> byTarget = new java.util.TreeMap<>();
+    for (StatsObjectDescriptor descriptor : descriptors) {
+      if (descriptor == null || descriptor.getTargetStorageId().isBlank()) {
+        throw new IllegalArgumentException("invalid snapshot file stats descriptor");
+      }
+      StatsObjectDescriptor existing =
+          byTarget.putIfAbsent(descriptor.getTargetStorageId(), descriptor);
+      if (existing == null) {
+        continue;
+      }
+      if (existing.getPayloadBytes() != descriptor.getPayloadBytes()
+          || !MessageDigest.isEqual(
+              existing.getPayloadSha256().toByteArray(),
+              descriptor.getPayloadSha256().toByteArray())) {
+        throw new IllegalArgumentException(
+            "conflicting snapshot file stats for target " + descriptor.getTargetStorageId());
+      }
+      if (descriptor.getPayloadUri().compareTo(existing.getPayloadUri()) < 0) {
+        byTarget.put(descriptor.getTargetStorageId(), descriptor);
+      }
+    }
+    return List.copyOf(byTarget.values());
   }
 
   static void validateIndexArtifactCoverage(
@@ -665,16 +702,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
   private static byte[] sha256(byte[] bytes) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is unavailable", e);
-    }
-  }
-
-  private static byte[] sha256(byte[] bytes, int offset, int length) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      digest.update(bytes, offset, length);
-      return digest.digest();
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
     }
