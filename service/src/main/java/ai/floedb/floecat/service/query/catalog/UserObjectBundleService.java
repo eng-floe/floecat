@@ -163,7 +163,7 @@ public class UserObjectBundleService {
   @Inject Observability observability;
 
   @PreDestroy
-  void closeCancellationTeardownExecutor() {
+  void closeExecutors() {
     metadataLookupExecutor.shutdownNow();
     cancellationTeardownExecutor.close();
   }
