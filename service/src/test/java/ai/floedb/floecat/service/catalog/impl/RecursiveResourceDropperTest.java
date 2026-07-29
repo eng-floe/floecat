@@ -339,6 +339,9 @@ class RecursiveResourceDropperTest {
         .thenReturn(
             Optional.of(new TopologyGraph.NamespaceRef(ancestorId, "db", CATALOG, List.of("db"))));
     when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns"))).thenReturn(List.of());
+    // The teardown delete reports whether it actually removed the pointer, and only a real removal
+    // is counted.
+    when(namespaceRepo.delete(eq(ROOT_NS), any())).thenReturn(true);
 
     // dropNamespaceTree is the teardown entry point: it deletes the root itself, bumping ancestors.
     var summary = dropper.dropNamespaceTree(nested);
@@ -483,12 +486,6 @@ class RecursiveResourceDropperTest {
             .setId("ns-child")
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
-    var grandchildId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("ns-grandchild")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
     // Scanned as "ns.child"...
     when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
         .thenReturn(
@@ -507,11 +504,8 @@ class RecursiveResourceDropperTest {
                     .setDisplayName("renamed")
                     .build()));
     // A child was created under the new name. Only a probe on the current path can see it.
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns", "renamed"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(
-                    grandchildId, "g", CATALOG, List.of("ns", "renamed", "g"))));
+    when(namespaceRepo.hasChildUnder(eq("acct"), eq("cat"), eq(List.of("ns", "renamed"))))
+        .thenReturn(true);
     // Everything else lets the delete through, so the abort below can only come from seeing that
     // child: probing the stale path would find nothing and this would commit.
     when(markerStore.advanceNamespaceMarker(eq(childId), anyLong())).thenReturn(true);
@@ -614,6 +608,32 @@ class RecursiveResourceDropperTest {
 
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(pointerStore, never()).compareAndSetBatch(any());
+  }
+
+  /**
+   * Account teardown enumerates every namespace in the catalog, so a nested one is reached again
+   * after its parent's subtree already destroyed it. Re-processing it would re-run both scans, the
+   * marker bumps and the cache evictions, and would add it to a count that is the audit record for
+   * an irreversible operation — the reported total has to be namespaces actually removed.
+   */
+  @Test
+  void teardownSkipsANestedNamespaceAlreadyDestroyedWithItsParent() {
+    var nestedId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-nested")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var nested = new TopologyGraph.NamespaceRef(nestedId, "child", CATALOG, List.of("ns", "child"));
+    // Its by-path row is gone: the parent's subtree drop already took it.
+    when(pointerStore.get(eq(Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child")))))
+        .thenReturn(Optional.empty());
+
+    var summary = dropper.dropNamespaceTree(nested, CATALOG);
+
+    assertEquals(0, summary.namespacesDeleted);
+    verify(namespaceRepo, never()).delete(eq(nestedId), any());
+    verify(markerStore, never()).bumpCatalogMarker(any());
   }
 
   @Test

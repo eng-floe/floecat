@@ -797,12 +797,13 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   /**
    * Whether {@code parentPath} has a direct child namespace, decided from by-path pointer rows
    * rather than content. This gates a delete, so an unparseable child namespace must be able to
-   * block it — but by being counted, not by failing the probe with a corruption error.
+   * block it — but by being counted, not by failing the probe with a corruption error. Streams and
+   * stops at the first hit: the prefix spans the whole subtree, and this runs twice per delete
+   * request.
    */
   private boolean hasImmediateChildren(
       String accountId, String catalogId, List<String> parentPath) {
-    return namespaceRepo.listRefsUnder(accountId, catalogId, parentPath).stream()
-        .anyMatch(child -> child.pathSegments().size() == parentPath.size() + 1);
+    return namespaceRepo.hasChildUnder(accountId, catalogId, parentPath);
   }
 
   private CatalogSurfaceNamespaces namespaceSurface() {

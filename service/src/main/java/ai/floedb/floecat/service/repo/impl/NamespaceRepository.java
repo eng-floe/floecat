@@ -164,6 +164,43 @@ public class NamespaceRepository {
   }
 
   /**
+   * Whether {@code parentPath} has at least one direct child namespace.
+   *
+   * <p>Streams pages and returns on the first hit rather than draining the prefix like {@link
+   * #listRefsUnder}: the prefix covers the whole subtree, so materializing it turns an existence
+   * check into work proportional to everything underneath. By-path keys sort so a direct child is
+   * usually in the first page. Blob-free, so an unparseable child is still counted rather than
+   * failing the probe.
+   */
+  public boolean hasChildUnder(String accountId, String catalogId, List<String> parentPath) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentPath);
+    var seenTokens = new java.util.HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      for (var row :
+          pointerStore.listPointersByPrefix(prefix, CHILD_PROBE_PAGE_SIZE, token, next)) {
+        if (Keys.extractNamespacePathSegments(accountId, catalogId, row.getKey()).size()
+            == parentPath.size() + 1) {
+          return true;
+        }
+      }
+      token = next.toString();
+      if (token.isBlank()) {
+        return false;
+      }
+      // A store that returns a non-advancing cursor would spin here forever with nothing
+      // observable.
+      if (!seenTokens.add(token)) {
+        throw new IllegalStateException(
+            "pointer scan did not advance; repeated page token: " + token);
+      }
+    }
+  }
+
+  private static final int CHILD_PROBE_PAGE_SIZE = 200;
+
+  /**
    * Page token resuming a {@link #list} scan immediately after the namespace at {@code fullPath}.
    * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
    * instead of after the whole over-fetched batch.

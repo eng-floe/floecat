@@ -136,8 +136,9 @@ public class RecursiveResourceDropper {
     // marker guard. A guarded drop can raise AbortRetryableException, which would retry the account
     // delete after its pointer is already gone and skip cleanup entirely, orphaning resources.
     var summary = dropNamespaceContents(root, false);
-    deleteNamespace(root);
-    summary.namespacesDeleted++;
+    if (deleteNamespace(root)) {
+      summary.namespacesDeleted++;
+    }
     return summary;
   }
 
@@ -156,9 +157,24 @@ public class RecursiveResourceDropper {
   /**
    * Teardown entry point for one namespace and everything under it, driven from its pointer row so
    * an unparseable namespace is still removed rather than aborting the account's cleanup.
+   *
+   * <p>Callers enumerate every namespace in the catalog, not just the top-level ones, because a
+   * damaged tree can leave a deep namespace whose ancestors are already gone and nothing else would
+   * reach it. By-path keys sort parents before children, so the shallowest ref destroys its whole
+   * subtree and the nested refs that follow are already handled by the time they come up. Those are
+   * skipped here — a redundant pass would re-run both scans, the marker bumps, and the cache
+   * evictions, and would count namespaces it did not delete into an audit record for an
+   * irreversible operation.
    */
   public DropSummary dropNamespaceTree(TopologyGraph.NamespaceRef ref, ResourceId catalogId) {
-    return dropNamespaceTree(namespaceFromRef(ref, catalogId));
+    var namespace = namespaceFromRef(ref, catalogId);
+    String byPathKey =
+        Keys.namespacePointerByPath(
+            catalogId.getAccountId(), catalogId.getId(), ref.pathSegments());
+    if (pointerStore.get(byPathKey).isEmpty()) {
+      return new DropSummary();
+    }
+    return dropNamespaceTree(namespace);
   }
 
   /** Removes a table after its pointer has already been deleted through a public mutation. */
@@ -347,10 +363,7 @@ public class RecursiveResourceDropper {
    * failing the probe outright.
    */
   private boolean hasImmediateChildren(ResourceId catalogId, List<String> parentPath) {
-    return namespaceRepo
-        .listRefsUnder(catalogId.getAccountId(), catalogId.getId(), parentPath)
-        .stream()
-        .anyMatch(child -> child.pathSegments().size() == parentPath.size() + 1);
+    return namespaceRepo.hasChildUnder(catalogId.getAccountId(), catalogId.getId(), parentPath);
   }
 
   private static BaseResourceRepository.AbortRetryableException namespaceChanged(
@@ -752,10 +765,10 @@ public class RecursiveResourceDropper {
         committed);
   }
 
-  private void deleteNamespace(Namespace namespace) {
+  private boolean deleteNamespace(Namespace namespace) {
     // Account teardown: the whole tree and its account pointer are going away, so there is nothing
     // for a fence to protect and nothing a late child could be orphaned under.
-    deleteNamespace(namespace, null, BatchGuard.NONE, UNPINNED);
+    return deleteNamespace(namespace, null, BatchGuard.NONE, UNPINNED);
   }
 
   /**
@@ -772,16 +785,23 @@ public class RecursiveResourceDropper {
    * subtree ({@link #UNPINNED} in account teardown, where there is no subtree to leave). Without
    * it, deleting by id would resolve the namespace's current pointer and remove one that had been
    * reparented out of the subtree since the scan.
+   *
+   * @return whether this call removed the namespace's pointer. False in teardown when it was
+   *     already gone — the owned state is still purged, but the caller must not count a deletion it
+   *     did not perform, since that count is the audit record for an irreversible operation.
    */
-  private void deleteNamespace(
+  private boolean deleteNamespace(
       Namespace namespace,
       ResourceId skipMarkerId,
       BatchGuard childrenGuard,
       long expectedVersion) {
     var namespaceId = namespace.getResourceId();
+    boolean removed;
     if (expectedVersion == UNPINNED) {
-      namespaceRepo.delete(namespaceId, childrenGuard);
-    } else if (!namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion, childrenGuard)) {
+      removed = namespaceRepo.delete(namespaceId, childrenGuard);
+    } else if (namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion, childrenGuard)) {
+      removed = true;
+    } else {
       throw namespaceChanged(namespaceId);
     }
     reclaimStrandedNamespacePath(namespace);
@@ -791,11 +811,14 @@ public class RecursiveResourceDropper {
     markerStore.bumpCatalogMarker(namespace.getCatalogId());
     bumpParentNamespaceMarkers(namespace, skipMarkerId);
     CLEANUP_LOG.infof(
-        "recursive_drop_namespace account_id=%s catalog_id=%s namespace_id=%s display_name=%s",
+        "recursive_drop_namespace account_id=%s catalog_id=%s namespace_id=%s display_name=%s"
+            + " removed=%s",
         namespaceId.getAccountId(),
         namespace.getCatalogId().getId(),
         namespaceId.getId(),
-        namespace.getDisplayName());
+        namespace.getDisplayName(),
+        removed);
+    return removed;
   }
 
   /**
