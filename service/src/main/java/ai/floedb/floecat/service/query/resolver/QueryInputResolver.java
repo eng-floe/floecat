@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -62,7 +63,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -140,8 +140,8 @@ public class QueryInputResolver {
 
   // Metadata calls run separately from the bounded planning pool so cancellation can interrupt the
   // active store call and release its planning worker without waiting for a non-cooperating client.
-  // A direct-handoff executor has no queue: admission happens before submission and remains held
-  // until the underlying call exits, so stalled work cannot retain cancelled request closures.
+  // Admission happens before submission and remains held until the underlying call exits. Its
+  // bounded queue bridges worker turnover without retaining unbounded cancelled request closures.
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
 
@@ -195,7 +195,7 @@ public class QueryInputResolver {
             MAX_CONCURRENT_INPUT_RESOLUTIONS,
             0L,
             TimeUnit.MILLISECONDS,
-            new SynchronousQueue<>(),
+            new ArrayBlockingQueue<>(MAX_CONCURRENT_INPUT_RESOLUTIONS),
             new ThreadPoolExecutor.AbortPolicy());
     ownedBlockingExecutor = planningExecutor;
     ownedMetadataIoExecutor = ioExecutor;
@@ -709,9 +709,6 @@ public class QueryInputResolver {
       acquireInputResolutionPermit(cancelled);
       acquired = true;
       return operation.get();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new CancellationException("interrupted while awaiting resolver I/O capacity");
     } finally {
       if (acquired) {
         concurrentInputResolutionPermits.release();

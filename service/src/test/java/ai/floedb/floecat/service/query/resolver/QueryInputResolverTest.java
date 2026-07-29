@@ -437,6 +437,59 @@ public class QueryInputResolverTest {
     }
   }
 
+  @Test
+  void admittedLookupStartsWhenAStalledWorkerTurnsOver() throws Exception {
+    int capacity = 64;
+    var graph = new TurnoverPinGraph(capacity);
+    var resolverWithTurnover = new QueryInputResolver(graph, null, 1, capacity);
+    resolverWithTurnover.postConstruct();
+    List<CompletableFuture<?>> activeRequests =
+        java.util.stream.IntStream.range(0, capacity)
+            .mapToObj(
+                index ->
+                    CompletableFuture.runAsync(
+                        () ->
+                            resolverWithTurnover.resolveInputs(
+                                "q-turnover-active-" + index,
+                                "cid",
+                                List.of(
+                                    QueryInput.newBuilder()
+                                        .setTableId(rid("TURNOVER-ACTIVE-" + index))
+                                        .build()),
+                                Optional.empty(),
+                                Optional.empty(),
+                                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                                null,
+                                () -> false)))
+            .toList();
+    CompletableFuture<Throwable> admitted = null;
+    try {
+      assertTrue(graph.allPinsStarted.await(2, TimeUnit.SECONDS));
+      admitted =
+          resolveCancellable(
+              () ->
+                  resolverWithTurnover.resolveInputs(
+                      "q-turnover-waiting",
+                      "cid",
+                      List.of(QueryInput.newBuilder().setTableId(rid("TURNOVER-WAITING")).build()),
+                      Optional.empty(),
+                      Optional.empty(),
+                      new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                      null,
+                      () -> false));
+      graph.releases.release();
+      assertTrue(graph.waitingPinStarted.await(1, TimeUnit.SECONDS));
+      assertFalse(admitted.isDone());
+    } finally {
+      graph.releases.release(capacity);
+      CompletableFuture.allOf(activeRequests.toArray(CompletableFuture[]::new)).join();
+      if (admitted != null) {
+        assertEquals(null, admitted.join());
+      }
+      resolverWithTurnover.closeBlockingExecutor();
+    }
+  }
+
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
@@ -1872,6 +1925,38 @@ public class QueryInputResolverTest {
       while (true) {
         try {
           releasePins.await();
+          return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+        } catch (InterruptedException ignored) {
+          // Simulate a store client that does not abort an active request on interruption.
+        }
+      }
+    }
+  }
+
+  /** Releases one blocked pin at a time to exercise executor-worker turnover. */
+  static final class TurnoverPinGraph extends FakeGraph {
+    final CountDownLatch allPinsStarted;
+    final CountDownLatch waitingPinStarted = new CountDownLatch(1);
+    final java.util.concurrent.Semaphore releases = new java.util.concurrent.Semaphore(0);
+
+    TurnoverPinGraph(int capacity) {
+      this.allPinsStarted = new CountDownLatch(capacity);
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if ("TURNOVER-WAITING".equals(tableId.getId())) {
+        waitingPinStarted.countDown();
+      } else {
+        allPinsStarted.countDown();
+      }
+      while (true) {
+        try {
+          releases.acquire();
           return super.tablePinFor(correlationId, tableId, override, asOfDefault);
         } catch (InterruptedException ignored) {
           // Simulate a store client that does not abort an active request on interruption.
