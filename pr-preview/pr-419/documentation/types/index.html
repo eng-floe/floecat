@@ -2149,8 +2149,11 @@ with <code>""</code> escaping. Nullability is not part of the grammar (parsing d
 <p>On the wire, <code>SchemaColumn.type</code> is the single authoritative semantic type: a recursive
 <code>floecat.types.LogicalType</code> message that preserves the full nested shape <em>including</em>
 element/value/field nullability, which the string grammar cannot carry. (The former flat
-<code>logical_type</code> string field is reserved; persisted columns written before the change must be
-re-reconciled from upstream metadata.) <code>LogicalTypeProtoAdapter.toProto</code>/<code>fromProto</code> convert
+<code>logical_type</code> string field is reserved; persisted columns written before the change are
+re-reconciled from upstream metadata where an upstream exists, and view output columns with no
+upstream are upgraded transparently on load via
+<code>LogicalTypeProtoAdapter.upgradeLegacyColumn</code>, which recovers the legacy string from protobuf
+unknown fields.) <code>LogicalTypeProtoAdapter.toProto</code>/<code>fromProto</code> convert
 between the JVM model and the wire message; the string grammar remains for textual inputs
 (generic schema declarations), docs, and debugging via <code>LogicalTypeFormat</code>.</p>
 <p>Nested fields additionally surface as child <code>SchemaColumn</code> rows with their own canonical paths —
