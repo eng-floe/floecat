@@ -367,6 +367,76 @@ public class QueryInputResolverTest {
     }
   }
 
+  @Test
+  void cancellationDoesNotQueueMetadataWorkBehindStalledCalls() throws Exception {
+    int capacity = 64;
+    var graph = new SaturatedPinGraph(capacity);
+    var saturatedResolver = new QueryInputResolver(graph, null, 1, capacity);
+    saturatedResolver.postConstruct();
+    List<AtomicBoolean> activeCancellation =
+        java.util.stream.IntStream.range(0, capacity)
+            .mapToObj(ignored -> new java.util.concurrent.atomic.AtomicBoolean())
+            .toList();
+    List<CompletableFuture<Throwable>> activeRequests =
+        java.util.stream.IntStream.range(0, capacity)
+            .mapToObj(
+                index ->
+                    resolveCancellable(
+                        () ->
+                            saturatedResolver.resolveInputs(
+                                "q-active-" + index,
+                                "cid",
+                                List.of(
+                                    QueryInput.newBuilder()
+                                        .setTableId(rid("ACTIVE-" + index))
+                                        .build()),
+                                Optional.empty(),
+                                Optional.empty(),
+                                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                                null,
+                                activeCancellation.get(index)::get)))
+            .toList();
+    try {
+      assertTrue(graph.allPinsStarted.await(2, TimeUnit.SECONDS));
+      List<AtomicBoolean> cancelled =
+          java.util.stream.IntStream.range(0, 16)
+              .mapToObj(ignored -> new java.util.concurrent.atomic.AtomicBoolean())
+              .toList();
+      List<CompletableFuture<Throwable>> cancelledRequests =
+          java.util.stream.IntStream.range(0, cancelled.size())
+              .mapToObj(
+                  index ->
+                      resolveCancellable(
+                          () ->
+                              saturatedResolver.resolveInputs(
+                                  "q-cancel-" + index,
+                                  "cid",
+                                  List.of(
+                                      QueryInput.newBuilder()
+                                          .setTableId(rid("CANCEL-" + index))
+                                          .build()),
+                                  Optional.empty(),
+                                  Optional.empty(),
+                                  new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                                  null,
+                                  cancelled.get(index)::get)))
+              .toList();
+      Thread.sleep(50);
+      assertEquals(0, metadataIoQueueSize(saturatedResolver));
+      cancelled.forEach(flag -> flag.set(true));
+      for (CompletableFuture<Throwable> request : cancelledRequests) {
+        assertTrue(
+            request.get(250, TimeUnit.MILLISECONDS)
+                instanceof java.util.concurrent.CancellationException);
+      }
+      assertEquals(0, metadataIoQueueSize(saturatedResolver));
+    } finally {
+      graph.releasePins.countDown();
+      CompletableFuture.allOf(activeRequests.toArray(CompletableFuture[]::new)).join();
+      saturatedResolver.closeBlockingExecutor();
+    }
+  }
+
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
@@ -1780,6 +1850,44 @@ public class QueryInputResolverTest {
         inFlightPinLookups.decrementAndGet();
       }
       return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+  }
+
+  /** Blocks every pin lookup so saturation can expose retained executor work. */
+  static final class SaturatedPinGraph extends FakeGraph {
+    final CountDownLatch allPinsStarted;
+    final CountDownLatch releasePins = new CountDownLatch(1);
+
+    SaturatedPinGraph(int capacity) {
+      this.allPinsStarted = new CountDownLatch(capacity);
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      allPinsStarted.countDown();
+      while (true) {
+        try {
+          releasePins.await();
+          return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+        } catch (InterruptedException ignored) {
+          // Simulate a store client that does not abort an active request on interruption.
+        }
+      }
+    }
+  }
+
+  private static int metadataIoQueueSize(QueryInputResolver resolver) {
+    try {
+      java.lang.reflect.Field field =
+          QueryInputResolver.class.getDeclaredField("metadataIoExecutor");
+      field.setAccessible(true);
+      return ((java.util.concurrent.ThreadPoolExecutor) field.get(resolver)).getQueue().size();
+    } catch (ReflectiveOperationException e) {
+      throw new AssertionError("unable to inspect resolver metadata executor", e);
     }
   }
 
