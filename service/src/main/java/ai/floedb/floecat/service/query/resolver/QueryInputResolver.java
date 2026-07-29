@@ -326,9 +326,10 @@ public class QueryInputResolver {
   }
 
   /**
-   * Resolve one input to its {@link InputPlan}, reading the metadata graph and the shared
-   * current-snapshot cache. Does not read or write {@code state.resolved} or {@code
-   * state.pinByTableId}; the caller merges the returned pins.
+   * Resolve one input to its {@link InputPlan}, reading the metadata graph and updating the shared
+   * current-snapshot cache and diagnostics. It does not read or write {@code state.resolved} or
+   * {@code state.pinByTableId}; the caller merges the returned pins. Callers invoke this method
+   * serially unless those cache and diagnostics collaborators are thread-safe.
    */
   private InputPlan planInput(
       ResolutionState state, QueryInput in, Map<NameRef, Optional<ResourceId>> resolvedNames) {
