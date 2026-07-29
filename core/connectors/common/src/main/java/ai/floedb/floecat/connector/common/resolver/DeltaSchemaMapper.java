@@ -69,27 +69,29 @@ final class DeltaSchemaMapper {
 
   static SchemaDescriptor map(
       ColumnIdAlgorithm cid_algo, String schemaJson, Set<String> partitionKeys) {
-    SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
-
     try {
       Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
-      AtomicInteger ordinals = new AtomicInteger(0);
       try {
         StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
-        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys, ordinals);
+        SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
+        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys, new AtomicInteger(0));
+        return sb.build();
       } catch (Exception kernelFailure) {
+        // The kernel walk can throw mid-traversal (e.g. malformed field metadata), after having
+        // already emitted columns — the fallback must start from a fresh builder and ordinal
+        // counter or the re-walk duplicates every column emitted before the failure.
         JsonNode root = MAPPER.readTree(schemaJson);
         JsonNode fields = root.get("fields");
         if (fields == null || !fields.isArray()) {
           throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
         }
-        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys, ordinals);
+        SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
+        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys, new AtomicInteger(0));
+        return sb.build();
       }
     } catch (Exception e) {
       throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
-
-    return sb.build();
   }
 
   private static void walkDeltaStruct(

@@ -225,6 +225,23 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
+  void kernelFailoverDoesNotDuplicateColumns() {
+    // A string-valued delta.columnMapping.id makes the kernel walk throw mid-traversal, after
+    // emitting earlier columns; the fallback re-walk must start from a fresh builder/ordinals.
+    String json =
+        """
+        {"type":"struct","fields":[
+          {"name":"a","type":"integer","nullable":true,"metadata":{}},
+          {"name":"b","type":"string","nullable":true,
+           "metadata":{"delta.columnMapping.id":"not-a-number"}}
+        ]}
+        """;
+    SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
+    assertThat(desc.getColumnsList()).extracting(SchemaColumn::getName).containsExactly("a", "b");
+    assertThat(desc.getColumnsList()).extracting(SchemaColumn::getOrdinal).containsExactly(1, 2);
+  }
+
+  @Test
   void arrayOfPrimitiveCarriesElementTypeInFullType() {
     String json =
         """
