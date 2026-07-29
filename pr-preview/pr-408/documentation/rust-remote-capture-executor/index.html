@@ -2053,11 +2053,10 @@ An old worker also cannot complete default page-index capture because it cannot 
 <p>If you only need file-group capture replacement, you do not need to replace the Java planner
 workers. <code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, and <code>PLAN_SNAPSHOT</code> can remain in the
 existing JVM control plane or executor fleet.</p>
-<p>Query-driven stats-only work is marked with <code>floecat.stats.query-driven=true</code>. The JVM snapshot
-planner attempts connector-native direct stats for that work and, when direct stats are unavailable,
-records an empty direct result without creating <code>EXEC_FILE_GROUP</code> jobs. A Rust file-group worker
-should therefore never receive this guarded query-driven fallback. Explicit capture-control jobs
-continue to use file-group fallback and remain part of the worker contract described below.</p>
+<p>Query-driven stats-only work does not carry a request-origin marker. Content-state coverage decides
+whether execution is required. For genuinely missing coverage, the JVM snapshot planner attempts
+connector-native direct stats first and can enqueue <code>EXEC_FILE_GROUP</code> jobs when the connector cannot
+satisfy the request directly.</p>
 <p>If a remote implementation also owns <code>PLAN_SNAPSHOT</code>, it must preserve the leased snapshot task's
 <code>source_revision</code>, <code>metadata_fingerprint</code>, and complete <code>requested_coverage</code> in its successful
 planned task. Dropping those fields disables or corrupts content-state deduplication. A remote

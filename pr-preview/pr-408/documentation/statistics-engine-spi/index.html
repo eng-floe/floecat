@@ -1911,17 +1911,15 @@ Each item is a store read; misses fall back to async enqueue with <code>SKIPPED<
   <code>table_id</code> + <code>snapshot_id</code> + encoded <code>target_spec</code> + <code>column_selectors</code>.</li>
 <li><code>columnSelectors</code> from the original request are preserved unchanged in follow-up enqueues
   (no scope widening).</li>
-<li>Query-driven enqueues carry the opaque <code>floecat.stats.query-driven=true</code> capture-policy property.
-  Column requests ask for <code>COLUMN_STATS</code> only; they do not implicitly request
-  <code>PARQUET_PAGE_INDEX</code>. Explicit <code>StatsCaptureControlPlane.triggerBatch(...)</code> requests retain the
-  combined stats/page-index behavior.</li>
-<li>Active query-driven jobs with the same table, snapshot, outputs, and capture-policy properties
+<li>Query-driven column requests ask for <code>COLUMN_STATS</code> only; they do not implicitly request
+  <code>PARQUET_PAGE_INDEX</code>. Request origin is not encoded in capture-policy properties, so equivalent
+  materialized stats coverage is reusable by query and control-plane callers.</li>
+<li>Active stats-only jobs with the same table, snapshot, outputs, and capture-policy properties
   share one durable root job even when their requested target sets overlap rather than match
   exactly. Different snapshots remain distinct.</li>
-<li>Snapshot planning attempts connector-native direct stats first. If the connector cannot provide
-  direct stats for a query-driven stats-only request, planning records an empty direct result and
-  does not fan the request out into file-group capture. Explicit control-plane captures retain the
-  normal file-group fallback.</li>
+<li>Content-state coverage determines whether snapshot capture is needed. Missing coverage first
+  attempts connector-native direct stats; when the connector cannot satisfy it directly, snapshot
+  planning falls back to file-group capture.</li>
 <li>Follow-up enqueues are tagged with a reason: <code>sync_followup_timeout</code>, <code>sync_followup_failed</code>,
   <code>sync_followup_partial</code>, or <code>async_mode</code> / <code>no_budget</code> / <code>sync_disabled</code> for SKIPPED outcomes.</li>
 </ul>

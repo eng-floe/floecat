@@ -1950,11 +1950,10 @@ reconcile control RPCs:</p>
     opaque properties map.</li>
 <li>snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
     columns, and properties exactly; the control plane rejects policy drift.</li>
-<li>query-driven stats requests are marked with <code>floecat.stats.query-driven=true</code> and request
-    stats without implicitly requesting Parquet page indexes.</li>
-<li>when connector-native direct stats are unavailable for a marked stats-only request, snapshot
-    planning records an empty direct result instead of creating file-group jobs. This guard does
-    not change explicit control-plane capture fallback behavior.</li>
+<li>query-driven stats requests do not implicitly request Parquet page indexes and do not encode
+    their request origin in capture-policy properties.</li>
+<li>content-state coverage is checked before execution. Missing coverage attempts connector-native
+    direct stats first and uses file-group capture when direct stats cannot satisfy the request.</li>
 <li><strong>Connector security boundary</strong>: all upstream I/O remains inside <code>FloecatConnector</code>.
   <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.</li>
@@ -1983,7 +1982,7 @@ reconcile control RPCs:</p>
     file-group results, direct stats, per-file-group stats)</li>
 <li>projection/root-summary state mirrors canonical parent rollups for eventual-consistent
     observability (root-job list summaries and tree/list aggregate counters)</li>
-<li><strong>Query-driven enqueue coalescing</strong>: active marked <code>CAPTURE_ONLY</code> root jobs use a normalized
+<li><strong>Stats-only enqueue coalescing</strong>: active stats-only <code>CAPTURE_ONLY</code> root jobs use a normalized
   capture identity containing the account, connector, table/snapshot pairs, requested outputs, and
   capture-policy properties, in addition to the normal root-job identity fields. Column target and
   selector differences therefore do not create parallel roots for overlapping requests against the
