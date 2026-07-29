@@ -20,7 +20,11 @@ import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
+import org.jboss.logging.MDC;
 
 /**
  * An immutable snapshot of a thread's ambient request context, for re-establishing it on another
@@ -36,6 +40,17 @@ import java.util.function.Supplier;
  * point that already propagates through this snapshot gets it for free.
  */
 public final class PropagatedContext {
+
+  private static final List<String> MDC_KEYS =
+      List.of(
+          "floecat_component",
+          "floecat_operation",
+          "query_id",
+          "correlation_id",
+          "floecat_account_id",
+          "floecat_subject",
+          "floecat_engine_kind",
+          "floecat_engine_version");
 
   private final Context otel;
   private final ResolvedCallContext call; // null off any request (e.g. unit tests, startup)
@@ -65,12 +80,14 @@ public final class PropagatedContext {
           call,
           () -> {
             // MDC is a projection of the call context; re-derive it so off-thread log lines carry
-            // the request's ids, then clear so a pooled worker does not leak them to the next task.
+            // the request's ids, then restore the worker's prior values for nested scopes and
+            // executors that already propagate MDC.
+            Map<String, Object> priorMdc = snapshotMdc();
             InboundContextInterceptor.populateMdc(call);
             try {
               return body.get();
             } finally {
-              InboundContextInterceptor.clearMdc();
+              restoreMdc(priorMdc);
             }
           });
     }
@@ -83,5 +100,27 @@ public final class PropagatedContext {
           body.run();
           return null;
         });
+  }
+
+  private static Map<String, Object> snapshotMdc() {
+    Map<String, Object> values = new HashMap<>();
+    for (String key : MDC_KEYS) {
+      Object value = MDC.get(key);
+      if (value != null) {
+        values.put(key, value);
+      }
+    }
+    return values;
+  }
+
+  private static void restoreMdc(Map<String, Object> priorMdc) {
+    for (String key : MDC_KEYS) {
+      Object value = priorMdc.get(key);
+      if (value == null) {
+        MDC.remove(key);
+      } else {
+        MDC.put(key, value);
+      }
+    }
   }
 }
