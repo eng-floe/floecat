@@ -417,6 +417,15 @@ final class DeltaSchemaMapper {
         if (lowerRaw.startsWith("decimal")) {
           yield canonicalDeltaDecimal(raw);
         }
+        if (lowerRaw.startsWith("char(") || lowerRaw.startsWith("varchar(")) {
+          // Databricks surfaces char/varchar length annotations in schema JSON; the canonical
+          // model collapses them to STRING.
+          try {
+            yield LogicalTypeFormat.parse(raw);
+          } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'", e);
+          }
+        }
         throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'");
       }
     };

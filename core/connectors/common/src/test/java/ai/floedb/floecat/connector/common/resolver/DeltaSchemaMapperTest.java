@@ -225,6 +225,13 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
+  void charAndVarcharScalarsCollapseToString() {
+    // Databricks surfaces char/varchar length annotations in schema JSON.
+    assertThat(typeTag(firstColumn(singleFieldSchema("c", "varchar(32)")))).isEqualTo("STRING");
+    assertThat(typeTag(firstColumn(singleFieldSchema("c", "char(5)")))).isEqualTo("STRING");
+  }
+
+  @Test
   void kernelFailoverDoesNotDuplicateColumns() {
     // A string-valued delta.columnMapping.id makes the kernel walk throw mid-traversal, after
     // emitting earlier columns; the fallback re-walk must start from a fresh builder/ordinals.
