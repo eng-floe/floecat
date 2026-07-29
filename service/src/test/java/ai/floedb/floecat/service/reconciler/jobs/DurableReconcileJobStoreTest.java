@@ -412,6 +412,36 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueCoalescesOverlappingQueryDrivenStatsForSameTableSnapshotAndOutput() {
+    ReconcileScope firstScope =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            queryDrivenCapturePolicy("#11"),
+            ReconcileSnapshotSelection.current());
+    ReconcileScope overlappingScope =
+        resolvedCaptureScope(
+            List.of(
+                captureRequest("tbl", 101L, "column:11"), captureRequest("tbl", 101L, "column:22")),
+            queryDrivenCapturePolicy("#11", "#22"),
+            ReconcileSnapshotSelection.current());
+    ReconcileScope otherSnapshot =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 202L, "column:11")),
+            queryDrivenCapturePolicy("#11"),
+            ReconcileSnapshotSelection.current());
+
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, firstScope);
+    String overlapping =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, overlappingScope);
+    String differentSnapshot =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, otherSnapshot);
+
+    assertEquals(first, overlapping);
+    assertNotEquals(first, differentSnapshot);
+  }
+
+  @Test
   void metadataInclusiveScopeDoesNotTreatCaptureRequestsAsExactTableSelection() {
     ReconcileCapturePolicy policy = capturePolicy("#11");
     List<ReconcileScope.ScopedCaptureRequest> requests =
@@ -7391,6 +7421,17 @@ class DurableReconcileJobStoreTest {
         ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
         ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
         properties);
+  }
+
+  private static ReconcileCapturePolicy queryDrivenCapturePolicy(String... selectors) {
+    return ReconcileCapturePolicy.of(
+        java.util.Arrays.stream(selectors)
+            .map(selector -> new ReconcileCapturePolicy.Column(selector, true, false))
+            .toList(),
+        Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+        Map.of(ReconcileCapturePolicy.QUERY_DRIVEN_STATS_PROPERTY, "true"));
   }
 
   private static ResourceId connectorResourceId() {

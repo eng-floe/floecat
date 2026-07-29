@@ -33,6 +33,12 @@ If you only need file-group capture replacement, you do not need to replace the 
 workers. `PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_VIEW`, and `PLAN_SNAPSHOT` can remain in the
 existing JVM control plane or executor fleet.
 
+Query-driven stats-only work is marked with `floecat.stats.query-driven=true`. The JVM snapshot
+planner attempts connector-native direct stats for that work and, when direct stats are unavailable,
+records an empty direct result without creating `EXEC_FILE_GROUP` jobs. A Rust file-group worker
+should therefore never receive this guarded query-driven fallback. Explicit capture-control jobs
+continue to use file-group fallback and remain part of the worker contract described below.
+
 If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the leased snapshot task's
 `source_revision`, `metadata_fingerprint`, and complete `requested_coverage` in its successful
 planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
@@ -362,8 +368,10 @@ It carries only file-group descriptors, snapshot-wide aggregate descriptors, and
 
 For column-stats capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the
-file groups. When default stats selection is in use, every file group must report the same resolved
-selector set. For `FIRST_N`, the realized column count must not exceed `max_default_columns`.
+file groups for explicit selection. When default stats selection is in use, every file group must
+report the same resolved selector set. A Delta column present in the snapshot schema but absent
+from an older Parquet file is materialized as all-null stats rather than dropped. For `FIRST_N`,
+the realized column count must not exceed `max_default_columns`.
 Name/field-ID aliases for the same columns may both be present; when field-ID selectors are
 available, the control plane counts those IDs rather than double-counting their name aliases.
 
@@ -372,9 +380,11 @@ For page-index capture, the finalizer must populate
 by the activated index generation. Explicitly requested selectors need not be repeated verbatim
 when the persisted artifacts use a different or unknown alias. For default selection on a
 non-empty snapshot, the realized set must be non-empty, every file group must report the same set,
-and the realized column count must not exceed `max_default_columns` for `FIRST_N`. The Java
-snapshot finalizer derives both stats and index sets from the file-group payloads; a non-Java
-finalizer must perform the same validation and aggregation.
+and the realized column count must not exceed `max_default_columns` for `FIRST_N`. A Delta column
+present in the snapshot schema but absent from an older Parquet file is represented by synthetic
+all-null V1 sidecar rows covering that file's row groups. The Java snapshot finalizer derives both
+stats and index sets from the file-group payloads; a non-Java finalizer must perform the same
+validation and aggregation.
 
 The manifest must also repeat the leased capture policy exactly, including outputs, column
 policies, default column scope, maximum default-column count, and the complete opaque properties

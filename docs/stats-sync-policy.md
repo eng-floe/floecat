@@ -23,7 +23,7 @@ resolve(StatsCaptureRequest)
        │      │      │
        │      │      ├─ job succeeded → re-read store
        │      │      │       ├─ record present ───────── CAPTURED (stats returned, no follow-up)
-       │      │      │       └─ record absent ─────────  PARTIAL  (async follow-up enqueued)
+       │      │      │       └─ record absent ─────────  PARTIAL  (deduped async follow-up)
        │      │      │
        │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
        │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
@@ -42,6 +42,13 @@ resolve(StatsCaptureRequest)
 | `TIMEOUT`  | no            | yes             | Sync capture exceeded latency budget              |
 | `FAILED`   | no            | yes             | Sync capture error or no upstream connector       |
 | `SKIPPED`  | no            | yes             | ASYNC mode, no budget, or sync disabled           |
+
+Query-driven column requests are stats-only and do not implicitly request Parquet page indexes.
+The reconciler first attempts connector-native direct stats. If direct stats are unavailable, the
+query-driven job records empty direct coverage without creating file-group jobs. A sync request can
+therefore return `PARTIAL` when no record was produced; its async follow-up is subject to durable
+active-job and content-state deduplication and does not reintroduce file-group fan-out. Explicit
+capture-control requests retain their normal file-group fallback.
 
 ## Configuration
 

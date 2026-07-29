@@ -212,12 +212,13 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationCaptureRequests()).hasSize(1);
     assertThat(scope.capturePolicy().outputs())
         .containsExactlyInAnyOrder(
-            ReconcileCapturePolicy.Output.TABLE_STATS,
-            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
     assertThat(scope.capturePolicy().columns())
         .extracting(ReconcileCapturePolicy.Column::selector)
         .containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
+    assertThat(scope.capturePolicy().selectorsForIndex()).isEmpty();
+    assertThat(scope.capturePolicy().isQueryDrivenStats()).isTrue();
   }
 
   @Test

@@ -54,8 +54,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -89,7 +87,6 @@ public class StatsOrchestrator {
   private final ConnectorRepository connectorRepository;
   private final StatsSyncCapture statsSyncCapture;
   private final boolean syncEnabled;
-  private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
   private final PlannerStatsResolver plannerResolver;
 
@@ -217,7 +214,7 @@ public class StatsOrchestrator {
           : StatsResolutionResult.failed(detail);
     }
 
-    enqueueAsyncCaptureBatch(List.of(request));
+    enqueueAsyncCaptureBatch(List.of(request), true);
     String skipReason =
         request.executionMode() != StatsExecutionMode.SYNC
             ? "async_mode"
@@ -392,7 +389,7 @@ public class StatsOrchestrator {
 
     // 6. Enqueue async captures for all misses that didn't sync.
     if (!asyncQueue.isEmpty()) {
-      enqueueAsyncCaptureBatch(asyncQueue);
+      enqueueAsyncCaptureBatch(asyncQueue, true);
     }
 
     diagnostics.emit(
@@ -432,7 +429,7 @@ public class StatsOrchestrator {
           1,
           Tag.of(TagKey.TRIGGER, "async_followup"),
           Tag.of(TagKey.SCOPE, "orchestrator"));
-      enqueueAsyncCaptureBatch(unresolvedForAsync);
+      enqueueAsyncCaptureBatch(unresolvedForAsync, true);
     }
     return List.copyOf(resolved);
   }
@@ -460,7 +457,7 @@ public class StatsOrchestrator {
               request.snapshotId(),
               ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
               List.copyOf(request.columnSelectors()));
-      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request));
+      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request), true);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
@@ -482,7 +479,7 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    enqueueAsyncCaptureBatch(List.of(request));
+    enqueueAsyncCaptureBatch(List.of(request), true);
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -499,7 +496,7 @@ public class StatsOrchestrator {
   }
 
   private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
-      List<StatsCaptureRequest> requests) {
+      List<StatsCaptureRequest> requests, boolean queryDriven) {
     if (requests == null || requests.isEmpty()) {
       return List.of();
     }
@@ -527,7 +524,7 @@ public class StatsOrchestrator {
           .add(new IndexedRequest(i, toAsyncRequest(request)));
     }
     for (List<IndexedRequest> groupedRequests : groupedByTable.values()) {
-      for (IndexedResult result : enqueueAsyncGroup(groupedRequests)) {
+      for (IndexedResult result : enqueueAsyncGroup(groupedRequests, queryDriven)) {
         results.set(result.index(), result.result());
       }
     }
@@ -562,7 +559,8 @@ public class StatsOrchestrator {
     };
   }
 
-  private List<IndexedResult> enqueueAsyncGroup(List<IndexedRequest> groupedRequests) {
+  private List<IndexedResult> enqueueAsyncGroup(
+      List<IndexedRequest> groupedRequests, boolean queryDriven) {
     if (groupedRequests == null || groupedRequests.isEmpty()) {
       return List.of();
     }
@@ -618,7 +616,8 @@ public class StatsOrchestrator {
                 List.copyOf(request.columnSelectors())));
       }
       ReconcileCapturePolicy capturePolicy =
-          capturePolicyFor(groupedRequests.stream().map(IndexedRequest::request).toList());
+          capturePolicyFor(
+              groupedRequests.stream().map(IndexedRequest::request).toList(), queryDriven);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(),
@@ -632,7 +631,6 @@ public class StatsOrchestrator {
               false,
               ReconcilerService.CaptureMode.CAPTURE_ONLY,
               scope);
-      lastEnqueuedJobByTable.put(tableKey(first), jobId);
       LOG.infof(
           "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s group_size=%d job=%s",
           first.tableId(),
@@ -733,7 +731,8 @@ public class StatsOrchestrator {
    * through the removed stats-engine framework.
    */
   public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
-    List<StatsCaptureBatchItemResult> items = enqueueAsyncCaptureBatch(batchRequest.requests());
+    List<StatsCaptureBatchItemResult> items =
+        enqueueAsyncCaptureBatch(batchRequest.requests(), false);
     for (StatsCaptureBatchItemResult item : items) {
       incrementCounter(
           ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
@@ -794,7 +793,8 @@ public class StatsOrchestrator {
     observability.counter(metric, amount, merged);
   }
 
-  private static ReconcileCapturePolicy capturePolicyFor(List<StatsCaptureRequest> requests) {
+  private static ReconcileCapturePolicy capturePolicyFor(
+      List<StatsCaptureRequest> requests, boolean queryDriven) {
     LinkedHashSet<ReconcileCapturePolicy.Output> outputs = new LinkedHashSet<>();
     LinkedHashMap<String, ReconcileCapturePolicy.Column> columns = new LinkedHashMap<>();
     for (StatsCaptureRequest request : requests) {
@@ -805,11 +805,13 @@ public class StatsOrchestrator {
         case TABLE -> outputs.add(ReconcileCapturePolicy.Output.TABLE_STATS);
         case COLUMN -> {
           outputs.add(ReconcileCapturePolicy.Output.COLUMN_STATS);
-          outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+          if (!queryDriven) {
+            outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+          }
           columns.put(
               "#" + request.target().getColumn().getColumnId(),
               new ReconcileCapturePolicy.Column(
-                  "#" + request.target().getColumn().getColumnId(), true, true));
+                  "#" + request.target().getColumn().getColumnId(), true, !queryDriven));
         }
         case FILE -> outputs.add(ReconcileCapturePolicy.Output.FILE_STATS);
         case TARGET_NOT_SET, EXPRESSION -> {}
@@ -818,11 +820,22 @@ public class StatsOrchestrator {
         if (selector == null || selector.isBlank()) {
           continue;
         }
-        outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
-        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, true));
+        if (queryDriven) {
+          outputs.add(ReconcileCapturePolicy.Output.COLUMN_STATS);
+        } else {
+          outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+        }
+        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, !queryDriven));
       }
     }
-    return ReconcileCapturePolicy.of(List.copyOf(columns.values()), Set.copyOf(outputs));
+    Map<String, String> properties =
+        queryDriven ? Map.of(ReconcileCapturePolicy.QUERY_DRIVEN_STATS_PROPERTY, "true") : Map.of();
+    return ReconcileCapturePolicy.of(
+        List.copyOf(columns.values()),
+        Set.copyOf(outputs),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+        properties);
   }
 
   private record IndexedRequest(int index, StatsCaptureRequest request) {}

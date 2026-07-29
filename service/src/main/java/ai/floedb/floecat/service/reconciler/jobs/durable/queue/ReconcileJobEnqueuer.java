@@ -736,13 +736,23 @@ public class ReconcileJobEnqueuer {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
+    boolean coalesceQueryDrivenStats =
+        jobKind == ReconcileJobKind.PLAN_CONNECTOR
+            && captureMode == CaptureMode.CAPTURE_ONLY
+            && scope.capturePolicy().isQueryDrivenStats()
+            && !scope.destinationCaptureRequests().isEmpty();
     String captureRequests =
-        scope.destinationCaptureRequests().stream()
-            .map(ReconcileJobEnqueuer::canonicalCaptureRequest)
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("");
-    String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
+        coalesceQueryDrivenStats
+            ? canonicalQueryDrivenCaptureRequests(scope.destinationCaptureRequests())
+            : scope.destinationCaptureRequests().stream()
+                .map(ReconcileJobEnqueuer::canonicalCaptureRequest)
+                .sorted()
+                .reduce((a, b) -> a + "," + b)
+                .orElse("");
+    String capturePolicy =
+        coalesceQueryDrivenStats
+            ? canonicalQueryDrivenCapturePolicy(scope.capturePolicy())
+            : canonicalCapturePolicy(scope.capturePolicy());
     String snapshotSelection = canonicalSnapshotSelection(scope.snapshotSelection());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
@@ -894,6 +904,28 @@ public class ReconcileJobEnqueuer {
         + request.targetSpec()
         + "|"
         + selectors;
+  }
+
+  private static String canonicalQueryDrivenCaptureRequests(
+      List<ReconcileScope.ScopedCaptureRequest> requests) {
+    return requests.stream()
+        .map(request -> request.tableId() + "|" + request.snapshotId())
+        .distinct()
+        .sorted()
+        .reduce((a, b) -> a + "," + b)
+        .orElse("");
+  }
+
+  private static String canonicalQueryDrivenCapturePolicy(ReconcileCapturePolicy policy) {
+    String outputs =
+        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
+    return outputs
+        + "|"
+        + policy.properties().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .map(entry -> entry.getKey() + "=" + entry.getValue())
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
   }
 
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {

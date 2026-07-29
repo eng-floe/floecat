@@ -27,6 +27,8 @@ import java.util.Set;
 
 /** Output and column policy for reconcile-time capture execution. */
 public final class ReconcileCapturePolicy {
+  public static final String QUERY_DRIVEN_STATS_PROPERTY = "floecat.stats.query-driven";
+
   public enum DefaultColumnScope {
     FIRST_N,
     ALL,
@@ -163,6 +165,11 @@ public final class ReconcileCapturePolicy {
 
   public boolean requestsIndexes() {
     return outputs.contains(Output.PARQUET_PAGE_INDEX);
+  }
+
+  @JsonIgnore
+  public boolean isQueryDrivenStats() {
+    return Boolean.parseBoolean(properties.getOrDefault(QUERY_DRIVEN_STATS_PROPERTY, "false"));
   }
 
   public boolean hasExplicitColumns() {

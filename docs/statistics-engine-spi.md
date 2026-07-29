@@ -131,6 +131,17 @@ Async enqueue policy:
   `table_id` + `snapshot_id` + encoded `target_spec` + `column_selectors`.
 - `columnSelectors` from the original request are preserved unchanged in follow-up enqueues
   (no scope widening).
+- Query-driven enqueues carry the opaque `floecat.stats.query-driven=true` capture-policy property.
+  Column requests ask for `COLUMN_STATS` only; they do not implicitly request
+  `PARQUET_PAGE_INDEX`. Explicit `StatsCaptureControlPlane.triggerBatch(...)` requests retain the
+  combined stats/page-index behavior.
+- Active query-driven jobs with the same table, snapshot, outputs, and capture-policy properties
+  share one durable root job even when their requested target sets overlap rather than match
+  exactly. Different snapshots remain distinct.
+- Snapshot planning attempts connector-native direct stats first. If the connector cannot provide
+  direct stats for a query-driven stats-only request, planning records an empty direct result and
+  does not fan the request out into file-group capture. Explicit control-plane captures retain the
+  normal file-group fallback.
 - Follow-up enqueues are tagged with a reason: `sync_followup_timeout`, `sync_followup_failed`,
   `sync_followup_partial`, or `async_mode` / `no_budget` / `sync_disabled` for SKIPPED outcomes.
 
