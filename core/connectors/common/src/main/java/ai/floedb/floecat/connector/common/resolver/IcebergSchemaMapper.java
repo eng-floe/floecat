@@ -61,8 +61,10 @@ public final class IcebergSchemaMapper {
                 !(t instanceof Types.StructType)
                     && !(t instanceof Types.ListType)
                     && !(t instanceof Types.MapType);
-            boolean isPartition =
-                partitionKeys.contains(field.name()) || partitionKeys.contains(path);
+            // Match by canonical path only: top-level paths equal the name, and a bare-name
+            // match would wrongly flag synthetic nested rows (a partition column literally
+            // named "key" must not mark every map-key row).
+            boolean isPartition = partitionKeys.contains(path);
             LogicalType logicalType = IcebergTypeMappings.toLogical(t);
 
             sb.addColumns(

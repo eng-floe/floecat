@@ -127,8 +127,10 @@ final class DeltaSchemaMapper {
       Set<String> partitionKeys,
       AtomicInteger ordinals) {
     DataType dataType = field.getDataType();
-    boolean isPartition =
-        partitionKeys.contains(field.getName()) || partitionKeys.contains(physical);
+    // Match by canonical path only: for top-level rows the path equals the name, and a bare-name
+    // match would wrongly flag synthetic nested rows (a partition column literally named "key"
+    // must not mark every map-key row).
+    boolean isPartition = partitionKeys.contains(physical);
     LogicalType logicalType = toLogicalType(dataType);
 
     sb.addColumns(
@@ -265,7 +267,9 @@ final class DeltaSchemaMapper {
       String physical,
       Set<String> partitionKeys,
       AtomicInteger ordinals) {
-    boolean isPartition = partitionKeys.contains(name) || partitionKeys.contains(physical);
+    // See walkDeltaField: canonical-path match only, so synthetic element/key/value rows are
+    // never flagged by a bare partition-column name.
+    boolean isPartition = partitionKeys.contains(physical);
     LogicalType logicalType = fallbackLogicalType(typeNode);
 
     sb.addColumns(

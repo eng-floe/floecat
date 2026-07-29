@@ -103,4 +103,29 @@ class NestedPathParityTest {
         .containsExactly("items", "items[]", "items[].a", "items[].a[]")
         .isEqualTo(statsPaths(schema));
   }
+
+  @Test
+  void barePartitionNameDoesNotFlagSyntheticNestedRows() {
+    // A table partitioned by a top-level column literally named "key" must not mark map-key
+    // rows as partition columns.
+    Schema schema =
+        new Schema(
+            Types.NestedField.required(1, "key", Types.StringType.get()),
+            Types.NestedField.optional(
+                2,
+                "attrs",
+                Types.MapType.ofOptional(3, 4, Types.StringType.get(), Types.LongType.get())));
+
+    var desc =
+        IcebergSchemaMapper.map(
+            ColumnIdAlgorithm.CID_FIELD_ID, SchemaParser.toJson(schema), Set.of("key"));
+
+    for (SchemaColumn col : desc.getColumnsList()) {
+      if (col.getPhysicalPath().equals("key")) {
+        assertThat(col.getPartitionKey()).as("top-level partition column").isTrue();
+      } else {
+        assertThat(col.getPartitionKey()).as("path %s", col.getPhysicalPath()).isFalse();
+      }
+    }
+  }
 }
