@@ -1770,25 +1770,29 @@ public class UserObjectBundleService {
           }
         }
         nextInputIndex += planCount;
-        // Resolve the planned inputs concurrently; results come back in plan order so the gather
-        // below stays deterministic. resolveNanos is the wall-clock of this stage.
+        // Resolve and consume planned inputs concurrently in request order. Consuming each result
+        // as it is joined gives an earlier deferred failure precedence over a later task failure,
+        // while still letting an eager view fill this chunk and spill later requested inputs.
         long selectStageStartNs = System.nanoTime();
-        List<PendingItem> selected =
-            BoundedFanout.mapOrdered(
-                plan,
-                MAX_PARALLEL_RELATION_TASKS,
-                blockingExecutor,
-                this::selectOne,
-                this::isCancelled);
-        resolveNanos += System.nanoTime() - selectStageStartNs;
-        for (PendingItem item : selected) {
-          // A view gathered earlier in this loop can fill the chunk via its base tables; the
-          // remaining already-selected inputs wait for the next chunk (their nodes are cached).
-          if (pending.size() >= MAX_RESOLUTIONS_PER_CHUNK) {
-            resolvedSpillover.addLast(item);
-          } else {
-            gather(item, toPin);
-          }
+        try {
+          BoundedFanout.forEachOrdered(
+              plan,
+              MAX_PARALLEL_RELATION_TASKS,
+              blockingExecutor,
+              this::selectOne,
+              item -> {
+                // A view gathered earlier in this loop can fill the chunk via its base tables;
+                // the remaining already-selected inputs wait for the next chunk (their nodes are
+                // cached).
+                if (pending.size() >= MAX_RESOLUTIONS_PER_CHUNK) {
+                  resolvedSpillover.addLast(item);
+                } else {
+                  gather(item, toPin);
+                }
+              },
+              this::isCancelled);
+        } finally {
+          resolveNanos += System.nanoTime() - selectStageStartNs;
         }
       }
       if (!toPin.isEmpty()) {
@@ -1919,34 +1923,6 @@ public class UserObjectBundleService {
 
       boolean failed() {
         return planningFailure != null;
-      }
-    }
-
-    /**
-     * Resolve every NAME candidate of the plan in one batch, seeding the name memo. Names sharing a
-     * catalog/namespace resolve their scope once here instead of once per candidate during select,
-     * and the memo turns each candidate's later resolveNameCached into a hit. Already-cached names
-     * (e.g. from a prior chunk's base-table drain) are left as they are.
-     */
-    private void seedNameResolutions(List<PlannedInput> plan) {
-      List<NameRef> refs = new ArrayList<>();
-      for (PlannedInput planned : plan) {
-        for (QueryInput candidate : planned.normalized()) {
-          if (candidate.getTargetCase() == QueryInput.TargetCase.NAME) {
-            refs.add(candidate.getName());
-          }
-        }
-      }
-      if (refs.isEmpty()) {
-        return;
-      }
-      long startNs = System.nanoTime();
-      try {
-        overlay
-            .resolveNames(correlationId, refs)
-            .forEach((ref, id) -> nameResolutionCache.putIfAbsent(normalizedNameRef(ref), id));
-      } finally {
-        nameResolveNanos.add(System.nanoTime() - startNs);
       }
     }
 

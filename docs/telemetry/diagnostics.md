@@ -92,7 +92,7 @@ Emitted by `GetUserObjects`. This is the main planner metadata lookup summary fo
 | `chunks` | Number of resolution chunks emitted. |
 | `found` / `not_found` | Candidate resolution result counts. |
 | `total_ms` | End-to-end service time for the operation body. |
-| `resolve_ms` | Total candidate resolution phase. |
+| `resolve_ms` | Wall-clock time spent in the concurrent candidate-selection stage; it is not the sum of individual worker-task durations. |
 | `normalize_ms` | Input/reference normalization time. |
 | `select_relation_ms` | Time choosing the selected relation/input for each candidate. |
 | `default_catalog_ms` | Time spent resolving default catalog state. |
