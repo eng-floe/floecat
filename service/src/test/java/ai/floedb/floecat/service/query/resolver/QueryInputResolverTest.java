@@ -145,6 +145,44 @@ public class QueryInputResolverTest {
     resolution.join();
   }
 
+  @Test
+  void cancellationInterruptsBlockedParallelPinResolution() throws Exception {
+    var blockingGraph = new BlockingPinGraph("SLOW");
+    var withStore = new QueryInputResolver(blockingGraph);
+    var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                withStore.resolveInputs(
+                    "q-cancel",
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(rid("SLOW")).build(),
+                        QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new ConcurrentHashMap<>(),
+                    null,
+                    cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    try {
+      assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+      cancelled.set(true);
+      assertTrue(
+          resolution.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+    } finally {
+      blockingGraph.allowSlowPin.countDown();
+    }
+  }
+
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {

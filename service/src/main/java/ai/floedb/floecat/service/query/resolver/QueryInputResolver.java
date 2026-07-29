@@ -49,11 +49,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 /**
@@ -109,7 +111,7 @@ public class QueryInputResolver {
   // worker pool: the driver blocks joining this fan-out and must not contend with it for the same
   // pool. The semaphore in BoundedFanout bounds concurrency; OTel context is re-established per
   // task.
-  private final Executor blockingExecutor = Executors.newVirtualThreadPerTaskExecutor();
+  private final ExecutorService blockingExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -310,6 +312,32 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
+    return resolveInputs(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        currentSnapshotPinCache,
+        diagnostics,
+        () -> false);
+  }
+
+  /**
+   * As {@link #resolveInputs(String, String, List, Optional, Optional, ConcurrentMap,
+   * PhaseDiagnostics)}, but stops before additional metadata work and interrupts fan-out tasks when
+   * {@code cancelled} becomes true.
+   */
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    throwIfCancelled(cancelled);
     PhaseDiagnostics diag = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
 
     // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
@@ -325,6 +353,7 @@ public class QueryInputResolver {
         diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
       }
     }
+    throwIfCancelled(cancelled);
 
     var state =
         new ResolutionState(
@@ -346,27 +375,17 @@ public class QueryInputResolver {
               .toList();
       Map<NameRef, Optional<ResourceId>> resolvedNames =
           nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
+      throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
       // a view yields its base tables' pins). planInput reads the metadata graph and the shared
       // current-snapshot cache; it does not touch `resolved` or `pinByTableId`. Inputs resolve
       // independently, so with more than one they are fanned out; the results are gathered in input
       // order for the merge below.
-      List<InputPlan> plans =
-          inputs.size() > 1
-              ? planInputsConcurrently(state, inputs, resolvedNames)
-              : planInputsSerially(state, inputs, resolvedNames);
-
-      // Merge the plans into the pin set in input order. Order decides two things: `resolved`
-      // mirrors the request order, and mergePin keeps the first pin seen for a table while raising
-      // QUERY_TABLE_PIN_CONFLICT when a later reference pins the same table with an incompatible
-      // snapshot/as-of. Every kept pin is already GC-rooted at construction, before the caller
-      // reads any schema/stats or persists the context.
-      for (InputPlan plan : plans) {
-        state.resolved.add(plan.resolvedId());
-        for (TablePin pin : plan.pins()) {
-          mergePin(state, pin);
-        }
+      if (inputs.size() > 1) {
+        planInputsConcurrently(state, inputs, resolvedNames, cancelled);
+      } else {
+        planInputsSerially(state, inputs, resolvedNames, cancelled);
       }
 
       RelationPinSet relationPinSet =
@@ -394,8 +413,10 @@ public class QueryInputResolver {
    * One input's resolution: the id recorded in {@code resolved}, and the table pins it contributes,
    * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
    * its own single pin.
-   */
+  */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
+
+  /** Merge one completed plan on the request thread, preserving request-order semantics. */
   private void mergePlan(ResolutionState state, InputPlan plan) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
@@ -409,16 +430,18 @@ public class QueryInputResolver {
     }
   }
 
-  /** Resolve the inputs one at a time on the calling thread, reporting to the shared diagnostics. */
-  private List<InputPlan> planInputsSerially(
+  /**
+   * Resolve the inputs one at a time on the calling thread, reporting to the shared diagnostics.
+   */
+  private void planInputsSerially(
       ResolutionState state,
       List<QueryInput> inputs,
-      Map<NameRef, Optional<ResourceId>> resolvedNames) {
-    List<InputPlan> plans = new ArrayList<>(inputs.size());
+      Map<NameRef, Optional<ResourceId>> resolvedNames,
+      BooleanSupplier cancelled) {
     for (QueryInput in : inputs) {
-      plans.add(planInput(state, in, resolvedNames));
+      throwIfCancelled(cancelled);
+      mergePlan(state, planInput(state, in, resolvedNames));
     }
-    return plans;
   }
 
   /**
@@ -434,22 +457,31 @@ public class QueryInputResolver {
    * Gathering plans in input order keeps the caller's merge deterministic (first-touch-wins,
    * conflict detection).
    */
-  private List<InputPlan> planInputsConcurrently(
+  private void planInputsConcurrently(
       ResolutionState state,
       List<QueryInput> inputs,
-      Map<NameRef, Optional<ResourceId>> resolvedNames) {
+      Map<NameRef, Optional<ResourceId>> resolvedNames,
+      BooleanSupplier cancelled) {
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
     ResolutionState taskState = state.withDiagnostics(taskDiagnostics);
     try {
-      return BoundedFanout.mapOrdered(
+      BoundedFanout.forEachOrdered(
           inputs,
           maxParallelInputResolutions,
           blockingExecutor,
-          in -> planInput(taskState, in, resolvedNames));
+          in -> planInput(taskState, in, resolvedNames),
+          plan -> mergePlan(state, plan),
+          cancelled);
     } finally {
       // A failed or cancelled sibling can still leave completed tasks' pin work in this
       // accumulator. Preserve those counters for the request's failure telemetry too.
       taskDiagnostics.flushInto(state.diagnostics);
+    }
+  }
+
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if (cancelled.getAsBoolean()) {
+      throw new CancellationException("input resolution cancelled");
     }
   }
 
