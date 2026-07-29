@@ -59,7 +59,40 @@ message LogicalType {
   optional int32 interval_leading_precision = 6;
   // Fractional seconds precision for INTERVAL (applies when range includes SECOND).
   optional int32 interval_fractional_precision = 7;
-  map<string,string> params = 99;
+
+  // Recursive shape for complex kinds. Set for TK_ARRAY/TK_MAP/TK_STRUCT when the nested
+  // structure is known; a complex kind without a shape is the legacy non-parameterised
+  // container tag. A StructShape with zero fields is an explicitly known empty struct
+  // (distinct from an unset shape). Never set for scalar kinds or TK_VARIANT.
+  oneof shape {
+    ArrayShape array = 20;
+    MapShape map = 21;
+    StructShape struct = 22;
+  }
+
+  reserved 99;
+  reserved "params";
+}
+
+message ArrayShape {
+  LogicalType element = 1;
+  bool element_nullable = 2;
+}
+
+message MapShape {
+  LogicalType key = 1;
+  LogicalType value = 2;
+  bool value_nullable = 3;
+}
+
+message StructShape {
+  repeated LogicalField fields = 1;
+}
+
+message LogicalField {
+  string name = 1;
+  LogicalType type = 2;
+  bool nullable = 3;
 }
 
 message ScalarValue {

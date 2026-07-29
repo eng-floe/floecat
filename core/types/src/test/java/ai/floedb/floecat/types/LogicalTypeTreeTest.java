@@ -97,9 +97,28 @@ class LogicalTypeTreeTest {
   }
 
   @Test
-  void emptyStructFieldsRejected() {
-    assertThatThrownBy(() -> LogicalType.struct(List.of()))
-        .isInstanceOf(IllegalArgumentException.class);
+  void emptyStructIsExplicitlyKnownEmpty() {
+    LogicalType t = LogicalType.struct(List.of());
+    assertThat(t.hasTypeTree()).isTrue();
+    assertThat(t.fields()).isEmpty();
+    assertThat(t).isNotEqualTo(LogicalType.of(LogicalKind.STRUCT));
+    assertThat(LogicalTypeFormat.format(t)).isEqualTo("STRUCT<>");
+    assertThat(LogicalTypeFormat.parse("STRUCT<>")).isEqualTo(t);
+  }
+
+  @Test
+  void parseRejectsExcessiveNestingDepth() {
+    String deep = "ARRAY<".repeat(1000) + "INT" + ">".repeat(1000);
+    assertThatThrownBy(() -> LogicalTypeFormat.parse(deep))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("nesting depth");
+  }
+
+  @Test
+  void parseAcceptsReasonableNestingDepth() {
+    String ok = "ARRAY<".repeat(20) + "INT" + ">".repeat(20);
+    LogicalType t = LogicalTypeFormat.parse(ok);
+    assertThat(t.kind()).isEqualTo(LogicalKind.ARRAY);
   }
 
   @Test
@@ -193,7 +212,6 @@ class LogicalTypeTreeTest {
             "ARRAY<INT>>",
             "MAP<STRING>",
             "MAP<STRING, INT",
-            "STRUCT<>",
             "STRUCT<a>",
             "STRUCT<a: >",
             "STRUCT<: INT>",
@@ -208,5 +226,134 @@ class LogicalTypeTreeTest {
   void parseStillRejectsParenParameterisedContainers() {
     assertThatThrownBy(() -> LogicalTypeFormat.parse("ARRAY(INT)"))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Protobuf round-trip (the lossless wire format — unlike the string grammar,
+  // it preserves nested nullability)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void protoRoundTripPreservesNestedNullability() {
+    List<LogicalType> cases =
+        List.of(
+            // ARRAY<INT NOT NULL>
+            LogicalType.array(INT, false),
+            // MAP<STRING, DECIMAL(12,2) NOT NULL>
+            LogicalType.map(STRING, LogicalType.decimal(12, 2), false),
+            // STRUCT<sku: STRING NOT NULL, quantities: ARRAY<INT>>
+            LogicalType.struct(
+                List.of(
+                    new LogicalField("sku", false, STRING),
+                    new LogicalField("quantities", true, LogicalType.array(INT, true)))),
+            // explicitly known empty struct
+            LogicalType.struct(List.of()),
+            // legacy non-parameterised tags survive too
+            LogicalType.of(LogicalKind.ARRAY),
+            LogicalType.of(LogicalKind.MAP),
+            LogicalType.of(LogicalKind.STRUCT),
+            LogicalType.of(LogicalKind.VARIANT),
+            // scalars with parameters
+            LogicalType.decimal(38, 9),
+            LogicalType.temporal(LogicalKind.TIMESTAMP, 3),
+            LogicalType.interval(IntervalRange.DAY_TO_SECOND, 2, 3),
+            LogicalType.of(LogicalKind.INTERVAL));
+    for (LogicalType t : cases) {
+      assertThat(LogicalTypeProtoAdapter.fromProto(LogicalTypeProtoAdapter.toProto(t)))
+          .as("proto round trip of %s", t)
+          .isEqualTo(t);
+    }
+  }
+
+  @Test
+  void stringGrammarLosesNullabilityButProtoDoesNot() {
+    LogicalType t = LogicalType.array(INT, false);
+    // The grammar has no nullability syntax: re-parsing defaults to nullable.
+    assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(t)).elementNullable()).isTrue();
+    // The proto tree keeps it.
+    assertThat(
+            LogicalTypeProtoAdapter.fromProto(LogicalTypeProtoAdapter.toProto(t)).elementNullable())
+        .isFalse();
+  }
+
+  @Test
+  void fromProtoRejectsUnspecifiedKind() {
+    ai.floedb.floecat.types.rpc.LogicalType unspecified =
+        ai.floedb.floecat.types.rpc.LogicalType.newBuilder().build();
+    assertThatThrownBy(() -> LogicalTypeProtoAdapter.fromProto(unspecified))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unrecognized logical type kind");
+  }
+
+  @Test
+  void fromProtoRejectsShapeKindMismatch() {
+    ai.floedb.floecat.types.rpc.LogicalType arrayShapeOnMapKind =
+        ai.floedb.floecat.types.rpc.LogicalType.newBuilder()
+            .setKind(ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_MAP)
+            .setArray(
+                ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
+                    .setElement(LogicalTypeProtoAdapter.toProto(INT))
+                    .setElementNullable(true))
+            .build();
+    assertThatThrownBy(() -> LogicalTypeProtoAdapter.fromProto(arrayShapeOnMapKind))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("array shape on non-ARRAY kind");
+
+    ai.floedb.floecat.types.rpc.LogicalType structShapeOnIntKind =
+        ai.floedb.floecat.types.rpc.LogicalType.newBuilder()
+            .setKind(ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_INT)
+            .setStruct(ai.floedb.floecat.types.rpc.StructShape.newBuilder())
+            .build();
+    assertThatThrownBy(() -> LogicalTypeProtoAdapter.fromProto(structShapeOnIntKind))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("struct shape on non-STRUCT kind");
+  }
+
+  @Test
+  void formatTagKeepsContainersFlatAndScalarsFull() {
+    assertThat(LogicalTypeFormat.formatTag(LogicalType.array(INT, true))).isEqualTo("ARRAY");
+    assertThat(LogicalTypeFormat.formatTag(LogicalType.map(STRING, INT, true))).isEqualTo("MAP");
+    assertThat(
+            LogicalTypeFormat.formatTag(
+                LogicalType.struct(List.of(new LogicalField("a", true, INT)))))
+        .isEqualTo("STRUCT");
+    assertThat(LogicalTypeFormat.formatTag(LogicalType.of(LogicalKind.VARIANT)))
+        .isEqualTo("VARIANT");
+    assertThat(LogicalTypeFormat.formatTag(LogicalType.decimal(10, 2))).isEqualTo("DECIMAL(10,2)");
+    assertThat(LogicalTypeFormat.formatTag(LogicalType.temporal(LogicalKind.TIMESTAMP, 3)))
+        .isEqualTo("TIMESTAMP(3)");
+  }
+
+  @Test
+  void toProtoRejectsExcessiveNestingDepth() {
+    LogicalType deep = INT;
+    for (int i = 0; i < 200; i++) {
+      deep = LogicalType.array(deep, true);
+    }
+    LogicalType finalDeep = deep;
+    assertThatThrownBy(() -> LogicalTypeProtoAdapter.toProto(finalDeep))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("nesting depth");
+  }
+
+  @Test
+  void fromProtoRejectsExcessiveNestingDepth() {
+    ai.floedb.floecat.types.rpc.LogicalType leaf =
+        LogicalTypeProtoAdapter.toProto(LogicalType.of(LogicalKind.INT));
+    ai.floedb.floecat.types.rpc.LogicalType deep = leaf;
+    for (int i = 0; i < 200; i++) {
+      deep =
+          ai.floedb.floecat.types.rpc.LogicalType.newBuilder()
+              .setKind(ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_ARRAY)
+              .setArray(
+                  ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
+                      .setElement(deep)
+                      .setElementNullable(true))
+              .build();
+    }
+    ai.floedb.floecat.types.rpc.LogicalType finalDeep = deep;
+    assertThatThrownBy(() -> LogicalTypeProtoAdapter.fromProto(finalDeep))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("nesting depth");
   }
 }

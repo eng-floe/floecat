@@ -135,9 +135,6 @@ public final class LogicalType {
     if ((key == null) != (value == null) || (value == null) != (valueNullable == null)) {
       throw new IllegalArgumentException("key, value, and valueNullable must be set together");
     }
-    if (fields != null && fields.isEmpty()) {
-      throw new IllegalArgumentException("STRUCT fields must not be empty when present");
-    }
     this.element = element;
     this.elementNullable = elementNullable;
     this.key = key;
@@ -353,9 +350,10 @@ public final class LogicalType {
   }
 
   /**
-   * Creates a STRUCT logical type with known fields.
+   * Creates a STRUCT logical type with known fields. An empty list is an explicitly known empty
+   * struct — distinct from the legacy non-parameterised tag created by {@code of(STRUCT)}.
    *
-   * @param fields the struct fields, in ordinal order (must be non-empty)
+   * @param fields the struct fields, in ordinal order
    * @return a new parameterised STRUCT {@code LogicalType}
    */
   public static LogicalType struct(List<LogicalField> fields) {

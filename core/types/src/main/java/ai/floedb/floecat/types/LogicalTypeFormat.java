@@ -151,7 +151,7 @@ public final class LogicalTypeFormat {
     }
     if (NESTED_START_RE.matcher(trimmed).find()) {
       Cursor c = new Cursor(trimmed, s);
-      LogicalType t = parseTree(c);
+      LogicalType t = parseTree(c, 0);
       c.skipWhitespace();
       if (!c.atEnd()) {
         throw c.unrecognized("trailing characters after type");
@@ -160,6 +160,13 @@ public final class LogicalTypeFormat {
     }
     return parseScalar(s);
   }
+
+  /**
+   * Maximum container nesting depth accepted by {@link #parse}. Parsing recurses once per level;
+   * without a cap a malformed deeply nested input would overflow the stack instead of failing with
+   * the {@link IllegalArgumentException} callers handle.
+   */
+  static final int MAX_NESTING_DEPTH = 64;
 
   private static LogicalType parseScalar(String s) {
     String trimmed = s.trim();
@@ -371,7 +378,10 @@ public final class LogicalTypeFormat {
     }
   }
 
-  private static LogicalType parseTree(Cursor c) {
+  private static LogicalType parseTree(Cursor c, int depth) {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw c.unrecognized("nesting depth exceeds " + MAX_NESTING_DEPTH);
+    }
     c.skipWhitespace();
     int start = c.pos;
 
@@ -391,32 +401,36 @@ public final class LogicalTypeFormat {
       switch (ident) {
         case "ARRAY" -> {
           c.pos = afterIdent + 1;
-          LogicalType element = parseTree(c);
+          LogicalType element = parseTree(c, depth + 1);
           c.expect('>');
           return LogicalType.array(element, true);
         }
         case "MAP" -> {
           c.pos = afterIdent + 1;
-          LogicalType key = parseTree(c);
+          LogicalType key = parseTree(c, depth + 1);
           c.expect(',');
-          LogicalType value = parseTree(c);
+          LogicalType value = parseTree(c, depth + 1);
           c.expect('>');
           return LogicalType.map(key, value, true);
         }
         case "STRUCT" -> {
           c.pos = afterIdent + 1;
           java.util.List<LogicalField> fields = new java.util.ArrayList<>();
-          while (true) {
-            String name = parseFieldName(c);
-            c.expect(':');
-            LogicalType type = parseTree(c);
-            fields.add(new LogicalField(name, true, type));
-            c.skipWhitespace();
-            if (!c.atEnd() && c.peek() == ',') {
-              c.pos++;
-              continue;
+          c.skipWhitespace();
+          // STRUCT<> is an explicitly known empty struct.
+          if (!c.atEnd() && c.peek() != '>') {
+            while (true) {
+              String name = parseFieldName(c);
+              c.expect(':');
+              LogicalType type = parseTree(c, depth + 1);
+              fields.add(new LogicalField(name, true, type));
+              c.skipWhitespace();
+              if (!c.atEnd() && c.peek() == ',') {
+                c.pos++;
+                continue;
+              }
+              break;
             }
-            break;
           }
           c.expect('>');
           return LogicalType.struct(fields);
