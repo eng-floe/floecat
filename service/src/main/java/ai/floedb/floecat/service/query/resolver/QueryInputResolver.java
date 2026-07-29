@@ -56,6 +56,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 /**
@@ -218,6 +219,7 @@ public class QueryInputResolver {
     private final QueryContextStore queryStore;
     private final String queryId;
     private final Map<TablePin, List<String>> rootsByPin = new IdentityHashMap<>();
+    private boolean terminal;
 
     ResolvingPinRoots(QueryContextStore queryStore, String queryId) {
       this.queryStore = queryStore;
@@ -229,7 +231,7 @@ public class QueryInputResolver {
      * callers propagate the failure without attempting a compensating release.
      */
     synchronized void register(TablePin pin) {
-      if (queryStore == null || queryId == null || queryId.isEmpty() || pin == null) {
+      if (terminal || queryStore == null || queryId == null || queryId.isEmpty() || pin == null) {
         return;
       }
       if (rootsByPin.containsKey(pin)) {
@@ -248,6 +250,9 @@ public class QueryInputResolver {
      * store failure retains ownership so a later failure cleanup can retry the release.
      */
     synchronized void discard(TablePin pin) {
+      if (terminal) {
+        return;
+      }
       List<String> roots = rootsByPin.get(pin);
       if (roots != null) {
         queryStore.releaseResolvingPinBlobs(queryId, roots);
@@ -260,6 +265,9 @@ public class QueryInputResolver {
      * and propagates to the caller, which retains the original resolution failure.
      */
     synchronized void releaseAll() {
+      // Cancellation can return from the fan-out before an uninterruptible task reaches register.
+      // Close ownership first so such a late task cannot add roots after this cleanup sweep.
+      terminal = true;
       var iterator = rootsByPin.entrySet().iterator();
       while (iterator.hasNext()) {
         Map.Entry<TablePin, List<String>> entry = iterator.next();
@@ -284,7 +292,13 @@ public class QueryInputResolver {
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId) {
     return resolveInputs(
-        "", correlationId, inputs, asOfDefault, defaultCatalogId, new ConcurrentHashMap<>(), null);
+        "",
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        null);
   }
 
   /**
@@ -324,6 +338,50 @@ public class QueryInputResolver {
   }
 
   /**
+   * Backward-compatible overload for callers compiled against the original cache contract.
+   *
+   * <p>The legacy cache stores completed pins and is not required to be concurrent. Copy it into a
+   * concurrent single-flight cache for this call, then copy successfully resolved pins back on the
+   * calling thread. Worker tasks therefore never mutate a caller-owned plain {@link Map}.
+   */
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      Map<ResourceId, TablePin> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
+        new ConcurrentHashMap<>();
+    synchronized (currentSnapshotPinCache) {
+      currentSnapshotPinCache.forEach(
+          (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
+    }
+    try {
+      return resolveInputs(
+          queryId,
+          correlationId,
+          inputs,
+          asOfDefault,
+          defaultCatalogId,
+          singleFlightCache,
+          diagnostics);
+    } finally {
+      synchronized (currentSnapshotPinCache) {
+        singleFlightCache.forEach(
+            (tableId, pinFuture) -> {
+              if (pinFuture.isDone()
+                  && !pinFuture.isCompletedExceptionally()
+                  && !pinFuture.isCancelled()) {
+                currentSnapshotPinCache.put(tableId, Futures.join(pinFuture));
+              }
+            });
+      }
+    }
+  }
+
+  /**
    * As {@link #resolveInputs(String, String, List, Optional, Optional, ConcurrentMap,
    * PhaseDiagnostics)}, but stops before additional metadata work and interrupts fan-out tasks when
    * {@code cancelled} becomes true.
@@ -348,7 +406,8 @@ public class QueryInputResolver {
       long defaultCatalogStartNs = System.nanoTime();
       try {
         defaultCatalog =
-            metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
+            withMetadataGraph(
+                () -> metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName));
       } finally {
         diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
       }
@@ -374,7 +433,9 @@ public class QueryInputResolver {
               .map(QueryInput::getName)
               .toList();
       Map<NameRef, Optional<ResourceId>> resolvedNames =
-          nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
+          nameInputs.isEmpty()
+              ? Map.of()
+              : withMetadataGraph(() -> metadataGraph.resolveNames(correlationId, nameInputs));
       throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
@@ -486,6 +547,20 @@ public class QueryInputResolver {
   }
 
   /**
+   * CatalogOverlay predates parallel resolution and does not require implementations to be
+   * thread-safe. Keep its callbacks serialized while allowing the rest of input planning to run
+   * concurrently.
+   */
+  private <T> T withMetadataGraph(Supplier<T> operation) {
+    if (metadataGraph.supportsConcurrentResolution()) {
+      return operation.get();
+    }
+    synchronized (metadataGraph) {
+      return operation.get();
+    }
+  }
+
+  /**
    * Resolve one input to its {@link InputPlan}, reading the metadata graph and updating the shared
    * current-snapshot cache and diagnostics. It does not read or write {@code state.resolved} or
    * {@code state.pinByTableId}; the caller merges the returned pins. Callers invoke this method
@@ -587,7 +662,9 @@ public class QueryInputResolver {
       if (inflight == null) {
         try {
           long snapshotPinStartNs = System.nanoTime();
-          pin = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
+          pin =
+              withMetadataGraph(
+                  () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
           state.resolvingPinRoots.register(pin);
           state.diagnostics.count("pin.snapshot_calls");
           state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -602,6 +679,7 @@ public class QueryInputResolver {
         state.diagnostics.count("pin.current_snapshot_cache_misses");
       } else {
         pin = Futures.join(inflight);
+        state.resolvingPinRoots.register(pin);
         state.diagnostics.count("pin.current_snapshot_cache_hits");
       }
       return pin;
@@ -636,7 +714,9 @@ public class QueryInputResolver {
       }
     }
     long snapshotPinStartNs = System.nanoTime();
-    TablePin resolved = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
+    TablePin resolved =
+        withMetadataGraph(
+            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
     state.resolvingPinRoots.register(resolved);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -711,10 +791,12 @@ public class QueryInputResolver {
     }
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
-        metadataGraph
-            .resolve(relationId)
-            .filter(ViewNode.class::isInstance)
-            .map(ViewNode.class::cast);
+        withMetadataGraph(
+            () ->
+                metadataGraph
+                    .resolve(relationId)
+                    .filter(ViewNode.class::isInstance)
+                    .map(ViewNode.class::cast));
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {
@@ -732,7 +814,7 @@ public class QueryInputResolver {
           }
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
-              metadataGraph.resolveNames(state.correlationId, baseRefs);
+              withMetadataGraph(() -> metadataGraph.resolveNames(state.correlationId, baseRefs));
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {

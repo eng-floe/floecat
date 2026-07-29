@@ -98,7 +98,7 @@ public class QueryInputResolverTest {
         List.of(QueryInput.newBuilder().setName(n).build()),
         Optional.empty(),
         Optional.empty(),
-        new ConcurrentHashMap<>(),
+        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
         null);
 
     // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
@@ -130,7 +130,8 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(fast).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new java.util.concurrent.ConcurrentHashMap<>(),
+                    new java.util.concurrent.ConcurrentHashMap<
+                        ResourceId, CompletableFuture<TablePin>>(),
                     null));
 
     try {
@@ -163,7 +164,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new ConcurrentHashMap<>(),
+                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
                     null,
                     cancelled::get);
                 return null;
@@ -201,7 +202,8 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<>(),
+                new java.util.concurrent.ConcurrentHashMap<
+                    ResourceId, CompletableFuture<TablePin>>(),
                 null));
 
     org.mockito.Mockito.verify(store)
@@ -232,7 +234,8 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<>(),
+                new java.util.concurrent.ConcurrentHashMap<
+                    ResourceId, CompletableFuture<TablePin>>(),
                 diagnostics));
 
     org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
@@ -439,7 +442,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -512,7 +515,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -567,7 +570,7 @@ public class QueryInputResolverTest {
             List.of(qi),
             Optional.<com.google.protobuf.Timestamp>empty(),
             Optional.<ResourceId>empty(),
-            new ConcurrentHashMap<>(),
+            new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
             null)
         .snapshotSet();
 
@@ -1310,6 +1313,11 @@ public class QueryInputResolverTest {
     private Consumer<ResourceId> beforeTablePin = ignored -> {};
 
     FakeGraph() {}
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return true;
+    }
 
     void setCatalogName(ResourceId id, String name) {
       catalogNames.put(id, name);
