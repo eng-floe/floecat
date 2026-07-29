@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
@@ -302,6 +303,27 @@ public class QueryInputResolverTest {
             QueryInput.newBuilder().setTableId(rid("TWO")).build()),
         Optional.empty(),
         Optional.empty());
+
+    assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
+  }
+
+  @Test
+  void cancellableSerialPlanningStaysOnTheCallerThreadWhenOverlayOptsOutOfConcurrency() {
+    Thread callerThread = Thread.currentThread();
+    var threadConfinedGraph = new CallerThreadOnlyGraph(callerThread);
+    var threadConfinedResolver = new QueryInputResolver(threadConfinedGraph);
+
+    threadConfinedResolver.resolveInputs(
+        "q-thread-confined",
+        "cid",
+        List.of(
+            QueryInput.newBuilder().setTableId(rid("ONE")).build(),
+            QueryInput.newBuilder().setTableId(rid("TWO")).build()),
+        Optional.empty(),
+        Optional.empty(),
+        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        null,
+        () -> false);
 
     assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
   }
@@ -651,6 +673,30 @@ public class QueryInputResolverTest {
     long tablePinCallsForT1 =
         metadataGraph.pinCalls().stream().filter(c -> c.tableId().equals(tableId)).count();
     assertEquals(1, tablePinCallsForT1, "CURRENT snapshot for a table must be resolved once");
+  }
+
+  @Test
+  void explicitCurrentSnapshotForRepeatedTableIsResolvedOnce() {
+    ResourceId tableId = rid("EXPLICIT_CURRENT");
+    metadataGraph.setCurrentSnapshot(tableId, 55);
+    SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+    Timestamp defaultAsOf = Timestamp.newBuilder().setSeconds(1_000).build();
+
+    var result =
+        resolver.resolveInputs(
+            "cid",
+            List.of(
+                QueryInput.newBuilder().setTableId(tableId).setSnapshot(current).build(),
+                QueryInput.newBuilder().setTableId(tableId).setSnapshot(current).build()),
+            Optional.of(defaultAsOf),
+            Optional.empty());
+
+    assertEquals(1, result.snapshotSet().getPinsCount());
+    assertEquals(55L, result.snapshotSet().getPins(0).getSnapshotId());
+    List<FakeGraph.PinCall> calls =
+        metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(tableId)).toList();
+    assertEquals(1, calls.size());
+    assertTrue(calls.get(0).asOfDefault().isEmpty());
   }
 
   /** A batch of distinct relations resolves every one, preserving request order. */

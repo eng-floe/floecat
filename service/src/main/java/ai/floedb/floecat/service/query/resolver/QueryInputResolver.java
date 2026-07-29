@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
@@ -208,7 +209,7 @@ public class QueryInputResolver {
       ownedBlockingExecutor.shutdownNow();
     }
     if (ownedMetadataIoExecutor != null) {
-      ownedMetadataIoExecutor.shutdownNow();
+      CancellableCallRunner.cancelDiscardedTasks(ownedMetadataIoExecutor.shutdownNow());
     }
   }
 
@@ -633,8 +634,11 @@ public class QueryInputResolver {
   }
 
   private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
-    if (cancelled == NEVER_CANCELLED) {
-      return withInputResolutionPermitSynchronously(operation);
+    if (cancelled == NEVER_CANCELLED || !metadataGraph.supportsConcurrentResolution()) {
+      // An overlay can opt out because it owns request-thread-confined state. Preserve that
+      // contract even for a cancellable caller; it can cancel while awaiting admission, but an
+      // active callback remains on the request thread until the overlay returns.
+      return withInputResolutionPermitSynchronously(cancelled, operation);
     }
     return CancellableCallRunner.call(
         metadataIoExecutor,
@@ -668,6 +672,12 @@ public class QueryInputResolver {
   /** Acquire process-wide metadata capacity while leaving a cancelled caller responsive. */
   private void acquireInputResolutionPermit(BooleanSupplier cancelled) {
     try {
+      if (cancelled == NEVER_CANCELLED) {
+        // Legacy callers cannot become cancelled, so a blocking fair acquire preserves FIFO
+        // ordering without repeatedly removing and re-enqueuing this waiter.
+        concurrentInputResolutionPermits.acquire();
+        return;
+      }
       // Timed waits let serial callers observe cancellation too. This is best-effort fairness:
       // a timed-out waiter must rejoin the fair semaphore's queue, trading strict FIFO for prompt
       // request cancellation when all store-I/O slots are occupied.
@@ -769,7 +779,9 @@ public class QueryInputResolver {
       ResourceId rid,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-    if (usesCurrentSnapshotFallback(override, asOfDefault)) {
+    Optional<Timestamp> effectiveAsOfDefault =
+        isExplicitCurrentSnapshot(override) ? Optional.empty() : asOfDefault;
+    if (usesCurrentSnapshotFallback(override, effectiveAsOfDefault)) {
       // Single-flight per table: two references to the same table's CURRENT snapshot must freeze
       // the
       // SAME snapshot even when they resolve on different threads, or an ingest landing between two
@@ -789,7 +801,9 @@ public class QueryInputResolver {
           pin =
               withInputResolutionPermit(
                   state.cancelled,
-                  () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
+                  () ->
+                      metadataGraph.tablePinFor(
+                          state.correlationId, rid, override, effectiveAsOfDefault));
           state.resolvingPinRoots.register(pin);
           state.diagnostics.count("pin.snapshot_calls");
           state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -882,10 +896,20 @@ public class QueryInputResolver {
 
   private boolean usesCurrentSnapshotFallback(
       SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (isExplicitCurrentSnapshot(override)) {
+      return true;
+    }
     if (override != null && override.getWhichCase() != SnapshotRef.WhichCase.WHICH_NOT_SET) {
       return false;
     }
     return asOfDefault.isEmpty();
+  }
+
+  /** An explicit CURRENT selector takes precedence over a request-wide AS-OF default. */
+  private boolean isExplicitCurrentSnapshot(SnapshotRef override) {
+    return override != null
+        && override.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
+        && override.getSpecial() == SpecialSnapshot.SS_CURRENT;
   }
 
   private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {

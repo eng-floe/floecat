@@ -16,6 +16,7 @@
 package ai.floedb.floecat.service.concurrent;
 
 import ai.floedb.floecat.service.context.PropagatedContext;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -56,8 +57,9 @@ public final class CancellableCallRunner {
     PropagatedContext context = PropagatedContext.capture();
     CompletableFuture<T> result = new CompletableFuture<>();
     CallLifecycle lifecycle = new CallLifecycle();
-    FutureTask<Void> submitted =
-        new FutureTask<>(
+    PermitLease permitLease = new PermitLease(permits);
+    SubmittedCall submitted =
+        new SubmittedCall(
             () -> {
               lifecycle.operationStarted.set(true);
               try {
@@ -69,17 +71,20 @@ public final class CancellableCallRunner {
               } catch (Throwable failure) {
                 result.completeExceptionally(failure);
               } finally {
-                permits.release();
+                permitLease.release();
               }
             },
-            null);
+            result,
+            lifecycle,
+            permitLease,
+            cancellationMessage);
     lifecycle.task = submitted;
     try {
       // An explicit FutureTask prevents ForkJoinPool from help-running a submitted lambda inline
       // on the caller, which would bypass this method's cancellation polling loop.
       executor.execute(submitted);
     } catch (RuntimeException | Error submissionFailure) {
-      permits.release();
+      permitLease.release();
       throw submissionFailure;
     }
     try {
@@ -103,6 +108,22 @@ public final class CancellableCallRunner {
     } catch (CancellationException e) {
       lifecycle.cancel();
       throw e;
+    }
+  }
+
+  /**
+   * Complete and release calls returned from {@link
+   * java.util.concurrent.ExecutorService#shutdownNow}.
+   *
+   * <p>A queued call has already acquired its admission permit, but its callable (and therefore its
+   * normal {@code finally}) will never run. Cancelling it here returns that permit and unblocks its
+   * caller instead of leaving either stranded during application shutdown.
+   */
+  public static void cancelDiscardedTasks(List<Runnable> discardedTasks) {
+    for (Runnable task : discardedTasks) {
+      if (task instanceof SubmittedCall submitted) {
+        submitted.cancel(false);
+      }
     }
   }
 
@@ -140,8 +161,51 @@ public final class CancellableCallRunner {
       cancellationRequested.set(true);
       // FutureTask atomically owns its runner while it is executing. Its cancellation path cannot
       // interrupt a platform thread after that task has completed and been returned to the pool.
-      if (operationStarted.get()) {
-        task.cancel(true);
+      task.cancel(true);
+    }
+  }
+
+  /** A permit lease that remains held until the dispatched callable truly exits. */
+  private static final class PermitLease {
+    private final Semaphore permits;
+    private final AtomicBoolean released = new AtomicBoolean();
+
+    PermitLease(Semaphore permits) {
+      this.permits = permits;
+    }
+
+    void release() {
+      if (released.compareAndSet(false, true)) {
+        permits.release();
+      }
+    }
+  }
+
+  /** FutureTask variant that cleans up admission when an executor discards it before execution. */
+  private static final class SubmittedCall extends FutureTask<Void> {
+    private final CompletableFuture<?> result;
+    private final CallLifecycle lifecycle;
+    private final PermitLease permitLease;
+    private final String cancellationMessage;
+
+    SubmittedCall(
+        Runnable runnable,
+        CompletableFuture<?> result,
+        CallLifecycle lifecycle,
+        PermitLease permitLease,
+        String cancellationMessage) {
+      super(runnable, null);
+      this.result = result;
+      this.lifecycle = lifecycle;
+      this.permitLease = permitLease;
+      this.cancellationMessage = cancellationMessage;
+    }
+
+    @Override
+    protected void done() {
+      if (isCancelled() && !lifecycle.operationStarted.get()) {
+        result.completeExceptionally(new CancellationException(cancellationMessage));
+        permitLease.release();
       }
     }
   }
