@@ -62,8 +62,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -137,7 +140,8 @@ public class QueryInputResolver {
 
   // Metadata calls run separately from the bounded planning pool so cancellation can interrupt the
   // active store call and release its planning worker without waiting for a non-cooperating client.
-  // The global semaphore remains held until that call actually exits, preserving the store-I/O cap.
+  // A direct-handoff executor has no queue: admission happens before submission and remains held
+  // until the underlying call exits, so stalled work cannot retain cancelled request closures.
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
 
@@ -185,7 +189,14 @@ public class QueryInputResolver {
   @PostConstruct
   void postConstruct() {
     ExecutorService planningExecutor = Executors.newFixedThreadPool(MAX_PARALLEL_INPUT_RESOLUTIONS);
-    ExecutorService ioExecutor = Executors.newFixedThreadPool(MAX_CONCURRENT_INPUT_RESOLUTIONS);
+    ExecutorService ioExecutor =
+        new ThreadPoolExecutor(
+            MAX_CONCURRENT_INPUT_RESOLUTIONS,
+            MAX_CONCURRENT_INPUT_RESOLUTIONS,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new SynchronousQueue<>(),
+            new ThreadPoolExecutor.AbortPolicy());
     ownedBlockingExecutor = planningExecutor;
     ownedMetadataIoExecutor = ioExecutor;
     blockingExecutor = planningExecutor;
@@ -627,26 +638,45 @@ public class QueryInputResolver {
       return withInputResolutionPermitSynchronously(operation);
     }
 
+    acquireInputResolutionPermit(cancelled);
     PropagatedContext context = PropagatedContext.capture();
-    // Do not use ExecutorService.submit here: ForkJoinPool may help-run its ForkJoinTask inline
-    // while this thread waits, preventing the cancellation poll below from ever running.
-    FutureTask<T> submitted =
+    CompletableFuture<T> result = new CompletableFuture<>();
+    AtomicReference<Thread> worker = new AtomicReference<>();
+    FutureTask<Void> submitted =
         new FutureTask<>(
-            () ->
-                context.supply(() -> withInputResolutionPermitSynchronously(cancelled, operation)));
-    metadataIoExecutor.execute(submitted);
+            () -> {
+              worker.set(Thread.currentThread());
+              try {
+                throwIfCancelled(cancelled);
+                result.complete(context.supply(operation));
+              } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+              } finally {
+                worker.set(null);
+                concurrentInputResolutionPermits.release();
+              }
+            },
+            null);
+    try {
+      // Do not use ExecutorService.submit here: ForkJoinPool may help-run its ForkJoinTask inline
+      // while this thread waits, preventing the cancellation poll below from ever running.
+      metadataIoExecutor.execute(submitted);
+    } catch (RuntimeException | Error submissionFailure) {
+      concurrentInputResolutionPermits.release();
+      throw submissionFailure;
+    }
     try {
       while (true) {
         if (cancelled.getAsBoolean()) {
-          submitted.cancel(true);
+          interrupt(worker);
           throw new CancellationException("input resolution cancelled");
         }
         try {
-          return submitted.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+          return result.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ignored) {
           // A bounded wait lets the caller interrupt a metadata operation as soon as it cancels.
         } catch (InterruptedException e) {
-          submitted.cancel(true);
+          interrupt(worker);
           Thread.currentThread().interrupt();
           throw new CancellationException("interrupted while awaiting resolver I/O");
         } catch (ExecutionException e) {
@@ -654,8 +684,15 @@ public class QueryInputResolver {
         }
       }
     } catch (CancellationException e) {
-      submitted.cancel(true);
+      interrupt(worker);
       throw e;
+    }
+  }
+
+  private static void interrupt(AtomicReference<Thread> worker) {
+    Thread active = worker.get();
+    if (active != null) {
+      active.interrupt();
     }
   }
 
@@ -669,17 +706,8 @@ public class QueryInputResolver {
       BooleanSupplier cancelled, Supplier<T> operation) {
     boolean acquired = false;
     try {
-      throwIfCancelled(cancelled);
-      // Timed waits let serial callers observe cancellation too. This is best-effort fairness:
-      // a timed-out waiter must rejoin the fair semaphore's queue, trading strict FIFO for prompt
-      // request cancellation when all store-I/O slots are occupied.
-      while (!acquired) {
-        throwIfCancelled(cancelled);
-        acquired =
-            concurrentInputResolutionPermits.tryAcquire(
-                GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
-      }
-      throwIfCancelled(cancelled);
+      acquireInputResolutionPermit(cancelled);
+      acquired = true;
       return operation.get();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -688,6 +716,25 @@ public class QueryInputResolver {
       if (acquired) {
         concurrentInputResolutionPermits.release();
       }
+    }
+  }
+
+  /** Acquire process-wide metadata capacity while leaving a cancelled caller responsive. */
+  private void acquireInputResolutionPermit(BooleanSupplier cancelled) {
+    try {
+      // Timed waits let serial callers observe cancellation too. This is best-effort fairness:
+      // a timed-out waiter must rejoin the fair semaphore's queue, trading strict FIFO for prompt
+      // request cancellation when all store-I/O slots are occupied.
+      while (true) {
+        throwIfCancelled(cancelled);
+        if (concurrentInputResolutionPermits.tryAcquire(
+            GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+          return;
+        }
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException("interrupted while awaiting resolver I/O capacity");
     }
   }
 
