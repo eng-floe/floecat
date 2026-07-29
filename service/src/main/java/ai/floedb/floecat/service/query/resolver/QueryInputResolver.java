@@ -331,6 +331,13 @@ public class QueryInputResolver {
     }
   }
 
+  private void mergePlan(ResolutionState state, InputPlan plan) {
+    state.resolved.add(plan.resolvedId());
+    for (TablePin pin : plan.pins()) {
+      mergePin(state, pin);
+    }
+  }
+
   /**
    * Resolve one input to its {@link InputPlan}, reading the metadata graph and updating the shared
    * current-snapshot cache and diagnostics. It does not read or write {@code state.resolved} or
