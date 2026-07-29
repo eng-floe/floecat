@@ -129,17 +129,18 @@ public class QueryInputResolver {
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
 
-  // DynamoDB-backed metadata calls can pin a carrier while they block. Production therefore owns
-  // a dedicated bounded platform-thread pool, independent of the Mutiny request executor whose
-  // driver synchronously awaits this fan-out. Direct unit construction retains a non-owning common
-  // pool fallback until CDI invokes postConstruct().
+  // Planning tasks only await the separately-dispatched metadata call, so production uses virtual
+  // threads here rather than limiting every request to a shared set of parked platform threads.
+  // Direct unit construction retains a non-owning common-pool fallback until CDI invokes
+  // postConstruct().
   private volatile ExecutorService blockingExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedBlockingExecutor;
 
-  // Metadata calls run separately from the bounded planning pool so cancellation can interrupt the
-  // active store call and release its planning worker without waiting for a non-cooperating client.
-  // Admission happens before submission and remains held until the underlying call exits. Its
-  // bounded queue bridges worker turnover without retaining unbounded cancelled request closures.
+  // Metadata calls run separately from planning because DynamoDB-backed calls can pin a carrier
+  // while blocking. Cancellation can therefore release the waiting virtual planning thread without
+  // waiting for a non-cooperating client. Admission happens before submission and remains held
+  // until the underlying call exits. Its bounded queue bridges worker turnover without retaining
+  // unbounded cancelled request closures.
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
 
@@ -186,7 +187,7 @@ public class QueryInputResolver {
 
   @PostConstruct
   void postConstruct() {
-    ExecutorService planningExecutor = Executors.newFixedThreadPool(MAX_PARALLEL_INPUT_RESOLUTIONS);
+    ExecutorService planningExecutor = Executors.newVirtualThreadPerTaskExecutor();
     ExecutorService ioExecutor =
         new ThreadPoolExecutor(
             MAX_CONCURRENT_INPUT_RESOLUTIONS,
