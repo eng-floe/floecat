@@ -1248,6 +1248,33 @@ public class QueryInputResolverTest {
     assertEquals(1, cache.size());
   }
 
+  @Test
+  void legacyMapCacheDoesNotRetainPinsFromAFailedResolution() {
+    ResourceId successful = rid("LEGACY_CACHE_SUCCESS");
+    ResourceId failing = rid("LEGACY_CACHE_FAILURE");
+    var graph = new FakeGraph();
+    graph.failPinFor(failing);
+    var withStore =
+        new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
+    Map<ResourceId, TablePin> legacyCache = new HashMap<>();
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-legacy-cache",
+                "cid",
+                List.of(
+                    QueryInput.newBuilder().setTableId(successful).build(),
+                    QueryInput.newBuilder().setTableId(failing).build()),
+                Optional.empty(),
+                Optional.empty(),
+                legacyCache,
+                null));
+
+    assertTrue(legacyCache.isEmpty());
+  }
+
   // ----------------------------------------------------------------------
   // Base-relation enrichment (catalog + search-path fallback)
   // ----------------------------------------------------------------------

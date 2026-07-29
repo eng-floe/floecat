@@ -54,10 +54,12 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -403,27 +405,26 @@ public class QueryInputResolver {
       currentSnapshotPinCache.forEach(
           (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
     }
-    try {
-      return resolveInputs(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          singleFlightCache,
-          diagnostics);
-    } finally {
-      synchronized (currentSnapshotPinCache) {
-        singleFlightCache.forEach(
-            (tableId, pinFuture) -> {
-              if (pinFuture.isDone()
-                  && !pinFuture.isCompletedExceptionally()
-                  && !pinFuture.isCancelled()) {
-                currentSnapshotPinCache.put(tableId, Futures.join(pinFuture));
-              }
-            });
-      }
+    ResolutionResult result =
+        resolveInputs(
+            queryId,
+            correlationId,
+            inputs,
+            asOfDefault,
+            defaultCatalogId,
+            singleFlightCache,
+            diagnostics);
+    synchronized (currentSnapshotPinCache) {
+      singleFlightCache.forEach(
+          (tableId, pinFuture) -> {
+            if (pinFuture.isDone()
+                && !pinFuture.isCompletedExceptionally()
+                && !pinFuture.isCancelled()) {
+              currentSnapshotPinCache.put(tableId, Futures.join(pinFuture));
+            }
+          });
     }
+    return result;
   }
 
   /**
@@ -740,11 +741,7 @@ public class QueryInputResolver {
         holder.complete(pin);
         state.diagnostics.count("pin.current_snapshot_cache_misses");
       } else {
-        // Deliberately await the single-flight winner rather than issue a competing lookup. A
-        // waiter can therefore observe cancellation only when the winner completes; that bounded
-        // latency preserves the invariant that every same-table CURRENT reference freezes one
-        // snapshot identity.
-        pin = Futures.join(inflight);
+        pin = awaitCurrentSnapshot(state, inflight);
         state.resolvingPinRoots.register(pin);
         state.diagnostics.count("pin.current_snapshot_cache_hits");
       }
@@ -788,6 +785,37 @@ public class QueryInputResolver {
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;
+  }
+
+  /** Await a single-flight winner without stranding a cancelled waiter on the executor. */
+  private TablePin awaitCurrentSnapshot(
+      ResolutionState state, CompletableFuture<TablePin> inflight) {
+    while (true) {
+      throwIfCancelled(state.cancelled);
+      if (Thread.currentThread().isInterrupted()) {
+        throw new CancellationException("interrupted while awaiting current snapshot pin");
+      }
+      try {
+        return inflight.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+      } catch (TimeoutException ignored) {
+        // A bounded wait lets the next loop observe cancellation or an executor interrupt.
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new CancellationException("interrupted while awaiting current snapshot pin");
+      } catch (ExecutionException e) {
+        rethrowAsyncFailure(e.getCause());
+      }
+    }
+  }
+
+  private static void rethrowAsyncFailure(Throwable failure) {
+    if (failure instanceof RuntimeException runtime) {
+      throw runtime;
+    }
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    throw new IllegalStateException("unexpected checked exception from async task", failure);
   }
 
   private boolean usesCurrentSnapshotFallback(
