@@ -57,7 +57,6 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
-import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -512,167 +511,186 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     // event loop, where that blocking work would fail with "current thread cannot be blocked".
     return mapFailures(
             runWithRetryOnWorker(
-                () -> {
-                  var princ = principal.get();
-                  var correlationId = princ.getCorrelationId();
-                  authz.require(princ, "namespace.write");
+                    () -> {
+                      var princ = principal.get();
+                      var correlationId = princ.getCorrelationId();
+                      authz.require(princ, "namespace.write");
 
-                  if (request.getRecursive() && request.getRequireEmpty()) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId,
-                        null,
-                        Map.of("reason", "recursive and require_empty cannot be combined"));
-                  }
-                  if (request.getRecursive()) {
-                    authz.require(princ, "table.write");
-                    authz.require(princ, "view.write");
-                  }
-
-                  var namespaceId = request.getNamespaceId();
-                  catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
-
-                  var namespace = namespaceRepo.getById(namespaceId).orElse(null);
-                  var catalogId =
-                      (namespace != null && namespace.hasCatalogId())
-                          ? namespace.getCatalogId()
-                          : null;
-
-                  if (catalogId == null) {
-                    var safe = namespaceRepo.metaForSafe(namespaceId);
-                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && safe.getPointerVersion() == 0L) {
-                      throw GrpcErrors.notFound(
-                          correlationId,
-                          GeneratedErrorMessages.MessageKey.NAMESPACE,
-                          Map.of("id", namespaceId.getId()));
-                    }
-                    MutationOps.BaseServiceChecks.enforcePreconditions(
-                        correlationId, safe, request.getPrecondition());
-                    topology.evictRelationRefs(namespaceId);
-                    metadataGraph.invalidate(namespaceId);
-                    return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
-                  }
-
-                  long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
-
-                  if (request.getRecursive()) {
-                    // Check the supplied condition before deleting descendants. The final delete
-                    // below still uses the same condition to catch a concurrent root mutation.
-                    // On a retry this check runs again, and by then an earlier attempt may have
-                    // already destroyed part of the subtree, so it reports partial teardown rather
-                    // than a bare precondition failure that reads like a no-op.
-                    enforceRootPrecondition(
-                        correlationId,
-                        namespaceRepo.metaFor(namespaceId),
-                        request.getPrecondition(),
-                        destroyed);
-                    if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed before recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    recursiveDropper.dropNamespaceContents(namespace, destroyed);
-                    if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    markerVersion++;
-                  }
-
-                  var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
-                  requireNamespaceEmpty(request, namespace, catalogId, parentPath, correlationId);
-
-                  if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
-                    if (request.getRecursive()) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
-                        Map.of());
-                  }
-                  var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
-                  if (markerAfterAdvance != markerVersion + 1) {
-                    if (request.getRecursive()) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
-                        Map.of());
-                  }
-                  // Same check again, after the marker advance: the scans are reads and cannot
-                  // join the delete's CAS batch, so emptiness has to be established on both sides
-                  // of
-                  // the fence.
-                  requireNamespaceEmpty(request, namespace, catalogId, parentPath, correlationId);
-
-                  if (request.getRecursive()) {
-                    // Descendants may already be irreversibly gone. If the caller's precondition on
-                    // the root no longer holds (a concurrent metadata bump, or a now-stale --etag),
-                    // the final delete below would report a generic precondition failure that reads
-                    // like a no-op, so pre-empt it here where the counts are known.
-                    enforceRootPrecondition(
-                        correlationId,
-                        namespaceRepo.metaForSafe(namespaceId),
-                        request.getPrecondition(),
-                        destroyed);
-                  }
-
-                  // The emptiness scans above are reads, and no read can be part of a CAS batch, so
-                  // on their own they always leave a window in which a child is published after the
-                  // last scan but before the pointer goes away. Carrying the marker into the delete
-                  // batch closes it: every child-publishing write advances this marker inside its
-                  // own batch (see BatchGuard), so a child that slipped past the scan makes this
-                  // delete fail rather than orphaning itself under a namespace that no longer
-                  // exists.
-                  final long fencedMarkerVersion = markerVersion + 1;
-                  final var childrenGuard =
-                      markerStore.namespaceDeleteGuard(namespaceId, fencedMarkerVersion);
-
-                  final MutationMeta meta;
-                  try {
-                    meta =
-                        MutationOps.deleteWithPreconditions(
-                            () -> namespaceRepo.metaFor(namespaceId),
-                            request.getPrecondition(),
-                            expected ->
-                                namespaceRepo.deleteWithPrecondition(
-                                    namespaceId, expected, childrenGuard),
-                            () -> namespaceRepo.metaForSafe(namespaceId),
+                      if (request.getRecursive() && request.getRequireEmpty()) {
+                        throw GrpcErrors.invalidArgument(
                             correlationId,
-                            "namespace",
-                            Map.of("id", namespaceId.getId()));
-                  } catch (BaseResourceRepository.BatchGuardFailedException childAppeared) {
-                    if (request.getRecursive()) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
-                        Map.of());
-                  } catch (StatusRuntimeException failed) {
-                    // The root's metadata can still change between the check above and this CAS, so
-                    // the last precondition failure gets the same treatment: never report a no-op
-                    // for an operation that has already destroyed part of the subtree.
-                    throw asPartialTeardown(correlationId, failed, destroyed);
-                  }
+                            null,
+                            Map.of("reason", "recursive and require_empty cannot be combined"));
+                      }
+                      if (request.getRecursive()) {
+                        authz.require(princ, "table.write");
+                        authz.require(princ, "view.write");
+                      }
 
-                  topology.evictRelationRefs(namespaceId);
-                  topology.evictNamespaceRefs(catalogId);
-                  metadataGraph.invalidate(namespaceId);
-                  markerStore.bumpCatalogMarker(catalogId);
-                  bumpParentNamespaceMarker(
-                      catalogId.getAccountId(), catalogId, namespace.getParentsList());
-                  return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
-                }),
+                      var namespaceId = request.getNamespaceId();
+                      catalogSurfaceWritePolicy()
+                          .requireDeletableNamespace(namespaceId, correlationId);
+
+                      var namespace = namespaceRepo.getById(namespaceId).orElse(null);
+                      var catalogId =
+                          (namespace != null && namespace.hasCatalogId())
+                              ? namespace.getCatalogId()
+                              : null;
+
+                      if (catalogId == null) {
+                        var safe = namespaceRepo.metaForSafe(namespaceId);
+                        boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                        if (callerCares && safe.getPointerVersion() == 0L) {
+                          throw GrpcErrors.notFound(
+                              correlationId,
+                              GeneratedErrorMessages.MessageKey.NAMESPACE,
+                              Map.of("id", namespaceId.getId()));
+                        }
+                        MutationOps.BaseServiceChecks.enforcePreconditions(
+                            correlationId, safe, request.getPrecondition());
+                        topology.evictRelationRefs(namespaceId);
+                        metadataGraph.invalidate(namespaceId);
+                        return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
+                      }
+
+                      long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+
+                      if (request.getRecursive()) {
+                        // Check the supplied condition before deleting descendants. The final
+                        // delete
+                        // below still uses the same condition to catch a concurrent root mutation.
+                        // A
+                        // failure here after an earlier attempt already destroyed part of the
+                        // subtree is
+                        // relabelled as partial teardown on the way out, along with every other way
+                        // this
+                        // operation can fail.
+                        MutationOps.BaseServiceChecks.enforcePreconditions(
+                            correlationId,
+                            namespaceRepo.metaFor(namespaceId),
+                            request.getPrecondition());
+                        if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "namespace children changed before recursive delete: "
+                                  + namespaceId.getId());
+                        }
+                        recursiveDropper.dropNamespaceContents(namespace, destroyed);
+                        if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "namespace children changed during recursive delete: "
+                                  + namespaceId.getId());
+                        }
+                        markerVersion++;
+                      }
+
+                      var parentPath =
+                          append(namespace.getParentsList(), namespace.getDisplayName());
+                      requireNamespaceEmpty(
+                          request, namespace, catalogId, parentPath, correlationId);
+
+                      if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                        if (request.getRecursive()) {
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "namespace children changed during recursive delete: "
+                                  + namespaceId.getId());
+                        }
+                        throw GrpcErrors.preconditionFailed(
+                            correlationId,
+                            GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                            Map.of());
+                      }
+                      var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
+                      if (markerAfterAdvance != markerVersion + 1) {
+                        if (request.getRecursive()) {
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "namespace children changed during recursive delete: "
+                                  + namespaceId.getId());
+                        }
+                        throw GrpcErrors.preconditionFailed(
+                            correlationId,
+                            GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                            Map.of());
+                      }
+                      // Same check again, after the marker advance: the scans are reads and cannot
+                      // join the delete's CAS batch, so emptiness has to be established on both
+                      // sides
+                      // of
+                      // the fence.
+                      requireNamespaceEmpty(
+                          request, namespace, catalogId, parentPath, correlationId);
+
+                      if (request.getRecursive()) {
+                        // Descendants may already be irreversibly gone, so check the caller's
+                        // condition
+                        // on the root before the delete rather than letting the delete's own check
+                        // decide
+                        // — both end up relabelled with the counts, but failing here keeps the
+                        // final
+                        // delete from being attempted against a root the caller no longer
+                        // recognises.
+                        MutationOps.BaseServiceChecks.enforcePreconditions(
+                            correlationId,
+                            namespaceRepo.metaForSafe(namespaceId),
+                            request.getPrecondition());
+                      }
+
+                      // The emptiness scans above are reads, and no read can be part of a CAS
+                      // batch, so
+                      // on their own they always leave a window in which a child is published after
+                      // the
+                      // last scan but before the pointer goes away. Carrying the marker into the
+                      // delete
+                      // batch closes it: every child-publishing write advances this marker inside
+                      // its
+                      // own batch (see BatchGuard), so a child that slipped past the scan makes
+                      // this
+                      // delete fail rather than orphaning itself under a namespace that no longer
+                      // exists.
+                      final long fencedMarkerVersion = markerVersion + 1;
+                      final var childrenGuard =
+                          markerStore.namespaceDeleteGuard(namespaceId, fencedMarkerVersion);
+
+                      final MutationMeta meta;
+                      try {
+                        meta =
+                            MutationOps.deleteWithPreconditions(
+                                () -> namespaceRepo.metaFor(namespaceId),
+                                request.getPrecondition(),
+                                expected ->
+                                    namespaceRepo.deleteWithPrecondition(
+                                        namespaceId, expected, childrenGuard),
+                                () -> namespaceRepo.metaForSafe(namespaceId),
+                                correlationId,
+                                "namespace",
+                                Map.of("id", namespaceId.getId()));
+                      } catch (BaseResourceRepository.BatchGuardFailedException childAppeared) {
+                        if (request.getRecursive()) {
+                          throw new BaseResourceRepository.AbortRetryableException(
+                              "namespace children changed during recursive delete: "
+                                  + namespaceId.getId());
+                        }
+                        throw GrpcErrors.preconditionFailed(
+                            correlationId,
+                            GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                            Map.of());
+                      }
+
+                      topology.evictRelationRefs(namespaceId);
+                      topology.evictNamespaceRefs(catalogId);
+                      metadataGraph.invalidate(namespaceId);
+                      markerStore.bumpCatalogMarker(catalogId);
+                      bumpParentNamespaceMarker(
+                          catalogId.getAccountId(), catalogId, namespace.getParentsList());
+                      return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
+                    })
+                // Outside the retries on purpose. The likeliest way a contended recursive delete
+                // fails is a repeated AbortRetryableException exhausting the budget, and that
+                // never re-enters the body — nor do CorruptionException, an immutability refusal,
+                // or the page-token guard. Relabelling here catches every one of them, so a
+                // caller whose subtree has just been destroyed is never handed a bare "retryable
+                // conflict, nothing committed".
+                .onFailure()
+                .transform(failed -> partialTeardownIfDestroyed(failed, destroyed)),
             correlationId())
         .onFailure()
         .invoke(L::fail)
@@ -737,42 +755,25 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   /**
-   * Enforces the caller's precondition on the root, reporting it as {@code
-   * NAMESPACE_RECURSIVE_PARTIAL} once this operation has already destroyed something.
+   * Re-labels any failure as {@code NAMESPACE_RECURSIVE_PARTIAL}, with the accumulated counts, once
+   * this operation has destroyed something — and returns it untouched otherwise. The original
+   * failure is kept as the cause; only the counts are added.
    *
-   * <p>A recursive delete is irreversible but retryable, so every precondition check after the
-   * first attempt runs against a subtree that may already be partly gone — including the pre-drop
-   * check at the top of a later attempt. A bare precondition failure there says "nothing happened"
-   * about an operation that has destroyed resources, which is the one thing this error exists to
-   * prevent. Routing every root precondition check through here keeps that guarantee independent of
-   * where in the method the check happens to sit.
+   * <p>Applied to the retried body as a whole rather than at each throw site. A recursive delete is
+   * irreversible but retryable, and the failure a caller is most likely to see is not a
+   * precondition miss inside the body but a repeated {@code AbortRetryableException} that exhausts
+   * the retry budget — which no in-body handler can observe. {@code CorruptionException}, an
+   * immutability refusal and the pagination guard escape the same way. Whatever the cause, telling
+   * a caller "nothing committed" about a subtree that is gone is the one outcome this error code
+   * exists to prevent.
    */
-  private void enforceRootPrecondition(
-      String correlationId,
-      MutationMeta meta,
-      ai.floedb.floecat.common.rpc.Precondition precondition,
-      RecursiveResourceDropper.DropSummary destroyed) {
-    try {
-      MutationOps.BaseServiceChecks.enforcePreconditions(correlationId, meta, precondition);
-    } catch (StatusRuntimeException failed) {
-      throw asPartialTeardown(correlationId, failed, destroyed);
-    }
-  }
-
-  /**
-   * Re-labels {@code failed} as a partial teardown when this operation has already destroyed
-   * something, and returns it unchanged otherwise. Only the counts are added — the failure itself
-   * is still reported, and remains the cause.
-   */
-  private StatusRuntimeException asPartialTeardown(
-      String correlationId,
-      StatusRuntimeException failed,
-      RecursiveResourceDropper.DropSummary destroyed) {
+  private Throwable partialTeardownIfDestroyed(
+      Throwable failed, RecursiveResourceDropper.DropSummary destroyed) {
     if (destroyed.total() == 0) {
       return failed;
     }
     return GrpcErrors.preconditionFailed(
-        correlationId,
+        correlationId(),
         GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
         Map.of(
             "deleted_namespaces",
