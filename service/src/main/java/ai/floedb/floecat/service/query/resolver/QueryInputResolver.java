@@ -74,7 +74,9 @@ import java.util.Set;
  *       view-creation time, regardless of the current query search-path.
  * </ol>
  *
- * <p>No side effects: this class only computes resolution, it does not mutate or persist anything.
+ * <p>This resolver does not persist query context. While resolving, it registers each constructed
+ * pin as a transient GC root and releases discarded or abandoned registrations when the resolution
+ * attempt ends.
  */
 @ApplicationScoped
 public class QueryInputResolver {
