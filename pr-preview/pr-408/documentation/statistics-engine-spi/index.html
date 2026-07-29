@@ -1899,12 +1899,13 @@ order.</p>
 <li>On success, re-reads the store → <strong>CAPTURED</strong>: returns stats + schedules no follow-up.</li>
 <li>On timeout (budget exceeded) → <strong>TIMEOUT</strong>: enqueues async follow-up, returns empty.</li>
 <li>On failure (no connector, job error) → <strong>FAILED</strong>: enqueues async follow-up, returns empty.</li>
-<li>Otherwise (ASYNC mode, no budget, or sync disabled) → <strong>SKIPPED</strong>: enqueues async reconcile job
-   and returns empty.</li>
+<li>With sync enabled, ASYNC mode or no budget → <strong>SKIPPED</strong>: enqueues an async reconcile job and
+   returns empty. With sync disabled, query resolution is store-only and enqueues no capture work.</li>
 </ol>
 <p><code>StatsOrchestrator.resolveBatch(batchRequest)</code>:</p>
 <p>Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
-Each item is a store read; misses fall back to async enqueue with <code>SKIPPED</code> outcome.</p>
+Each item is a store read. With sync enabled, misses fall back to async enqueue with <code>SKIPPED</code>
+outcome; with sync disabled, misses return <code>SKIPPED</code> without capture.</p>
 <p>Async enqueue policy:</p>
 <ul>
 <li>Enqueue scope is table-scoped using <code>ReconcileScope.ScopedCaptureRequest</code> payloads:
