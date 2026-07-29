@@ -2753,6 +2753,71 @@ class StatsRepositoryTargetStorageTest {
         .hasMessageContaining("publication intent changed");
   }
 
+  @Test
+  void publishedActiveGenerationResumesWithoutRevalidatingAttemptReferences() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 720L;
+    String generationId = "full-rescan-published-replacement";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference original =
+        prewrittenReference(snapshotId, generationId, "column-1", "payload-1");
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(original));
+    StatsStore.PrewrittenTargetStatsReference replacementAttempt =
+        new StatsStore.PrewrittenTargetStatsReference(
+            original.targetStorageId(),
+            original.blobUri() + ".replacement",
+            original.blobBytes() + 1L,
+            original.blobSha256());
+
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(replacementAttempt), predecessor, null))
+        .isTrue();
+
+    assertThat(generationLifecycle(pointerStore, snapshotId, generationId)).isEqualTo("PUBLISHED");
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId))
+        .contains(
+            Keys.snapshotTargetStatsManifestBlobUri(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId));
+  }
+
+  @Test
+  void publishedGenerationCannotResumeAfterItIsSuperseded() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 721L;
+    String firstGenerationId = "full-rescan-published-first";
+    String secondGenerationId = "full-rescan-published-second";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference firstReference =
+        prewrittenReference(snapshotId, firstGenerationId, "column-1", "payload-1");
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, firstGenerationId, List.of(firstReference));
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID,
+        snapshotId,
+        secondGenerationId,
+        List.of(prewrittenReference(snapshotId, secondGenerationId, "column-1", "payload-2")));
+
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, snapshotId, firstGenerationId, false);
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPreparedStatsGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    firstGenerationId,
+                    List.of(firstReference),
+                    predecessor,
+                    null))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("published target stats generation is no longer active");
+  }
+
   private static StatsStore.PrewrittenTargetStatsReference prewrittenReference(
       long snapshotId, String generationId, String targetStorageId, String payload) {
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(payload));

@@ -559,12 +559,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     Set<String> finalTargets = new HashSet<>();
     String finalStatsPrefix =
         Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
-            tableId.getAccountId(),
-            tableId.getId(),
-            snapshotTask.snapshotId(),
-            lease.parentJobId,
-            lease.jobId,
-            lease.leaseEpoch);
+            tableId.getAccountId(), tableId.getId(), snapshotTask.snapshotId(), lease.parentJobId);
     for (StatsObjectDescriptor object : manifest.getFinalStatsList()) {
       finalStats.add(prewrittenStatsReference(finalStatsPrefix, object));
       if (!finalTargets.add(object.getTargetStorageId())) {

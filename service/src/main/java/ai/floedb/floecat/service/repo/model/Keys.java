@@ -1344,14 +1344,10 @@ public final class Keys {
   }
 
   public static String reconcileSnapshotFinalizeStatsObjectPrefix(
-      String accountId,
-      String tableId,
-      long snapshotId,
-      String parentJobId,
-      String jobId,
-      String leaseEpoch) {
-    return reconcileFileGroupStatsObjectPrefix(
-        accountId, tableId, snapshotId, parentJobId, jobId, leaseEpoch);
+      String accountId, String tableId, long snapshotId, String parentJobId) {
+    String generationId = "full-rescan-" + req("parent_job_id", parentJobId);
+    return snapshotTargetStatsGenerationBlobPrefix(accountId, tableId, snapshotId, generationId)
+        + "finalizer-outputs/";
   }
 
   public static String reconcileSnapshotCaptureManifestUri(

@@ -406,15 +406,27 @@ public class StatsRepository implements StatsStore {
     String effectiveGenerationId = requireGenerationId(generationId);
     StatsStore.StatsGenerationPredecessor requiredPredecessor =
         java.util.Objects.requireNonNull(predecessor, "predecessor");
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    boolean alreadyActive =
+        current
+            .map(ActiveSnapshotStats::generationId)
+            .filter(effectiveGenerationId::equals)
+            .isPresent();
+    if (GENERATION_PUBLISHED.equals(lifecycleState)) {
+      if (!alreadyActive) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "published target stats generation is no longer active: " + effectiveGenerationId);
+      }
+      return true;
+    }
     List<PrewrittenStatsWrite> finalWrites =
         prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, finalReferences);
-    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
     if (lifecycleState.isBlank() || GENERATION_WRITING.equals(lifecycleState)) {
       ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
       ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, finalWrites, true);
       targetStatsStorage.overwriteReferencesBatch(finalWrites);
-    } else if (GENERATION_PUBLISHING.equals(lifecycleState)
-        || GENERATION_PUBLISHED.equals(lifecycleState)) {
+    } else if (GENERATION_PUBLISHING.equals(lifecycleState)) {
       ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, finalWrites, false);
       targetStatsStorage.verifyExactReferences(finalWrites);
     } else {
@@ -423,16 +435,6 @@ public class StatsRepository implements StatsStore {
               + effectiveGenerationId
               + " state="
               + lifecycleState);
-    }
-    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
-    boolean alreadyActive =
-        current
-            .map(ActiveSnapshotStats::generationId)
-            .filter(effectiveGenerationId::equals)
-            .isPresent();
-    if (GENERATION_PUBLISHED.equals(lifecycleState) && !alreadyActive) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "published target stats generation is no longer active: " + effectiveGenerationId);
     }
     if (!alreadyActive
         && (!matchesPredecessor(current, requiredPredecessor)

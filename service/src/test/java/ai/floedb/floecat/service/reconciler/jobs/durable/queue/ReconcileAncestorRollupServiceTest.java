@@ -66,6 +66,7 @@ class ReconcileAncestorRollupServiceTest {
         job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
     parent.childrenFinalized = true;
     parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
 
     StoredReconcileJob fileGroupOne =
         job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
@@ -83,6 +84,116 @@ class ReconcileAncestorRollupServiceTest {
 
     assertEquals(14L, projection.statsProcessed());
     assertEquals(5L, projection.indexesProcessed());
+  }
+
+  @Test
+  void successfulReplacementFinalizerSupersedesPriorFailedFinalizers() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
+
+    StoredReconcileJob fileGroupOne =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob fileGroupTwo =
+        job("file-group-2", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+
+    StoredReconcileJob failed =
+        job(
+            "failed-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    failed.createdAtMs = 100L;
+    failed.finishedAtMs = 150L;
+    failed.errors = 1L;
+    StoredReconcileJob succeeded =
+        job(
+            "replacement-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_SUCCEEDED");
+    succeeded.createdAtMs = 200L;
+    succeeded.statsProcessed = 9L;
+    succeeded.indexesProcessed = 7L;
+
+    var projection =
+        rollups.recomputeParentProjection(
+            parent, List.of(fileGroupOne, fileGroupTwo, failed, succeeded));
+
+    assertEquals("JS_SUCCEEDED", projection.state());
+    assertEquals(0L, projection.errors());
+    assertEquals(9L, projection.statsProcessed());
+    assertEquals(7L, projection.indexesProcessed());
+  }
+
+  @Test
+  void successfulReplacementFinalizerDoesNotHideMissingFileGroupChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
+
+    StoredReconcileJob fileGroup =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob failed =
+        job(
+            "failed-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    failed.createdAtMs = 100L;
+    StoredReconcileJob succeeded =
+        job(
+            "replacement-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_SUCCEEDED");
+    succeeded.createdAtMs = 200L;
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroup, failed, succeeded));
+
+    assertEquals("JS_WAITING", projection.state());
+  }
+
+  @Test
+  void historicalFailedReplacementFinalizersRemainOneTerminalLogicalChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 2L;
+    parent.snapshotTaskFileGroupCount = 1;
+
+    StoredReconcileJob fileGroup =
+        job("file-group", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob firstFailure =
+        job(
+            "failed-finalizer-1",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    firstFailure.createdAtMs = 100L;
+    firstFailure.errors = 1L;
+    StoredReconcileJob latestFailure =
+        job(
+            "failed-finalizer-2",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    latestFailure.createdAtMs = 200L;
+    latestFailure.errors = 1L;
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroup, firstFailure, latestFailure));
+
+    assertEquals("JS_FAILED", projection.state());
+    assertEquals(1L, projection.errors());
   }
 
   @Test

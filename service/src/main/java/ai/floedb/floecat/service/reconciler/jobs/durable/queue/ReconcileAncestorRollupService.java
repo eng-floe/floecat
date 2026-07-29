@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJob
 import ai.floedb.floecat.service.reconciler.jobs.durable.projection.ReconcileJobProjector.ProjectedPublicJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -219,11 +220,26 @@ public class ReconcileAncestorRollupService {
 
   private List<StoredReconcileJob> dedupeDirectChildrenForRollup(
       StoredReconcileJob parent, List<StoredReconcileJob> directChildren) {
-    if (parent == null
-        || parent.jobKind() != ReconcileJobKind.PLAN_CONNECTOR
-        || directChildren == null
-        || directChildren.isEmpty()) {
+    if (parent == null || directChildren == null || directChildren.isEmpty()) {
       return directChildren == null ? List.of() : directChildren;
+    }
+    if (parent.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
+      var result = new ArrayList<StoredReconcileJob>(directChildren.size());
+      StoredReconcileJob finalizer = null;
+      for (StoredReconcileJob child : directChildren) {
+        if (child != null && child.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+          finalizer = chooseSnapshotFinalizer(finalizer, child);
+        } else {
+          result.add(child);
+        }
+      }
+      if (finalizer != null) {
+        result.add(finalizer);
+      }
+      return List.copyOf(result);
+    }
+    if (parent.jobKind() != ReconcileJobKind.PLAN_CONNECTOR) {
+      return directChildren;
     }
     Map<String, StoredReconcileJob> byLogicalTarget = new LinkedHashMap<>();
     for (StoredReconcileJob child : directChildren) {
@@ -235,6 +251,26 @@ public class ReconcileAncestorRollupService {
       byLogicalTarget.put(logicalTarget, chooseConnectorLogicalChild(current, child));
     }
     return List.copyOf(byLogicalTarget.values());
+  }
+
+  private StoredReconcileJob chooseSnapshotFinalizer(
+      StoredReconcileJob current, StoredReconcileJob candidate) {
+    if (candidate == null) {
+      return current;
+    }
+    if (current == null) {
+      return candidate;
+    }
+    boolean currentSucceeded = "JS_SUCCEEDED".equals(blankToEmpty(current.state));
+    boolean candidateSucceeded = "JS_SUCCEEDED".equals(blankToEmpty(candidate.state));
+    if (currentSucceeded != candidateSucceeded) {
+      return candidateSucceeded ? candidate : current;
+    }
+    int createdComparison = Long.compare(candidate.createdAtMs, current.createdAtMs);
+    if (createdComparison != 0) {
+      return createdComparison > 0 ? candidate : current;
+    }
+    return candidate.updatedAtMs >= current.updatedAtMs ? candidate : current;
   }
 
   private StoredReconcileJob chooseConnectorLogicalChild(
@@ -305,9 +341,15 @@ public class ReconcileAncestorRollupService {
             aggregate.cancelledChildJobs(),
             aggregate.directChildObserved());
     long expectedDirectChildJobs =
-        Math.max(
-            Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
-            Math.max(0L, aggregate.directChildObserved()));
+        parent != null && parent.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+            ? Math.max(
+                Math.max(
+                    Math.max(0L, parent.expectedDirectChildren),
+                    Math.max(0L, aggregate.directChildObserved())),
+                Math.max(0L, parent.snapshotTaskFileGroupCount) + 1L)
+            : Math.max(
+                Math.max(0L, parent == null ? 0L : parent.expectedDirectChildren),
+                Math.max(0L, aggregate.directChildObserved()));
     boolean childSetFinalized = childSetFinalized(parent);
     boolean allSucceeded =
         childSetFinalized

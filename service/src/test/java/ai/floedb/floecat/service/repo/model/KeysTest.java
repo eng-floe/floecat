@@ -109,6 +109,14 @@ class KeysTest {
   }
 
   @Test
+  void snapshotFinalizerStatsPrefixIsStableAcrossReplacementAttempts() {
+    assertEquals(
+        "/accounts/a/tables/t/target-stats/0000000000000000007/generations/"
+            + "full-rescan-parent/finalizer-outputs/",
+        Keys.reconcileSnapshotFinalizeStatsObjectPrefix("a", "t", 7L, "parent"));
+  }
+
+  @Test
   void tableIdFromSnapshotPointerKeyCoversEverySnapshotPointerShape() {
     // A transaction touching ANY snapshot pointer must schedule a root resync, not only the
     // current-snapshot pointer. The extractor recovers the (percent-decoded) table id from all

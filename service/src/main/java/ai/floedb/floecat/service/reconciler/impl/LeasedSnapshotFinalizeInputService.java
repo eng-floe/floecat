@@ -177,12 +177,7 @@ public class LeasedSnapshotFinalizeInputService {
     ReconcileSnapshotTask snapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
     return Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
-        lease.accountId,
-        snapshotTask.tableId(),
-        snapshotTask.snapshotId(),
-        lease.parentJobId,
-        lease.jobId,
-        lease.leaseEpoch);
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId(), lease.parentJobId);
   }
 
   private static String captureManifestUri(ReconcileJobStore.LeasedJob lease) {

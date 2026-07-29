@@ -6110,6 +6110,112 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void finalizerTerminalFailuresRetryWithBackoffThenFailParentWithoutReplacement() {
+    configureRetryPolicy(2, 100L, 100L);
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true)
+            .withContentState("revision-1", "metadata-1", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on explicit-empty finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    runProjectionMaintenance();
+    String finalizerJobId =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .findFirst()
+            .orElseThrow()
+            .jobId;
+
+    var firstLease = leaseJob(finalizerJobId);
+    store.markRunning(finalizerJobId, firstLease.leaseEpoch, 100L, "finalizer-1");
+    store.markFailedTerminal(
+        finalizerJobId,
+        firstLease.leaseEpoch,
+        110L,
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+    StoredReconcileJob retrying =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    assertEquals("JS_QUEUED", retrying.state);
+    assertEquals(1, retrying.attempt);
+    assertTrue(retrying.nextAttemptAtMs > System.currentTimeMillis());
+    assertFalse(retrying.readyPointerKey.isBlank());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+
+    makeQueuedJobDueNow(finalizerJobId);
+    var secondLease = leaseJob(finalizerJobId);
+    store.markRunning(finalizerJobId, secondLease.leaseEpoch, 120L, "finalizer-2");
+    store.markFailedTerminal(
+        finalizerJobId,
+        secondLease.leaseEpoch,
+        130L,
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+    String replayedFinalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    assertEquals(finalizerJobId, replayedFinalizerJobId);
+    runProjectionMaintenance(3);
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_FAILED", finalizers.getFirst().state);
+    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, snapshotJobId).orElseThrow().state);
+    runProjectionMaintenance(3);
+    assertEquals(
+        1L,
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .count());
+  }
+
+  @Test
   void snapshotFinalizeCommitRequiresParentSnapshotOwnership() {
     ReconcileSnapshotTask emptyPlan =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
@@ -6302,6 +6408,70 @@ class DurableReconcileJobStoreTest {
     assertTrue(finalized.isPresent());
     assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
     assertEquals(400L, finalized.orElseThrow().finalizedAtMs);
+  }
+
+  @Test
+  void finalizerDependencyWaitExhaustsRetryBudget() {
+    configureRetryPolicy(2, 0L, 0L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var firstLease = leaseJob(jobId);
+    store.markRunning(jobId, firstLease.leaseEpoch, 100L, "executor-finalizer-1");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            firstLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
+            110L,
+            "Waiting for snapshot file groups",
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+    StoredReconcileJob retrying =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_QUEUED", retrying.state);
+    assertEquals(1, retrying.attempt);
+
+    makeQueuedJobDueNow(jobId);
+    var secondLease = leaseJob(jobId);
+    store.markRunning(jobId, secondLease.leaseEpoch, 120L, "executor-finalizer-2");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            secondLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
+            130L,
+            "Waiting for snapshot file groups",
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    StoredReconcileJob exhausted =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_FAILED", exhausted.state);
+    assertEquals(2, exhausted.attempt);
+    assertEquals(0L, exhausted.nextAttemptAtMs);
+    assertTrue(exhausted.readyPointerKey == null || exhausted.readyPointerKey.isBlank());
   }
 
   @Test

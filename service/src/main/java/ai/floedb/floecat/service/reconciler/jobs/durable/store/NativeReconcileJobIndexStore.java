@@ -208,6 +208,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return Optional.empty();
     }
     if (!isDedupeActiveState(record.get().state)
+        && retainsLogicalSnapshotFinalizer(record.get())) {
+      return record;
+    }
+    if (!isDedupeActiveState(record.get().state)
         && !blank(acceptedTerminalParentJobId)
         && acceptedTerminalParentJobId.equals(
             record.get().parentJobId == null ? "" : record.get().parentJobId)) {
@@ -1297,6 +1301,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   private static boolean retainsDedupeOwnership(StoredReconcileJob record) {
     return record != null && (isDedupeActiveState(record.state) || !blank(record.parentJobId));
+  }
+
+  private static boolean retainsLogicalSnapshotFinalizer(StoredReconcileJob record) {
+    return record != null
+        && "FINALIZE_SNAPSHOT_CAPTURE".equals(record.jobKind)
+        && !blank(record.parentJobId)
+        && !"JS_CANCELLED".equals(record.state);
   }
 
   private JobIndexWriteBatch queuedJobInsertOps(

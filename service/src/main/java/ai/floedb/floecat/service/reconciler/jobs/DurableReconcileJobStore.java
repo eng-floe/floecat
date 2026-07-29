@@ -4130,7 +4130,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     java.util.Set<String> succeededKeys = new java.util.LinkedHashSet<>();
-    boolean hasLiveFinalizer = false;
+    boolean hasFinalizer = false;
     for (StoredReconcileJob storedChild :
         directChildren == null ? List.<StoredReconcileJob>of() : directChildren) {
       ReconcileJob child =
@@ -4141,9 +4141,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       if (child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-          && !"JS_CANCELLED".equals(child.state)
-          && !"JS_FAILED".equals(child.state)) {
-        hasLiveFinalizer = true;
+          && !"JS_CANCELLED".equals(child.state)) {
+        hasFinalizer = true;
         continue;
       }
       if (child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP
@@ -4167,7 +4166,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
 
-    if (hasLiveFinalizer || !succeededKeys.equals(expectedKeys)) {
+    if (hasFinalizer || !succeededKeys.equals(expectedKeys)) {
       return false;
     }
 
@@ -4782,7 +4781,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               snapshotsProcessed,
               statsProcessed,
               indexesProcessed);
-      case FAILED_WAITING_ON_DEPENDENCY ->
+      case FAILED_WAITING_ON_DEPENDENCY -> {
+        if (nextChild.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+          applyFailedRetryableToRecord(
+              nextChild,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              indexesProcessed);
+        } else {
           applyFailedWaitingToRecord(
               nextChild,
               false,
@@ -4795,7 +4808,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               snapshotsProcessed,
               statsProcessed,
               indexesProcessed);
-      case FAILED_TERMINAL ->
+        }
+      }
+      case FAILED_TERMINAL -> {
+        if (nextChild.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+          applyFailedRetryableToRecord(
+              nextChild,
+              finishedAtMs,
+              message,
+              tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              indexesProcessed);
+        } else {
           applyFailedTerminalToRecord(
               nextChild,
               finishedAtMs,
@@ -4808,6 +4837,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               snapshotsProcessed,
               statsProcessed,
               indexesProcessed);
+        }
+      }
       case CANCELLED ->
           applyCancelledToRecord(
               nextChild,
