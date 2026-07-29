@@ -286,6 +286,13 @@ public class QueryInputResolverTest {
     assertTrue(
         metadataGraph.pinCalls().isEmpty(),
         "reuse must short-circuit before re-resolving against the live root");
+    org.mockito.Mockito.verify(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-reuse"),
+            org.mockito.ArgumentMatchers.argThat(
+                uris ->
+                    uris.contains("s3://T2/pinned-table.pb")
+                        && uris.contains("s3://T2/pinned-snap.pb")));
   }
 
   @Test

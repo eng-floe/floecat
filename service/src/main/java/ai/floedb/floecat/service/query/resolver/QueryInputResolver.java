@@ -445,7 +445,9 @@ public class QueryInputResolver {
               .filter(pin -> reusableFor(pin, override, asOfDefault));
       if (reused.isPresent()) {
         state.diagnostics.count("pin.committed_pin_reuse");
-        return reused.get();
+        TablePin pin = reused.get();
+        state.resolvingPinRoots.register(pin);
+        return pin;
       }
     }
     long snapshotPinStartNs = System.nanoTime();
