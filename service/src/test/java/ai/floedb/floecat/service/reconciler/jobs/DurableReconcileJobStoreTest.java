@@ -61,6 +61,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -3567,7 +3568,7 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      assertTrue(findAndDeleteReadyEntry(readyKey));
+      assertTrue(findAndDeleteReadyEntry(queued, readyKey));
     }
 
     var filteredLease =
@@ -7112,12 +7113,35 @@ class DurableReconcileJobStoreTest {
         .anyMatch(upsert -> canonicalPointerKey.equals(upsert.pointerKey()));
   }
 
-  private boolean findAndDeleteReadyEntry(String readyPointerKey) {
-    if (store.pointerStore.get(readyPointerKey).isEmpty()) {
-      return false;
+  private boolean findAndDeleteReadyEntry(StoredReconcileJob record, String readyPointerKey) {
+    List<ReconcileReadyQueueBackend.ReadyQueueSlice> slices =
+        List.of(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+                record.executionPolicy().executionClass().name()),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, record.laneKey),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, record.pinnedExecutorId()),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, record.jobKind().name()));
+    for (ReconcileReadyQueueBackend.ReadyQueueSlice slice : slices) {
+      var page = store.readyQueueBackend.scanReadySlice(slice, 100, "", null);
+      for (var entry : page.entries()) {
+        if (!readyPointerKey.equals(entry.readyPointerKey())) {
+          continue;
+        }
+        var canonical =
+            store
+                .readyQueueBackend
+                .loadCanonicalSnapshot(entry.canonicalPointerKey(), null)
+                .orElse(null);
+        return store.readyQueueBackend.deleteReadyEntry(entry, canonical);
+      }
     }
-    store.pointerStore.delete(readyPointerKey);
-    return true;
+    return false;
   }
 
   private ReconcileLeaseStore leaseManager() {
