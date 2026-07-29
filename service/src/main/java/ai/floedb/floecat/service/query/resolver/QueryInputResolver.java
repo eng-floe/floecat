@@ -39,8 +39,8 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
-import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -55,11 +55,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 /**
@@ -100,12 +102,12 @@ public class QueryInputResolver {
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
+  private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
-  // per-request bound only: the virtual-thread executor has no shared-pool ceiling. Read once here
-  // via ConfigProvider (not a @ConfigProperty ctor param) so the new-constructed test call sites
-  // keep compiling while production still honors config.
+  // per-request bound only. Read once here via ConfigProvider (not a @ConfigProperty ctor param)
+  // so the new-constructed test call sites keep compiling while production still honors config.
   private final int maxParallelInputResolutions;
 
   // Bounds metadata I/O across every request handled by this application-scoped resolver. The
@@ -120,11 +122,10 @@ public class QueryInputResolver {
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
 
-  // Runs per-input resolution off the request thread on virtual threads, not the shared Quarkus
-  // worker pool: the driver blocks joining this fan-out and must not contend with it for the same
-  // pool. The semaphore in BoundedFanout bounds concurrency; OTel context is re-established per
-  // task.
-  private final ExecutorService blockingExecutor = Executors.newVirtualThreadPerTaskExecutor();
+  // DynamoDB-backed metadata calls can pin a carrier while they block. Production uses Quarkus's
+  // managed platform-thread executor, matching NameResolver.parallelScan; the common pool is a
+  // non-owning test fallback for direct constructor call sites.
+  private volatile ExecutorService blockingExecutor = ForkJoinPool.commonPool();
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -167,10 +168,11 @@ public class QueryInputResolver {
     return clamped;
   }
 
-  /** Stop accepting fan-out work and wait for any in-flight resolution tasks during shutdown. */
-  @PreDestroy
-  void closeBlockingExecutor() {
-    blockingExecutor.close();
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors != null) {
+      managedExecutors.stream().findFirst().ifPresent(executor -> blockingExecutor = executor);
+    }
   }
 
   // =============================================================================
@@ -561,7 +563,9 @@ public class QueryInputResolver {
    * measured by the caller around this call regardless. One task state is shared by all tasks
    * because everything they touch is immutable or thread-safe (the current-snapshot cache and the
    * accumulator). Keep off-thread diagnostics to counters and durations only; one-shot put/emit
-   * values must stay on the request thread because the accumulator rejects them. Gathering plans in
+   * values must stay on the request thread because the accumulator rejects them. The task timing
+   * keys are aggregate work time in this concurrent path, so they may exceed the enclosing
+   * wall-clock resolver phase; dashboards must not treat them as elapsed time. Gathering plans in
    * input order keeps the caller's merge deterministic (first-touch-wins, conflict detection).
    */
   private void planInputsConcurrently(
@@ -596,11 +600,15 @@ public class QueryInputResolver {
     boolean acquired = false;
     try {
       throwIfCancelled(cancelled);
-      // A blocking acquire retains Semaphore's FIFO queue. BoundedFanout interrupts a queued
-      // worker on stream cancellation, so cancellation remains prompt without repeatedly leaving
-      // and rejoining the fair queue at its tail.
-      concurrentInputResolutionPermits.acquire();
-      acquired = true;
+      // Timed waits let serial callers observe cancellation too. This is best-effort fairness:
+      // a timed-out waiter must rejoin the fair semaphore's queue, trading strict FIFO for prompt
+      // request cancellation when all store-I/O slots are occupied.
+      while (!acquired) {
+        throwIfCancelled(cancelled);
+        acquired =
+            concurrentInputResolutionPermits.tryAcquire(
+                GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+      }
       throwIfCancelled(cancelled);
       return operation.get();
     } catch (InterruptedException e) {

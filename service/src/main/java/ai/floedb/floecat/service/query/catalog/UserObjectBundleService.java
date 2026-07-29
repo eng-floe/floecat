@@ -1810,8 +1810,18 @@ public class UserObjectBundleService {
           toRelease = pendingChunkPins;
           pendingChunkPins = RelationPinSet.getDefaultInstance();
         }
+        boolean publishIdleCancellation;
         synchronized (producerStateLock) {
           cancellationTelemetryPending = true;
+          publishIdleCancellation = !producerActive;
+          if (publishIdleCancellation) {
+            cancellationTelemetryPending = false;
+          }
+        }
+        if (publishIdleCancellation) {
+          // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
+          // this termination callback returns. Emit while it is still recording.
+          publishCancellationTelemetry();
         }
         // onTermination may run on a transport/event-loop thread. Root release can perform store
         // I/O, so teardown runs on a managed executor. Telemetry is published only after the
@@ -1828,7 +1838,6 @@ public class UserObjectBundleService {
                       "Failed to release cancelled stream pin roots query_id=%s",
                       ctx.getQueryId());
                 }
-                publishCancellationTelemetryIfIdle();
               });
         } catch (RejectedExecutionException shutdown) {
           LOG.warnf(
@@ -1856,16 +1865,6 @@ public class UserObjectBundleService {
       if (publishCancellation) {
         publishCancellationTelemetry();
       }
-    }
-
-    private void publishCancellationTelemetryIfIdle() {
-      synchronized (producerStateLock) {
-        if (producerActive || !cancellationTelemetryPending) {
-          return;
-        }
-        cancellationTelemetryPending = false;
-      }
-      publishCancellationTelemetry();
     }
 
     private void publishCancellationTelemetry() {
