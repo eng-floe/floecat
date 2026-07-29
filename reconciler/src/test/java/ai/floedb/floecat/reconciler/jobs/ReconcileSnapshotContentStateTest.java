@@ -21,6 +21,59 @@ import org.junit.jupiter.api.Test;
 
 class ReconcileSnapshotContentStateTest {
   @Test
+  void wildcardAvailableTargetCoversExplicitRequestedTarget() {
+    String requested = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+    String available = coverageAtom("COLUMN_STATS", "*", "#11", "semantics-1");
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(List.of(requested), List.of(available)))
+        .isEmpty();
+  }
+
+  @Test
+  void explicitAvailableTargetCoversSameExplicitRequestedTarget() {
+    String requested = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+    String available = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(List.of(requested), List.of(available)))
+        .isEmpty();
+  }
+
+  @Test
+  void explicitAvailableTargetDoesNotCoverDifferentExplicitRequestedTarget() {
+    String requested = coverageAtom("COLUMN_STATS", "column:22", "#11", "semantics-1");
+    String available = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(List.of(requested), List.of(available)))
+        .containsExactly(requested);
+  }
+
+  @Test
+  void explicitAvailableTargetDoesNotCoverWildcardRequestedTarget() {
+    String requested = coverageAtom("COLUMN_STATS", "*", "#11", "semantics-1");
+    String available = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(List.of(requested), List.of(available)))
+        .containsExactly(requested);
+  }
+
+  @Test
+  void wildcardAvailableTargetStillRequiresCompatibleOutputSelectorAndSemantics() {
+    String requested = coverageAtom("COLUMN_STATS", "column:11", "#11", "semantics-1");
+    List<String> incompatible =
+        List.of(
+            coverageAtom("PARQUET_PAGE_INDEX", "*", "#11", "semantics-1"),
+            coverageAtom("COLUMN_STATS", "*", "#22", "semantics-1"),
+            coverageAtom("COLUMN_STATS", "*", "#11", "semantics-2"));
+
+    assertThat(ReconcileSnapshotContentState.missingCoverage(List.of(requested), incompatible))
+        .containsExactly(requested);
+  }
+
+  @Test
   void coverageUsesSetSemanticsForExactSubsetAndSupersetRequests() {
     List<String> one =
         ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(policy("a")));
@@ -414,5 +467,14 @@ class ReconcileSnapshotContentStateTest {
         Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
         ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
         32);
+  }
+
+  private static String coverageAtom(
+      String output, String target, String selector, String semantics) {
+    return output + "|" + encode(target) + "|" + encode(selector) + "|" + semantics;
+  }
+
+  private static String encode(String value) {
+    return value.length() + ":" + value;
   }
 }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
@@ -294,35 +295,7 @@ public class ServerSideStorageConfigResolver {
   }
 
   static Map<String, String> preserveCatalogCredentials(ConnectorConfig config) {
-    if (config == null || config.options() == null) {
-      return config == null ? Map.of() : config.options();
-    }
-    boolean icebergCatalog =
-        config.kind() == ConnectorConfig.Kind.ICEBERG
-            && !"filesystem".equals(normalize(config.options().get("iceberg.source")));
-    boolean deltaGlue =
-        config.kind() == ConnectorConfig.Kind.DELTA
-            && "glue".equals(normalize(config.options().get("delta.source")));
-    if (!icebergCatalog && !deltaGlue) {
-      return config.options();
-    }
-    LinkedHashMap<String, String> preserved = new LinkedHashMap<>(config.options());
-    copyIfPresent(preserved, "s3.access-key-id", "rest.access-key-id");
-    copyIfPresent(preserved, "s3.secret-access-key", "rest.secret-access-key");
-    copyIfPresent(preserved, "s3.session-token", "rest.session-token");
-    copyIfPresent(
-        preserved,
-        RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
-        RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
-    return Map.copyOf(preserved);
-  }
-
-  private static void copyIfPresent(
-      Map<String, String> properties, String sourceKey, String targetKey) {
-    String value = properties.get(sourceKey);
-    if (isNonBlank(value)) {
-      properties.putIfAbsent(targetKey, value);
-    }
+    return CredentialResolverSupport.catalogScopedAwsOptions(config);
   }
 
   private static VendStorageCredentialsRequest resolveRequest(

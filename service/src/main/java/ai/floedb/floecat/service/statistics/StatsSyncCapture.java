@@ -121,8 +121,10 @@ class StatsSyncCapture {
               accountId, jobId, job.get().message);
           return StatsSyncOutcome.FAILED;
         }
-        case "JS_CANCELLED" -> {
-          LOG.debugf("stats_sync_capture job cancelled account=%s job=%s", accountId, jobId);
+        case "JS_CANCELLING", "JS_CANCELLED" -> {
+          LOG.debugf(
+              "stats_sync_capture job cancellation requested account=%s job=%s state=%s",
+              accountId, jobId, job.get().state);
           return StatsSyncOutcome.FAILED;
         }
         default -> sleepIfBudgetRemains(deadlineNanos);

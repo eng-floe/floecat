@@ -5724,6 +5724,48 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void snapshotContentStateSkipsExplicitColumnCoveredByWildcardOnUnchangedRevision() {
+    ReconcileCapturePolicy policy = statsOnlyCapturePolicy("#11");
+    ReconcileScope wildcardScope = ReconcileScope.of(List.of(), "table-1", List.of(), policy);
+    String wildcardPolicyAtom =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, wildcardScope).getFirst();
+    String semantics = wildcardPolicyAtom.substring(wildcardPolicyAtom.lastIndexOf('|') + 1);
+    List<String> materializedCoverage = List.of(coverageAtom("COLUMN_STATS", "*", "", semantics));
+    publishFinalizedContent(
+        CaptureMode.CAPTURE_ONLY,
+        wildcardScope,
+        contentTask("revision-1", "", materializedCoverage),
+        100L,
+        200L);
+
+    ReconcileScope explicitScope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest("table-1", 55L, "column:11", List.of())),
+            policy);
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, explicitScope);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            explicitScope,
+            contentTask("revision-1", "", requestedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertTrue(store.leaseNext().isEmpty());
+    ReconcileJob completed = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals("JS_SUCCEEDED", completed.state);
+    assertEquals(0L, completed.snapshotsProcessed);
+  }
+
+  @Test
   void sameRevisionIndexRecaptureIncludesPreviouslyMaterializedColumns() {
     ReconcileCapturePolicy materializedPolicy =
         ReconcileCapturePolicy.of(
@@ -7691,6 +7733,21 @@ class DurableReconcileJobStoreTest {
         Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
         ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
         ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
+  }
+
+  private static String coverageAtom(
+      String output, String target, String selector, String semantics) {
+    return output
+        + "|"
+        + target.length()
+        + ":"
+        + target
+        + "|"
+        + selector.length()
+        + ":"
+        + selector
+        + "|"
+        + semantics;
   }
 
   private static ResourceId connectorResourceId() {

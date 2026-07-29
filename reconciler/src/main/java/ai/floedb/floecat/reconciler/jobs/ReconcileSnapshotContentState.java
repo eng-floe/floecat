@@ -138,7 +138,7 @@ public final class ReconcileSnapshotContentState {
     if (availableAtom == null
         || requestedAtom == null
         || availableAtom.output() != requestedAtom.output()
-        || !availableAtom.target().equals(requestedAtom.target())
+        || !targetCovers(availableAtom.target(), requestedAtom.target())
         || !availableAtom.semantics().equals(requestedAtom.semantics())) {
       return false;
     }
@@ -158,6 +158,10 @@ public final class ReconcileSnapshotContentState {
     return requestedDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
         && availableDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
         && availableDefault.limit() >= requestedDefault.limit();
+  }
+
+  private static boolean targetCovers(String available, String requested) {
+    return available.equals(requested) || (available.equals("*") && !requested.equals("*"));
   }
 
   private static DefaultSelection parseDefaultSelection(String selector) {

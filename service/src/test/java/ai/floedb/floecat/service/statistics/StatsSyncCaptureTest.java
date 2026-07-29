@@ -21,7 +21,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -82,19 +81,17 @@ class StatsSyncCaptureTest {
   }
 
   @Test
-  void waitsForTerminalCancellationBeforeFailing() {
+  void returnsFailedImmediatelyWhenCancellationIsRequested() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
         .thenReturn("job-1");
-    when(jobStore.get("acct", "job-1"))
-        .thenReturn(Optional.of(job("JS_CANCELLING")))
-        .thenReturn(Optional.of(job("JS_CANCELLED")));
+    when(jobStore.get("acct", "job-1")).thenReturn(Optional.of(job("JS_CANCELLING")));
 
     StatsSyncCapture capture = capture(jobStore);
     StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofMillis(250));
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
-    verify(jobStore, times(2)).get("acct", "job-1");
+    verify(jobStore).get("acct", "job-1");
   }
 
   @Test

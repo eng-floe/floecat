@@ -210,7 +210,45 @@ public final class CredentialResolverSupport {
     }
 
     var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
-    return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
+    ConnectorConfig resolved =
+        new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
+    Map<String, String> catalogScopedOptions = catalogScopedAwsOptions(resolved);
+    return catalogScopedOptions.equals(options)
+        ? resolved
+        : new ConnectorConfig(
+            resolved.kind(),
+            resolved.displayName(),
+            resolved.uri(),
+            catalogScopedOptions,
+            resolved.auth());
+  }
+
+  /**
+   * Preserves the connector credential source for catalog calls before table-scoped storage
+   * credentials replace the storage credential source.
+   */
+  public static Map<String, String> catalogScopedAwsOptions(ConnectorConfig config) {
+    if (config == null || config.options() == null) {
+      return config == null ? Map.of() : config.options();
+    }
+    boolean icebergCatalog =
+        config.kind() == ConnectorConfig.Kind.ICEBERG
+            && !"filesystem".equals(normalize(config.options().get("iceberg.source")));
+    boolean deltaGlue =
+        config.kind() == ConnectorConfig.Kind.DELTA
+            && "glue".equals(normalize(config.options().get("delta.source")));
+    if (!icebergCatalog && !deltaGlue) {
+      return config.options();
+    }
+    Map<String, String> scoped = new HashMap<>(config.options());
+    copyIfPresent(scoped, "s3.access-key-id", "rest.access-key-id");
+    copyIfPresent(scoped, "s3.secret-access-key", "rest.secret-access-key");
+    copyIfPresent(scoped, "s3.session-token", "rest.session-token");
+    copyIfPresent(
+        scoped,
+        RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+        RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
+    return Map.copyOf(scoped);
   }
 
   public static java.util.Optional<ResolvedStorageCredentials> resolveStorageCredentials(
@@ -266,7 +304,6 @@ public final class CredentialResolverSupport {
                                 new IllegalStateException(
                                     "Failed refreshing AWS web identity credentials")));
         options.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
-        options.putAll(initial.asS3Properties());
       }
       case AWS_ASSUME_ROLE -> {
         ResolvedStorageCredentials initial =
@@ -284,7 +321,6 @@ public final class CredentialResolverSupport {
                                 new IllegalStateException(
                                     "Failed refreshing AWS assume role credentials")));
         options.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
-        options.putAll(initial.asS3Properties());
       }
       default -> {}
     }
@@ -868,6 +904,21 @@ public final class CredentialResolverSupport {
     if (value != null && !value.isBlank()) {
       target.put(key, value);
     }
+  }
+
+  private static void copyIfPresent(
+      Map<String, String> properties, String sourceKey, String targetKey) {
+    if (properties == null || sourceKey == null || targetKey == null) {
+      return;
+    }
+    String value = properties.get(sourceKey);
+    if (value != null && !value.isBlank()) {
+      properties.putIfAbsent(targetKey, value);
+    }
+  }
+
+  private static String normalize(String value) {
+    return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
   }
 
   private static int parseLifetimeSeconds(String raw) {
