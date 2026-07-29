@@ -104,6 +104,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -118,6 +119,7 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final int MAX_CONCURRENT_METADATA_LOOKUPS = 64;
+  private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
@@ -164,8 +166,18 @@ public class UserObjectBundleService {
 
   @PreDestroy
   void closeExecutors() {
-    metadataLookupExecutor.shutdownNow();
-    cancellationTeardownExecutor.close();
+    shutdownExecutor(metadataLookupExecutor);
+    shutdownExecutor(cancellationTeardownExecutor);
+  }
+
+  /** Bound bean destruction even if a store call ignores interruption during shutdown. */
+  private static void shutdownExecutor(ExecutorService executor) {
+    CancellableCallRunner.cancelDiscardedTasks(executor.shutdownNow());
+    try {
+      executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
