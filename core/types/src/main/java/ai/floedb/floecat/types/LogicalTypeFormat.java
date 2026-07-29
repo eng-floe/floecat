@@ -125,6 +125,17 @@ public final class LogicalTypeFormat {
     return t.kind().name();
   }
 
+  /**
+   * Formats only the container tag for complex types ({@code "ARRAY"}, {@code "MAP"}, {@code
+   * "STRUCT"}, {@code "VARIANT"}), regardless of any nested type tree; scalar types format exactly
+   * as {@link #format(LogicalType)}. This is the legacy flat spelling used where non-parameterised
+   * consumers still read the type string.
+   */
+  public static String formatTag(LogicalType t) {
+    Objects.requireNonNull(t, "LogicalType");
+    return t.isComplex() ? t.kind().name() : format(t);
+  }
+
   private static String formatFieldName(String name) {
     if (BARE_FIELD_NAME_RE.matcher(name).matches()) {
       return name;
