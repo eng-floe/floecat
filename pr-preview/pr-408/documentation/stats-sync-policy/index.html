@@ -1642,7 +1642,7 @@ on a cold cache.</p>
        │      │      │
        │      │      ├─ job succeeded → re-read store
        │      │      │       ├─ record present ───────── CAPTURED (stats returned, no follow-up)
-       │      │      │       └─ record absent ─────────  PARTIAL  (async follow-up enqueued)
+       │      │      │       └─ record absent ─────────  PARTIAL  (deduped async follow-up)
        │      │      │
        │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
        │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
@@ -1699,6 +1699,12 @@ on a cold cache.</p>
 </tr>
 </tbody>
 </table>
+<p>Query-driven column requests are stats-only and do not implicitly request Parquet page indexes.
+The reconciler first attempts connector-native direct stats. If direct stats are unavailable, the
+query-driven job records empty direct coverage without creating file-group jobs. A sync request can
+therefore return <code>PARTIAL</code> when no record was produced; its async follow-up is subject to durable
+active-job and content-state deduplication and does not reintroduce file-group fan-out. Explicit
+capture-control requests retain their normal file-group fallback.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

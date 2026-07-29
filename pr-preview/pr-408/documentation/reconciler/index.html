@@ -1938,7 +1938,9 @@ reconcile control RPCs:</p>
 <li><code>CaptureEngine.capture</code> accepts a <code>CaptureFileResultConsumer</code>. Engines emit file-scoped stats
     progressively through that consumer instead of retaining them in <code>CaptureEngineResult</code>.</li>
 <li>The terminal result may contain compact group-level aggregate partials and staged index
-    outputs, but it must not contain file stats or page-index rows.</li>
+    outputs, but it must not contain file stats or page-index rows. It also reports the sorted,
+    distinct concrete selectors represented by its column-stat aggregates so finalization can
+    preserve resolved default columns and name/field-ID aliases.</li>
 <li>Engine capabilities use <code>PROGRESSIVE_FILE_OUTPUTS</code>. Implementations compiled against the old
     <code>capture(request)</code> or <code>COMPLETE_FILE_GROUP_OUTPUTS</code> API must be updated.</li>
 <li><code>ReconcilerBackend.indexCaptureComplete</code> is a snapshot-level completeness proof. Backend
@@ -1948,6 +1950,11 @@ reconcile control RPCs:</p>
     opaque properties map.</li>
 <li>snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
     columns, and properties exactly; the control plane rejects policy drift.</li>
+<li>query-driven stats requests are marked with <code>floecat.stats.query-driven=true</code> and request
+    stats without implicitly requesting Parquet page indexes.</li>
+<li>when connector-native direct stats are unavailable for a marked stats-only request, snapshot
+    planning records an empty direct result instead of creating file-group jobs. This guard does
+    not change explicit control-plane capture fallback behavior.</li>
 <li><strong>Connector security boundary</strong>: all upstream I/O remains inside <code>FloecatConnector</code>.
   <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.</li>
@@ -1976,6 +1983,11 @@ reconcile control RPCs:</p>
     file-group results, direct stats, per-file-group stats)</li>
 <li>projection/root-summary state mirrors canonical parent rollups for eventual-consistent
     observability (root-job list summaries and tree/list aggregate counters)</li>
+<li><strong>Query-driven enqueue coalescing</strong>: active marked <code>CAPTURE_ONLY</code> root jobs use a normalized
+  capture identity containing the account, connector, table/snapshot pairs, requested outputs, and
+  capture-policy properties, in addition to the normal root-job identity fields. Column target and
+  selector differences therefore do not create parallel roots for overlapping requests against the
+  same snapshot. A different snapshot or output family receives a distinct root job.</li>
 <li><strong>Job leasing</strong>: workers lease from persisted ready pointers, mark jobs
   running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
   configured interval. Failed jobs are retried with backoff up to configured attempt limits before
@@ -2113,7 +2125,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
 <li><strong>Incremental run</strong>: <code>--incremental</code> enumerates snapshots selected by the explicit snapshot scope
   (<code>--current</code>, <code>--latest-n</code>, <code>--snapshot</code>, or <code>--all</code>). Durable content state then skips snapshots
   whose metadata fingerprint and requested capture coverage are already complete, or narrows work
-  to only the missing coverage. Full rescans bypass this content-state deduplication.</li>
+  to only the missing coverage. Materialized coverage records the concrete stats and index
+  selectors reported by executors, allowing a field-ID/name alias to satisfy an equivalent later
+  request. An <code>ALL</code> default covers any narrower default, and a larger <code>FIRST_N</code> covers a smaller
+  <code>FIRST_N</code>; the reverse does not hold. Full rescans bypass this content-state deduplication.</li>
 </ul>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
