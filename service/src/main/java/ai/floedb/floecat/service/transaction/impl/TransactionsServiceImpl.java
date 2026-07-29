@@ -107,7 +107,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
-  private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
+
+  // Ops an intent contributes at apply, counted as (own pointer writes) + APPLY_OPS_PER_INTENT_-
+  // CLEANUP. Splitting the cleanup out is not cosmetic: it used to be folded into the plain and
+  // connector numbers but omitted from the table one, so table-heavy transactions were under-
+  // estimated by two ops each and could pass this gate only to fail at apply, terminally.
+
+  // The intent's own pointer write: one CasUpsert, CasDelete, or check on the target.
+  private static final int APPLY_OPS_PER_PLAIN_INTENT = 1;
+
   // Canonical pointer, new by-name pointer, new relation claim, old by-name delete, old claim
   // delete, plus the two namespace-fence ops (pointer pin + children-marker advance) a table intent
   // carries when it publishes into a namespace. Charged to every table intent even though intents
@@ -115,10 +123,16 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // under-count.
   private static final int APPLY_OPS_PER_TABLE_INTENT = 7;
 
-  // Connectors are account-scoped, never namespace children, so a connector intent carries no
-  // namespace fence. Charging it the table estimate would reject connector-heavy transactions at
-  // prepare time that fit comfortably under the real limit.
-  private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 5;
+  // Canonical pointer, new by-name pointer, old by-name delete. Connectors are account-scoped,
+  // never
+  // namespace children, so a connector intent carries no namespace fence — charging it the table
+  // estimate would reject connector-heavy transactions that fit comfortably under the real limit.
+  private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 3;
+
+  // Every intent releases its lock in the same batch: the by-target and by-tx intent pointers
+  // (appendIntentCleanupOps). Independent of what the intent itself writes.
+  private static final int APPLY_OPS_PER_INTENT_CLEANUP = 2;
+
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
@@ -1705,11 +1719,19 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   /**
-   * Prepare-time upper bound on the pointer ops one intent contributes at apply. Used only as a
-   * pre-flight gate; apply re-checks against the real op count, so this must not under-count — but
-   * over-counting rejects transactions that would have fit, so each shape is charged its own cost.
+   * Prepare-time upper bound on the pointer ops one intent contributes at apply: what the intent
+   * writes, plus the lock release every intent carries.
+   *
+   * <p>Used only as a pre-flight gate — apply re-checks against the real op count — so
+   * under-counting turns a clear rejection here into a terminal {@code POINTER_TXN_TOO_LARGE} after
+   * the caller has already prepared. Over-counting rejects transactions that would have fit, so
+   * each shape is charged its own cost rather than the largest.
    */
   private int estimatedApplyOps(String pointerKey) {
+    return ownApplyOps(pointerKey) + APPLY_OPS_PER_INTENT_CLEANUP;
+  }
+
+  private int ownApplyOps(String pointerKey) {
     if (isTableByIdPointer(pointerKey)) {
       return APPLY_OPS_PER_TABLE_INTENT;
     }

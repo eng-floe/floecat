@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -694,6 +695,81 @@ class TransactionsServiceImplTest {
                         && intent.getTargetPointerKey().equals(pointerKey)
                         && intent.hasExpectedVersion()
                         && intent.getExpectedVersion() == 7L));
+  }
+
+  /**
+   * The prepare-time op estimate is only a pre-flight gate — apply re-checks against the real count
+   * — so it must agree with apply about what a transaction costs. It did not: the two
+   * intent-cleanup ops every intent carries were folded into the plain and connector estimates but
+   * omitted from the table one, so 12 to 14 table intents passed here and then died at apply with a
+   * terminal POINTER_TXN_TOO_LARGE. Eleven is the largest that apply actually commits (11 * 9 + 1 =
+   * 100).
+   */
+  @Test
+  void prepareRejectsATableTransactionApplyCouldNotCommit() throws Exception {
+    assertEquals(TransactionState.TS_PREPARED, prepareTableIntents(11).getState());
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableIntents(12));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
+  }
+
+  private Transaction prepareTableIntents(int intents) throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    var resolver = Mockito.mock(NameResolver.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "nameResolver", resolver);
+    inject(service, "overlay", overlay);
+
+    String accountId = "acct";
+    String txId = "tx-budget";
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(
+            Optional.of(
+                Transaction.newBuilder()
+                    .setAccountId(accountId)
+                    .setTxId(txId)
+                    .setState(TransactionState.TS_OPEN)
+                    .setUpdatedAt(Timestamps.fromMillis(1))
+                    .build()));
+    when(pointerStore.get(org.mockito.ArgumentMatchers.anyString()))
+        .thenAnswer(
+            call ->
+                Optional.of(
+                    Pointer.newBuilder().setKey(call.getArgument(0)).setVersion(7L).build()));
+    when(overlay.resolve(any())).thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
+    when(intentRepo.getByTarget(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(Optional.empty());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(any(), anyLong())).thenReturn(true);
+
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
+    for (int i = 0; i < intents; i++) {
+      request.addChanges(
+          TxChange.newBuilder()
+              .setTableId(
+                  ResourceId.newBuilder()
+                      .setAccountId(accountId)
+                      .setId("table-" + i)
+                      .setKind(ResourceKind.RK_TABLE))
+              .setIntendedBlobUri(Keys.accountRootPrefix(accountId) + "/tables/intended-" + i));
+    }
+    return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
   }
 
   @Test
