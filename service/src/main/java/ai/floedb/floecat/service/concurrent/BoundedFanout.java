@@ -159,11 +159,11 @@ public final class BoundedFanout {
         active.remove(slot);
         TaskOutcome<O> outcome = completedOutcome(slot.completion);
         outcomes.set(slot.index, outcome);
-        onCompletion.accept(slot.index, outcome);
         if (next < items.size()) {
           active.add(
               submitCompletionTask(next, items.get(next++), executor, context, task, completions));
         }
+        onCompletion.accept(slot.index, outcome);
       }
     } catch (RuntimeException | Error submissionFailure) {
       awaitCompletedTasks(active);
@@ -196,7 +196,6 @@ public final class BoundedFanout {
         CompletionSlot<O> slot = takeCancellableCompletion(completions, active, cancelled);
         TaskOutcome<O> outcome = completedOutcome(slot.task, active, cancelled);
         outcomes.set(slot.index, outcome);
-        onCompletion.accept(slot.index, outcome);
         active.remove(slot);
         if (next < items.size()) {
           checkCancelled(cancelled, active);
@@ -204,6 +203,7 @@ public final class BoundedFanout {
               submitCancellableTask(
                   next, items.get(next++), executor, context, task, cancelled, completions));
         }
+        onCompletion.accept(slot.index, outcome);
       }
     } catch (CancellationException cancellationFailure) {
       cancelSubmittedTasks(active);

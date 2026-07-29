@@ -155,6 +155,58 @@ class BoundedFanoutTest {
   }
 
   @Test
+  void refillsBeforeDeliveringCompletionToTheCaller() throws Exception {
+    CountDownLatch firstCompletionDelivered = new CountDownLatch(1);
+    CountDownLatch thirdTaskStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstCompletion = new CountDownLatch(1);
+    CountDownLatch releaseSecondTask = new CountDownLatch(1);
+
+    try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+      CompletableFuture<Void> result =
+          CompletableFuture.runAsync(
+              () ->
+                  BoundedFanout.forEachOrdered(
+                      List.of(0, 1, 2),
+                      2,
+                      executor,
+                      value -> {
+                        if (value == 1) {
+                          try {
+                            releaseSecondTask.await();
+                          } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                          }
+                        }
+                        if (value == 2) {
+                          thirdTaskStarted.countDown();
+                        }
+                        return value;
+                      },
+                      value -> {
+                        if (value == 0) {
+                          firstCompletionDelivered.countDown();
+                          try {
+                            releaseFirstCompletion.await();
+                          } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                          }
+                        }
+                      }));
+
+      try {
+        assertThat(firstCompletionDelivered.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(thirdTaskStarted.await(250, TimeUnit.MILLISECONDS)).isTrue();
+      } finally {
+        releaseFirstCompletion.countDown();
+        releaseSecondTask.countDown();
+      }
+      result.get(1, TimeUnit.SECONDS);
+    }
+  }
+
+  @Test
   void taskFailureSurfacesUnwrapped() {
     assertThatThrownBy(
             () ->
