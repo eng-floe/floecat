@@ -47,6 +47,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -227,6 +229,40 @@ public class QueryInputResolverTest {
     } finally {
       graph.allowPinLookups.countDown();
       CompletableFuture.allOf(requests).join();
+    }
+  }
+
+  @Test
+  void dedicatedFanoutExecutorDoesNotStarveBehindBlockedCallers() throws Exception {
+    var graph = new GloballyLimitedPinGraph();
+    var resolverWithDedicatedExecutor = new QueryInputResolver(graph, null, 2, 2);
+    resolverWithDedicatedExecutor.postConstruct();
+    List<QueryInput> inputs =
+        List.of(
+            QueryInput.newBuilder().setTableId(rid("ONE")).build(),
+            QueryInput.newBuilder().setTableId(rid("TWO")).build());
+    try (ExecutorService callers = Executors.newFixedThreadPool(2)) {
+      CompletableFuture<?>[] requests =
+          java.util.stream.IntStream.range(0, 2)
+              .mapToObj(
+                  ignored ->
+                      CompletableFuture.runAsync(
+                          () ->
+                              resolverWithDedicatedExecutor.resolveInputs(
+                                  "cid", inputs, Optional.empty(), Optional.empty()),
+                          callers))
+              .toArray(CompletableFuture[]::new);
+
+      try {
+        // Both caller threads are synchronously awaiting resolver work. If that work shared this
+        // two-thread executor, no pin lookup could start and this latch would time out.
+        assertTrue(graph.twoPinLookupsStarted.await(1, TimeUnit.SECONDS));
+      } finally {
+        graph.allowPinLookups.countDown();
+        CompletableFuture.allOf(requests).join();
+      }
+    } finally {
+      resolverWithDedicatedExecutor.closeBlockingExecutor();
     }
   }
 

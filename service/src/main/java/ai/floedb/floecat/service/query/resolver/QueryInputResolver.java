@@ -39,8 +39,9 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -56,6 +57,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -63,7 +65,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
-import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 /**
@@ -124,10 +125,12 @@ public class QueryInputResolver {
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
 
-  // DynamoDB-backed metadata calls can pin a carrier while they block. Production uses Quarkus's
-  // managed platform-thread executor, matching NameResolver.parallelScan; the common pool is a
-  // non-owning test fallback for direct constructor call sites.
+  // DynamoDB-backed metadata calls can pin a carrier while they block. Production therefore owns
+  // a dedicated bounded platform-thread pool, independent of the Mutiny request executor whose
+  // driver synchronously awaits this fan-out. Direct unit construction retains a non-owning common
+  // pool fallback until CDI invokes postConstruct().
   private volatile ExecutorService blockingExecutor = ForkJoinPool.commonPool();
+  private ExecutorService ownedBlockingExecutor;
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -170,10 +173,17 @@ public class QueryInputResolver {
     return clamped;
   }
 
-  @Inject
-  void init(Instance<ManagedExecutor> managedExecutors) {
-    if (managedExecutors != null) {
-      managedExecutors.stream().findFirst().ifPresent(executor -> blockingExecutor = executor);
+  @PostConstruct
+  void postConstruct() {
+    ExecutorService executor = Executors.newFixedThreadPool(MAX_PARALLEL_INPUT_RESOLUTIONS);
+    ownedBlockingExecutor = executor;
+    blockingExecutor = executor;
+  }
+
+  @PreDestroy
+  void closeBlockingExecutor() {
+    if (ownedBlockingExecutor != null) {
+      ownedBlockingExecutor.close();
     }
   }
 
