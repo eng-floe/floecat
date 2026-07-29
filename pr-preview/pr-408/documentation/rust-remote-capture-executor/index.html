@@ -2329,9 +2329,9 @@ already cleared the lease as part of successful completion.</p>
   its column name, so content-state deduplication can recognize later requests using either form</li>
 <li><code>realized_index_selectors</code> is the sorted, distinct selector set represented by the file group's
   index wrappers; omit it only when page-index output was not requested</li>
-<li>explicit selectors need not appear verbatim when the persisted artifacts use a different or
-  unknown selector alias; an explicit field-ID request may therefore report only a name alias or
-  no known realized selector</li>
+<li>explicit selectors need not appear verbatim when the persisted artifacts use an equivalent
+  alias; an explicit field-ID request may therefore report its resolved name alias, but page-index
+  capture for a non-empty group must still report at least one realized selector</li>
 <li>default index selection resolves to a non-empty selector set for non-empty snapshots, uses the
   same set for every file in the group, and does not exceed <code>max_default_columns</code> for <code>FIRST_N</code></li>
 <li>every stats descriptor identifies its target storage ID and the object size and SHA-256</li>
@@ -2350,7 +2350,8 @@ and without re-reading the worker objects.</p>
 <li>For each group, write its one-byte kind (<code>1</code> for file stats or <code>2</code> for index artifacts), followed
    by its descriptor count as an unsigned 32-bit big-endian integer.</li>
 <li>Sort descriptors by target storage ID, payload URI, payload byte count, then lowercase payload
-   SHA-256 hex.</li>
+   SHA-256 hex. Compare the two string fields lexicographically as unsigned UTF-8 bytes; do not
+   use UTF-16 code-unit ordering.</li>
 <li>For each descriptor, write the UTF-8 target storage ID and payload URI as a 32-bit big-endian
    byte length followed by the bytes, write the payload byte count as a 64-bit big-endian integer,
    then write the binary payload SHA-256 as a 32-bit big-endian byte length followed by the bytes.</li>
@@ -2369,12 +2370,13 @@ call. Attached delete artifacts can make the file-stats descriptor count larger 
 data-file count. Keep the value bounded to the RPC deadline and message-size limits of the worker
 deployment.</p>
 <h2 id="snapshot-finalizer-implications">Snapshot Finalizer Implications<a class="headerlink" href="#snapshot-finalizer-implications" title="Permanent link">&para;</a></h2>
-<p>The snapshot finalizer still reads and SHA-verifies each file-group result payload and each
-referenced stats object to calculate snapshot-wide aggregates. That worker-side workload remains
-proportional to the snapshot's data and delete-file count. For each successful group it must derive
-the exact expected stats-target set from the immutable <code>file_execution_plans</code>: successful data
-files, attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra
-targets are invalid.</p>
+<p>The snapshot finalizer reads and SHA-verifies each bounded file-group result payload. It validates
+the referenced stats and index descriptors but does not download their immutable objects. Its
+worker-side workload is therefore proportional to planned-file, descriptor, and partial-aggregate
+counts rather than to the referenced objects' byte volume. For each successful group it derives the
+exact expected stats-target set from the immutable <code>file_execution_plans</code>: successful data files,
+attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra targets
+are invalid.</p>
 <p>An Iceberg delete file may be referenced by data files in different groups. Repeated references to
 that target are execution overhead rather than additional logical files: a finalizer should verify
 that repeated descriptors identify identical stats content and retain one snapshot-level target.
