@@ -317,7 +317,6 @@ public class QueryInputResolver {
    * its own single pin.
    */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
-
   private void mergePlan(ResolutionState state, InputPlan plan) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
@@ -328,13 +327,6 @@ public class QueryInputResolver {
     }
     if (plan.terminalFailure() instanceof Error error) {
       throw error;
-    }
-  }
-
-  private void mergePlan(ResolutionState state, InputPlan plan) {
-    state.resolved.add(plan.resolvedId());
-    for (TablePin pin : plan.pins()) {
-      mergePin(state, pin);
     }
   }
 
