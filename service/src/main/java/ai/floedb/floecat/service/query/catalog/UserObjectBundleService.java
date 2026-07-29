@@ -105,9 +105,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -120,6 +122,7 @@ import org.jboss.logging.Logger;
 public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
+  private static final int MAX_CONCURRENT_METADATA_LOOKUPS = 64;
   private static final long CANCELLATION_POLL_MILLIS = 10;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
@@ -168,6 +171,10 @@ public class UserObjectBundleService {
   // stream producer so cancellation can interrupt them without waiting for a stalled store client.
   private final ExecutorService metadataLookupExecutor =
       Executors.newVirtualThreadPerTaskExecutor();
+  // Holds capacity until the actual overlay call exits, including after its stream subscriber has
+  // cancelled. This bounds interruption-insensitive repository calls across all active streams.
+  private final Semaphore metadataLookupPermits =
+      new Semaphore(MAX_CONCURRENT_METADATA_LOOKUPS, true /* FIFO across streams */);
 
   @Inject Observability observability;
 
@@ -1829,22 +1836,43 @@ public class UserObjectBundleService {
      * when the subscriber cancels, even if the downstream client ignores interruption.
      */
     private <T> T awaitCancellableMetadataLookup(Supplier<T> lookup) {
-      throwIfCancelled(this::isCancelled);
+      acquireMetadataLookupPermit();
       PropagatedContext context = PropagatedContext.capture();
-      FutureTask<T> submitted = new FutureTask<>(() -> context.supply(lookup));
-      metadataLookupExecutor.execute(submitted);
+      CompletableFuture<T> result = new CompletableFuture<>();
+      AtomicReference<Thread> worker = new AtomicReference<>();
+      FutureTask<Void> submitted =
+          new FutureTask<>(
+              () -> {
+                worker.set(Thread.currentThread());
+                try {
+                  throwIfCancelled(this::isCancelled);
+                  result.complete(context.supply(lookup));
+                } catch (Throwable failure) {
+                  result.completeExceptionally(failure);
+                } finally {
+                  worker.set(null);
+                  metadataLookupPermits.release();
+                }
+              },
+              null);
+      try {
+        metadataLookupExecutor.execute(submitted);
+      } catch (RuntimeException | Error submissionFailure) {
+        metadataLookupPermits.release();
+        throw submissionFailure;
+      }
       try {
         while (true) {
           if (isCancelled()) {
-            submitted.cancel(true);
+            interruptMetadataLookup(worker);
             throw new CancellationException("GetUserObjects stream cancelled");
           }
           try {
-            return submitted.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+            return result.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
           } catch (TimeoutException ignored) {
             // A bounded wait lets the producer interrupt a stalled lookup on cancellation.
           } catch (InterruptedException e) {
-            submitted.cancel(true);
+            interruptMetadataLookup(worker);
             Thread.currentThread().interrupt();
             throw new CancellationException("GetUserObjects metadata lookup interrupted");
           } catch (ExecutionException e) {
@@ -1852,8 +1880,30 @@ public class UserObjectBundleService {
           }
         }
       } catch (CancellationException e) {
-        submitted.cancel(true);
+        interruptMetadataLookup(worker);
         throw e;
+      }
+    }
+
+    /** Wait for global lookup capacity without holding a stream producer after cancellation. */
+    private void acquireMetadataLookupPermit() {
+      try {
+        while (true) {
+          throwIfCancelled(this::isCancelled);
+          if (metadataLookupPermits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+            return;
+          }
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new CancellationException("GetUserObjects metadata lookup interrupted");
+      }
+    }
+
+    private static void interruptMetadataLookup(AtomicReference<Thread> worker) {
+      Thread active = worker.get();
+      if (active != null) {
+        active.interrupt();
       }
     }
 
