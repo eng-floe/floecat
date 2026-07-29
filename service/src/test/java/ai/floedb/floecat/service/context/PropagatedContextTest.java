@@ -108,6 +108,30 @@ class PropagatedContextTest {
   }
 
   @Test
+  void restoresExistingMdcAfterAnInlineNestedScope() {
+    MDC.put("floecat_component", "outer-component");
+    MDC.put("floecat_operation", "outer-operation");
+    MDC.put("correlation_id", "outer-correlation");
+    try {
+      ResolvedCallContexts.callWith(
+          resolvedWithEngine("spark"),
+          () -> {
+            PropagatedContext.capture()
+                .run(() -> assertThat(MDC.get("floecat_engine_kind")).isEqualTo("spark"));
+            return null;
+          });
+
+      assertThat(MDC.get("floecat_component")).isEqualTo("outer-component");
+      assertThat(MDC.get("floecat_operation")).isEqualTo("outer-operation");
+      assertThat(MDC.get("correlation_id")).isEqualTo("outer-correlation");
+    } finally {
+      MDC.remove("floecat_component");
+      MDC.remove("floecat_operation");
+      MDC.remove("correlation_id");
+    }
+  }
+
+  @Test
   void offAnyRequestTheBodyStillRuns() {
     // Captured with no ambient request (startup, unit tests): supply must run the body rather than
     // fail, and no context is fabricated.
