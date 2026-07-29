@@ -29,9 +29,9 @@ Delta, etc.) and SQL-facing components.
 | `DECIMAL`        | 12                 | Fixed-precision decimal (precision, scale)        |
 | `INTERVAL`       | 14                 | Duration / period                                 |
 | `JSON`           | 15                 | Semi-structured JSON text                         |
-| `ARRAY`          | 16                 | Ordered collection (non-parameterised in v1)      |
-| `MAP`            | 17                 | Key-value map (non-parameterised in v1)           |
-| `STRUCT`         | 18                 | Named-field record (non-parameterised in v1)      |
+| `ARRAY`          | 16                 | Ordered collection (carries an element type tree) |
+| `MAP`            | 17                 | Key-value map (carries key/value type trees)      |
+| `STRUCT`         | 18                 | Named-field record (carries an ordered field list)|
 | `VARIANT`        | 19                 | Schema-flexible semi-structured value             |
 
 ### Integer collapsing
@@ -82,14 +82,39 @@ Leading precision is non‑negative and connector‑defined; fractional precisio
   When enabled, zoned timestamps are converted into that session zone and stored as local
   `TIMESTAMP` values.
 
-### Complex types (v1)
-`ARRAY`, `MAP`, `STRUCT`, and `VARIANT` are non-parameterised in v1. The logical kind captures
-only the container category; element/value/field types are captured by child `SchemaColumn` rows
-carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
+### Complex types
+`ARRAY`, `MAP`, and `STRUCT` carry a recursive type tree on `LogicalType`: `element()` +
+`elementNullable()` for ARRAY, `key()`/`value()` + `valueNullable()` for MAP, and ordered
+`LogicalField` entries (`name`, `nullable`, `type`) for STRUCT. `VARIANT` is self-describing and
+never carries a tree. A bare container tag (`LogicalType.of(LogicalKind.ARRAY)`) remains valid and
+represents the legacy non-parameterised form; use `hasTypeTree()` to distinguish the two.
+
+The string grammar mirrors the tree:
+
+```
+type   ::= scalar
+         | ARRAY "<" type ">"
+         | STRUCT "<" field ("," field)* ">"
+         | MAP "<" type "," type ">"
+field  ::= name ":" type
+```
+
+e.g. `ARRAY<INT>`, `MAP<STRING, DOUBLE>`, `ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>`.
+Struct field names are case-preserved; names that are not simple identifiers are double-quoted
+with `""` escaping. Nullability is not part of the grammar (parsing defaults to nullable).
+
+On the wire, `SchemaColumn.logical_type` keeps the flat container tag (`ARRAY`, `MAP`, `STRUCT`)
+for legacy consumers, and `SchemaColumn.logical_type_full` carries the full grammar string for
+complex columns (empty for scalars and legacy producers). Struct fields additionally surface as
+child `SchemaColumn` rows with their own paths (e.g. `address.city`, `items[].sku`, `tags{}.v`) —
+those rows drive per-leaf stats and field-ID mapping, while `logical_type_full` is the
+authoritative carrier of the complete nested type.
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`.
+  stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`
+  plus the nested type tree for complex kinds (`element`/`elementNullable`, `key`/`value`/`valueNullable`,
+  `fields`).
   `temporalPrecision` is optional (unset means default microsecond precision). Interval fields are
   optional and only apply to `INTERVAL`. Canonical `DECIMAL` semantics are
   `precision ≥ 1` and `0 ≤ scale ≤ precision` with no global precision ceiling in the core model.

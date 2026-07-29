@@ -254,6 +254,53 @@ class ViewMetadataServiceTest {
     assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz_ns"));
   }
 
+  // ── icebergTypeValueToLogical nested types ────────────────────────────────
+
+  @Test
+  void listTypeValuePreservesElementType() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of("type", "list", "element", "string", "element-required", true));
+    assertEquals("ARRAY<STRING>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+    assertEquals(Boolean.FALSE, logical.elementNullable());
+  }
+
+  @Test
+  void structTypeValuePreservesFields() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of(
+                "type",
+                "struct",
+                "fields",
+                java.util.List.of(
+                    java.util.Map.of("name", "sku", "required", true, "type", "string"),
+                    java.util.Map.of(
+                        "name",
+                        "quantities",
+                        "type",
+                        java.util.Map.of("type", "list", "element", "int")))));
+    assertEquals(
+        "STRUCT<sku: STRING, quantities: ARRAY<INT>>",
+        ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+  }
+
+  @Test
+  void mapTypeValuePreservesKeyAndValueTypes() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of("type", "map", "key", "string", "value", "double"));
+    assertEquals("MAP<STRING, DOUBLE>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+  }
+
+  @Test
+  void complexTypeValueStillFormatsFlatTag() {
+    assertEquals(
+        "ARRAY",
+        ViewMetadataService.icebergTypeValueToCanonical(
+            java.util.Map.of("type", "list", "element", "string")));
+  }
+
   private ViewMetadataService.MetadataContext contextWithSingleVersion() {
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(

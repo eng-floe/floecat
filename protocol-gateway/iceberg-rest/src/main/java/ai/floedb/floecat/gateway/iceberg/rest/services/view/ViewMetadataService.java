@@ -24,6 +24,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepre
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewVersion;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalField;
+import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -332,13 +336,22 @@ public class ViewMetadataService {
       boolean required = Boolean.TRUE.equals(field.get("required"));
       Object typeValue = field.get("type");
       try {
-        String logical = icebergTypeValueToCanonical(typeValue);
-        columns.add(
+        LogicalType logical = icebergTypeValueToLogical(typeValue);
+        boolean isContainer =
+            logical.kind() == LogicalKind.ARRAY
+                || logical.kind() == LogicalKind.MAP
+                || logical.kind() == LogicalKind.STRUCT;
+        SchemaColumn.Builder column =
             SchemaColumn.newBuilder()
                 .setName(name)
                 .setNullable(!required)
-                .setLogicalType(logical)
-                .build());
+                .setLogicalType(LogicalTypeFormat.formatTag(logical))
+                .setLogicalTypeFull(logical.hasTypeTree() ? LogicalTypeFormat.format(logical) : "")
+                .setLeaf(!isContainer);
+        if (field.get("id") instanceof Number id) {
+          column.setFieldId(id.intValue());
+        }
+        columns.add(column.build());
       } catch (Exception e) {
         throw new IllegalArgumentException(
             "Cannot parse type for field '" + name + "': " + e.getMessage());
@@ -359,40 +372,50 @@ public class ViewMetadataService {
       Pattern.compile("^decimal\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$", Pattern.CASE_INSENSITIVE);
 
   /**
-   * Converts the Iceberg REST JSON type value for a schema field to the canonical logical-type
-   * string used by FloeCAT. Iceberg uses JSON strings for primitives (e.g. {@code "int"}) and JSON
-   * objects for complex types (e.g. {@code {"type":"list",...}}).
-   *
-   * <p>Mapping follows {@code IcebergTypeMappings.toCanonical()} semantics: both {@code int} and
-   * {@code long} map to {@code "INT"}; {@code timestamptz} maps to {@code "TIMESTAMPTZ"}; {@code
-   * decimal(p,s)} maps to {@code "DECIMAL(p,s)"}.
+   * Converts the Iceberg REST JSON type value for a schema field to the flat canonical logical-type
+   * string used by FloeCAT (container tag only for complex types). Prefer {@link
+   * #icebergTypeValueToLogical(Object)} where the full nested tree is needed.
    */
   static String icebergTypeValueToCanonical(Object typeValue) {
+    return LogicalTypeFormat.formatTag(icebergTypeValueToLogical(typeValue));
+  }
+
+  /**
+   * Converts the Iceberg REST JSON type value for a schema field to a canonical {@link
+   * LogicalType}, recursing into complex types. Iceberg uses JSON strings for primitives (e.g.
+   * {@code "int"}) and JSON objects for complex types (e.g. {@code {"type":"list",...}}).
+   *
+   * <p>Mapping follows {@code IcebergTypeMappings.toLogical()} semantics: both {@code int} and
+   * {@code long} map to {@code INT}; {@code timestamptz} maps to {@code TIMESTAMPTZ}; {@code
+   * decimal(p,s)} maps to {@code DECIMAL(p,s)}; list/map/struct preserve element/key/value/field
+   * types and nullability ({@code element-required}, {@code value-required}, {@code required}).
+   */
+  static LogicalType icebergTypeValueToLogical(Object typeValue) {
     if (typeValue instanceof String s) {
       String lower = s.trim().toLowerCase();
       return switch (lower) {
-        case "int", "integer", "long" -> "INT";
-        case "float" -> "FLOAT";
-        case "double" -> "DOUBLE";
-        case "boolean" -> "BOOLEAN";
-        case "string" -> "STRING";
-        case "binary", "fixed" -> "BINARY";
-        case "uuid" -> "UUID";
-        case "date" -> "DATE";
-        case "time" -> "TIME";
+        case "int", "integer", "long" -> LogicalType.of(LogicalKind.INT);
+        case "float" -> LogicalType.of(LogicalKind.FLOAT);
+        case "double" -> LogicalType.of(LogicalKind.DOUBLE);
+        case "boolean" -> LogicalType.of(LogicalKind.BOOLEAN);
+        case "string" -> LogicalType.of(LogicalKind.STRING);
+        case "binary", "fixed" -> LogicalType.of(LogicalKind.BINARY);
+        case "uuid" -> LogicalType.of(LogicalKind.UUID);
+        case "date" -> LogicalType.of(LogicalKind.DATE);
+        case "time" -> LogicalType.of(LogicalKind.TIME);
         // timestamp (no tz) / timestamp_ns (nanosecond, no tz) → timezone-naive
-        case "timestamp", "timestamp_ns" -> "TIMESTAMP";
+        case "timestamp", "timestamp_ns" -> LogicalType.of(LogicalKind.TIMESTAMP);
         // timestamptz (UTC) / timestamptz_ns (nanosecond, UTC) → UTC-normalised
-        case "timestamptz", "timestamptz_ns" -> "TIMESTAMPTZ";
-        case "variant" -> "VARIANT";
+        case "timestamptz", "timestamptz_ns" -> LogicalType.of(LogicalKind.TIMESTAMPTZ);
+        case "variant" -> LogicalType.of(LogicalKind.VARIANT);
         default -> {
           Matcher m = DECIMAL_TYPE_RE.matcher(lower);
           if (m.matches()) {
-            yield "DECIMAL(" + m.group(1) + "," + m.group(2) + ")";
+            yield LogicalType.decimal(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
           }
           // fixed(n) → BINARY
           if (lower.startsWith("fixed(") || lower.startsWith("fixed ")) {
-            yield "BINARY";
+            yield LogicalType.of(LogicalKind.BINARY);
           }
           throw new IllegalArgumentException("Unrecognized Iceberg primitive type: " + s);
         }
@@ -402,9 +425,33 @@ public class ViewMetadataService {
       Object kind = map.get("type");
       if (kind instanceof String k) {
         return switch (k.toLowerCase().trim()) {
-          case "list" -> "ARRAY";
-          case "map" -> "MAP";
-          case "struct" -> "STRUCT";
+          case "list" ->
+              LogicalType.array(
+                  icebergTypeValueToLogical(map.get("element")),
+                  !Boolean.TRUE.equals(map.get("element-required")));
+          case "map" ->
+              LogicalType.map(
+                  icebergTypeValueToLogical(map.get("key")),
+                  icebergTypeValueToLogical(map.get("value")),
+                  !Boolean.TRUE.equals(map.get("value-required")));
+          case "struct" -> {
+            Object rawFields = map.get("fields");
+            if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+              yield LogicalType.of(LogicalKind.STRUCT);
+            }
+            List<LogicalField> structFields = new ArrayList<>();
+            for (Object rawField : fields) {
+              if (!(rawField instanceof Map<?, ?> fieldMap)) {
+                throw new IllegalArgumentException("Malformed struct field: " + rawField);
+              }
+              structFields.add(
+                  new LogicalField(
+                      String.valueOf(fieldMap.get("name")),
+                      !Boolean.TRUE.equals(fieldMap.get("required")),
+                      icebergTypeValueToLogical(fieldMap.get("type"))));
+            }
+            yield LogicalType.struct(structFields);
+          }
           default -> throw new IllegalArgumentException("Unrecognized Iceberg complex type: " + k);
         };
       }
