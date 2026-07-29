@@ -55,16 +55,14 @@ public final class BoundedFanout {
     Semaphore gate = new Semaphore(permits);
     PropagatedContext context = PropagatedContext.capture();
     List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
-    int nextItem = 0;
-    while (nextItem < items.size() && futures.size() < permits) {
-      I item = items.get(nextItem++);
+    for (I item : items) {
       submitCompletionFuture(
           futures,
           () ->
               CompletableFuture.supplyAsync(
                   () -> runTask(gate, context, task, item, () -> false), executor));
     }
-    return collectCompletedFutures(futures, items, nextItem, gate, context, executor, task);
+    return collectCompletedFutures(futures);
   }
 
   /**
@@ -83,16 +81,14 @@ public final class BoundedFanout {
     Semaphore gate = new Semaphore(permits);
     PropagatedContext context = PropagatedContext.capture();
     List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
-    int nextItem = 0;
-    while (nextItem < items.size() && futures.size() < permits) {
-      I item = items.get(nextItem++);
+    for (I item : items) {
       submitCompletionFuture(
           futures,
           () ->
               CompletableFuture.supplyAsync(
                   () -> runTask(gate, context, task, item, () -> false), executor));
     }
-    consumeCompletedFutures(futures, items, nextItem, gate, context, executor, task, consumer);
+    consumeCompletedFutures(futures, consumer);
   }
 
   /**
@@ -113,14 +109,12 @@ public final class BoundedFanout {
     Semaphore gate = new Semaphore(permits);
     PropagatedContext context = PropagatedContext.capture();
     List<Future<O>> futures = new ArrayList<>(items.size());
-    int nextItem = 0;
     try {
-      while (nextItem < items.size() && futures.size() < permits) {
+      for (I item : items) {
         if (cancelled.getAsBoolean()) {
           cancelSubmittedTasks(futures);
           throw cancelled();
         }
-        I item = items.get(nextItem++);
         submitTask(
             futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
@@ -144,15 +138,6 @@ public final class BoundedFanout {
         if (firstRuntimeFailure == null && firstErrorFailure == null) {
           firstErrorFailure = e;
         }
-      }
-      if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
-        if (cancelled.getAsBoolean()) {
-          cancelSubmittedTasks(futures);
-          throw cancelled();
-        }
-        I item = items.get(nextItem++);
-        submitTask(
-            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -181,14 +166,12 @@ public final class BoundedFanout {
     Semaphore gate = new Semaphore(permits);
     PropagatedContext context = PropagatedContext.capture();
     List<Future<O>> futures = new ArrayList<>(items.size());
-    int nextItem = 0;
     try {
-      while (nextItem < items.size() && futures.size() < permits) {
+      for (I item : items) {
         if (cancelled.getAsBoolean()) {
           cancelSubmittedTasks(futures);
           throw cancelled();
         }
-        I item = items.get(nextItem++);
         submitTask(
             futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
@@ -214,15 +197,6 @@ public final class BoundedFanout {
         if (firstRuntimeFailure == null && firstErrorFailure == null) {
           firstErrorFailure = e;
         }
-      }
-      if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
-        if (cancelled.getAsBoolean()) {
-          cancelSubmittedTasks(futures);
-          throw cancelled();
-        }
-        I item = items.get(nextItem++);
-        submitTask(
-            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
       }
     }
     if (firstRuntimeFailure != null) {
@@ -255,14 +229,7 @@ public final class BoundedFanout {
   }
 
   /** Collect every completed future, preserving the first unwrapped task failure. */
-  private static <I, O> List<O> collectCompletedFutures(
-      List<CompletableFuture<O>> futures,
-      List<I> items,
-      int nextItem,
-      Semaphore gate,
-      PropagatedContext context,
-      Executor executor,
-      Function<I, O> task) {
+  private static <O> List<O> collectCompletedFutures(List<CompletableFuture<O>> futures) {
     List<O> results = new ArrayList<>(futures.size());
     RuntimeException firstRuntimeFailure = null;
     Error firstErrorFailure = null;
@@ -279,14 +246,6 @@ public final class BoundedFanout {
           firstErrorFailure = e;
         }
       }
-      if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
-        I item = items.get(nextItem++);
-        submitCompletionFuture(
-            futures,
-            () ->
-                CompletableFuture.supplyAsync(
-                    () -> runTask(gate, context, task, item, () -> false), executor));
-      }
     }
     if (firstRuntimeFailure != null) {
       throw firstRuntimeFailure;
@@ -298,15 +257,8 @@ public final class BoundedFanout {
   }
 
   /** Consume completed futures in input order, preserving the first task or consumer failure. */
-  private static <I, O> void consumeCompletedFutures(
-      List<CompletableFuture<O>> futures,
-      List<I> items,
-      int nextItem,
-      Semaphore gate,
-      PropagatedContext context,
-      Executor executor,
-      Function<I, O> task,
-      Consumer<? super O> consumer) {
+  private static <O> void consumeCompletedFutures(
+      List<CompletableFuture<O>> futures, Consumer<? super O> consumer) {
     RuntimeException firstRuntimeFailure = null;
     Error firstErrorFailure = null;
     for (int index = 0; index < futures.size(); index++) {
@@ -324,14 +276,6 @@ public final class BoundedFanout {
         if (firstRuntimeFailure == null && firstErrorFailure == null) {
           firstErrorFailure = e;
         }
-      }
-      if (firstRuntimeFailure == null && firstErrorFailure == null && nextItem < items.size()) {
-        I item = items.get(nextItem++);
-        submitCompletionFuture(
-            futures,
-            () ->
-                CompletableFuture.supplyAsync(
-                    () -> runTask(gate, context, task, item, () -> false), executor));
       }
     }
     if (firstRuntimeFailure != null) {

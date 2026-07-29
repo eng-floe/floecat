@@ -43,13 +43,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Consumer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -1477,6 +1477,7 @@ public class QueryInputResolverTest {
     void beforeTablePin(Consumer<ResourceId> callback) {
       beforeTablePin = callback;
     }
+
     List<PinCall> pinCalls() {
       return pinCalls;
     }

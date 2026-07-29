@@ -81,8 +81,9 @@ class BoundedFanoutTest {
   }
 
   @Test
-  void submitsOnlyTheRollingWindowWhileTheFirstResultIsBlocked() throws Exception {
+  void refillsPermitsWhileTheFirstResultIsBlocked() throws Exception {
     CountDownLatch firstStarted = new CountDownLatch(1);
+    CountDownLatch laterItemStarted = new CountDownLatch(1);
     CountDownLatch releaseFirst = new CountDownLatch(1);
     AtomicInteger submissions = new AtomicInteger();
     Executor countingExecutor =
@@ -107,13 +108,19 @@ class BoundedFanoutTest {
                           Thread.currentThread().interrupt();
                           throw new AssertionError(e);
                         }
+                      } else if (value >= 3) {
+                        laterItemStarted.countDown();
                       }
                       return value;
                     }));
 
     assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
-    assertThat(submissions.get()).isEqualTo(3);
-    releaseFirst.countDown();
+    assertThat(laterItemStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    try {
+      assertThat(submissions.get()).isEqualTo(100);
+    } finally {
+      releaseFirst.countDown();
+    }
     assertThat(result.get(1, TimeUnit.SECONDS)).hasSize(100);
   }
 

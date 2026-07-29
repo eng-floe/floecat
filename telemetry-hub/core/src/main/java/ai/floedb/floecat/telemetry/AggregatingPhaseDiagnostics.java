@@ -29,8 +29,8 @@ import java.util.concurrent.atomic.LongAdder;
  * count}/{@code add} sum, {@code timer}/{@code nanos} sum the elapsed time, and each summed key is
  * flushed once as a single {@code add} / {@code nanos}. The per-key values (e.g. total snapshot
  * lookups and the total time spent in them) are the per-request aggregate; per-item ordering and
- * one-shot fields ({@code put}, {@code emit}) are not representable and are rejected — a caller
- * that needs them should record on the request thread.
+ * one-shot fields ({@code put}, {@code emit}) are not representable and are omitted — a caller that
+ * needs them should record on the request thread.
  */
 public final class AggregatingPhaseDiagnostics implements PhaseDiagnostics {
 
@@ -58,38 +58,22 @@ public final class AggregatingPhaseDiagnostics implements PhaseDiagnostics {
     counts.computeIfAbsent(key, k -> new LongAdder()).add(amount);
   }
 
-  // One-shot values do not aggregate across items. Fail loudly so a newly added off-thread
-  // diagnostic cannot silently appear only for serial requests.
+  // One-shot values do not aggregate across items. Omitting telemetry must never turn into a
+  // request failure when a concurrent path reaches a newly added diagnostic.
   @Override
-  public void put(String key, String value) {
-    throw unsupportedOneShot("put");
-  }
+  public void put(String key, String value) {}
 
   @Override
-  public void put(String key, long value) {
-    throw unsupportedOneShot("put");
-  }
+  public void put(String key, long value) {}
 
   @Override
-  public void put(String key, double value) {
-    throw unsupportedOneShot("put");
-  }
+  public void put(String key, double value) {}
 
   @Override
-  public void put(String key, boolean value) {
-    throw unsupportedOneShot("put");
-  }
+  public void put(String key, boolean value) {}
 
   @Override
-  public void emit(String eventName) {
-    throw unsupportedOneShot("emit");
-  }
-
-  private static UnsupportedOperationException unsupportedOneShot(String operation) {
-    return new UnsupportedOperationException(
-        operation
-            + " is not supported by AggregatingPhaseDiagnostics; record it on the request thread");
-  }
+  public void emit(String eventName) {}
 
   /**
    * Emit the accumulated totals to {@code target}: one {@code add} per counter, one summed {@code

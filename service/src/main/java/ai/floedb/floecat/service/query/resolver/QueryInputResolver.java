@@ -157,12 +157,12 @@ public class QueryInputResolver {
   private static int configuredMaxParallelInputResolutions() {
     int configured =
         ConfigProvider.getConfig()
-            .getOptionalValue("floecat.catalog.bundle.max_parallel_relations", Integer.class)
+            .getOptionalValue("floecat.query.resolver.max_parallel_inputs", Integer.class)
             .orElse(DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS);
     int clamped = Math.max(1, Math.min(MAX_PARALLEL_INPUT_RESOLUTIONS, configured));
     if (configured != clamped) {
       LOG.warnf(
-          "floecat.catalog.bundle.max_parallel_relations must be between 1 and %d; using %d"
+          "floecat.query.resolver.max_parallel_inputs must be between 1 and %d; using %d"
               + " instead of %d",
           MAX_PARALLEL_INPUT_RESOLUTIONS, clamped, configured);
     }
@@ -449,12 +449,7 @@ public class QueryInputResolver {
         defaultCatalog =
             withInputResolutionPermit(
                 cancelled,
-                () ->
-                    withMetadataGraph(
-                        () ->
-                            metadataGraph
-                                .catalog(defaultCatalogId.get())
-                                .map(CatalogNode::displayName)));
+                () -> metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName));
       } finally {
         diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
       }
@@ -483,10 +478,7 @@ public class QueryInputResolver {
           nameInputs.isEmpty()
               ? Map.of()
               : withInputResolutionPermit(
-                  cancelled,
-                  () ->
-                      withMetadataGraph(
-                          () -> metadataGraph.resolveNames(correlationId, nameInputs)));
+                  cancelled, () -> metadataGraph.resolveNames(correlationId, nameInputs));
       throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
@@ -628,15 +620,6 @@ public class QueryInputResolver {
   }
 
   /**
-   * The serial planning path keeps callbacks on the request thread for overlays that opt out.
-   * Synchronizing on an application-scoped overlay would incorrectly serialize independent
-   * requests, so the concurrency capability governs scheduling rather than a shared mutex.
-   */
-  private <T> T withMetadataGraph(Supplier<T> operation) {
-    return operation.get();
-  }
-
-  /**
    * Resolve one input to its {@link InputPlan}, reading the metadata graph and updating the shared
    * current-snapshot cache and diagnostics. It does not read or write {@code state.resolved} or
    * {@code state.pinByTableId}; the caller merges the returned pins. Callers invoke this method
@@ -738,9 +721,7 @@ public class QueryInputResolver {
       if (inflight == null) {
         try {
           long snapshotPinStartNs = System.nanoTime();
-          pin =
-              withMetadataGraph(
-                  () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
+          pin = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
           state.resolvingPinRoots.register(pin);
           state.diagnostics.count("pin.snapshot_calls");
           state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -790,9 +771,7 @@ public class QueryInputResolver {
       }
     }
     long snapshotPinStartNs = System.nanoTime();
-    TablePin resolved =
-        withMetadataGraph(
-            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
+    TablePin resolved = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
     state.resolvingPinRoots.register(resolved);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -867,12 +846,10 @@ public class QueryInputResolver {
     }
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
-        withMetadataGraph(
-            () ->
-                metadataGraph
-                    .resolve(relationId)
-                    .filter(ViewNode.class::isInstance)
-                    .map(ViewNode.class::cast));
+        metadataGraph
+            .resolve(relationId)
+            .filter(ViewNode.class::isInstance)
+            .map(ViewNode.class::cast);
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {
@@ -890,7 +867,7 @@ public class QueryInputResolver {
           }
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
-              withMetadataGraph(() -> metadataGraph.resolveNames(state.correlationId, baseRefs));
+              metadataGraph.resolveNames(state.correlationId, baseRefs);
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {

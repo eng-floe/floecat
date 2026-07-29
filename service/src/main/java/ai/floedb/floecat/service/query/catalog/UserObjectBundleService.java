@@ -1720,10 +1720,13 @@ public class UserObjectBundleService {
     }
 
     private void fillPending() {
+      throwIfCancelled(this::isCancelled);
       List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
       drainEagerBaseTables(toPin);
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        throwIfCancelled(this::isCancelled);
         PendingItem item = resolveNextResolution();
+        throwIfCancelled(this::isCancelled);
         pending.add(item);
         if (item instanceof PendingFound found) {
           toPin.add(found.relation());
@@ -1771,8 +1774,12 @@ public class UserObjectBundleService {
     }
 
     private void cancel() {
-      cancelled.set(true);
-      publishStreamTelemetry("cancelled");
+      if (cancelled.compareAndSet(false, true)) {
+        RelationPinSet toRelease = pendingChunkPins;
+        pendingChunkPins = RelationPinSet.getDefaultInstance();
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
+        publishStreamTelemetry("cancelled");
+      }
     }
 
     /**
@@ -1786,6 +1793,7 @@ public class UserObjectBundleService {
      */
     private void drainEagerBaseTables(List<ResolvedRelation> toPin) {
       while (pending.size() < MAX_RESOLUTIONS_PER_CHUNK && !eagerBaseQueue.isEmpty()) {
+        throwIfCancelled(this::isCancelled);
         EagerBaseCursor cursor = eagerBaseQueue.peekFirst();
         if (cursor == null) {
           break;
@@ -1800,6 +1808,7 @@ public class UserObjectBundleService {
       List<NameRef> baseRelations = cursor.view.baseRelations();
       while (cursor.nextBaseIndex < baseRelations.size()
           && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        throwIfCancelled(this::isCancelled);
         NameRef baseRef = baseRelations.get(cursor.nextBaseIndex++);
         long resolveStartNs = System.nanoTime();
         try {
@@ -1835,6 +1844,7 @@ public class UserObjectBundleService {
     }
 
     private PendingItem resolveNextResolution() {
+      throwIfCancelled(this::isCancelled);
       long resolveStartNs = System.nanoTime();
       try {
         TableReferenceCandidate candidate = tables.get(nextInputIndex);
@@ -1912,6 +1922,7 @@ public class UserObjectBundleService {
     }
 
     private UserObjectsBundleChunk flushResolutionChunk() {
+      throwIfCancelled(this::isCancelled);
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
       if (LOG.isDebugEnabled()) {
@@ -1921,12 +1932,14 @@ public class UserObjectBundleService {
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
+      throwIfCancelled(this::isCancelled);
       long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
       pinCommitNanos += System.nanoTime() - pinCommitStartNs;
       QueryContext liveCtx = null;
       List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
       for (PendingItem item : chunkItems) {
+        throwIfCancelled(this::isCancelled);
         if (item instanceof PendingResolved resolved) {
           resolutions.add(resolved.resolution());
           continue;
