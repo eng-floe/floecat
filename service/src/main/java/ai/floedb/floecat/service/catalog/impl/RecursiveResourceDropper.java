@@ -434,9 +434,16 @@ public class RecursiveResourceDropper {
       return Optional.of(new RelationPin(meta.getPointerVersion(), false));
     }
     if (owner.isEmpty()) {
-      // The pointer moved between the version read and the content read, or it dangles. Either way
-      // this scan is stale and must not be acted on.
-      throw relationChanged(resourceId);
+      // Either the pointer moved between the version read and the content read, or it dangles. The
+      // first is a race and the second never resolves on its own, so aborting would burn the whole
+      // retry budget and leave the namespace undeletable — the same dead end an unparseable blob used
+      // to produce. Treat it like that case and delete on pointer evidence: pinning to the version
+      // read above means a pointer that really did move loses its CAS instead.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_relation_blob_absent account_id=%s namespace_id=%s resource_id=%s"
+              + " blob_uri=%s",
+          resourceId.getAccountId(), expectedOwner.getId(), resourceId.getId(), meta.getBlobUri());
+      return Optional.of(new RelationPin(meta.getPointerVersion(), false));
     }
     if (!owner.get().getId().equals(expectedOwner.getId())) {
       throw movedOutOfSubtree(resourceId, expectedOwner.getId());
