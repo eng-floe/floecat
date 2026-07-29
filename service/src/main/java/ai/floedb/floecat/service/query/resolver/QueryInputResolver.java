@@ -60,7 +60,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -195,10 +195,10 @@ public class QueryInputResolver {
   @PreDestroy
   void closeBlockingExecutor() {
     if (ownedBlockingExecutor != null) {
-      ownedBlockingExecutor.close();
+      ownedBlockingExecutor.shutdownNow();
     }
     if (ownedMetadataIoExecutor != null) {
-      ownedMetadataIoExecutor.close();
+      ownedMetadataIoExecutor.shutdownNow();
     }
   }
 
@@ -628,10 +628,13 @@ public class QueryInputResolver {
     }
 
     PropagatedContext context = PropagatedContext.capture();
-    Future<T> submitted =
-        metadataIoExecutor.submit(
+    // Do not use ExecutorService.submit here: ForkJoinPool may help-run its ForkJoinTask inline
+    // while this thread waits, preventing the cancellation poll below from ever running.
+    FutureTask<T> submitted =
+        new FutureTask<>(
             () ->
                 context.supply(() -> withInputResolutionPermitSynchronously(cancelled, operation)));
+    metadataIoExecutor.execute(submitted);
     try {
       while (true) {
         if (cancelled.getAsBoolean()) {
