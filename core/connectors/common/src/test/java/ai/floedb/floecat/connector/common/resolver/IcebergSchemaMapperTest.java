@@ -208,6 +208,88 @@ class IcebergSchemaMapperTest {
   }
 
   // ---------------------------------------------------------------------------
+  // Full nested type tree (logical_type_full)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void scalarFieldHasNoFullType() {
+    SchemaColumn col = singleColumn(Types.NestedField.required(1, "n", Types.IntegerType.get()));
+    assertThat(col.getLogicalTypeFull()).isEmpty();
+  }
+
+  @Test
+  void listOfPrimitiveCarriesElementTypeInFullType() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(
+                1, "items", Types.ListType.ofOptional(2, Types.StringType.get())));
+    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
+    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRING>");
+  }
+
+  @Test
+  void nestedListCarriesInnerDimensionInFullType() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(
+                1,
+                "matrix",
+                Types.ListType.ofOptional(
+                    2, Types.ListType.ofRequired(3, Types.IntegerType.get()))));
+    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<ARRAY<INT>>");
+  }
+
+  @Test
+  void mapCarriesKeyAndValueTypesInFullType() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(
+                1,
+                "attrs",
+                Types.MapType.ofOptional(2, 3, Types.StringType.get(), Types.LongType.get())));
+    assertThat(col.getLogicalType()).isEqualTo("MAP");
+    assertThat(col.getLogicalTypeFull()).isEqualTo("MAP<STRING, INT>");
+  }
+
+  @Test
+  void listOfStructCarriesFieldsInFullType() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(
+                1,
+                "items",
+                Types.ListType.ofOptional(
+                    2,
+                    Types.StructType.of(
+                        Types.NestedField.required(3, "sku", Types.StringType.get()),
+                        Types.NestedField.optional(
+                            4,
+                            "quantities",
+                            Types.ListType.ofOptional(5, Types.IntegerType.get()))))));
+    assertThat(col.getLogicalTypeFull())
+        .isEqualTo("ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>");
+  }
+
+  @Test
+  void fullTypeRoundTripsThroughParse() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(
+                1,
+                "attrs",
+                Types.MapType.ofOptional(
+                    2,
+                    3,
+                    Types.StringType.get(),
+                    Types.ListType.ofRequired(4, Types.DecimalType.of(38, 9)))));
+    ai.floedb.floecat.types.LogicalType parsed =
+        ai.floedb.floecat.types.LogicalTypeFormat.parse(col.getLogicalTypeFull());
+    assertThat(parsed.kind()).isEqualTo(ai.floedb.floecat.types.LogicalKind.MAP);
+    assertThat(parsed.value().element())
+        .isEqualTo(ai.floedb.floecat.types.LogicalType.decimal(38, 9));
+  }
+
+  // ---------------------------------------------------------------------------
   // Nested struct expands children
   // ---------------------------------------------------------------------------
 

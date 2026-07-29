@@ -16,9 +16,11 @@
 
 package ai.floedb.floecat.connector.common.resolver;
 
+import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import java.util.List;
 import java.util.Objects;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -50,9 +52,22 @@ public final class IcebergTypeMappings {
       case STRING -> LogicalType.of(LogicalKind.STRING);
       case FIXED, BINARY -> LogicalType.of(LogicalKind.BINARY);
       case UUID -> LogicalType.of(LogicalKind.UUID);
-      case LIST -> LogicalType.of(LogicalKind.ARRAY);
-      case MAP -> LogicalType.of(LogicalKind.MAP);
-      case STRUCT -> LogicalType.of(LogicalKind.STRUCT);
+      case LIST -> {
+        Types.ListType list = t.asListType();
+        yield LogicalType.array(toLogical(list.elementType()), list.isElementOptional());
+      }
+      case MAP -> {
+        Types.MapType map = t.asMapType();
+        yield LogicalType.map(
+            toLogical(map.keyType()), toLogical(map.valueType()), map.isValueOptional());
+      }
+      case STRUCT -> {
+        List<LogicalField> fields =
+            t.asStructType().fields().stream()
+                .map(f -> new LogicalField(f.name(), f.isOptional(), toLogical(f.type())))
+                .toList();
+        yield fields.isEmpty() ? LogicalType.of(LogicalKind.STRUCT) : LogicalType.struct(fields);
+      }
       case VARIANT -> LogicalType.of(LogicalKind.VARIANT);
       case DECIMAL -> {
         var d = (Types.DecimalType) t;

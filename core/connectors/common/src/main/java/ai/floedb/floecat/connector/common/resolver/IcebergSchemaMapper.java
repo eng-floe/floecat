@@ -19,6 +19,8 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.Set;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
@@ -93,12 +95,16 @@ public final class IcebergSchemaMapper {
             && !(t instanceof Types.ListType)
             && !(t instanceof Types.MapType);
 
+    LogicalType logicalType = IcebergTypeMappings.toLogical(field.type());
+
     sb.addColumns(
         ColumnIdComputer.withComputedId(
             cid_algo,
             SchemaColumn.newBuilder()
                 .setName(field.name())
-                .setLogicalType(IcebergTypeMappings.toCanonical(field.type()))
+                .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
+                .setLogicalTypeFull(
+                    logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
                 .setFieldId(field.fieldId())
                 .setNullable(!field.isRequired())
                 .setPhysicalPath(physical)
