@@ -209,7 +209,7 @@ public final class BoundedFanout {
       cancelSubmittedTasks(active);
       throw cancellationFailure;
     } catch (RuntimeException | Error submissionFailure) {
-      awaitSubmittedTasks(active);
+      awaitSubmittedTasks(active, cancelled);
       throw submissionFailure;
     }
   }
@@ -351,23 +351,30 @@ public final class BoundedFanout {
     }
   }
 
-  /** Wait for every submitted task after rejecting one bounded-window submission. */
-  private static void awaitSubmittedTasks(List<? extends CompletionSlot<?>> active) {
-    boolean interrupted = false;
+  /**
+   * Wait for submitted tasks after a rejected submission, while still returning promptly when the
+   * stream is cancelled. Without cancellation the original rejection remains caller-visible.
+   */
+  private static void awaitSubmittedTasks(
+      List<? extends CompletionSlot<?>> active, BooleanSupplier cancelled) {
     for (CompletionSlot<?> slot : active) {
-      try {
-        slot.task.get();
-      } catch (InterruptedException e) {
-        interrupted = true;
-        cancelSubmittedTasks(active);
-        break;
-      } catch (ExecutionException | CancellationException ignored) {
-        // The submission failure is the caller-visible outcome; task failures only complete
-        // task-owned cleanup.
+      while (true) {
+        checkCancelled(cancelled, active);
+        try {
+          slot.task.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+          break;
+        } catch (TimeoutException ignored) {
+          // A bounded wait lets the next loop observe cancellation.
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          cancelSubmittedTasks(active);
+          throw cancelled();
+        } catch (ExecutionException | CancellationException ignored) {
+          // The submission failure is the caller-visible outcome; task failures only complete
+          // task-owned cleanup.
+          break;
+        }
       }
-    }
-    if (interrupted) {
-      Thread.currentThread().interrupt();
     }
   }
 

@@ -28,6 +28,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -314,6 +316,54 @@ class BoundedFanoutTest {
       } finally {
         allowTaskCompletion.countDown();
       }
+    }
+  }
+
+  @Test
+  void cancellationDuringRejectedSubmissionInterruptsActiveTasks() throws Exception {
+    CountDownLatch taskStarted = new CountDownLatch(1);
+    CountDownLatch taskInterrupted = new CountDownLatch(1);
+    AtomicBoolean cancelled = new AtomicBoolean();
+    try (ExecutorService executor =
+        new ThreadPoolExecutor(
+            1,
+            1,
+            0,
+            TimeUnit.MILLISECONDS,
+            new SynchronousQueue<>(),
+            new ThreadPoolExecutor.AbortPolicy())) {
+      CompletableFuture<Throwable> result =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  BoundedFanout.mapOrdered(
+                      List.of(1, 2),
+                      2,
+                      executor,
+                      ignored -> {
+                        taskStarted.countDown();
+                        try {
+                          new CountDownLatch(1).await();
+                          return ignored;
+                        } catch (InterruptedException e) {
+                          taskInterrupted.countDown();
+                          Thread.currentThread().interrupt();
+                          throw new CancellationException("task interrupted");
+                        }
+                      },
+                      cancelled::get);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+
+      assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      cancelled.set(true);
+      assertThat(result.get(250, TimeUnit.MILLISECONDS))
+          .isInstanceOf(CancellationException.class)
+          .hasMessage("fan-out cancelled");
+      assertThat(taskInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
     }
   }
 

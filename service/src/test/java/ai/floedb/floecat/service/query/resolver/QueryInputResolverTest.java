@@ -227,7 +227,6 @@ public class QueryInputResolverTest {
     } finally {
       graph.allowPinLookups.countDown();
       CompletableFuture.allOf(requests).join();
-      globallyLimitedResolver.closeBlockingExecutor();
     }
   }
 
