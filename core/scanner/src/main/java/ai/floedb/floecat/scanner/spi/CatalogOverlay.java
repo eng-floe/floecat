@@ -194,6 +194,17 @@ public interface CatalogOverlay {
   }
 
   /**
+   * Whether independent resolution callbacks may run concurrently on this overlay instance.
+   *
+   * <p>The default preserves compatibility for existing overlays, whose lifecycle state may be tied
+   * to one request thread. Implementations backed by thread-safe services may opt in to concurrent
+   * resolution.
+   */
+  default boolean supportsConcurrentResolution() {
+    return false;
+  }
+
+  /**
    * Resolves a relation (table or view) by name reference using an explicit engine context.
    *
    * <p>Prefer this overload wherever the caller already holds the request's engine context — see
