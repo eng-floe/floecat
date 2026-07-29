@@ -203,12 +203,31 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var table = tableBuilder.build();
 
                   if (idempotencyKey == null) {
-                    var existing =
-                        tableRepo.getByName(
-                            accountId,
-                            spec.getCatalogId().getId(),
-                            spec.getNamespaceId().getId(),
-                            normName);
+                    java.util.Optional<Table> existing;
+                    try {
+                      existing =
+                          tableRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    } catch (BaseResourceRepository.CorruptionException dangling) {
+                      // The name resolves to a row whose blob is unreadable. A delete that could
+                      // not
+                      // parse its target removes the canonical pointer alone — the secondary keys
+                      // are
+                      // derived from the value — so this row can outlive the table and keep its
+                      // name
+                      // reserved. Release provably orphaned rows and re-ask; if the name is still
+                      // held, the row belongs to something live and the read genuinely failed.
+                      reclaimStrandedNames(spec, normName);
+                      existing =
+                          tableRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    }
                     if (existing.isPresent()) {
                       throw GrpcErrors.alreadyExists(
                           corr,
@@ -225,13 +244,24 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       tableRepo.create(
                           table, markerStore.namespaceChildGuard(spec.getNamespaceId()));
                     } catch (BaseResourceRepository.NameConflictException nce) {
-                      throw GrpcErrors.alreadyExists(
-                          corr,
-                          TABLE_ALREADY_EXISTS,
-                          Map.of(
-                              "display_name", normName,
-                              "catalog_id", spec.getCatalogId().getId(),
-                              "namespace_id", spec.getNamespaceId().getId()));
+                      // The name may be held by a row whose relation no longer exists. A delete
+                      // that
+                      // could not parse its target removes the canonical pointer but cannot derive
+                      // the
+                      // secondary keys to remove with it, so the name stays reserved by a table
+                      // that
+                      // is gone — and this create is where that first becomes visible and where the
+                      // namespace needed to clean it up is actually known. Reconcile provably
+                      // orphaned rows and try once more before reporting the name as taken.
+                      if (!retryCreateAfterReclaimingStrandedNames(table, spec, normName)) {
+                        throw GrpcErrors.alreadyExists(
+                            corr,
+                            TABLE_ALREADY_EXISTS,
+                            Map.of(
+                                "display_name", normName,
+                                "catalog_id", spec.getCatalogId().getId(),
+                                "namespace_id", spec.getNamespaceId().getId()));
+                      }
                     }
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
@@ -537,6 +567,49 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * Re-attempts a create whose name collided, after releasing name rows whose relation is gone.
+   *
+   * <p>A delete that cannot parse its target removes only the canonical pointer — the repository
+   * derives secondary keys from the value, and an unreadable value yields none — so the by-name row
+   * and the shared relation-name claim outlive the table and keep its name reserved. Nothing on the
+   * delete path can clean that up: the namespace those keys are built from lives in the very blob
+   * that could not be read. A create is the first operation that both notices and knows the
+   * namespace, so the reconcile belongs here.
+   *
+   * <p>Only rows whose relation has no canonical pointer left are released, so a live table sharing
+   * the namespace is untouched. Retried once and only when something was actually released.
+   *
+   * @return true when the retry committed the create
+   */
+  private int reclaimStrandedNames(TableSpec spec, String normName) {
+    int reclaimed =
+        recursiveDropper.reclaimStrandedRelationNames(
+            ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+                .setResourceId(spec.getNamespaceId())
+                .setCatalogId(spec.getCatalogId())
+                .build());
+    if (reclaimed > 0) {
+      LOG.infof(
+          "table_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",
+          spec.getNamespaceId().getId(), normName, reclaimed);
+    }
+    return reclaimed;
+  }
+
+  private boolean retryCreateAfterReclaimingStrandedNames(
+      Table table, TableSpec spec, String normName) {
+    if (reclaimStrandedNames(spec, normName) == 0) {
+      return false;
+    }
+    try {
+      tableRepo.create(table, markerStore.namespaceChildGuard(spec.getNamespaceId()));
+      return true;
+    } catch (BaseResourceRepository.NameConflictException stillTaken) {
+      return false;
+    }
   }
 
   private static void validateTableMaskOrThrow(FieldMask mask, String corr) {

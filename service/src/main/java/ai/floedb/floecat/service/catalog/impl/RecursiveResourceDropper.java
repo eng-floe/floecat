@@ -483,8 +483,8 @@ public class RecursiveResourceDropper {
    * decide, outside any drop. Best-effort: a row that changes under the batch is left for the
    * caller's own re-check rather than aborting the request.
    */
-  public void reclaimStrandedRelationNames(Namespace namespace) {
-    reclaimStrandedRelationNames(namespace, BatchGuard.NONE);
+  public int reclaimStrandedRelationNames(Namespace namespace) {
+    return reclaimStrandedRelationNames(namespace, BatchGuard.NONE);
   }
 
   /**
@@ -503,19 +503,21 @@ public class RecursiveResourceDropper {
    * <p>The drop path reclaims these rows inline as it walks them; this sweep exists for callers who
    * only need to decide emptiness, such as a non-recursive delete.
    */
-  private void reclaimStrandedRelationNames(Namespace namespace, BatchGuard subtreePin) {
+  private int reclaimStrandedRelationNames(Namespace namespace, BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     String accountId = namespaceId.getAccountId();
 
+    int reclaimed = 0;
     for (var pointer :
         tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, subtreePin);
+      reclaimed += reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, subtreePin) ? 1 : 0;
     }
     for (var pointer :
         viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, subtreePin);
+      reclaimed += reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, subtreePin) ? 1 : 0;
     }
+    return reclaimed;
   }
 
   /**
@@ -532,7 +534,7 @@ public class RecursiveResourceDropper {
    * trusts the reclaim either — the emptiness gate re-counts these rows and is the authority on
    * whether the namespace may go.
    */
-  private void reclaimIfOrphaned(
+  private boolean reclaimIfOrphaned(
       Pointer namePointer, Namespace namespace, ResourceKind kind, BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     String accountId = namespaceId.getAccountId();
@@ -540,14 +542,14 @@ public class RecursiveResourceDropper {
     if (ownerId.isEmpty()) {
       // Neither the pointer's ref nor its blob URI names an owner, so orphanhood cannot be proven.
       // Leave it: the emptiness gate reports a non-empty namespace, which is the honest answer.
-      return;
+      return false;
     }
     String canonicalKey =
         kind == ResourceKind.RK_TABLE
             ? Keys.tablePointerById(accountId, ownerId)
             : Keys.viewPointerById(accountId, ownerId);
     if (pointerStore.get(canonicalKey).isPresent()) {
-      return;
+      return false;
     }
 
     var ops = new ArrayList<PointerStore.CasOp>();
@@ -575,12 +577,13 @@ public class RecursiveResourceDropper {
           "recursive_drop_reclaim_stranded_name_contended account_id=%s namespace_id=%s"
               + " pointer_key=%s",
           accountId, namespaceId.getId(), namePointer.getKey());
-      return;
+      return false;
     }
     CLEANUP_LOG.infof(
         "recursive_drop_reclaimed_stranded_name account_id=%s namespace_id=%s kind=%s"
             + " relation_id=%s pointer_key=%s",
         accountId, namespaceId.getId(), kind.name(), ownerId, namePointer.getKey());
+    return true;
   }
 
   /** The relation a by-name pointer names: its ref if present, else parsed from its blob URI. */

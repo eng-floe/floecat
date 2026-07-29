@@ -545,13 +545,35 @@ class BackendStorageIT {
     assertTrue(blobs.delete(ptr.get(byId).orElseThrow().getBlobUri()));
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid).build());
     assertTrue(ptr.get(byId).isEmpty());
-    // ...while the by-name row the emptiness gate counts is left stranded.
+    // The delete could not parse the table, so the repository removed the canonical pointer alone:
+    // the by-name row survives, because the keys to remove it with live in the blob that could not
+    // be read. The name is therefore still reserved at this point.
     assertTrue(ptr.get(byName).isPresent());
 
+    // What must not happen is the name staying reserved for good. A create knows the namespace, so
+    // it reconciles the orphaned row and succeeds instead of reporting ALREADY_EXISTS.
+    var recreated =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "recreated");
+    assertNotEquals(
+        tid.getId(), recreated.getResourceId().getId(), "a new table, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new table");
+
+    // And the namespace is still deletable afterwards.
+    TestSupport.deleteTable(table, ns.getResourceId(), recreated.getResourceId());
     namespace.deleteNamespace(
         DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
 
-    assertTrue(ptr.get(byName).isEmpty(), "the stranded by-name pointer must be reclaimed");
+    assertTrue(ptr.get(byName).isEmpty());
     assertTrue(
         ptr.get(
                 Keys.namespacePointerById(
