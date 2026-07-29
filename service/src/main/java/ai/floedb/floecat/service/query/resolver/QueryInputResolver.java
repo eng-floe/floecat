@@ -518,7 +518,7 @@ public class QueryInputResolver {
    * One input's resolution: the id recorded in {@code resolved}, and the table pins it contributes,
    * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
    * its own single pin.
-  */
+   */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
 
   /** Merge one completed plan on the request thread, preserving request-order semantics. */
@@ -735,6 +735,10 @@ public class QueryInputResolver {
         holder.complete(pin);
         state.diagnostics.count("pin.current_snapshot_cache_misses");
       } else {
+        // Deliberately await the single-flight winner rather than issue a competing lookup. A
+        // waiter can therefore observe cancellation only when the winner completes; that bounded
+        // latency preserves the invariant that every same-table CURRENT reference freezes one
+        // snapshot identity.
         pin = Futures.join(inflight);
         state.resolvingPinRoots.register(pin);
         state.diagnostics.count("pin.current_snapshot_cache_hits");

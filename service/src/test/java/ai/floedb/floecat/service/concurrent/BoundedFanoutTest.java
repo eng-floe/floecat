@@ -26,6 +26,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -84,15 +85,16 @@ class BoundedFanoutTest {
   void refillsPermitsWhileTheFirstResultIsBlocked() throws Exception {
     CountDownLatch firstStarted = new CountDownLatch(1);
     CountDownLatch laterItemStarted = new CountDownLatch(1);
-    CountDownLatch allItemsSubmitted = new CountDownLatch(1);
+    CountDownLatch initialWindowSubmitted = new CountDownLatch(1);
     CountDownLatch releaseFirst = new CountDownLatch(1);
     AtomicInteger submissions = new AtomicInteger();
+    LinkedBlockingQueue<Runnable> queuedTasks = new LinkedBlockingQueue<>();
     Executor countingExecutor =
         command -> {
-          if (submissions.incrementAndGet() == 100) {
-            allItemsSubmitted.countDown();
+          if (submissions.incrementAndGet() == 3) {
+            initialWindowSubmitted.countDown();
           }
-          CompletableFuture.runAsync(command);
+          queuedTasks.add(command);
         };
 
     CompletableFuture<List<Integer>> result =
@@ -117,15 +119,37 @@ class BoundedFanoutTest {
                       return value;
                     }));
 
-    assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
-    assertThat(laterItemStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    // Before any submitted task completes, only the bounded window may reach the executor.
+    assertThat(initialWindowSubmitted.await(1, TimeUnit.SECONDS)).isTrue();
+    assertThat(submissions.get()).isEqualTo(3);
+    ExecutorService workers = Executors.newFixedThreadPool(3);
     try {
-      assertThat(allItemsSubmitted.await(1, TimeUnit.SECONDS)).isTrue();
-      assertThat(submissions.get()).isEqualTo(100);
+      try {
+        for (int i = 0; i < 3; i++) {
+          workers.submit(
+              () -> {
+                try {
+                  while (!result.isDone()) {
+                    Runnable submitted = queuedTasks.poll(10, TimeUnit.MILLISECONDS);
+                    if (submitted != null) {
+                      submitted.run();
+                    }
+                  }
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                }
+              });
+        }
+        assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(laterItemStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(submissions.get()).isGreaterThan(3);
+      } finally {
+        releaseFirst.countDown();
+      }
+      assertThat(result.get(1, TimeUnit.SECONDS)).hasSize(100);
     } finally {
-      releaseFirst.countDown();
+      workers.shutdownNow();
     }
-    assertThat(result.get(1, TimeUnit.SECONDS)).hasSize(100);
   }
 
   @Test

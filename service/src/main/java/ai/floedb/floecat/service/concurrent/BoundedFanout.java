@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.concurrent;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -25,19 +26,21 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Supplier;
 
 /**
  * Runs independent, mostly-blocking tasks with a concurrency bound.
  *
- * <p>All items are submitted immediately and wait on the internal semaphore, so callers must use an
- * executor that can queue the full input set without rejecting or starving runnable tasks.
+ * <p>At most the configured number of tasks are submitted at a time. A completed task immediately
+ * opens one submission slot, independent of input order; completed results are retained by index
+ * and observed in input order after the bounded window has drained.
  */
 public final class BoundedFanout {
 
@@ -56,18 +59,9 @@ public final class BoundedFanout {
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items, int permits, Executor executor, Function<I, O> task) {
-    validatePermits(permits);
-    Semaphore gate = new Semaphore(permits);
-    PropagatedContext context = PropagatedContext.capture();
-    List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
-    for (I item : items) {
-      submitCompletionFuture(
-          futures,
-          () ->
-              CompletableFuture.supplyAsync(
-                  () -> runTask(gate, context, task, item, () -> false), executor));
-    }
-    return collectCompletedFutures(futures);
+    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
+    completeAll(items, permits, executor, task, outcomes, (index, outcome) -> {});
+    return orderedResults(outcomes);
   }
 
   /**
@@ -82,27 +76,19 @@ public final class BoundedFanout {
       Executor executor,
       Function<I, O> task,
       Consumer<? super O> consumer) {
-    validatePermits(permits);
-    Semaphore gate = new Semaphore(permits);
-    PropagatedContext context = PropagatedContext.capture();
-    List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
-    for (I item : items) {
-      submitCompletionFuture(
-          futures,
-          () ->
-              CompletableFuture.supplyAsync(
-                  () -> runTask(gate, context, task, item, () -> false), executor));
-    }
-    consumeCompletedFutures(futures, consumer);
+    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
+    OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer);
+    completeAll(items, permits, executor, task, outcomes, ordered::accept);
+    ordered.throwIfFailed();
   }
 
   /**
    * As {@link #mapOrdered(List, int, Executor, Function)}, but {@code cancelled} is polled so a
    * cancelled stream interrupts every submitted task and returns without waiting for a slow task's
    * completion. Tasks must cooperate with interruption while blocked in downstream calls. The
-   * permit wait is interruptible for the same reason. A non-cancellation task failure waits for
-   * every already-submitted sibling before surfacing, so its latency is bounded by the slowest
-   * sibling; this completion guarantee lets callers safely release task-owned resources.
+   * submission window observes cancellation before it submits more work. A non-cancellation task
+   * failure waits for every input task before surfacing, so callers can safely release task-owned
+   * resources.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items,
@@ -110,48 +96,10 @@ public final class BoundedFanout {
       ExecutorService executor,
       Function<I, O> task,
       BooleanSupplier cancelled) {
-    validatePermits(permits);
-    Semaphore gate = new Semaphore(permits);
-    PropagatedContext context = PropagatedContext.capture();
-    List<Future<O>> futures = new ArrayList<>(items.size());
-    try {
-      for (I item : items) {
-        if (cancelled.getAsBoolean()) {
-          cancelSubmittedTasks(futures);
-          throw cancelled();
-        }
-        submitTask(
-            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
-      }
-    } catch (CancellationException cancellationFailure) {
-      cancelSubmittedTasks(futures);
-      throw cancellationFailure;
-    }
-
-    List<O> results = new ArrayList<>(items.size());
-    RuntimeException firstRuntimeFailure = null;
-    Error firstErrorFailure = null;
-    for (int index = 0; index < futures.size(); index++) {
-      Future<O> future = futures.get(index);
-      try {
-        results.add(awaitCancellable(future, futures, cancelled));
-      } catch (RuntimeException e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstRuntimeFailure = e;
-        }
-      } catch (Error e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstErrorFailure = e;
-        }
-      }
-    }
-    if (firstRuntimeFailure != null) {
-      throw firstRuntimeFailure;
-    }
-    if (firstErrorFailure != null) {
-      throw firstErrorFailure;
-    }
-    return results;
+    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
+    completeAllCancellable(
+        items, permits, executor, task, cancelled, outcomes, (index, outcome) -> {});
+    return orderedResults(outcomes);
   }
 
   /**
@@ -167,198 +115,219 @@ public final class BoundedFanout {
       Function<I, O> task,
       Consumer<? super O> consumer,
       BooleanSupplier cancelled) {
-    validatePermits(permits);
-    Semaphore gate = new Semaphore(permits);
-    PropagatedContext context = PropagatedContext.capture();
-    List<Future<O>> futures = new ArrayList<>(items.size());
-    try {
-      for (I item : items) {
-        if (cancelled.getAsBoolean()) {
-          cancelSubmittedTasks(futures);
-          throw cancelled();
-        }
-        submitTask(
-            futures, () -> executor.submit(() -> runTask(gate, context, task, item, cancelled)));
-      }
-    } catch (CancellationException cancellationFailure) {
-      cancelSubmittedTasks(futures);
-      throw cancellationFailure;
-    }
-
-    RuntimeException firstRuntimeFailure = null;
-    Error firstErrorFailure = null;
-    for (int index = 0; index < futures.size(); index++) {
-      Future<O> future = futures.get(index);
-      try {
-        O result = awaitCancellable(future, futures, cancelled);
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          consumer.accept(result);
-        }
-      } catch (RuntimeException e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstRuntimeFailure = e;
-        }
-      } catch (Error e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstErrorFailure = e;
-        }
-      }
-    }
-    if (firstRuntimeFailure != null) {
-      throw firstRuntimeFailure;
-    }
-    if (firstErrorFailure != null) {
-      throw firstErrorFailure;
-    }
+    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
+    OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer);
+    completeAllCancellable(items, permits, executor, task, cancelled, outcomes, ordered::accept);
+    ordered.throwIfFailed();
   }
 
-  /** Run one task under the captured context while holding one concurrency permit. */
-  private static <I, O> O runTask(
-      Semaphore gate,
-      PropagatedContext context,
-      Function<I, O> task,
-      I item,
-      BooleanSupplier cancelled) {
-    acquire(gate);
-    try {
-      return context.supply(
-          () -> {
-            if (cancelled.getAsBoolean()) {
-              throw cancelled();
-            }
-            return task.apply(item);
-          });
-    } finally {
-      gate.release();
-    }
-  }
-
-  /** Collect every completed future, preserving the first unwrapped task failure. */
-  private static <O> List<O> collectCompletedFutures(List<CompletableFuture<O>> futures) {
-    List<O> results = new ArrayList<>(futures.size());
-    RuntimeException firstRuntimeFailure = null;
-    Error firstErrorFailure = null;
-    for (int index = 0; index < futures.size(); index++) {
-      CompletableFuture<O> future = futures.get(index);
-      try {
-        results.add(Futures.join(future));
-      } catch (RuntimeException e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstRuntimeFailure = e;
-        }
-      } catch (Error e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstErrorFailure = e;
-        }
+  /** Re-throw the first input-ordered task failure after every bounded task has finished. */
+  private static <O> List<O> orderedResults(List<TaskOutcome<O>> outcomes) {
+    List<O> results = new ArrayList<>(outcomes.size());
+    for (TaskOutcome<O> outcome : outcomes) {
+      if (outcome.failure() != null) {
+        rethrowTaskFailure(outcome.failure());
       }
-    }
-    if (firstRuntimeFailure != null) {
-      throw firstRuntimeFailure;
-    }
-    if (firstErrorFailure != null) {
-      throw firstErrorFailure;
+      results.add(outcome.result());
     }
     return results;
   }
 
-  /** Consume completed futures in input order, preserving the first task or consumer failure. */
-  private static <O> void consumeCompletedFutures(
-      List<CompletableFuture<O>> futures, Consumer<? super O> consumer) {
-    RuntimeException firstRuntimeFailure = null;
-    Error firstErrorFailure = null;
-    for (int index = 0; index < futures.size(); index++) {
-      CompletableFuture<O> future = futures.get(index);
-      try {
-        O result = Futures.join(future);
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          consumer.accept(result);
-        }
-      } catch (RuntimeException e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstRuntimeFailure = e;
-        }
-      } catch (Error e) {
-        if (firstRuntimeFailure == null && firstErrorFailure == null) {
-          firstErrorFailure = e;
+  /**
+   * Submit no more than {@code permits} tasks at once, recording each outcome as it completes so a
+   * fast later task immediately replenishes the window despite ordered result observation.
+   */
+  private static <I, O> void completeAll(
+      List<I> items,
+      int permits,
+      Executor executor,
+      Function<I, O> task,
+      List<TaskOutcome<O>> outcomes,
+      BiConsumer<Integer, TaskOutcome<O>> onCompletion) {
+    validatePermits(permits);
+    PropagatedContext context = PropagatedContext.capture();
+    BlockingQueue<CompletionSlot<O>> completions = new LinkedBlockingQueue<>();
+    List<CompletionSlot<O>> active = new ArrayList<>(permits);
+    int next = 0;
+    try {
+      while (next < items.size() && active.size() < permits) {
+        active.add(
+            submitCompletionTask(next, items.get(next++), executor, context, task, completions));
+      }
+      while (!active.isEmpty()) {
+        CompletionSlot<O> slot = takeCompletion(completions);
+        active.remove(slot);
+        TaskOutcome<O> outcome = completedOutcome(slot.completion);
+        outcomes.set(slot.index, outcome);
+        onCompletion.accept(slot.index, outcome);
+        if (next < items.size()) {
+          active.add(
+              submitCompletionTask(next, items.get(next++), executor, context, task, completions));
         }
       }
-    }
-    if (firstRuntimeFailure != null) {
-      throw firstRuntimeFailure;
-    }
-    if (firstErrorFailure != null) {
-      throw firstErrorFailure;
-    }
-  }
-
-  /** Await each already-submitted completion future after a submission failure. */
-  private static <O> void submitCompletionFuture(
-      List<CompletableFuture<O>> futures, Supplier<CompletableFuture<O>> submission) {
-    try {
-      futures.add(submission.get());
     } catch (RuntimeException | Error submissionFailure) {
-      awaitCompletedFutures(futures);
+      awaitCompletedTasks(active);
       throw submissionFailure;
     }
   }
 
-  /** Await each already-submitted task after an executor submission failure. */
-  private static <O> void submitTask(List<Future<O>> futures, Supplier<Future<O>> submission) {
+  /** Cancellable counterpart of the bounded completion scheduler. */
+  private static <I, O> void completeAllCancellable(
+      List<I> items,
+      int permits,
+      ExecutorService executor,
+      Function<I, O> task,
+      BooleanSupplier cancelled,
+      List<TaskOutcome<O>> outcomes,
+      BiConsumer<Integer, TaskOutcome<O>> onCompletion) {
+    validatePermits(permits);
+    PropagatedContext context = PropagatedContext.capture();
+    BlockingQueue<CompletionSlot<O>> completions = new LinkedBlockingQueue<>();
+    List<CompletionSlot<O>> active = new ArrayList<>(permits);
+    int next = 0;
     try {
-      futures.add(submission.get());
+      while (next < items.size() && active.size() < permits) {
+        checkCancelled(cancelled, active);
+        active.add(
+            submitCancellableTask(
+                next, items.get(next++), executor, context, task, cancelled, completions));
+      }
+      while (!active.isEmpty()) {
+        CompletionSlot<O> slot = takeCancellableCompletion(completions, active, cancelled);
+        TaskOutcome<O> outcome = completedOutcome(slot.task, active, cancelled);
+        outcomes.set(slot.index, outcome);
+        onCompletion.accept(slot.index, outcome);
+        active.remove(slot);
+        if (next < items.size()) {
+          checkCancelled(cancelled, active);
+          active.add(
+              submitCancellableTask(
+                  next, items.get(next++), executor, context, task, cancelled, completions));
+        }
+      }
+    } catch (CancellationException cancellationFailure) {
+      cancelSubmittedTasks(active);
+      throw cancellationFailure;
     } catch (RuntimeException | Error submissionFailure) {
-      awaitSubmittedTasks(futures);
+      awaitSubmittedTasks(active);
       throw submissionFailure;
     }
   }
 
-  /** Await each already-submitted completion future after a submission failure. */
-  private static void awaitCompletedFutures(List<? extends CompletableFuture<?>> futures) {
-    for (CompletableFuture<?> future : futures) {
-      try {
-        Futures.join(future);
-      } catch (RuntimeException | Error ignored) {
-        // The submission failure is the caller-visible outcome; task failures only complete
-        // cleanup.
-      }
-    }
+  private static <I, O> CompletionSlot<O> submitCompletionTask(
+      int index,
+      I item,
+      Executor executor,
+      PropagatedContext context,
+      Function<I, O> task,
+      BlockingQueue<CompletionSlot<O>> completions) {
+    CompletionSlot<O> slot = new CompletionSlot<>(index);
+    slot.completion =
+        CompletableFuture.supplyAsync(() -> context.supply(() -> task.apply(item)), executor);
+    // Completion stages run only after the CompletableFuture has reached its terminal state, so
+    // removing this slot cannot briefly exceed the submitted-task window.
+    slot.completion.whenComplete((ignored, failure) -> completions.add(slot));
+    return slot;
   }
 
-  /** Await each already-submitted task while preserving an executor submission failure. */
-  private static void awaitSubmittedTasks(List<? extends Future<?>> futures) {
+  private static <I, O> CompletionSlot<O> submitCancellableTask(
+      int index,
+      I item,
+      ExecutorService executor,
+      PropagatedContext context,
+      Function<I, O> task,
+      BooleanSupplier cancelled,
+      BlockingQueue<CompletionSlot<O>> completions) {
+    CompletionSlot<O> slot = new CompletionSlot<>(index);
+    FutureTask<O> submitted =
+        new FutureTask<O>(
+            () ->
+                context.supply(
+                    () -> {
+                      if (cancelled.getAsBoolean()) {
+                        throw cancelled();
+                      }
+                      return task.apply(item);
+                    })) {
+          @Override
+          protected void done() {
+            completions.add(slot);
+          }
+        };
+    slot.task = submitted;
+    executor.execute(submitted);
+    return slot;
+  }
+
+  private static <O> CompletionSlot<O> takeCompletion(
+      BlockingQueue<CompletionSlot<O>> completions) {
     boolean interrupted = false;
-    for (Future<?> future : futures) {
-      try {
-        future.get();
-      } catch (InterruptedException e) {
-        interrupted = true;
-        cancelSubmittedTasks(futures);
-        break;
-      } catch (ExecutionException | CancellationException ignored) {
-        // The submission failure is the caller-visible outcome; task failures only complete
-        // cleanup.
+    try {
+      while (true) {
+        try {
+          return completions.take();
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
       }
-    }
-    if (interrupted) {
-      Thread.currentThread().interrupt();
+    } finally {
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
-  /** Await one task while repeatedly observing stream cancellation. */
-  private static <O> O awaitCancellable(
-      Future<O> future, List<? extends Future<?>> futures, BooleanSupplier cancelled) {
+  /** Await an active completion while polling cancellation instead of joining a slow input. */
+  private static <O> CompletionSlot<O> takeCancellableCompletion(
+      BlockingQueue<CompletionSlot<O>> completions,
+      List<CompletionSlot<O>> active,
+      BooleanSupplier cancelled) {
     while (true) {
-      if (cancelled.getAsBoolean()) {
-        cancelSubmittedTasks(futures);
+      checkCancelled(cancelled, active);
+      try {
+        CompletionSlot<O> slot = completions.poll(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+        if (slot != null) {
+          return slot;
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        cancelSubmittedTasks(active);
         throw cancelled();
       }
+    }
+  }
+
+  private static <O> TaskOutcome<O> completedOutcome(CompletableFuture<O> future) {
+    try {
+      return TaskOutcome.success(Futures.join(future));
+    } catch (RuntimeException | Error failure) {
+      return TaskOutcome.failure(failure);
+    }
+  }
+
+  private static <O> TaskOutcome<O> completedOutcome(
+      Future<O> future, List<CompletionSlot<O>> active, BooleanSupplier cancelled) {
+    try {
+      return TaskOutcome.success(awaitCancellable(future, active, cancelled));
+    } catch (RuntimeException | Error failure) {
+      return TaskOutcome.failure(failure);
+    }
+  }
+
+  /**
+   * Await one just-completed task while still honoring a cancellation that races its completion.
+   */
+  private static <O> O awaitCancellable(
+      Future<O> future, List<? extends CompletionSlot<?>> active, BooleanSupplier cancelled) {
+    while (true) {
+      checkCancelled(cancelled, active);
       try {
         return future.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
       } catch (TimeoutException ignored) {
         // A bounded wait lets the next loop observe cancellation.
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
-        cancelSubmittedTasks(futures);
+        cancelSubmittedTasks(active);
         throw cancelled();
       } catch (ExecutionException e) {
         rethrowTaskFailure(e.getCause());
@@ -366,10 +335,56 @@ public final class BoundedFanout {
     }
   }
 
+  private static <O> List<TaskOutcome<O>> emptyOutcomes(int size) {
+    return new ArrayList<>(java.util.Collections.nCopies(size, null));
+  }
+
+  /** Wait for every completion future after rejecting one bounded-window submission. */
+  private static void awaitCompletedTasks(List<? extends CompletionSlot<?>> active) {
+    for (CompletionSlot<?> slot : active) {
+      try {
+        Futures.join(slot.completion);
+      } catch (RuntimeException | Error ignored) {
+        // The submission failure is the caller-visible outcome; task failures only complete
+        // task-owned cleanup.
+      }
+    }
+  }
+
+  /** Wait for every submitted task after rejecting one bounded-window submission. */
+  private static void awaitSubmittedTasks(List<? extends CompletionSlot<?>> active) {
+    boolean interrupted = false;
+    for (CompletionSlot<?> slot : active) {
+      try {
+        slot.task.get();
+      } catch (InterruptedException e) {
+        interrupted = true;
+        cancelSubmittedTasks(active);
+        break;
+      } catch (ExecutionException | CancellationException ignored) {
+        // The submission failure is the caller-visible outcome; task failures only complete
+        // task-owned cleanup.
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private static void checkCancelled(
+      BooleanSupplier cancelled, List<? extends CompletionSlot<?>> active) {
+    if (cancelled.getAsBoolean()) {
+      cancelSubmittedTasks(active);
+      throw cancelled();
+    }
+  }
+
   /** Interrupt every submitted task, including work already inside a downstream call. */
-  private static void cancelSubmittedTasks(List<? extends Future<?>> futures) {
-    for (Future<?> future : futures) {
-      future.cancel(true);
+  private static void cancelSubmittedTasks(List<? extends CompletionSlot<?>> active) {
+    for (CompletionSlot<?> slot : active) {
+      if (slot.task != null) {
+        slot.task.cancel(true);
+      }
     }
   }
 
@@ -396,16 +411,70 @@ public final class BoundedFanout {
     return new CancellationException("fan-out cancelled");
   }
 
+  private static final class CompletionSlot<O> {
+    private final int index;
+    private CompletableFuture<O> completion;
+    private Future<O> task;
+
+    private CompletionSlot(int index) {
+      this.index = index;
+    }
+  }
+
+  private record TaskOutcome<O>(O result, Throwable failure) {
+    private static <O> TaskOutcome<O> success(O result) {
+      return new TaskOutcome<>(result, null);
+    }
+
+    private static <O> TaskOutcome<O> failure(Throwable failure) {
+      return new TaskOutcome<>(null, failure);
+    }
+  }
+
   /**
-   * Interruptible permit acquire: a shutdown/interrupt aborts the task instead of pinning the
-   * thread on an uninterruptible wait.
+   * Delivers completed results to a caller in input order without stalling the submission window.
    */
-  private static void acquire(Semaphore gate) {
-    try {
-      gate.acquire();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new CancellationException("interrupted while awaiting fan-out permit");
+  private static final class OrderedOutcomeConsumer<O> {
+    private final List<TaskOutcome<O>> outcomes;
+    private final Consumer<? super O> consumer;
+    private int nextIndex;
+    private RuntimeException firstRuntimeFailure;
+    private Error firstErrorFailure;
+
+    private OrderedOutcomeConsumer(List<TaskOutcome<O>> outcomes, Consumer<? super O> consumer) {
+      this.outcomes = outcomes;
+      this.consumer = consumer;
+    }
+
+    private void accept(int index, TaskOutcome<O> ignored) {
+      while (nextIndex < outcomes.size() && outcomes.get(nextIndex) != null) {
+        TaskOutcome<O> outcome = outcomes.get(nextIndex++);
+        try {
+          if (outcome.failure() != null) {
+            rethrowTaskFailure(outcome.failure());
+          }
+          if (firstRuntimeFailure == null && firstErrorFailure == null) {
+            consumer.accept(outcome.result());
+          }
+        } catch (RuntimeException e) {
+          if (firstRuntimeFailure == null && firstErrorFailure == null) {
+            firstRuntimeFailure = e;
+          }
+        } catch (Error e) {
+          if (firstRuntimeFailure == null && firstErrorFailure == null) {
+            firstErrorFailure = e;
+          }
+        }
+      }
+    }
+
+    private void throwIfFailed() {
+      if (firstRuntimeFailure != null) {
+        throw firstRuntimeFailure;
+      }
+      if (firstErrorFailure != null) {
+        throw firstErrorFailure;
+      }
     }
   }
 }

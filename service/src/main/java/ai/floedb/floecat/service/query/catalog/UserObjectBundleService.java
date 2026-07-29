@@ -1623,7 +1623,7 @@ public class UserObjectBundleService {
     private final Span parentSpan = Span.current();
     // Coordinates the resolving-root handoff. Cancellation can arrive on a different thread than
     // chunk production, so it must neither release pins being committed nor miss pins accumulated
-    // after its cleanup pass.
+    // after its cleanup pass. Store I/O always happens outside this lock.
     private final Object pendingChunkPinsLock = new Object();
     private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
@@ -1783,8 +1783,14 @@ public class UserObjectBundleService {
           toRelease = pendingChunkPins;
           pendingChunkPins = RelationPinSet.getDefaultInstance();
         }
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
-        publishStreamTelemetry("cancelled");
+        // onTermination may run on a transport/event-loop thread. Root release can perform store
+        // I/O and telemetry finishes spans, so only the state handoff runs inline there.
+        Thread.startVirtualThread(
+            () -> {
+              queryStore.releaseResolvingPinBlobs(
+                  ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
+              publishStreamTelemetry("cancelled");
+            });
       }
     }
 
@@ -2349,6 +2355,7 @@ public class UserObjectBundleService {
     }
 
     private void commitChunkPins() {
+      RelationPinSet toCommit;
       synchronized (pendingChunkPinsLock) {
         throwIfCancelled(this::isCancelled);
         if (pendingChunkPins.getPinsCount() == 0) {
@@ -2359,32 +2366,36 @@ public class UserObjectBundleService {
               "Committing chunk pins query_id=%s pin_count=%d",
               ctx.getQueryId(), pendingChunkPins.getPinsCount());
         }
-        RelationPinSet toCommit = pendingChunkPins;
-        // Keep the cancellation cleanup out of this handoff until update establishes the durable
-        // query-context root. Otherwise a concurrent cancel could reopen the blob-GC window.
-        Optional<QueryContext> updated;
-        try {
-          updated =
-              queryStore.update(
-                  ctx.getQueryId(),
-                  existing -> mergeRelationPins(existing, toCommit, correlationId));
-        } catch (RuntimeException | Error e) {
-          pendingChunkPins = RelationPinSet.getDefaultInstance();
-          queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-          throw e;
-        }
+        toCommit = pendingChunkPins;
         pendingChunkPins = RelationPinSet.getDefaultInstance();
-        if (updated.isEmpty()) {
-          queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-          LOG.warnf(
-              "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
-          throw GrpcErrors.notFound(
-              correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
-        }
+      }
+
+      // A concurrent cancellation sees this set as in-flight and leaves it to this method: a
+      // successful update establishes the durable root; a failed update releases the transient
+      // root below. That avoids both the GC window and blocking cancellation on store I/O.
+      Optional<QueryContext> updated;
+      try {
+        updated =
+            queryStore.update(
+                ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+      } catch (RuntimeException | Error e) {
+        finishFailedPinCommit(toCommit);
+        throw e;
+      }
+      if (updated.isEmpty()) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+        LOG.warnf(
+            "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
+        throw GrpcErrors.notFound(
+            correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
       }
       if (LOG.isDebugEnabled()) {
         LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
       }
+    }
+
+    private void finishFailedPinCommit(RelationPinSet toCommit) {
+      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
     }
 
     private int pendingChunkPinCount() {
