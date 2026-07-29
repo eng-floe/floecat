@@ -19,6 +19,8 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -75,19 +77,28 @@ final class GenericSchemaMapper {
               "Generic schema column '" + name + "' is missing a non-blank 'type'");
         }
 
-        String canonicalType = LogicalTypeFormat.format(LogicalTypeFormat.parse(declaredType));
+        LogicalType logicalType = LogicalTypeFormat.parse(declaredType);
+        // ARRAY/MAP/STRUCT containers are not stats-capable; marking them leaf=true would send
+        // them into min/max encoding, which rejects complex kinds. VARIANT is leaf, matching the
+        // Iceberg/Delta mappers.
+        boolean isContainer =
+            logicalType.kind() == LogicalKind.ARRAY
+                || logicalType.kind() == LogicalKind.MAP
+                || logicalType.kind() == LogicalKind.STRUCT;
         sb.addColumns(
             ColumnIdComputer.withComputedId(
                 cid_algo,
                 SchemaColumn.newBuilder()
                     .setName(name)
-                    .setLogicalType(canonicalType)
+                    .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
+                    .setLogicalTypeFull(
+                        logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
                     .setFieldId(ordinal) // deterministic order
                     .setNullable(true) // assume nullable
                     .setPhysicalPath(name)
                     .setPartitionKey(false)
                     .setOrdinal(ordinal++) // 1-based ordinal within the parent schema object
-                    .setLeaf(true)
+                    .setLeaf(!isContainer)
                     .build()));
       }
 

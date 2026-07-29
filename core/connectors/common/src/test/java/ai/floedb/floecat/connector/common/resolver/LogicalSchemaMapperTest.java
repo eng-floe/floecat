@@ -83,6 +83,36 @@ class LogicalSchemaMapperTest {
   }
 
   @Test
+  void genericContainerColumnsAreNotLeaf() {
+    String json =
+        """
+            {"cols":[
+                {"name":"tags","type":"ARRAY<STRING>"},
+                {"name":"bare","type":"ARRAY"},
+                {"name":"v","type":"VARIANT"}
+            ]}
+        """;
+
+    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
+    SchemaDescriptor desc = mapper.map(baseTable(json, upstream), json);
+
+    SchemaColumn tags = desc.getColumns(0);
+    assertEquals("ARRAY", tags.getLogicalType());
+    assertEquals("ARRAY<STRING>", tags.getLogicalTypeFull());
+    // Containers are not stats-capable; a leaf=true container would be sent into min/max
+    // encoding, which rejects complex kinds.
+    assertFalse(tags.getLeaf());
+
+    SchemaColumn bare = desc.getColumns(1);
+    assertEquals("ARRAY", bare.getLogicalType());
+    assertEquals("", bare.getLogicalTypeFull());
+    assertFalse(bare.getLeaf());
+
+    // VARIANT is self-describing and stays leaf, matching the Iceberg/Delta mappers.
+    assertTrue(desc.getColumns(2).getLeaf());
+  }
+
+  @Test
   void genericDecimalPrecisionAbove38IsAllowed() {
     String json =
         """
