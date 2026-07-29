@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -2155,16 +2156,22 @@ class UserObjectBundleServiceTest {
 
   @Test
   void requestedInputAfterAnOverflowingViewSpillsToTheNextChunkInOrder() {
-    assertRequestedInputAfterViewSpillsToNextChunk(30);
+    assertRequestedInputAfterViewSpillsToNextChunk(30, false);
   }
 
   @Test
   void requestedInputAfterAChunkFillingViewSpillsToTheNextChunkInOrder() {
-    assertRequestedInputAfterViewSpillsToNextChunk(24);
+    assertRequestedInputAfterViewSpillsToNextChunk(24, false);
+  }
+
+  @Test
+  void failureAfterAChunkFillingViewIsDeferredUntilTheNextPull() {
+    assertRequestedInputAfterViewSpillsToNextChunk(24, true);
   }
 
   /** Verify that a requested relation after a view's eager bases retains its input position. */
-  private void assertRequestedInputAfterViewSpillsToNextChunk(int baseCount) {
+  private void assertRequestedInputAfterViewSpillsToNextChunk(
+      int baseCount, boolean trailingCandidateFails) {
     // Input 0 is a view whose eager base tables fill chunk 1; input 1 is a plain table selected in
     // the same batch and must be emitted in chunk 2.
     ResourceId viewId =
@@ -2212,13 +2219,38 @@ class UserObjectBundleServiceTest {
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setViewId(viewId))
             .build();
-    TableReferenceCandidate tableCandidate =
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
-            .build();
+    TableReferenceCandidate trailingCandidate =
+        trailingCandidateFails
+            ? TableReferenceCandidate.getDefaultInstance()
+            : TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build();
+
+    if (trailingCandidateFails) {
+      List<UserObjectsBundleChunk> emitted = new ArrayList<>();
+      assertThatThrownBy(
+              () ->
+                  service.stream("cid", ctx, List.of(viewCandidate, trailingCandidate))
+                      .onItem()
+                      .invoke(emitted::add)
+                      .collect()
+                      .asList()
+                      .await()
+                      .indefinitely())
+          .isInstanceOf(RuntimeException.class);
+      assertThat(emitted).hasSize(2);
+      assertThat(emitted.get(1).getResolutions().getItemsCount()).isEqualTo(25);
+      assertThat(emitted.get(1).getResolutions().getItems(0).getInputIndex()).isZero();
+      assertThat(
+              emitted.get(1).getResolutions().getItemsList().stream()
+                  .filter(item -> item.getInputIndex() == -1)
+                  .count())
+          .isEqualTo(24);
+      return;
+    }
 
     List<UserObjectsBundleChunk> chunks =
-        service.stream("cid", ctx, List.of(viewCandidate, tableCandidate))
+        service.stream("cid", ctx, List.of(viewCandidate, trailingCandidate))
             .collect()
             .asList()
             .await()

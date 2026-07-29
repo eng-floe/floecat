@@ -82,7 +82,6 @@ import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -100,16 +99,17 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BooleanSupplier;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -152,16 +152,9 @@ public class UserObjectBundleService {
   // store-bound resolution; a small fan-out overlaps their round-trips without flooding the store.
   private static final int MAX_PARALLEL_RELATION_TASKS = 8;
 
-  // Runs per-relation resolution off the request thread. The Quarkus ManagedExecutor is injected in
-  // init(); tests (and any wiring without one) fall back to the common pool.
-  private volatile Executor blockingExecutor = ForkJoinPool.commonPool();
-
-  @Inject
-  void init(Instance<ManagedExecutor> managedExecutors) {
-    if (managedExecutors != null) {
-      managedExecutors.stream().findFirst().ifPresent(e -> blockingExecutor = e);
-    }
-  }
+  // The stream driver blocks while it gathers this fan-out. Keep its blocking metadata work off
+  // the application worker pool so concurrent drivers cannot starve the executor that runs them.
+  private final ExecutorService blockingExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -298,8 +291,10 @@ public class UserObjectBundleService {
                   .iterable(() -> iterator)
                   .onFailure()
                   .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
+                  .onCancellation()
+                  .invoke(iterator::cancel)
                   .onTermination()
-                  .invoke(iterator::cancel);
+                  .invoke(() -> iterator.publishStreamTelemetry("terminated"));
             });
   }
 
@@ -1756,14 +1751,23 @@ public class UserObjectBundleService {
       while (!resolvedSpillover.isEmpty() && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
         gather(resolvedSpillover.removeFirst(), toPin);
       }
-      // Then newly requested inputs, up to this chunk's remaining capacity. Selecting is separated
-      // from gathering so the select step can later run in parallel; today it is a serial loop.
+      // Then newly requested inputs, up to this chunk's remaining capacity. Selection failures are
+      // kept as ordered outcomes: if a view ahead fills this chunk, a later failure waits in
+      // spillover and is not allowed to suppress the view and its eager base tables.
       int budget = MAX_RESOLUTIONS_PER_CHUNK - pending.size();
       if (budget > 0 && nextInputIndex < resolutionCount) {
         int planCount = Math.min(budget, resolutionCount - nextInputIndex);
         List<PlannedInput> plan = new ArrayList<>(planCount);
         for (int i = 0; i < planCount; i++) {
-          plan.add(planInput(nextInputIndex + i));
+          int inputIndex = nextInputIndex + i;
+          try {
+            throwIfCancelled(this::isCancelled);
+            plan.add(planInput(inputIndex));
+          } catch (CancellationException e) {
+            throw e;
+          } catch (RuntimeException e) {
+            plan.add(PlannedInput.failed(inputIndex, e));
+          }
         }
         nextInputIndex += planCount;
         // Resolve the planned inputs concurrently; results come back in plan order so the gather
@@ -1771,7 +1775,11 @@ public class UserObjectBundleService {
         long selectStageStartNs = System.nanoTime();
         List<PendingItem> selected =
             BoundedFanout.mapOrdered(
-                plan, MAX_PARALLEL_RELATION_TASKS, blockingExecutor, this::selectOne);
+                plan,
+                MAX_PARALLEL_RELATION_TASKS,
+                blockingExecutor,
+                this::selectOne,
+                this::isCancelled);
         resolveNanos += System.nanoTime() - selectStageStartNs;
         for (PendingItem item : selected) {
           // A view gathered earlier in this loop can fill the chunk via its base tables; the
@@ -1823,6 +1831,9 @@ public class UserObjectBundleService {
      * neither found nor not-found, matching the end-chunk contract.
      */
     private void gather(PendingItem item, List<ResolvedRelation> toPin) {
+      if (item instanceof PendingFailure failure) {
+        throw failure.failure();
+      }
       pending.add(item);
       if (item instanceof PendingFound found) {
         foundCount++;
@@ -1898,7 +1909,18 @@ public class UserObjectBundleService {
 
     /** A requested input paired with its normalized candidates, ready to select against. */
     private record PlannedInput(
-        int inputIndex, TableReferenceCandidate candidate, List<QueryInput> normalized) {}
+        int inputIndex,
+        TableReferenceCandidate candidate,
+        List<QueryInput> normalized,
+        RuntimeException planningFailure) {
+      static PlannedInput failed(int inputIndex, RuntimeException failure) {
+        return new PlannedInput(inputIndex, null, List.of(), failure);
+      }
+
+      boolean failed() {
+        return planningFailure != null;
+      }
+    }
 
     /**
      * Resolve every NAME candidate of the plan in one batch, seeding the name memo. Names sharing a
@@ -1940,7 +1962,7 @@ public class UserObjectBundleService {
       try {
         List<QueryInput> normalized =
             normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
-        return new PlannedInput(inputIndex, candidate, normalized);
+        return new PlannedInput(inputIndex, candidate, normalized, null);
       } finally {
         normalizeNanos += System.nanoTime() - normalizeStartNs;
       }
@@ -1952,7 +1974,11 @@ public class UserObjectBundleService {
      */
     private PendingItem selectOne(PlannedInput planned) {
       int inputIndex = planned.inputIndex();
+      if (planned.failed()) {
+        return new PendingFailure(inputIndex, planned.planningFailure());
+      }
       try {
+        throwIfCancelled(this::isCancelled);
         long selectStartNs = System.nanoTime();
         Optional<ResolvedRelation> resolved;
         try {
@@ -1974,6 +2000,8 @@ public class UserObjectBundleService {
           }
           return new PendingFound(inputIndex, resolved.get());
         }
+      } catch (CancellationException e) {
+        throw e;
       } catch (GraphNodeMissingException e) {
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
@@ -1994,6 +2022,8 @@ public class UserObjectBundleService {
                 .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
                 .setFailure(failure)
                 .build());
+      } catch (RuntimeException e) {
+        return new PendingFailure(inputIndex, e);
       }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
@@ -2379,6 +2409,26 @@ public class UserObjectBundleService {
      */
     private interface PendingItem {
       int inputIndex();
+    }
+
+    /** A planning or selection exception deferred until its request-order position is emitted. */
+    private static final class PendingFailure implements PendingItem {
+      private final int inputIndex;
+      private final RuntimeException failure;
+
+      private PendingFailure(int inputIndex, RuntimeException failure) {
+        this.inputIndex = inputIndex;
+        this.failure = failure;
+      }
+
+      @Override
+      public int inputIndex() {
+        return inputIndex;
+      }
+
+      RuntimeException failure() {
+        return failure;
+      }
     }
 
     private static final class PendingResolved implements PendingItem {
