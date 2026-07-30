@@ -2624,20 +2624,29 @@
 <td>component, mode, operation, reason, resource, result, scope, trigger</td>
 </tr>
 <tr>
-<td>floecat.service.storage.account.bytes</td>
+<td>floecat.service.storage.account.gc_estimated_bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>
 <td>v1</td>
-<td>Estimated per-account storage byte consumption (sampled, not exact).</td>
+<td>Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark.</td>
 <td>account</td>
 <td>account</td>
 </tr>
 <tr>
-<td>floecat.service.storage.account.pointers</td>
+<td>floecat.service.storage.account.gc_estimated_pointers</td>
 <td>GAUGE</td>
 <td></td>
 <td>v1</td>
-<td>Per-account pointer count stored in the service.</td>
+<td>Pointer roots traversed by the latest per-account CAS GC mark.</td>
+<td>account</td>
+<td>account</td>
+</tr>
+<tr>
+<td>floecat.service.storage.account.gc_size_coverage</td>
+<td>GAUGE</td>
+<td>ratio</td>
+<td>v1</td>
+<td>Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata.</td>
 <td>account</td>
 <td>account</td>
 </tr>
