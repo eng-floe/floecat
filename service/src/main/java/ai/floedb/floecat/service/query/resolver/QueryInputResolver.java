@@ -687,11 +687,6 @@ public class QueryInputResolver {
         "interrupted while awaiting resolver I/O");
   }
 
-  /** Acquires the global store-I/O slot and runs an uncancellable legacy call on the caller. */
-  private <T> T withInputResolutionPermitSynchronously(Supplier<T> operation) {
-    return withInputResolutionPermitSynchronously(NEVER_CANCELLED, operation);
-  }
-
   /** Runs one metadata operation while retaining its global permit until the call truly returns. */
   private <T> T withInputResolutionPermitSynchronously(
       BooleanSupplier cancelled, Supplier<T> operation) {
@@ -959,6 +954,9 @@ public class QueryInputResolver {
 
   // Helper method to compute effective as-of timestamp for dependency pinning
   private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (isExplicitCurrentSnapshot(override)) {
+      return Optional.empty();
+    }
     if (override != null && override.hasAsOf()) {
       return Optional.of(override.getAsOf());
     }

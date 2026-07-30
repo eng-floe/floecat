@@ -1381,6 +1381,33 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void view_with_explicit_current_override_ignores_asof_default_for_base_pins() {
+    ResourceId base = rid("BASE_EXPLICIT_CURRENT");
+    ResourceId viewId = viewRid("V_EXPLICIT_CURRENT");
+    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
+    metadataGraph.setCurrentSnapshot(base, 101L);
+    metadataGraph.setAsOfSnapshot(base, 555L);
+    Timestamp defaultAsOf = Timestamp.newBuilder().setSeconds(202).build();
+
+    QueryInput input =
+        QueryInput.newBuilder()
+            .setViewId(viewId)
+            .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+            .build();
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs("cid", List.of(input), Optional.of(defaultAsOf), Optional.empty())
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals(101L, pins.get(0).getSnapshotId());
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertTrue(call.asOfDefault().isEmpty());
+  }
+
+  @Test
   void view_with_snapshot_override_is_invalid() {
     ResourceId base = rid("BASE_INVALID");
     ResourceId viewId = viewRid("V_INVALID");
