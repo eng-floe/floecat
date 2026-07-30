@@ -534,6 +534,15 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         authz.require(princ, "table.write");
                         authz.require(princ, "view.write");
                       }
+                      // The emptiness gate reconciles stranded relation index rows before trusting
+                      // its own count, which deletes pointers belonging to tables and views. Only a
+                      // caller who could have deleted those relations outright may do so: recursive
+                      // delete has just proven it, and a plain delete has to be asked. Without the
+                      // grant the reconcile is skipped and the leftover rows make the namespace
+                      // report NOT_EMPTY, which is the honest answer for a caller who cannot clear
+                      // them.
+                      boolean mayReclaimRelationRows =
+                          authz.allows(princ, "table.write") && authz.allows(princ, "view.write");
 
                       var namespaceId = request.getNamespaceId();
 
@@ -603,7 +612,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       var parentPath =
                           append(namespace.getParentsList(), namespace.getDisplayName());
                       requireNamespaceEmpty(
-                          request, namespace, catalogId, parentPath, correlationId);
+                          request,
+                          namespace,
+                          catalogId,
+                          parentPath,
+                          mayReclaimRelationRows,
+                          correlationId);
 
                       if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
                         if (request.getRecursive()) {
@@ -634,7 +648,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       // of
                       // the fence.
                       requireNamespaceEmpty(
-                          request, namespace, catalogId, parentPath, correlationId);
+                          request,
+                          namespace,
+                          catalogId,
+                          parentPath,
+                          mayReclaimRelationRows,
+                          correlationId);
 
                       if (request.getRecursive()) {
                         // Descendants may already be irreversibly gone, so check the caller's
@@ -761,18 +780,23 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * <p>The relation count is over by-name index rows, but only a live relation can be deleted. A
    * row whose relation is already gone — what a corrupt-blob delete leaves behind — would otherwise
    * make a namespace holding nothing report NOT_EMPTY forever, with no delete path able to clear
-   * it, so those rows are reconciled once before the answer is trusted.
+   * it, so those rows are reconciled once before the answer is trusted — but only when {@code
+   * mayReclaimRelationRows} says the caller holds the relation write grants that reconcile spends.
    */
   private void requireNamespaceEmpty(
       DeleteNamespaceRequest request,
       Namespace namespace,
       ResourceId catalogId,
       List<String> parentPath,
+      boolean mayReclaimRelationRows,
       String correlationId) {
     String accountId = catalogId.getAccountId();
     String namespaceId = namespace.getResourceId().getId();
 
     if (hasRelations(accountId, catalogId.getId(), namespaceId)) {
+      if (!mayReclaimRelationRows) {
+        throw notEmpty(request, namespace, correlationId, "relations");
+      }
       recursiveDropper.reclaimStrandedRelationNames(namespace);
       if (hasRelations(accountId, catalogId.getId(), namespaceId)) {
         throw notEmpty(request, namespace, correlationId, "relations");

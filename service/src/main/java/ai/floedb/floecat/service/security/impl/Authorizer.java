@@ -24,10 +24,20 @@ import java.util.List;
 @ApplicationScoped
 public class Authorizer {
   public void require(PrincipalContext principalContext, String permission) {
-    if (principalContext.getPermissionsList().contains(permission)) {
+    if (allows(principalContext, permission)) {
       return;
     }
     throw denied(principalContext, "missing permission: " + permission);
+  }
+
+  /**
+   * Whether the principal holds {@code permission}, without denying the call. For an operation
+   * whose required grants are already checked and which can additionally do something optional
+   * under a further grant — housekeeping it is free to skip — rather than for deciding access to
+   * the operation itself, which belongs in {@link #require}.
+   */
+  public boolean allows(PrincipalContext principalContext, String permission) {
+    return principalContext.getPermissionsList().contains(permission);
   }
 
   public void require(PrincipalContext principalContext, List<String> permissions) {
