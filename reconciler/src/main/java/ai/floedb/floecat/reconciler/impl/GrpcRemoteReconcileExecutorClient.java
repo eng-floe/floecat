@@ -2162,10 +2162,23 @@ class GrpcRemoteReconcileExecutorClient
             .setPartitionDataJson(plan.partitionDataJson())
             .setFileFormat(plan.fileFormat())
             .setPartitionSpecId(plan.partitionSpecId())
+            .setContentIdentity(plan.contentIdentity())
+            .setSourceFingerprint(plan.sourceFingerprint())
+            .setIndexSourceFingerprint(plan.indexSourceFingerprint())
+            .setStatsCaptureSignature(plan.statsCaptureSignature())
+            .setIndexCaptureSignature(plan.indexCaptureSignature())
+            .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
+            .addAllReusableAuxiliaryStats(plan.reusableAuxiliaryStats())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(GrpcRemoteReconcileExecutorClient::toProtoIcebergDeleteFile)
                     .toList());
+    if (plan.reusesFileStats()) {
+      builder.setReusableFileStats(plan.reusableFileStats());
+    }
+    if (plan.reusesIndexArtifact()) {
+      builder.setReusableIndexArtifact(plan.reusableIndexArtifact());
+    }
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
       var dvBuilder =
@@ -2198,6 +2211,7 @@ class GrpcRemoteReconcileExecutorClient
             })
         .setPartitionSpecId(deleteFile.partitionSpecId())
         .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .setContentIdentity(deleteFile.contentIdentity())
         .build();
   }
 
@@ -2212,7 +2226,7 @@ class GrpcRemoteReconcileExecutorClient
                 plan.getDeletionVector().getSizeInBytes(),
                 plan.getDeletionVector().getCardinality())
             : null;
-    return ReconcileFileExecutionPlan.of(
+    return new ReconcileFileExecutionPlan(
         plan.getFilePath(),
         plan.getFileSizeInBytes(),
         plan.getPartitionDataJson(),
@@ -2221,7 +2235,16 @@ class GrpcRemoteReconcileExecutorClient
         plan.getPartitionSpecId(),
         plan.getIcebergDeleteFilesList().stream()
             .map(GrpcRemoteReconcileExecutorClient::fromProtoIcebergDeleteFile)
-            .toList());
+            .toList(),
+        plan.getContentIdentity(),
+        plan.getSourceFingerprint(),
+        plan.getIndexSourceFingerprint(),
+        plan.getStatsCaptureSignature(),
+        plan.getIndexCaptureSignature(),
+        plan.getAuxiliaryStatsFingerprintsMap(),
+        plan.getReusableFileStats(),
+        plan.getReusableAuxiliaryStatsList(),
+        plan.getReusableIndexArtifact());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
@@ -2237,7 +2260,8 @@ class GrpcRemoteReconcileExecutorClient
         deleteFile.getFileSizeInBytes(),
         content,
         deleteFile.getPartitionSpecId(),
-        deleteFile.getEqualityFieldIdsList());
+        deleteFile.getEqualityFieldIdsList(),
+        deleteFile.getContentIdentity());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(

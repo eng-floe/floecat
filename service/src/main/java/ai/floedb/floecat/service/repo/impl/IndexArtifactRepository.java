@@ -48,9 +48,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
+  private static final String REUSE_SOURCE_FINGERPRINT_PROPERTY =
+      "floedb.reconcile.source-fingerprint-v1";
+  private static final String REUSE_INDEX_SIGNATURE_PROPERTY =
+      "floedb.reconcile.index-signature-v1";
   private static final int MAX_POINTER_BATCH_SIZE = 100;
   private static final String DIRECT_GENERATION = "direct";
   private static final String LIST_TOKEN_PREFIX = "v1.";
@@ -127,15 +132,18 @@ public class IndexArtifactRepository {
                   bytes.length)));
       Optional<String> after = activeGeneration(tableId, value.getSnapshotId());
       if (before.equals(after) && after.isPresent()) {
+        updateArtifactIdentityPointer(value);
         return;
       }
       if (before.isEmpty() && after.isEmpty()) {
         if (activateDirectGenerationIfAbsent(tableId, value.getSnapshotId())) {
+          updateArtifactIdentityPointer(value);
           return;
         }
         after = activeGeneration(tableId, value.getSnapshotId());
       }
       if (after.filter(generationId::equals).isPresent()) {
+        updateArtifactIdentityPointer(value);
         return;
       }
       if (DIRECT_GENERATION.equals(generationId)
@@ -320,6 +328,9 @@ public class IndexArtifactRepository {
 
   public void completePreparedGenerationActivation(
       ResourceId tableId, long snapshotId, PreparedActivation prepared) {
+    activeGeneration(tableId, snapshotId)
+        .ifPresent(
+            generationId -> updateArtifactIdentityPointers(tableId, snapshotId, generationId));
     if (prepared != null && prepared.deleteDirectPredecessor()) {
       deleteDirectGenerationPointers(tableId, snapshotId);
     }
@@ -566,6 +577,150 @@ public class IndexArtifactRepository {
                             generationId,
                             indexArtifactTargetStorageId(target)))
                     .map(this::readRecord));
+  }
+
+  public Optional<IndexArtifactRecord> getReusableIndexArtifact(
+      ResourceId tableId,
+      IndexTarget target,
+      String sourceFingerprint,
+      String indexCaptureSignature) {
+    if (tableId == null
+        || target == null
+        || sourceFingerprint == null
+        || sourceFingerprint.isBlank()
+        || indexCaptureSignature == null
+        || indexCaptureSignature.isBlank()) {
+      return Optional.empty();
+    }
+    String key =
+        artifactIdentityPointerKey(tableId, target, sourceFingerprint, indexCaptureSignature);
+    Pointer pointer = pointerStore.get(key).orElse(null);
+    if (pointer != null && PointerReferences.isOpaqueMarkerPointer(pointer)) {
+      try {
+        Optional<IndexArtifactRecord> indexed =
+            getIndexArtifact(tableId, Long.parseLong(pointer.getBlobUri()), target);
+        if (indexed
+            .filter(
+                record ->
+                    sourceFingerprint.equals(
+                            record.getPropertiesMap().get(REUSE_SOURCE_FINGERPRINT_PROPERTY))
+                        && indexCaptureSignature.equals(
+                            record.getPropertiesMap().get(REUSE_INDEX_SIGNATURE_PROPERTY)))
+            .isPresent()) {
+          return indexed;
+        }
+      } catch (NumberFormatException ignored) {
+      }
+    }
+    Optional<IndexArtifactRecord> migrated =
+        findHistoricalIndexArtifact(
+            tableId,
+            target,
+            record ->
+                sourceFingerprint.equals(
+                        record.getPropertiesMap().get(REUSE_SOURCE_FINGERPRINT_PROPERTY))
+                    && indexCaptureSignature.equals(
+                        record.getPropertiesMap().get(REUSE_INDEX_SIGNATURE_PROPERTY)));
+    migrated.ifPresent(this::updateArtifactIdentityPointer);
+    return migrated;
+  }
+
+  public Optional<IndexArtifactRecord> findHistoricalIndexArtifact(
+      ResourceId tableId, IndexTarget target, Predicate<IndexArtifactRecord> compatibility) {
+    if (tableId == null || target == null || compatibility == null) {
+      return Optional.empty();
+    }
+    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
+    String pageToken = "";
+    do {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 1_000, pageToken, next);
+      for (Pointer pointer : pointers) {
+        String key = pointer.getKey();
+        if (!key.endsWith("/index-artifacts/active-generation")) {
+          continue;
+        }
+        String relative = key.substring(prefix.length());
+        int slash = relative.indexOf('/');
+        if (slash <= 0) {
+          continue;
+        }
+        try {
+          long snapshotId = Long.parseLong(relative.substring(0, slash));
+          Optional<IndexArtifactRecord> candidate = getIndexArtifact(tableId, snapshotId, target);
+          if (candidate.filter(compatibility).isPresent()) {
+            return candidate;
+          }
+        } catch (NumberFormatException ignored) {
+        }
+      }
+      pageToken = next.toString();
+    } while (!pageToken.isBlank());
+    return Optional.empty();
+  }
+
+  private void updateArtifactIdentityPointers(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String prefix =
+        Keys.snapshotIndexArtifactGenerationPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    String pageToken = "";
+    do {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 500, pageToken, next);
+      for (Pointer pointer : pointers) {
+        IndexArtifactRecord record = readRecord(pointer);
+        updateArtifactIdentityPointer(record);
+      }
+      pageToken = next.toString();
+    } while (!pageToken.isBlank());
+  }
+
+  private String artifactIdentityPointerKey(
+      ResourceId tableId,
+      IndexTarget target,
+      String sourceFingerprint,
+      String indexCaptureSignature) {
+    return Keys.indexArtifactIdentityPointer(
+        tableId.getAccountId(),
+        tableId.getId(),
+        indexArtifactTargetStorageId(target),
+        sourceFingerprint,
+        indexCaptureSignature);
+  }
+
+  private void updateArtifactIdentityPointer(IndexArtifactRecord record) {
+    if (record == null || !record.hasTarget()) {
+      return;
+    }
+    String sourceFingerprint =
+        record.getPropertiesMap().getOrDefault(REUSE_SOURCE_FINGERPRINT_PROPERTY, "");
+    String indexCaptureSignature =
+        record.getPropertiesMap().getOrDefault(REUSE_INDEX_SIGNATURE_PROPERTY, "");
+    if (sourceFingerprint.isBlank() || indexCaptureSignature.isBlank()) {
+      return;
+    }
+    String key =
+        artifactIdentityPointerKey(
+            record.getTableId(), record.getTarget(), sourceFingerprint, indexCaptureSignature);
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      Pointer current = pointerStore.get(key).orElse(null);
+      if (current != null
+          && PointerReferences.isOpaqueMarkerPointer(current)
+          && Long.toString(record.getSnapshotId()).equals(current.getBlobUri())) {
+        return;
+      }
+      long expectedVersion = current == null ? 0L : current.getVersion();
+      if (pointerStore.compareAndSet(
+          key,
+          expectedVersion,
+          PointerReferences.opaqueMarkerPointer(
+              key, Long.toString(record.getSnapshotId()), expectedVersion + 1L))) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "index artifact identity pointer conflicted repeatedly");
   }
 
   public List<IndexArtifactRecord> listIndexArtifacts(

@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
@@ -25,7 +26,11 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -60,54 +65,205 @@ public class StandaloneJavaFileGroupExecutionRunner {
     Consumer<TargetStatsRecord> publisher =
         java.util.Objects.requireNonNull(fileStatsPublisher, "fileStatsPublisher");
     List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts = new ArrayList<>();
-    CaptureEngineResult capture =
-        captureEngineRegistry.capture(
-            new CaptureEngineRequest(
-                payload.sourceConnector(),
-                payload.sourceNamespace(),
-                payload.sourceTable(),
-                payload.tableId(),
-                payload.snapshotId(),
-                payload.planId(),
-                payload.groupId(),
-                payload.plannedFilePaths(),
-                payload.statsColumns(),
-                payload.indexColumns(),
-                FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
-                requestedStatsKinds,
-                payload.capturePageIndex(),
-                java.util.Optional.of(payload.storageLocation())
-                    .filter(location -> !location.isBlank()),
-                authorizationHeader,
-                java.util.Optional.of(payload.jobId()),
-                java.util.Optional.of(payload.leaseEpoch()),
-                stop),
-            (fileStats, pageIndexEntries) -> {
-              List<TargetStatsRecord> completedFileStats =
-                  fileStats == null ? List.of() : fileStats;
-              List<ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry>
-                  completedPageIndexEntries =
-                      pageIndexEntries == null ? List.of() : pageIndexEntries;
-              throwIfCancellationRequested(stop);
-              for (TargetStatsRecord fileStat : completedFileStats) {
-                throwIfCancellationRequested(stop);
-                publisher.accept(fileStat);
-              }
-              if (payload.capturePageIndex()) {
-                stagedIndexArtifacts.addAll(
-                    FileGroupIndexArtifactStager.stage(
-                        payload.tableId(),
-                        payload.snapshotId(),
-                        payload.plannedFilePaths(),
-                        completedFileStats,
-                        completedPageIndexEntries));
-              }
-              throwIfCancellationRequested(stop);
-            });
-    throwIfCancellationRequested(stop);
-    stagedIndexArtifacts.addAll(capture.stagedIndexArtifacts());
+    List<TargetStatsRecord> partialAggregates = new ArrayList<>();
+    List<TargetStatsRecord> reusedFileRecords = new ArrayList<>();
+    Set<String> publishedStatsTargets = new HashSet<>();
+    Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
+    Map<String, ReconcileFileExecutionPlan> plansByPath = new LinkedHashMap<>();
+    for (ReconcileFileExecutionPlan plan : payload.fileExecutionPlans()) {
+      plansByPath.put(plan.filePath(), plan);
+      if (plan.reusesFileStats()) {
+        publishReusableStats(
+            plan.reusableFileStats(), publisher, reusedFileRecords, publishedStatsTargets, stop);
+        addEncodedSelectors(
+            realizedStatsSelectors,
+            plan.reusableFileStats()
+                .getPropertiesOrDefault(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, ""));
+      }
+      for (TargetStatsRecord auxiliary : plan.reusableAuxiliaryStats()) {
+        publishReusableStats(auxiliary, publisher, reusedFileRecords, publishedStatsTargets, stop);
+      }
+      if (plan.reusesIndexArtifact()) {
+        stagedIndexArtifacts.add(
+            new ReconcilerBackend.StagedIndexArtifact(
+                plan.reusableIndexArtifact(), null, "application/x-parquet"));
+      }
+    }
+    if (!reusedFileRecords.isEmpty()) {
+      partialAggregates.addAll(
+          FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
+              payload.tableId(), payload.snapshotId(), requestedStatsKinds, reusedFileRecords));
+    }
+
+    for (boolean captureStats : List.of(false, true)) {
+      for (boolean captureIndex : List.of(false, true)) {
+        if (!captureStats && !captureIndex) {
+          continue;
+        }
+        List<String> paths =
+            payload.plannedFilePaths().stream()
+                .filter(
+                    path -> {
+                      ReconcileFileExecutionPlan plan = plansByPath.get(path);
+                      boolean needsStats =
+                          !requestedStatsKinds.isEmpty()
+                              && (plan == null || !plan.reusesFileStats());
+                      boolean needsIndex =
+                          payload.capturePageIndex()
+                              && (plan == null || !plan.reusesIndexArtifact());
+                      return needsStats == captureStats && needsIndex == captureIndex;
+                    })
+                .toList();
+        if (paths.isEmpty()) {
+          continue;
+        }
+        List<TargetStatsRecord> completedStats = new ArrayList<>();
+        List<ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry>
+            completedIndexes = new ArrayList<>();
+        CaptureEngineResult capture =
+            captureEngineRegistry.capture(
+                new CaptureEngineRequest(
+                    payload.sourceConnector(),
+                    payload.sourceNamespace(),
+                    payload.sourceTable(),
+                    payload.tableId(),
+                    payload.snapshotId(),
+                    payload.planId(),
+                    payload.groupId(),
+                    paths,
+                    captureStats ? payload.statsColumns() : Set.of(),
+                    captureIndex ? payload.indexColumns() : Set.of(),
+                    FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
+                    captureStats ? requestedStatsKinds : Set.of(),
+                    captureIndex,
+                    java.util.Optional.of(payload.storageLocation())
+                        .filter(location -> !location.isBlank()),
+                    authorizationHeader,
+                    java.util.Optional.of(payload.jobId()),
+                    java.util.Optional.of(payload.leaseEpoch()),
+                    stop),
+                (fileStats, pageIndexEntries) -> {
+                  List<TargetStatsRecord> completedFileStats =
+                      fileStats == null ? List.of() : fileStats;
+                  List<ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry>
+                      completedPageIndexEntries =
+                          pageIndexEntries == null ? List.of() : pageIndexEntries;
+                  throwIfCancellationRequested(stop);
+                  completedStats.addAll(completedFileStats);
+                  completedIndexes.addAll(completedPageIndexEntries);
+                  throwIfCancellationRequested(stop);
+                });
+        throwIfCancellationRequested(stop);
+        for (TargetStatsRecord record : completedStats) {
+          TargetStatsRecord stamped =
+              stampCapturedStats(record, plansByPath, capture.realizedStatsSelectors());
+          String target =
+              ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(stamped.getTarget());
+          if (publishedStatsTargets.add(target)) {
+            publisher.accept(stamped);
+          }
+        }
+        if (captureIndex) {
+          stagedIndexArtifacts.addAll(
+              stampCapturedIndexes(
+                  FileGroupIndexArtifactStager.stage(
+                      payload.tableId(),
+                      payload.snapshotId(),
+                      paths,
+                      completedStats,
+                      completedIndexes),
+                  plansByPath));
+        }
+        stagedIndexArtifacts.addAll(
+            stampCapturedIndexes(capture.stagedIndexArtifacts(), plansByPath));
+        partialAggregates.addAll(capture.statsRecords());
+        realizedStatsSelectors.addAll(capture.realizedStatsSelectors());
+      }
+    }
+    List<TargetStatsRecord> mergedPartialAggregates =
+        FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            payload.tableId(), payload.snapshotId(), requestedStatsKinds, partialAggregates);
     return CaptureEngineResult.of(
-        capture.statsRecords(), List.of(), stagedIndexArtifacts, capture.realizedStatsSelectors());
+        mergedPartialAggregates,
+        List.of(),
+        stagedIndexArtifacts,
+        List.copyOf(realizedStatsSelectors));
+  }
+
+  private static void publishReusableStats(
+      TargetStatsRecord record,
+      Consumer<TargetStatsRecord> publisher,
+      List<TargetStatsRecord> reused,
+      Set<String> publishedTargets,
+      BooleanSupplier stop) {
+    throwIfCancellationRequested(stop);
+    String target =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(record.getTarget());
+    if (publishedTargets.add(target)) {
+      publisher.accept(record);
+      reused.add(record);
+    }
+  }
+
+  private static TargetStatsRecord stampCapturedStats(
+      TargetStatsRecord record,
+      Map<String, ReconcileFileExecutionPlan> plansByPath,
+      List<String> realizedSelectors) {
+    String filePath = record.hasFile() ? record.getFile().getFilePath() : "";
+    ReconcileFileExecutionPlan owner = plansByPath.get(filePath);
+    String fingerprint = owner == null ? "" : owner.sourceFingerprint();
+    if (owner == null) {
+      for (ReconcileFileExecutionPlan candidate : plansByPath.values()) {
+        String auxiliary = candidate.auxiliaryStatsFingerprints().get(filePath);
+        if (auxiliary != null) {
+          owner = candidate;
+          fingerprint = auxiliary;
+          break;
+        }
+      }
+    }
+    return owner == null
+        ? record
+        : FileArtifactReuse.stampStats(
+            record, fingerprint, owner.statsCaptureSignature(), realizedSelectors);
+  }
+
+  private static List<ReconcilerBackend.StagedIndexArtifact> stampCapturedIndexes(
+      List<ReconcilerBackend.StagedIndexArtifact> artifacts,
+      Map<String, ReconcileFileExecutionPlan> plansByPath) {
+    if (artifacts == null || artifacts.isEmpty()) {
+      return List.of();
+    }
+    List<ReconcilerBackend.StagedIndexArtifact> stamped = new ArrayList<>();
+    for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
+      String path =
+          artifact.record().hasTarget() && artifact.record().getTarget().hasFile()
+              ? artifact.record().getTarget().getFile().getFilePath()
+              : "";
+      ReconcileFileExecutionPlan plan = plansByPath.get(path);
+      stamped.add(
+          plan == null
+              ? artifact
+              : new ReconcilerBackend.StagedIndexArtifact(
+                  FileArtifactReuse.stampIndex(
+                      artifact.record(),
+                      plan.indexSourceFingerprint(),
+                      plan.indexCaptureSignature()),
+                  artifact.content(),
+                  artifact.contentType()));
+    }
+    return List.copyOf(stamped);
+  }
+
+  private static void addEncodedSelectors(Set<String> out, String encoded) {
+    if (encoded == null || encoded.isBlank()) {
+      return;
+    }
+    for (String selector : encoded.split(",")) {
+      if (!selector.isBlank()) {
+        out.add(selector.trim());
+      }
+    }
   }
 
   private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {

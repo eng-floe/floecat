@@ -32,6 +32,10 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -47,6 +51,7 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
@@ -215,6 +220,279 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(
         ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
         payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
+    assertTrue(!payload.fileExecutionPlans().getFirst().sourceFingerprint().isBlank());
+  }
+
+  @Test
+  void resolvePinsCompatiblePriorStatsAndIndexIntoIncrementalFilePlan() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    String schema = "{\"type\":\"struct\",\"fields\":[]}";
+    ReconcileFileExecutionPlan filePlan =
+        ReconcileFileExecutionPlan.of(
+            filePath, 123L, "{}", null, "PARQUET", 3, List.of(), "iceberg-data-v1:7:10");
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of(filePath),
+            List.of(),
+            List.of(),
+            schema,
+            List.of(filePlan));
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            java.util.Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    String sourceFingerprint = FileArtifactReuse.sourceFingerprint(filePlan, schema);
+    String indexSourceFingerprint = FileArtifactReuse.indexSourceFingerprint(filePlan);
+    String statsSignature = FileArtifactReuse.statsCaptureSignature(policy);
+    String indexSignature = FileArtifactReuse.indexCaptureSignature(policy);
+    TargetStatsRecord priorStats =
+        fileStatsRecord(filePath, 10L).toBuilder()
+            .setSnapshotId(SNAPSHOT_ID - 1L)
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, sourceFingerprint)
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, statsSignature)
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1")
+            .build();
+    IndexTarget indexTarget =
+        IndexTarget.newBuilder()
+            .setFile(IndexFileTarget.newBuilder().setFilePath(filePath))
+            .build();
+    IndexArtifactRecord priorIndex =
+        IndexArtifactRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID - 1L)
+            .setTarget(indexTarget)
+            .setArtifactUri("s3://sidecars/prior.parquet")
+            .setState(IndexArtifactState.IAS_READY)
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, indexSourceFingerprint)
+            .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, indexSignature)
+            .putProperties("indexed_columns", "#1")
+            .build();
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    var repositoryPredecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scope)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                            TABLE_ID,
+                            SNAPSHOT_ID,
+                            "db",
+                            "events",
+                            List.of(group),
+                            false,
+                            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                            1)
+                        .withIndexPredecessor(pinned),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
+    when(indexArtifactRepository.loadGenerationInput(
+            tableId(), SNAPSHOT_ID, repositoryPredecessor, List.of(filePath)))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(repositoryPredecessor, List.of()));
+    when(statsStore.getReusableTargetStats(
+            tableId(), StatsTargetIdentity.fileTarget(filePath), sourceFingerprint, statsSignature))
+        .thenReturn(Optional.of(priorStats));
+    when(indexArtifactRepository.getReusableIndexArtifact(
+            tableId(), indexTarget, indexSourceFingerprint, indexSignature))
+        .thenReturn(Optional.of(priorIndex));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    ReconcileFileExecutionPlan resolved = payload.fileExecutionPlans().getFirst();
+    assertEquals(sourceFingerprint, resolved.sourceFingerprint());
+    assertEquals(indexSourceFingerprint, resolved.indexSourceFingerprint());
+    assertEquals(SNAPSHOT_ID, resolved.reusableFileStats().getSnapshotId());
+    assertEquals(SNAPSHOT_ID, resolved.reusableIndexArtifact().getSnapshotId());
+    assertEquals("s3://sidecars/prior.parquet", resolved.reusableIndexArtifact().getArtifactUri());
+  }
+
+  @Test
+  void resolveMigratesLegacyIcebergStatsWithoutSnapshotOrdering() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    String schema = "{\"type\":\"struct\",\"fields\":[]}";
+    ReconcileFileExecutionPlan filePlan =
+        ReconcileFileExecutionPlan.of(
+            filePath, 123L, "{}", null, "PARQUET", 3, List.of(), "iceberg-data-v1:7:10");
+    ReconcileFileGroupTask group = fileGroup(filePath, schema, filePlan);
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    TargetStatsRecord legacy =
+        fileStatsRecord(filePath, 10L).toBuilder()
+            .setSnapshotId(987L)
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath(filePath)
+                    .setRowCount(10L)
+                    .setSizeBytes(123L)
+                    .setSequenceNumber(7L))
+            .build();
+
+    stubFileGroupResolve(group, scope, null);
+    when(statsStore.findHistoricalTargetStats(
+            eq(tableId()), eq(StatsTargetIdentity.fileTarget(filePath)), any()))
+        .thenReturn(Optional.of(legacy));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    ReconcileFileExecutionPlan resolved = payload.fileExecutionPlans().getFirst();
+    assertEquals(SNAPSHOT_ID, resolved.reusableFileStats().getSnapshotId());
+    assertEquals(10L, resolved.reusableFileStats().getFile().getRowCount());
+    assertEquals(
+        resolved.sourceFingerprint(),
+        resolved
+            .reusableFileStats()
+            .getPropertiesMap()
+            .get(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY));
+  }
+
+  @Test
+  void resolveMigratesLegacyDeltaStatsUsingHistoricalLogIdentity() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    String contentIdentity = "delta-add-v1:42::";
+    ReconcileFileExecutionPlan filePlan =
+        ReconcileFileExecutionPlan.of(
+            filePath, 123L, "{}", null, "PARQUET", 3, List.of(), contentIdentity);
+    ReconcileFileGroupTask group = fileGroup(filePath, "{}", filePlan);
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    TargetStatsRecord legacy =
+        fileStatsRecord(filePath, 10L).toBuilder()
+            .setSnapshotId(987L)
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath(filePath)
+                    .setRowCount(10L)
+                    .setSizeBytes(123L))
+            .build();
+
+    stubFileGroupResolve(group, scope, null);
+    when(connectorRepo.getById(connectorId()))
+        .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_DELTA).build()));
+    service.legacyFileIdentityResolverFactory =
+        (resolvedConnector, namespace, tableName, destinationTableId, filePaths) ->
+            new LeasedFileGroupExecutionService.LegacyFileIdentityResolver() {
+              @Override
+              public Optional<String> contentIdentity(long snapshotId, String requestedFilePath) {
+                return snapshotId == 987L && filePath.equals(requestedFilePath)
+                    ? Optional.of(contentIdentity)
+                    : Optional.empty();
+              }
+
+              @Override
+              public void close() {}
+            };
+    when(statsStore.findHistoricalTargetStats(
+            eq(tableId()), eq(StatsTargetIdentity.fileTarget(filePath)), any()))
+        .thenAnswer(
+            invocation -> {
+              java.util.function.Predicate<TargetStatsRecord> compatibility =
+                  invocation.getArgument(2);
+              return compatibility.test(legacy) ? Optional.of(legacy) : Optional.empty();
+            });
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    ReconcileFileExecutionPlan resolved = payload.fileExecutionPlans().getFirst();
+    assertEquals(SNAPSHOT_ID, resolved.reusableFileStats().getSnapshotId());
+    assertEquals(10L, resolved.reusableFileStats().getFile().getRowCount());
+    assertEquals(
+        resolved.sourceFingerprint(),
+        resolved
+            .reusableFileStats()
+            .getPropertiesOrThrow(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY));
+  }
+
+  @Test
+  void resolveMigratesLegacyIndexForIndexOnlyPolicyUsingHistoricalStatsIdentity() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    String schema = "{\"type\":\"struct\",\"fields\":[]}";
+    ReconcileFileExecutionPlan filePlan =
+        ReconcileFileExecutionPlan.of(
+            filePath, 123L, "{}", null, "PARQUET", 3, List.of(), "iceberg-data-v1:7:10");
+    ReconcileFileGroupTask group = fileGroup(filePath, schema, filePlan);
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+            java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    TargetStatsRecord legacyStats =
+        fileStatsRecord(filePath, 10L).toBuilder()
+            .setSnapshotId(987L)
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath(filePath)
+                    .setRowCount(10L)
+                    .setSizeBytes(123L)
+                    .setSequenceNumber(7L))
+            .build();
+    IndexTarget target =
+        IndexTarget.newBuilder()
+            .setFile(IndexFileTarget.newBuilder().setFilePath(filePath))
+            .build();
+    IndexArtifactRecord legacyIndex =
+        IndexArtifactRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(987L)
+            .setTarget(target)
+            .setArtifactUri("s3://sidecars/legacy.parquet")
+            .setState(IndexArtifactState.IAS_READY)
+            .putProperties("indexed_columns", "#1")
+            .build();
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+
+    stubFileGroupResolve(group, scope, pinned);
+    when(statsStore.findHistoricalTargetStats(
+            eq(tableId()), eq(StatsTargetIdentity.fileTarget(filePath)), any()))
+        .thenReturn(Optional.of(legacyStats));
+    when(indexArtifactRepository.getIndexArtifact(tableId(), 987L, target))
+        .thenReturn(Optional.of(legacyIndex));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    ReconcileFileExecutionPlan resolved = payload.fileExecutionPlans().getFirst();
+    assertEquals(TargetStatsRecord.getDefaultInstance(), resolved.reusableFileStats());
+    assertEquals(SNAPSHOT_ID, resolved.reusableIndexArtifact().getSnapshotId());
+    assertEquals("s3://sidecars/legacy.parquet", resolved.reusableIndexArtifact().getArtifactUri());
   }
 
   @Test
@@ -1412,6 +1690,75 @@ class LeasedFileGroupExecutionServiceTest {
             StatsTarget.newBuilder().setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
         .setFile(FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(rowCount))
         .build();
+  }
+
+  private static ReconcileFileGroupTask fileGroup(
+      String filePath, String schema, ReconcileFileExecutionPlan filePlan) {
+    return ReconcileFileGroupTask.of(
+        "plan-1",
+        "group-1",
+        TABLE_ID,
+        SNAPSHOT_ID,
+        1,
+        "",
+        0,
+        List.of(filePath),
+        List.of(),
+        List.of(),
+        schema,
+        List.of(filePlan));
+  }
+
+  private void stubFileGroupResolve(
+      ReconcileFileGroupTask group,
+      ReconcileScope scope,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinned) {
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scope)));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(group),
+            false,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
+    if (pinned != null) {
+      snapshotTask = snapshotTask.withIndexPredecessor(pinned);
+      var predecessor =
+          new IndexArtifactRepository.GenerationPredecessor(
+              pinned.generationId(),
+              pinned.activePointerVersion(),
+              pinned.captureManifestUri(),
+              pinned.captureManifestPointerVersion());
+      when(indexArtifactRepository.loadGenerationInput(
+              tableId(), SNAPSHOT_ID, predecessor, group.filePaths()))
+          .thenReturn(new IndexArtifactRepository.GenerationInput(predecessor, List.of()));
+    }
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
   }
 
   private static ResourceId tableId() {

@@ -584,35 +584,22 @@ public final class Keys {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets-active";
   }
 
-  /**
-   * Pointer key for the latest snapshot that has committed stats for a table.
-   *
-   * <p>Updated whenever a new stats generation is first created; enables O(1) stale lookups without
-   * scanning all snapshot manifest pointers.
-   */
-  public static String tableStatsLatestSnapshotPointer(String accountId, String tableId) {
+  public static String targetStatsArtifactIdentityPointer(
+      String accountId,
+      String tableId,
+      String targetStorageId,
+      String sourceFingerprint,
+      String statsCaptureSignature) {
     return "/accounts/"
         + encode(req("account_id", accountId))
         + "/tables/"
         + encode(req("table_id", tableId))
-        + "/stats/latest-snapshot";
-  }
-
-  /**
-   * Pointer key for the latest snapshot that has committed stats for a specific target (column).
-   *
-   * <p>Set on every write of a per-target stats record; enables O(1) per-column stale lookups for
-   * targets absent from the table-level latest snapshot (partial snapshots, new columns).
-   */
-  public static String targetStatsLatestSnapshotPointer(
-      String accountId, String tableId, String storageId) {
-    return "/accounts/"
-        + encode(req("account_id", accountId))
-        + "/tables/"
-        + encode(req("table_id", tableId))
-        + "/stats/targets/"
-        + encode(req("storage_id", storageId))
-        + "/latest-snapshot";
+        + "/target-stats/artifact-identities/"
+        + encode(req("target_storage_id", targetStorageId))
+        + "/"
+        + encode(req("source_fingerprint", sourceFingerprint))
+        + "/"
+        + encode(req("stats_capture_signature", statsCaptureSignature));
   }
 
   public static String snapshotTargetStatsGenerationRootPointer(
@@ -765,6 +752,24 @@ public final class Keys {
         encode(req("account_id", accountId)),
         encode(req("table_id", tableId)),
         reqNonNegative("snapshot_id", snapshotId));
+  }
+
+  public static String indexArtifactIdentityPointer(
+      String accountId,
+      String tableId,
+      String targetStorageId,
+      String sourceFingerprint,
+      String indexCaptureSignature) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/"
+        + encode(req("table_id", tableId))
+        + "/index-artifacts/artifact-identities/"
+        + encode(req("target_storage_id", targetStorageId))
+        + "/"
+        + encode(req("source_fingerprint", sourceFingerprint))
+        + "/"
+        + encode(req("index_capture_signature", indexCaptureSignature));
   }
 
   public static String snapshotIndexArtifactActiveGenerationPointer(

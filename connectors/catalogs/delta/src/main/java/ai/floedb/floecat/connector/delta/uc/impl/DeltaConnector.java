@@ -467,6 +467,39 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
+  public Map<String, String> snapshotFileContentIdentities(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> filePaths) {
+    if (snapshotId < 0 || filePaths == null || filePaths.isEmpty()) {
+      return Map.of();
+    }
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    try (var planner =
+        new DeltaPlanner(
+            engine,
+            parquetInput,
+            storageLocation,
+            snapshotId,
+            Set.of(),
+            filePaths,
+            null,
+            null,
+            false,
+            true)) {
+      LinkedHashMap<String, String> identities = new LinkedHashMap<>();
+      for (PlannedFile<String> planned : planner) {
+        if (!planned.contentIdentity().isBlank()) {
+          identities.put(planned.path(), planned.contentIdentity());
+        }
+      }
+      return Map.copyOf(identities);
+    }
+  }
+
+  @Override
   public void close() {}
 
   @Override
@@ -528,7 +561,9 @@ abstract class DeltaConnector implements FloecatConnector {
                 deletionVector.getPathOrInlineDv(),
                 deletionVector.getOffset().orElse(null),
                 deletionVector.getSizeInBytes(),
-                deletionVector.getCardinality()));
+                deletionVector.getCardinality()),
+        List.of(),
+        planned.contentIdentity());
   }
 
   protected Table loadTable(String storageLocation) {

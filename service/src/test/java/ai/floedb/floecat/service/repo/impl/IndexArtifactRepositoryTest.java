@@ -133,6 +133,8 @@ class IndexArtifactRepositoryTest {
             .setArtifactFormatVersion(1)
             .setState(IndexArtifactState.IAS_READY)
             .putProperties("indexed_columns", "customer_id")
+            .putProperties("floedb.reconcile.source-fingerprint-v1", "source-identity")
+            .putProperties("floedb.reconcile.index-signature-v1", "index-policy")
             .build();
     byte[] wrapper = record.toByteArray();
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(wrapper));
@@ -170,6 +172,15 @@ class IndexArtifactRepositoryTest {
         .get()
         .extracting(IndexArtifactRecord::getArtifactUri)
         .isEqualTo("https://external.example/custom/index.parquet");
+    assertThat(
+            repository.getReusableIndexArtifact(
+                TABLE_ID, target, "source-identity", "index-policy"))
+        .get()
+        .extracting(IndexArtifactRecord::getArtifactUri)
+        .isEqualTo("https://external.example/custom/index.parquet");
+    assertThat(
+            repository.getReusableIndexArtifact(TABLE_ID, target, "other-source", "index-policy"))
+        .isEmpty();
     assertThat(
             pointers
                 .get(

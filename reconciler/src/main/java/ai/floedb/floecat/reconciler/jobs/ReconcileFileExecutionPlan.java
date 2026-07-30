@@ -10,6 +10,11 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import java.util.List;
+import java.util.Map;
+
 public record ReconcileFileExecutionPlan(
     String filePath,
     long fileSizeInBytes,
@@ -17,17 +22,65 @@ public record ReconcileFileExecutionPlan(
     DeltaDeletionVector deletionVector,
     String fileFormat,
     int partitionSpecId,
-    java.util.List<IcebergDeleteFile> icebergDeleteFiles) {
+    List<IcebergDeleteFile> icebergDeleteFiles,
+    String contentIdentity,
+    String sourceFingerprint,
+    String indexSourceFingerprint,
+    String statsCaptureSignature,
+    String indexCaptureSignature,
+    Map<String, String> auxiliaryStatsFingerprints,
+    TargetStatsRecord reusableFileStats,
+    List<TargetStatsRecord> reusableAuxiliaryStats,
+    IndexArtifactRecord reusableIndexArtifact) {
 
   public ReconcileFileExecutionPlan {
     filePath = filePath == null ? "" : filePath.trim();
     fileSizeInBytes = Math.max(0L, fileSizeInBytes);
     partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
     fileFormat = fileFormat == null ? "" : fileFormat.trim();
-    icebergDeleteFiles =
-        icebergDeleteFiles == null
-            ? java.util.List.of()
-            : java.util.List.copyOf(icebergDeleteFiles);
+    icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
+    contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+    sourceFingerprint = sourceFingerprint == null ? "" : sourceFingerprint.trim();
+    indexSourceFingerprint = indexSourceFingerprint == null ? "" : indexSourceFingerprint.trim();
+    statsCaptureSignature = statsCaptureSignature == null ? "" : statsCaptureSignature.trim();
+    indexCaptureSignature = indexCaptureSignature == null ? "" : indexCaptureSignature.trim();
+    auxiliaryStatsFingerprints =
+        auxiliaryStatsFingerprints == null ? Map.of() : Map.copyOf(auxiliaryStatsFingerprints);
+    reusableFileStats =
+        reusableFileStats == null ? TargetStatsRecord.getDefaultInstance() : reusableFileStats;
+    reusableAuxiliaryStats =
+        reusableAuxiliaryStats == null ? List.of() : List.copyOf(reusableAuxiliaryStats);
+    reusableIndexArtifact =
+        reusableIndexArtifact == null
+            ? IndexArtifactRecord.getDefaultInstance()
+            : reusableIndexArtifact;
+  }
+
+  public ReconcileFileExecutionPlan(
+      String filePath,
+      long fileSizeInBytes,
+      String partitionDataJson,
+      DeltaDeletionVector deletionVector,
+      String fileFormat,
+      int partitionSpecId,
+      List<IcebergDeleteFile> icebergDeleteFiles) {
+    this(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        "",
+        "",
+        "",
+        "",
+        "",
+        Map.of(),
+        TargetStatsRecord.getDefaultInstance(),
+        List.of(),
+        IndexArtifactRecord.getDefaultInstance());
   }
 
   public static ReconcileFileExecutionPlan of(
@@ -36,7 +89,7 @@ public record ReconcileFileExecutionPlan(
       String partitionDataJson,
       DeltaDeletionVector deletionVector) {
     return new ReconcileFileExecutionPlan(
-        filePath, fileSizeInBytes, partitionDataJson, deletionVector, "", 0, java.util.List.of());
+        filePath, fileSizeInBytes, partitionDataJson, deletionVector, "", 0, List.of());
   }
 
   public static ReconcileFileExecutionPlan of(
@@ -55,6 +108,72 @@ public record ReconcileFileExecutionPlan(
         fileFormat,
         partitionSpecId,
         icebergDeleteFiles);
+  }
+
+  public static ReconcileFileExecutionPlan of(
+      String filePath,
+      long fileSizeInBytes,
+      String partitionDataJson,
+      DeltaDeletionVector deletionVector,
+      String fileFormat,
+      int partitionSpecId,
+      java.util.List<IcebergDeleteFile> icebergDeleteFiles,
+      String contentIdentity) {
+    return new ReconcileFileExecutionPlan(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        contentIdentity,
+        "",
+        "",
+        "",
+        "",
+        Map.of(),
+        TargetStatsRecord.getDefaultInstance(),
+        List.of(),
+        IndexArtifactRecord.getDefaultInstance());
+  }
+
+  public ReconcileFileExecutionPlan withReuse(
+      String sourceFingerprint,
+      String indexSourceFingerprint,
+      String statsCaptureSignature,
+      String indexCaptureSignature,
+      Map<String, String> auxiliaryStatsFingerprints,
+      TargetStatsRecord reusableFileStats,
+      List<TargetStatsRecord> reusableAuxiliaryStats,
+      IndexArtifactRecord reusableIndexArtifact) {
+    return new ReconcileFileExecutionPlan(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        contentIdentity,
+        sourceFingerprint,
+        indexSourceFingerprint,
+        statsCaptureSignature,
+        indexCaptureSignature,
+        auxiliaryStatsFingerprints,
+        reusableFileStats,
+        reusableAuxiliaryStats,
+        reusableIndexArtifact);
+  }
+
+  public boolean reusesFileStats() {
+    return reusableFileStats != null
+        && !reusableFileStats.equals(TargetStatsRecord.getDefaultInstance());
+  }
+
+  public boolean reusesIndexArtifact() {
+    return reusableIndexArtifact != null
+        && !reusableIndexArtifact.equals(IndexArtifactRecord.getDefaultInstance());
   }
 
   public record DeltaDeletionVector(
@@ -80,13 +199,24 @@ public record ReconcileFileExecutionPlan(
       long fileSizeInBytes,
       IcebergDeleteContent content,
       int partitionSpecId,
-      java.util.List<Integer> equalityFieldIds) {
+      java.util.List<Integer> equalityFieldIds,
+      String contentIdentity) {
+    public IcebergDeleteFile(
+        String filePath,
+        long fileSizeInBytes,
+        IcebergDeleteContent content,
+        int partitionSpecId,
+        java.util.List<Integer> equalityFieldIds) {
+      this(filePath, fileSizeInBytes, content, partitionSpecId, equalityFieldIds, "");
+    }
+
     public IcebergDeleteFile {
       filePath = filePath == null ? "" : filePath.trim();
       fileSizeInBytes = Math.max(0L, fileSizeInBytes);
       content = content == null ? IcebergDeleteContent.UNSPECIFIED : content;
       equalityFieldIds =
           equalityFieldIds == null ? java.util.List.of() : java.util.List.copyOf(equalityFieldIds);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
     }
   }
 

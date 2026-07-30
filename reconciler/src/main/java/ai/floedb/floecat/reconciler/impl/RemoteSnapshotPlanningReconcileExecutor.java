@@ -702,7 +702,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         file.partitionSpecId(),
         file.icebergDeleteFiles().stream()
             .map(RemoteSnapshotPlanningReconcileExecutor::icebergDeleteFile)
-            .toList());
+            .toList(),
+        file.contentIdentity());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile icebergDeleteFile(
@@ -718,7 +719,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         deleteFile.fileSizeInBytes(),
         content,
         deleteFile.partitionSpecId(),
-        deleteFile.equalityFieldIds());
+        deleteFile.equalityFieldIds(),
+        deleteFile.contentIdentity());
   }
 
   private ReconcileContext reconcileContext(ReconcileJobStore.LeasedJob lease) {

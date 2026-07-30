@@ -1442,10 +1442,23 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setPartitionDataJson(plan.partitionDataJson())
             .setFileFormat(plan.fileFormat())
             .setPartitionSpecId(plan.partitionSpecId())
+            .setContentIdentity(plan.contentIdentity())
+            .setSourceFingerprint(plan.sourceFingerprint())
+            .setIndexSourceFingerprint(plan.indexSourceFingerprint())
+            .setStatsCaptureSignature(plan.statsCaptureSignature())
+            .setIndexCaptureSignature(plan.indexCaptureSignature())
+            .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
+            .addAllReusableAuxiliaryStats(plan.reusableAuxiliaryStats())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(ReconcileExecutorControlImpl::toProtoIcebergDeleteFile)
                     .toList());
+    if (plan.reusesFileStats()) {
+      builder.setReusableFileStats(plan.reusableFileStats());
+    }
+    if (plan.reusesIndexArtifact()) {
+      builder.setReusableIndexArtifact(plan.reusableIndexArtifact());
+    }
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
       var dvBuilder =
@@ -1478,6 +1491,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             })
         .setPartitionSpecId(deleteFile.partitionSpecId())
         .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .setContentIdentity(deleteFile.contentIdentity())
         .build();
   }
 
@@ -1492,7 +1506,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 plan.getDeletionVector().getSizeInBytes(),
                 plan.getDeletionVector().getCardinality())
             : null;
-    return ReconcileFileExecutionPlan.of(
+    return new ReconcileFileExecutionPlan(
         plan.getFilePath(),
         plan.getFileSizeInBytes(),
         plan.getPartitionDataJson(),
@@ -1501,7 +1515,16 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         plan.getPartitionSpecId(),
         plan.getIcebergDeleteFilesList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoIcebergDeleteFile)
-            .toList());
+            .toList(),
+        plan.getContentIdentity(),
+        plan.getSourceFingerprint(),
+        plan.getIndexSourceFingerprint(),
+        plan.getStatsCaptureSignature(),
+        plan.getIndexCaptureSignature(),
+        plan.getAuxiliaryStatsFingerprintsMap(),
+        plan.getReusableFileStats(),
+        plan.getReusableAuxiliaryStatsList(),
+        plan.getReusableIndexArtifact());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
@@ -1517,7 +1540,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         deleteFile.getFileSizeInBytes(),
         content,
         deleteFile.getPartitionSpecId(),
-        deleteFile.getEqualityFieldIdsList());
+        deleteFile.getEqualityFieldIdsList(),
+        deleteFile.getContentIdentity());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.CaptureMode toProtoCaptureMode(

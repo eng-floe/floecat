@@ -329,7 +329,7 @@ public class SnapshotPlanBlobStore {
     public int fileCount = 0;
     public List<String> filePaths = List.of();
     public String executionSchemaJson = "";
-    public List<ReconcileFileExecutionPlan> fileExecutionPlans = List.of();
+    public List<StoredFileExecutionPlan> fileExecutionPlans = List.of();
 
     static StoredFileGroupTask from(ReconcileFileGroupTask task) {
       StoredFileGroupTask stored = new StoredFileGroupTask();
@@ -341,7 +341,8 @@ public class SnapshotPlanBlobStore {
       stored.fileCount = effective.fileCount();
       stored.filePaths = effective.filePaths();
       stored.executionSchemaJson = effective.executionSchemaJson();
-      stored.fileExecutionPlans = effective.fileExecutionPlans();
+      stored.fileExecutionPlans =
+          effective.fileExecutionPlans().stream().map(StoredFileExecutionPlan::from).toList();
       return stored;
     }
 
@@ -362,7 +363,116 @@ public class SnapshotPlanBlobStore {
           List.of(),
           List.of(),
           executionSchemaJson,
-          fileExecutionPlans);
+          fileExecutionPlans == null
+              ? List.of()
+              : fileExecutionPlans.stream().map(StoredFileExecutionPlan::toPlan).toList());
+    }
+  }
+
+  static final class StoredFileExecutionPlan {
+    public String filePath = "";
+    public long fileSizeInBytes = 0L;
+    public String partitionDataJson = "";
+    public StoredDeltaDeletionVector deletionVector;
+    public String fileFormat = "";
+    public int partitionSpecId = 0;
+    public List<StoredIcebergDeleteFile> icebergDeleteFiles = List.of();
+    public String contentIdentity = "";
+
+    static StoredFileExecutionPlan from(ReconcileFileExecutionPlan plan) {
+      ReconcileFileExecutionPlan effective =
+          plan == null ? ReconcileFileExecutionPlan.of("", 0L, "", null) : plan;
+      StoredFileExecutionPlan stored = new StoredFileExecutionPlan();
+      stored.filePath = effective.filePath();
+      stored.fileSizeInBytes = effective.fileSizeInBytes();
+      stored.partitionDataJson = effective.partitionDataJson();
+      stored.deletionVector = StoredDeltaDeletionVector.from(effective.deletionVector());
+      stored.fileFormat = effective.fileFormat();
+      stored.partitionSpecId = effective.partitionSpecId();
+      stored.icebergDeleteFiles =
+          effective.icebergDeleteFiles().stream().map(StoredIcebergDeleteFile::from).toList();
+      stored.contentIdentity = effective.contentIdentity();
+      return stored;
+    }
+
+    ReconcileFileExecutionPlan toPlan() {
+      return ReconcileFileExecutionPlan.of(
+          filePath,
+          fileSizeInBytes,
+          partitionDataJson,
+          deletionVector == null ? null : deletionVector.toDeletionVector(),
+          fileFormat,
+          partitionSpecId,
+          icebergDeleteFiles == null
+              ? List.of()
+              : icebergDeleteFiles.stream().map(StoredIcebergDeleteFile::toDeleteFile).toList(),
+          contentIdentity);
+    }
+  }
+
+  static final class StoredDeltaDeletionVector {
+    public String storageType = "";
+    public String pathOrInlineDv = "";
+    public Integer offset;
+    public int sizeInBytes = 0;
+    public long cardinality = 0L;
+
+    static StoredDeltaDeletionVector from(
+        ReconcileFileExecutionPlan.DeltaDeletionVector deletionVector) {
+      if (deletionVector == null) {
+        return null;
+      }
+      StoredDeltaDeletionVector stored = new StoredDeltaDeletionVector();
+      stored.storageType = deletionVector.storageType();
+      stored.pathOrInlineDv = deletionVector.pathOrInlineDv();
+      stored.offset = deletionVector.offset();
+      stored.sizeInBytes = deletionVector.sizeInBytes();
+      stored.cardinality = deletionVector.cardinality();
+      return stored;
+    }
+
+    ReconcileFileExecutionPlan.DeltaDeletionVector toDeletionVector() {
+      return new ReconcileFileExecutionPlan.DeltaDeletionVector(
+          storageType, pathOrInlineDv, offset, sizeInBytes, cardinality);
+    }
+  }
+
+  static final class StoredIcebergDeleteFile {
+    public String filePath = "";
+    public long fileSizeInBytes = 0L;
+    public String content = ReconcileFileExecutionPlan.IcebergDeleteContent.UNSPECIFIED.name();
+    public int partitionSpecId = 0;
+    public List<Integer> equalityFieldIds = List.of();
+    public String contentIdentity = "";
+
+    static StoredIcebergDeleteFile from(ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile) {
+      StoredIcebergDeleteFile stored = new StoredIcebergDeleteFile();
+      if (deleteFile == null) {
+        return stored;
+      }
+      stored.filePath = deleteFile.filePath();
+      stored.fileSizeInBytes = deleteFile.fileSizeInBytes();
+      stored.content = deleteFile.content().name();
+      stored.partitionSpecId = deleteFile.partitionSpecId();
+      stored.equalityFieldIds = deleteFile.equalityFieldIds();
+      stored.contentIdentity = deleteFile.contentIdentity();
+      return stored;
+    }
+
+    ReconcileFileExecutionPlan.IcebergDeleteFile toDeleteFile() {
+      ReconcileFileExecutionPlan.IcebergDeleteContent parsedContent;
+      try {
+        parsedContent = ReconcileFileExecutionPlan.IcebergDeleteContent.valueOf(content);
+      } catch (IllegalArgumentException | NullPointerException ignored) {
+        parsedContent = ReconcileFileExecutionPlan.IcebergDeleteContent.UNSPECIFIED;
+      }
+      return new ReconcileFileExecutionPlan.IcebergDeleteFile(
+          filePath,
+          fileSizeInBytes,
+          parsedContent,
+          partitionSpecId,
+          equalityFieldIds,
+          contentIdentity);
     }
   }
 

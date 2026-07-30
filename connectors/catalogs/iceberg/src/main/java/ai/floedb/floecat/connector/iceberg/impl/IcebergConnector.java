@@ -1096,7 +1096,8 @@ public abstract class IcebergConnector implements FloecatConnector {
         List.of(),
         planned.sequenceNumber(),
         null,
-        deleteFiles.stream().map(IcebergConnector::toSnapshotIcebergDeleteFile).toList());
+        deleteFiles.stream().map(IcebergConnector::toSnapshotIcebergDeleteFile).toList(),
+        planned.contentIdentity());
   }
 
   private static FloecatConnector.SnapshotIcebergDeleteFile toSnapshotIcebergDeleteFile(
@@ -1106,7 +1107,11 @@ public abstract class IcebergConnector implements FloecatConnector {
         deleteFile.fileSizeInBytes(),
         mapDeleteContent(deleteFile.content()),
         deleteFile.partitionSpecId(),
-        deleteFile.equalityFieldIds());
+        deleteFile.equalityFieldIds(),
+        "iceberg-delete-v1:"
+            + (deleteFile.fileSequenceNumber() == null ? "" : deleteFile.fileSequenceNumber())
+            + ":"
+            + deleteFile.recordCount());
   }
 
   private static FileContent mapDeleteContent(org.apache.iceberg.FileContent content) {

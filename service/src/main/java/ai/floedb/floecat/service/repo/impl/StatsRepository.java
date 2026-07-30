@@ -56,10 +56,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
+  private static final String REUSE_SOURCE_FINGERPRINT_PROPERTY =
+      "floedb.reconcile.source-fingerprint-v1";
+  private static final String REUSE_STATS_SIGNATURE_PROPERTY =
+      "floedb.reconcile.stats-signature-v1";
   private static final int MAX_POINTER_BATCH_SIZE = 100;
   private static final String GENERATION_WRITING = "WRITING";
   private static final String GENERATION_PUBLISHING = "PUBLISHING";
@@ -158,8 +163,7 @@ public class StatsRepository implements StatsStore {
         pointerKey(canonicalRecord, active.generationId()),
         blobUri(canonicalRecord, active.generationId()),
         canonicalRecord);
-    updateTargetLatestSnapshotIfNewer(
-        canonicalRecord.getTableId(), canonicalRecord.getSnapshotId(), canonicalRecord.getTarget());
+    updateArtifactIdentityPointer(canonicalRecord);
   }
 
   @Override
@@ -186,8 +190,7 @@ public class StatsRepository implements StatsStore {
     }
     targetStatsStorage.createBatch(writes);
     for (TargetStatsRecord record : canonicalRecords) {
-      updateTargetLatestSnapshotIfNewer(
-          record.getTableId(), record.getSnapshotId(), record.getTarget());
+      updateArtifactIdentityPointer(record);
     }
   }
 
@@ -235,14 +238,6 @@ public class StatsRepository implements StatsStore {
         prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, references);
     ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
     targetStatsStorage.overwriteReferencesBatch(writes);
-    updateTargetLatestSnapshotsIfNewer(
-        tableId,
-        snapshotId,
-        (references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references)
-            .stream()
-                .filter(java.util.Objects::nonNull)
-                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
-                .toList());
   }
 
   @Override
@@ -390,15 +385,6 @@ public class StatsRepository implements StatsStore {
           "published target stats generation is no longer active: " + effectiveGenerationId);
     }
     publishActiveGenerationPointer(tableId, snapshotId, effectiveGenerationId, current);
-    updateTargetLatestSnapshotsIfNewer(
-        tableId,
-        snapshotId,
-        (references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references)
-            .stream()
-                .filter(java.util.Objects::nonNull)
-                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
-                .toList());
-    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
     markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
   }
 
@@ -453,17 +439,6 @@ public class StatsRepository implements StatsStore {
                 publicationFence))) {
       return false;
     }
-    updateTargetLatestSnapshotsIfNewer(
-        tableId,
-        snapshotId,
-        (finalReferences == null
-                ? List.<StatsStore.PrewrittenTargetStatsReference>of()
-                : finalReferences)
-            .stream()
-                .filter(java.util.Objects::nonNull)
-                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
-                .toList());
-    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
     markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
     return true;
   }
@@ -626,11 +601,6 @@ public class StatsRepository implements StatsStore {
     }
     targetStatsStorage.overwriteBatch(writes);
     publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
-    for (TargetStatsRecord record :
-        listAllInGeneration(tableId, snapshotId, effectiveGenerationId)) {
-      updateTargetLatestSnapshotIfNewer(tableId, snapshotId, record.getTarget());
-    }
-    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
   }
 
   @Override
@@ -682,10 +652,7 @@ public class StatsRepository implements StatsStore {
             blobUri(canonicalRecord, active.generationId()),
             canonicalRecord);
     if (created) {
-      updateTargetLatestSnapshotIfNewer(
-          canonicalRecord.getTableId(),
-          canonicalRecord.getSnapshotId(),
-          canonicalRecord.getTarget());
+      updateArtifactIdentityPointer(canonicalRecord);
     }
     return created;
   }
@@ -714,8 +681,7 @@ public class StatsRepository implements StatsStore {
     }
     List<TargetStatsRecord> created = targetStatsStorage.createBatchIfAbsent(writes);
     for (TargetStatsRecord record : created) {
-      updateTargetLatestSnapshotIfNewer(
-          record.getTableId(), record.getSnapshotId(), record.getTarget());
+      updateArtifactIdentityPointer(record);
     }
     return created;
   }
@@ -851,322 +817,60 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
-  public Optional<TargetStatsRecord> getStaleTargetStats(
-      ResourceId tableId, long snapshotId, StatsTarget target) {
-    // Per-target pointer: O(1), most precise — set on every write for this column.
-    OptionalLong targetLatest = findLatestTargetSnapshotId(tableId, snapshotId, target);
-    if (targetLatest.isPresent()) {
-      Optional<TargetStatsRecord> record =
-          getTargetStats(tableId, targetLatest.getAsLong(), target);
-      if (record.isPresent()) {
-        return record;
-      }
-      // Pointer present but record deleted — fall through.
+  public Optional<TargetStatsRecord> getReusableTargetStats(
+      ResourceId tableId,
+      StatsTarget target,
+      String sourceFingerprint,
+      String statsCaptureSignature) {
+    if (tableId == null
+        || target == null
+        || sourceFingerprint == null
+        || sourceFingerprint.isBlank()
+        || statsCaptureSignature == null
+        || statsCaptureSignature.isBlank()) {
+      return Optional.empty();
     }
-    // Table-level pointer: O(1), covers columns where per-target pointer not yet written (legacy).
-    OptionalLong staleId = findLatestStatsSnapshotId(tableId, snapshotId);
-    if (staleId.isPresent()) {
-      Optional<TargetStatsRecord> record = getTargetStats(tableId, staleId.getAsLong(), target);
-      if (record.isPresent()) {
-        return record;
+    String key =
+        artifactIdentityPointerKey(tableId, target, sourceFingerprint, statsCaptureSignature);
+    Pointer pointer = pointerStore.get(key).orElse(null);
+    if (pointer != null && PointerReferences.isOpaqueMarkerPointer(pointer)) {
+      try {
+        long snapshotId = Long.parseLong(pointer.getBlobUri());
+        Optional<TargetStatsRecord> indexed = getTargetStats(tableId, snapshotId, target);
+        if (indexed
+            .filter(
+                record ->
+                    sourceFingerprint.equals(
+                            record.getPropertiesMap().get(REUSE_SOURCE_FINGERPRINT_PROPERTY))
+                        && statsCaptureSignature.equals(
+                            record.getPropertiesMap().get(REUSE_STATS_SIGNATURE_PROPERTY)))
+            .isPresent()) {
+          return indexed;
+        }
+      } catch (NumberFormatException ignored) {
       }
     }
-    // Legacy fallback: prefix scan for data written before either pointer index existed.
-    return staleTargetStatsViaScan(tableId, snapshotId, target);
+    Optional<TargetStatsRecord> migrated =
+        findHistoricalTargetStats(
+            tableId,
+            target,
+            record ->
+                sourceFingerprint.equals(
+                        record.getPropertiesMap().get(REUSE_SOURCE_FINGERPRINT_PROPERTY))
+                    && statsCaptureSignature.equals(
+                        record.getPropertiesMap().get(REUSE_STATS_SIGNATURE_PROPERTY)));
+    migrated.ifPresent(this::updateArtifactIdentityPointer);
+    return migrated;
   }
 
-  /**
-   * Batch stale lookup. Resolves each target the same way {@link #getStaleTargetStats} does — the
-   * per-target pointer first (most precise/newest), then the table-level pointer, then a legacy
-   * prefix scan — so the batch and single paths can never disagree on which snapshot serves a
-   * target. (They previously could: {@code replaceAllStatsForSnapshot} advances per-target pointers
-   * but not the table-level pointer, so a table-level-first batch could return staler stats than a
-   * per-target-first single lookup.) The per-target pointer reads run in parallel (bounded by
-   * {@link #MAX_PARALLEL_READS}, mirroring {@link #getTargetStatsBatch}) and targets are grouped by
-   * resolved snapshot so records are still fetched in batches.
-   */
   @Override
-  public Map<String, Optional<TargetStatsRecord>> getStaleTargetStatsBatch(
-      ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
-    if (targets == null || targets.isEmpty()) {
-      return Map.of();
+  public Optional<TargetStatsRecord> findHistoricalTargetStats(
+      ResourceId tableId, StatsTarget target, Predicate<TargetStatsRecord> compatibility) {
+    if (tableId == null || target == null || compatibility == null) {
+      return Optional.empty();
     }
-
-    OptionalLong tableLevel = findLatestStatsSnapshotId(tableId, snapshotId);
-
-    // Resolve each target's per-target pointer in parallel — each is a pointer + blob read, and
-    // this cold-cache path would otherwise do 2N sequential round-trips.
-    ConcurrentHashMap<String, OptionalLong> perTargetSnapshot =
-        new ConcurrentHashMap<>(targets.size());
-    var semaphore = new Semaphore(Math.min(targets.size(), MAX_PARALLEL_READS));
-    try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
-      var futures =
-          targets.stream()
-              .map(
-                  target ->
-                      CompletableFuture.runAsync(
-                          () -> {
-                            semaphore.acquireUninterruptibly();
-                            try {
-                              perTargetSnapshot.put(
-                                  StatsTargetIdentity.storageId(target),
-                                  findLatestTargetSnapshotId(tableId, snapshotId, target));
-                            } finally {
-                              semaphore.release();
-                            }
-                          },
-                          exec))
-              .toList();
-      awaitAll(futures);
-    }
-
-    // Group by resolved snapshot (per-target pointer first, else table-level), preserving order.
-    Map<Long, List<StatsTarget>> bySnapshot = new LinkedHashMap<>();
-    List<StatsTarget> needScan = new ArrayList<>();
-    for (StatsTarget target : targets) {
-      OptionalLong resolved =
-          perTargetSnapshot.getOrDefault(
-              StatsTargetIdentity.storageId(target), OptionalLong.empty());
-      if (resolved.isEmpty()) {
-        resolved = tableLevel; // per-target pointer not written (legacy) — fall back.
-      }
-      if (resolved.isPresent()) {
-        bySnapshot.computeIfAbsent(resolved.getAsLong(), k -> new ArrayList<>()).add(target);
-      } else {
-        needScan.add(target);
-      }
-    }
-
-    Map<String, Optional<TargetStatsRecord>> found = new LinkedHashMap<>(targets.size());
-    List<StatsTarget> retryTableLevel = new ArrayList<>();
-    for (var group : bySnapshot.entrySet()) {
-      long groupSnapshot = group.getKey();
-      Map<String, Optional<TargetStatsRecord>> fetched =
-          getTargetStatsBatch(tableId, groupSnapshot, group.getValue());
-      for (StatsTarget target : group.getValue()) {
-        String key = StatsTargetIdentity.storageId(target);
-        Optional<TargetStatsRecord> record = fetched.getOrDefault(key, Optional.empty());
-        if (record.isPresent()) {
-          found.put(key, record);
-        } else if (tableLevel.isPresent() && tableLevel.getAsLong() != groupSnapshot) {
-          // Per-target pointer resolved but the record was deleted — retry the table-level snapshot
-          // (matching single getStaleTargetStats) before falling to a scan.
-          retryTableLevel.add(target);
-        } else {
-          needScan.add(target);
-        }
-      }
-    }
-    if (!retryTableLevel.isEmpty()) {
-      Map<String, Optional<TargetStatsRecord>> fetched =
-          getTargetStatsBatch(tableId, tableLevel.getAsLong(), retryTableLevel);
-      for (StatsTarget target : retryTableLevel) {
-        String key = StatsTargetIdentity.storageId(target);
-        Optional<TargetStatsRecord> record = fetched.getOrDefault(key, Optional.empty());
-        if (record.isPresent()) {
-          found.put(key, record);
-        } else {
-          needScan.add(target);
-        }
-      }
-    }
-    for (StatsTarget target : needScan) {
-      found.put(
-          StatsTargetIdentity.storageId(target),
-          staleTargetStatsViaScan(tableId, snapshotId, target));
-    }
-
-    // Re-order results to match request order for deterministic output.
-    Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
-    for (StatsTarget target : targets) {
-      String key = StatsTargetIdentity.storageId(target);
-      out.put(key, found.getOrDefault(key, Optional.empty()));
-    }
-    return Collections.unmodifiableMap(out);
-  }
-
-  /**
-   * O(1) lookup: reads the table-level latest-snapshot pointer and returns its snapshotId when it
-   * is ≤ the requested snapshotId. Returns empty when the index has not been written yet
-   * (pre-existing data) or when the indexed snapshot is newer than the request.
-   */
-  private OptionalLong findLatestStatsSnapshotId(ResourceId tableId, long maxSnapshotId) {
-    return readLatestSnapshotPointer(
-        Keys.tableStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId()),
-        maxSnapshotId);
-  }
-
-  /**
-   * O(1) read of a latest-snapshot pointer: returns its snapshotId when ≤ {@code maxSnapshotId}, or
-   * empty when the pointer is absent (pre-index data), unreadable, or newer than the request.
-   */
-  private OptionalLong readLatestSnapshotPointer(String pointerKey, long maxSnapshotId) {
-    Optional<Pointer> ptr = pointerStore.get(pointerKey);
-    if (ptr.isEmpty()) {
-      return OptionalLong.empty();
-    }
-    OptionalLong latestId = latestSnapshotId(ptr.get());
-    return latestId.isPresent() && latestId.getAsLong() <= maxSnapshotId
-        ? latestId
-        : OptionalLong.empty();
-  }
-
-  /**
-   * Advances the table-level latest-snapshot pointer to {@code snapshotId} when it is newer than
-   * the current value. Retries the read-CAS loop until either the pointer is already at a {@code >=
-   * snapshotId} (another writer advanced it) or our CAS succeeds. Without the retry a
-   * higher-snapshotId writer can lose CAS to a lower-snapshotId writer and leave the pointer stale.
-   */
-  private void updateLatestStatsSnapshotIfNewer(ResourceId tableId, long snapshotId) {
-    advanceLatestSnapshotPointer(
-        Keys.tableStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId()), snapshotId);
-  }
-
-  /**
-   * Advances a latest-snapshot pointer to {@code snapshotId} when it is newer than the current
-   * value. Retries the read-CAS loop until the pointer is already at {@code >= snapshotId} (another
-   * writer advanced it) or our CAS succeeds. Without the retry a higher-snapshotId writer can lose
-   * CAS to a lower-snapshotId writer and leave the pointer stale.
-   */
-  private void advanceLatestSnapshotPointer(String pointerKey, long snapshotId) {
-    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
-      Optional<Pointer> existing = pointerStore.get(pointerKey);
-      long currentId = existing.flatMap(StatsRepository::latestSnapshotIdBoxed).orElse(0L);
-      if (snapshotId <= currentId) {
-        return; // Pointer already at a >= snapshotId — nothing to do.
-      }
-      long expectedVersion = existing.map(Pointer::getVersion).orElse(0L);
-      Pointer next =
-          PointerReferences.opaqueMarkerPointer(
-              pointerKey, Long.toString(snapshotId), expectedVersion + 1L);
-      if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
-        return; // CAS succeeded — pointer advanced.
-      }
-      // CAS lost to a concurrent writer. Re-read: if they advanced to >= snapshotId we're done;
-      // if they advanced to < snapshotId we retry to ensure our higher value eventually wins.
-    }
-    // Bounded like the other CAS loops (BaseResourceRepository.CAS_MAX): surface sustained
-    // contention as a retryable abort rather than spinning forever.
-    throw new BaseResourceRepository.AbortRetryableException(
-        "exhausted CAS attempts advancing latest-snapshot pointer " + pointerKey);
-  }
-
-  /**
-   * Advances the per-target latest-snapshot pointer to {@code snapshotId} when it is newer than the
-   * current value. Same CAS-retry loop as {@link #updateLatestStatsSnapshotIfNewer} but keyed per
-   * column, enabling O(1) stale lookups for targets absent from the table-level snapshot.
-   */
-  private void updateTargetLatestSnapshotIfNewer(
-      ResourceId tableId, long snapshotId, StatsTarget target) {
-    updateTargetLatestSnapshotIfNewer(tableId, snapshotId, StatsTargetIdentity.storageId(target));
-  }
-
-  private void updateTargetLatestSnapshotIfNewer(
-      ResourceId tableId, long snapshotId, String storageId) {
-    advanceLatestSnapshotPointer(
-        Keys.targetStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId(), storageId),
-        snapshotId);
-  }
-
-  private record LatestSnapshotState(Pointer pointer, long snapshotId) {}
-
-  private void updateTargetLatestSnapshotsIfNewer(
-      ResourceId tableId, long snapshotId, List<String> storageIds) {
-    if (storageIds == null || storageIds.isEmpty()) {
-      return;
-    }
-    List<String> uniqueStorageIds = new ArrayList<>(new java.util.LinkedHashSet<>(storageIds));
-    for (int from = 0; from < uniqueStorageIds.size(); from += MAX_POINTER_BATCH_SIZE) {
-      updateTargetLatestSnapshotChunk(
-          tableId,
-          snapshotId,
-          uniqueStorageIds.subList(
-              from, Math.min(from + MAX_POINTER_BATCH_SIZE, uniqueStorageIds.size())));
-    }
-  }
-
-  private void updateTargetLatestSnapshotChunk(
-      ResourceId tableId, long snapshotId, List<String> storageIds) {
-    Map<String, String> pointerKeys = new LinkedHashMap<>(storageIds.size());
-    for (String storageId : storageIds) {
-      pointerKeys.put(
-          storageId,
-          Keys.targetStatsLatestSnapshotPointer(
-              tableId.getAccountId(), tableId.getId(), storageId));
-    }
-    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
-      Map<String, LatestSnapshotState> states = new LinkedHashMap<>(storageIds.size());
-      Map<String, Pointer> pointers = pointerStore.getBatch(List.copyOf(pointerKeys.values()));
-      for (String storageId : storageIds) {
-        Pointer pointer = pointers.get(pointerKeys.get(storageId));
-        long currentSnapshotId = latestSnapshotIdBoxed(pointer).orElse(0L);
-        states.put(storageId, new LatestSnapshotState(pointer, currentSnapshotId));
-      }
-
-      List<String> pending =
-          storageIds.stream()
-              .filter(storageId -> states.get(storageId).snapshotId() < snapshotId)
-              .toList();
-      if (pending.isEmpty()) {
-        return;
-      }
-
-      List<PointerStore.CasOp> ops = new ArrayList<>(pending.size());
-      for (String storageId : pending) {
-        LatestSnapshotState state = states.get(storageId);
-        String pointerKey = pointerKeys.get(storageId);
-        long expectedVersion = state.pointer() == null ? 0L : state.pointer().getVersion();
-        ops.add(
-            new PointerStore.CasUpsert(
-                pointerKey,
-                expectedVersion,
-                PointerReferences.opaqueMarkerPointer(
-                    pointerKey, Long.toString(snapshotId), expectedVersion + 1L)));
-      }
-      if (pointerStore.compareAndSetBatch(ops)) {
-        return;
-      }
-    }
-    throw new BaseResourceRepository.AbortRetryableException(
-        "exhausted CAS attempts advancing latest-snapshot pointer batch for table "
-            + tableId.getId());
-  }
-
-  private static OptionalLong latestSnapshotId(Pointer pointer) {
-    if (!PointerReferences.isOpaqueMarkerPointer(pointer)) {
-      return OptionalLong.empty();
-    }
-    try {
-      long snapshotId = Long.parseLong(pointer.getBlobUri());
-      return snapshotId >= 0L ? OptionalLong.of(snapshotId) : OptionalLong.empty();
-    } catch (NumberFormatException ignored) {
-      return OptionalLong.empty();
-    }
-  }
-
-  private static Optional<Long> latestSnapshotIdBoxed(Pointer pointer) {
-    OptionalLong snapshotId = latestSnapshotId(pointer);
-    return snapshotId.isPresent() ? Optional.of(snapshotId.getAsLong()) : Optional.empty();
-  }
-
-  /**
-   * O(1) lookup: reads the per-target latest-snapshot pointer and returns its snapshotId when it is
-   * ≤ the requested snapshotId. Returns empty when no pointer exists (pre-existing data) or when
-   * the indexed snapshot is newer than the request.
-   */
-  private OptionalLong findLatestTargetSnapshotId(
-      ResourceId tableId, long maxSnapshotId, StatsTarget target) {
-    String storageId = StatsTargetIdentity.storageId(target);
-    return readLatestSnapshotPointer(
-        Keys.targetStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId(), storageId),
-        maxSnapshotId);
-  }
-
-  /** Full prefix scan fallback for tables written before the latest-snapshot index existed. */
-  private Optional<TargetStatsRecord> staleTargetStatsViaScan(
-      ResourceId tableId, long snapshotId, StatsTarget target) {
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
-    List<Long> candidateSnapshotIds = new ArrayList<>();
+    java.util.LinkedHashSet<Long> snapshotIds = new java.util.LinkedHashSet<>();
     String pageToken = "";
     do {
       StringBuilder nextToken = new StringBuilder();
@@ -1174,21 +878,64 @@ public class StatsRepository implements StatsStore {
           pointerStore.listPointersByPrefix(prefix, 1_000, pageToken, nextToken);
       for (Pointer pointer : pointers) {
         OptionalLong candidate = parseSnapshotIdFromStatsManifestPointer(prefix, pointer.getKey());
-        if (candidate.isPresent() && candidate.getAsLong() <= snapshotId) {
-          candidateSnapshotIds.add(candidate.getAsLong());
-        }
+        candidate.ifPresent(snapshotIds::add);
       }
       pageToken = nextToken.toString();
     } while (!pageToken.isBlank());
-
-    candidateSnapshotIds.sort(Comparator.reverseOrder());
-    for (long candidateSnapshotId : candidateSnapshotIds) {
-      Optional<TargetStatsRecord> record = getTargetStats(tableId, candidateSnapshotId, target);
-      if (record.isPresent()) {
-        return record;
+    for (long snapshotId : snapshotIds) {
+      Optional<TargetStatsRecord> candidate = getTargetStats(tableId, snapshotId, target);
+      if (candidate.filter(compatibility).isPresent()) {
+        return candidate;
       }
     }
     return Optional.empty();
+  }
+
+  private String artifactIdentityPointerKey(
+      ResourceId tableId,
+      StatsTarget target,
+      String sourceFingerprint,
+      String statsCaptureSignature) {
+    return Keys.targetStatsArtifactIdentityPointer(
+        tableId.getAccountId(),
+        tableId.getId(),
+        StatsTargetIdentity.storageId(target),
+        sourceFingerprint,
+        statsCaptureSignature);
+  }
+
+  private void updateArtifactIdentityPointer(TargetStatsRecord record) {
+    if (record == null || !record.hasTarget() || !record.getTarget().hasFile()) {
+      return;
+    }
+    String sourceFingerprint =
+        record.getPropertiesMap().getOrDefault(REUSE_SOURCE_FINGERPRINT_PROPERTY, "");
+    String statsCaptureSignature =
+        record.getPropertiesMap().getOrDefault(REUSE_STATS_SIGNATURE_PROPERTY, "");
+    if (sourceFingerprint.isBlank() || statsCaptureSignature.isBlank()) {
+      return;
+    }
+    String key =
+        artifactIdentityPointerKey(
+            record.getTableId(), record.getTarget(), sourceFingerprint, statsCaptureSignature);
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      Pointer current = pointerStore.get(key).orElse(null);
+      if (current != null
+          && PointerReferences.isOpaqueMarkerPointer(current)
+          && Long.toString(record.getSnapshotId()).equals(current.getBlobUri())) {
+        return;
+      }
+      long expectedVersion = current == null ? 0L : current.getVersion();
+      if (pointerStore.compareAndSet(
+          key,
+          expectedVersion,
+          PointerReferences.opaqueMarkerPointer(
+              key, Long.toString(record.getSnapshotId()), expectedVersion + 1L))) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "target stats artifact identity pointer conflicted repeatedly");
   }
 
   @Override
@@ -1353,7 +1100,6 @@ public class StatsRepository implements StatsStore {
       for (TargetStatsRecord record : canonicalRecords) {
         targetStatsStorage.create(
             pointerKey(record, generationId), blobUri(record, generationId), record);
-        updateTargetLatestSnapshotIfNewer(tableId, snapshotId, record.getTarget());
       }
       publishActiveGeneration(tableId, snapshotId, generationId, current);
     } catch (RuntimeException e) {
@@ -1834,9 +1580,6 @@ public class StatsRepository implements StatsStore {
   private ActiveSnapshotStats ensureActiveGeneration(ResourceId tableId, long snapshotId) {
     Optional<ActiveSnapshotStats> existing = activeGenerationLive(tableId, snapshotId);
     if (existing.isPresent()) {
-      // Generation already exists — advance the latest-snapshot index in case this snapshot
-      // is newer than what the index currently records (covers first write after a CAS race).
-      updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
       return existing.get();
     }
 
@@ -1850,7 +1593,6 @@ public class StatsRepository implements StatsStore {
     targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
     Pointer created = PointerReferences.blobPointer(manifestPointer, manifestBlobUri, 1L);
     if (pointerStore.compareAndSet(manifestPointer, 0L, created)) {
-      updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
       return new ActiveSnapshotStats(
           tableId.getAccountId(),
           tableId.getId(),
@@ -1866,7 +1608,6 @@ public class StatsRepository implements StatsStore {
                 () ->
                     new BaseResourceRepository.AbortRetryableException(
                         "active target stats generation vanished during create"));
-    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
     return resolved;
   }
 

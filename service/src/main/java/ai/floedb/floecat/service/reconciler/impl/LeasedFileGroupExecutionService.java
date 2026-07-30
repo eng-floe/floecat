@@ -19,7 +19,11 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CONNECTOR;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -32,7 +36,10 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
@@ -65,9 +72,11 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
@@ -79,6 +88,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject IdempotencyRepository idempotencyStore;
+  LegacyFileIdentityResolverFactory legacyFileIdentityResolverFactory =
+      LeasedFileGroupExecutionService::openLegacyFileIdentityResolver;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -110,6 +121,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
     Connector resolvedConnector = resolvedConnectorPayload(connector, table);
+    String sourceNamespace = String.join(".", table.getUpstream().getNamespacePathList());
+    String sourceTable = table.getUpstream().getTableDisplayName();
     ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
     IndexArtifactRepository.GenerationInput capturedIndexInput =
         capturePolicy.requestsIndexes()
@@ -121,13 +134,36 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             ? new IndexArtifactRepository.GenerationInput(
                 capturedIndexInput.predecessor(), List.of())
             : capturedIndexInput;
+    LegacyFileIdentityResolver legacyIdentityResolver =
+        lease.fullRescan
+            ? LegacyFileIdentityResolver.NONE
+            : legacyFileIdentityResolverFactory.open(
+                resolvedConnector,
+                sourceNamespace,
+                sourceTable,
+                tableId,
+                Set.copyOf(plannedTask.filePaths()));
+    List<ReconcileFileExecutionPlan> executionPlans;
+    try {
+      executionPlans =
+          enrichExecutionPlans(
+              tableId,
+              plannedTask.snapshotId(),
+              plannedTask.executionSchemaJson(),
+              plannedTask.fileExecutionPlans(),
+              capturePolicy,
+              lease.fullRescan,
+              legacyIdentityResolver);
+    } finally {
+      legacyIdentityResolver.close();
+    }
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
         lease.parentJobId,
         resolvedConnector,
-        String.join(".", table.getUpstream().getNamespacePathList()),
-        table.getUpstream().getTableDisplayName(),
+        sourceNamespace,
+        sourceTable,
         resolvePayloadStorageLocation(table),
         tableId,
         plannedTask.snapshotId(),
@@ -144,7 +180,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             lease.leaseEpoch),
         plannedTask.filePaths(),
         plannedTask.executionSchemaJson(),
-        plannedTask.fileExecutionPlans(),
+        executionPlans,
         capturePolicy,
         new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
             indexInput.predecessor().generationId(),
@@ -152,6 +188,282 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             indexInput.predecessor().captureManifestUri(),
             indexInput.predecessor().captureManifestPointerVersion()),
         indexInput.artifacts());
+  }
+
+  private List<ReconcileFileExecutionPlan> enrichExecutionPlans(
+      ResourceId tableId,
+      long snapshotId,
+      String executionSchemaJson,
+      List<ReconcileFileExecutionPlan> plans,
+      ReconcileCapturePolicy capturePolicy,
+      boolean fullRescan,
+      LegacyFileIdentityResolver legacyIdentityResolver) {
+    String statsSignature = FileArtifactReuse.statsCaptureSignature(capturePolicy);
+    String indexSignature = FileArtifactReuse.indexCaptureSignature(capturePolicy);
+    boolean requestsStats =
+        !FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(capturePolicy).isEmpty();
+    boolean requestsIndexes = capturePolicy.requestsIndexes();
+    List<ReconcileFileExecutionPlan> enriched = new ArrayList<>();
+    for (ReconcileFileExecutionPlan plan :
+        plans == null ? List.<ReconcileFileExecutionPlan>of() : plans) {
+      String sourceFingerprint = FileArtifactReuse.sourceFingerprint(plan, executionSchemaJson);
+      String indexSourceFingerprint = FileArtifactReuse.indexSourceFingerprint(plan);
+      Map<String, String> auxiliaryFingerprints =
+          FileArtifactReuse.auxiliaryStatsFingerprints(plan);
+      TargetStatsRecord reusableStats = TargetStatsRecord.getDefaultInstance();
+      List<TargetStatsRecord> reusableAuxiliaryStats = List.of();
+      IndexArtifactRecord reusableIndex = IndexArtifactRecord.getDefaultInstance();
+      boolean hasContentIdentity = !plan.contentIdentity().isBlank();
+      TargetStatsRecord priorStats = null;
+      boolean migratedLegacyStats = false;
+      if (!fullRescan && hasContentIdentity && snapshotId >= 0L && requestsStats) {
+        priorStats =
+            statsStore
+                .getReusableTargetStats(
+                    tableId,
+                    StatsTargetIdentity.fileTarget(plan.filePath()),
+                    sourceFingerprint,
+                    statsSignature)
+                .orElse(null);
+        if (priorStats == null && legacyStatsPolicyCompatible(capturePolicy)) {
+          priorStats =
+              statsStore
+                  .findHistoricalTargetStats(
+                      tableId,
+                      StatsTargetIdentity.fileTarget(plan.filePath()),
+                      candidate ->
+                          legacyStatsCompatible(
+                              candidate, plan, capturePolicy, legacyIdentityResolver))
+                  .orElse(null);
+          migratedLegacyStats = priorStats != null;
+        }
+        if (FileArtifactReuse.compatibleStats(
+                priorStats, plan.filePath(), sourceFingerprint, statsSignature)
+            || migratedLegacyStats) {
+          reusableStats =
+              FileArtifactReuse.bindStatsToSnapshot(
+                  priorStats, tableId, snapshotId, sourceFingerprint, statsSignature);
+          if (migratedLegacyStats) {
+            reusableStats =
+                FileArtifactReuse.stampStats(
+                    reusableStats,
+                    sourceFingerprint,
+                    statsSignature,
+                    priorStats.getFile().getColumnsList().stream()
+                        .map(column -> "#" + column.getColumnId())
+                        .toList());
+          }
+        }
+        ArrayList<TargetStatsRecord> auxiliary = new ArrayList<>();
+        for (Map.Entry<String, String> entry : auxiliaryFingerprints.entrySet()) {
+          TargetStatsRecord priorAuxiliary =
+              statsStore
+                  .getReusableTargetStats(
+                      tableId,
+                      StatsTargetIdentity.fileTarget(entry.getKey()),
+                      entry.getValue(),
+                      statsSignature)
+                  .orElse(null);
+          auxiliary.add(
+              FileArtifactReuse.compatibleStats(
+                      priorAuxiliary, entry.getKey(), entry.getValue(), statsSignature)
+                  ? FileArtifactReuse.bindStatsToSnapshot(
+                      priorAuxiliary, tableId, snapshotId, entry.getValue(), statsSignature)
+                  : FileArtifactReuse.auxiliaryStatsRecord(
+                      plan, entry.getKey(), tableId, snapshotId, entry.getValue(), statsSignature));
+        }
+        reusableAuxiliaryStats = List.copyOf(auxiliary);
+      }
+      if (!fullRescan
+          && hasContentIdentity
+          && snapshotId >= 0L
+          && requestsIndexes
+          && priorStats == null) {
+        priorStats =
+            statsStore
+                .findHistoricalTargetStats(
+                    tableId,
+                    StatsTargetIdentity.fileTarget(plan.filePath()),
+                    candidate ->
+                        legacySourceIdentityCompatible(candidate, plan, legacyIdentityResolver))
+                .orElse(null);
+      }
+      if (!fullRescan && hasContentIdentity && snapshotId >= 0L && requestsIndexes) {
+        IndexTarget target =
+            IndexTarget.newBuilder()
+                .setFile(IndexFileTarget.newBuilder().setFilePath(plan.filePath()))
+                .build();
+        IndexArtifactRecord prior =
+            indexArtifactRepository
+                .getReusableIndexArtifact(tableId, target, indexSourceFingerprint, indexSignature)
+                .orElse(null);
+        if (prior == null && priorStats != null && legacyIndexPolicyCompatible(capturePolicy)) {
+          prior =
+              indexArtifactRepository
+                  .getIndexArtifact(tableId, priorStats.getSnapshotId(), target)
+                  .filter(candidate -> legacyIndexCompatible(candidate, plan, capturePolicy))
+                  .orElse(null);
+        }
+        if (FileArtifactReuse.compatibleIndex(
+                prior, plan.filePath(), indexSourceFingerprint, indexSignature)
+            || (priorStats != null && legacyIndexCompatible(prior, plan, capturePolicy))) {
+          reusableIndex =
+              FileArtifactReuse.bindIndexToSnapshot(
+                  prior, tableId, snapshotId, indexSourceFingerprint, indexSignature);
+        }
+      }
+      enriched.add(
+          plan.withReuse(
+              sourceFingerprint,
+              indexSourceFingerprint,
+              statsSignature,
+              indexSignature,
+              auxiliaryFingerprints,
+              reusableStats,
+              reusableAuxiliaryStats,
+              reusableIndex));
+    }
+    return List.copyOf(enriched);
+  }
+
+  private static boolean legacyStatsPolicyCompatible(ReconcileCapturePolicy policy) {
+    ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
+    if (!effective.properties().isEmpty()) {
+      return false;
+    }
+    if (!effective.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      return true;
+    }
+    Set<String> selectors = effective.selectorsForStats();
+    return !selectors.isEmpty()
+        && selectors.stream().allMatch(selector -> selector.startsWith("#"));
+  }
+
+  private static boolean legacyStatsCompatible(
+      TargetStatsRecord record,
+      ReconcileFileExecutionPlan plan,
+      ReconcileCapturePolicy policy,
+      LegacyFileIdentityResolver legacyIdentityResolver) {
+    if (!legacySourceIdentityCompatible(record, plan, legacyIdentityResolver)) {
+      return false;
+    }
+    Set<String> selectors = policy.selectorsForStats();
+    if (selectors.isEmpty()) {
+      return true;
+    }
+    Set<String> present =
+        record.getFile().getColumnsList().stream()
+            .map(column -> "#" + column.getColumnId())
+            .collect(java.util.stream.Collectors.toSet());
+    return present.containsAll(selectors);
+  }
+
+  private static boolean legacySourceIdentityCompatible(
+      TargetStatsRecord record,
+      ReconcileFileExecutionPlan plan,
+      LegacyFileIdentityResolver legacyIdentityResolver) {
+    if (FileArtifactReuse.legacyCompatibleIcebergStats(record, plan)) {
+      return true;
+    }
+    if (record == null || !plan.contentIdentity().startsWith("delta-add-v1:")) {
+      return false;
+    }
+    String historicalIdentity =
+        legacyIdentityResolver.contentIdentity(record.getSnapshotId(), plan.filePath()).orElse("");
+    return FileArtifactReuse.legacyCompatibleDeltaStats(record, plan, historicalIdentity);
+  }
+
+  private static boolean legacyIndexPolicyCompatible(ReconcileCapturePolicy policy) {
+    ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
+    return effective.properties().isEmpty() && !effective.selectorsForIndex().isEmpty();
+  }
+
+  private static boolean legacyIndexCompatible(
+      IndexArtifactRecord record, ReconcileFileExecutionPlan plan, ReconcileCapturePolicy policy) {
+    if (record == null
+        || !record.hasTarget()
+        || !record.getTarget().hasFile()
+        || !plan.filePath().equals(record.getTarget().getFile().getFilePath())
+        || record.getState() != ai.floedb.floecat.catalog.rpc.IndexArtifactState.IAS_READY
+        || record.getArtifactUri().isBlank()) {
+      return false;
+    }
+    Set<String> indexed =
+        java.util.Arrays.stream(record.getPropertiesOrDefault("indexed_columns", "").split(","))
+            .map(String::trim)
+            .filter(selector -> !selector.isBlank())
+            .collect(java.util.stream.Collectors.toSet());
+    return indexed.containsAll(policy.selectorsForIndex());
+  }
+
+  @FunctionalInterface
+  interface LegacyFileIdentityResolverFactory {
+    LegacyFileIdentityResolver open(
+        Connector connector,
+        String namespace,
+        String table,
+        ResourceId tableId,
+        Set<String> filePaths);
+  }
+
+  interface LegacyFileIdentityResolver {
+    LegacyFileIdentityResolver NONE =
+        new LegacyFileIdentityResolver() {
+          @Override
+          public java.util.Optional<String> contentIdentity(long snapshotId, String filePath) {
+            return java.util.Optional.empty();
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    java.util.Optional<String> contentIdentity(long snapshotId, String filePath);
+
+    void close();
+  }
+
+  private static LegacyFileIdentityResolver openLegacyFileIdentityResolver(
+      Connector connector,
+      String namespace,
+      String table,
+      ResourceId tableId,
+      Set<String> filePaths) {
+    if (connector == null || connector.getKind() != ConnectorKind.CK_DELTA) {
+      return LegacyFileIdentityResolver.NONE;
+    }
+    try {
+      FloecatConnector source = ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector));
+      Map<Long, Map<String, String>> bySnapshot = new HashMap<>();
+      return new LegacyFileIdentityResolver() {
+        @Override
+        public java.util.Optional<String> contentIdentity(long snapshotId, String filePath) {
+          Map<String, String> identities =
+              bySnapshot.computeIfAbsent(
+                  snapshotId,
+                  id -> {
+                    try {
+                      return source.snapshotFileContentIdentities(
+                          namespace, table, tableId, id, filePaths);
+                    } catch (RuntimeException ignored) {
+                      return Map.of();
+                    }
+                  });
+          return java.util.Optional.ofNullable(identities.get(filePath))
+              .filter(identity -> !identity.isBlank());
+        }
+
+        @Override
+        public void close() {
+          try {
+            source.close();
+          } catch (Exception ignored) {
+          }
+        }
+      };
+    } catch (RuntimeException ignored) {
+      return LegacyFileIdentityResolver.NONE;
+    }
   }
 
   private IndexArtifactRepository.GenerationInput pinnedIndexInput(

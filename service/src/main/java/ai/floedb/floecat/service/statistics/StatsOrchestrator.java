@@ -226,50 +226,39 @@ public class StatsOrchestrator {
     return StatsResolutionResult.skipped(skipReason);
   }
 
-  /** Returns the newest available stats at or before the requested snapshot, if any. */
-  public Optional<TargetStatsRecord> resolveStale(StatsCaptureRequest request) {
-    return statsStore.getStaleTargetStats(
-        request.tableId(), request.snapshotId(), request.target());
-  }
-
   /**
-   * Planner-optimised batch resolution with <em>stale-before-sync</em> ordering.
+   * Planner-optimised batch resolution.
    *
    * <p>For each request:
    *
    * <ol>
    *   <li>Batch read all targets from the store in a single call (eliminates N×1 store round-trips
    *       from the old per-target resolve loop).
-   *   <li>Stale fallback for misses — if {@code staleOk}, check the stale store <em>before</em>
-   *       attempting sync capture. This lets the planner use existing (possibly older) stats rather
-   *       than blocking on a sync capture that may timeout.
    *   <li>Sync capture for targets still missing, per-target, while {@code deadlineNanos} allows.
    *   <li>Async enqueue for remaining misses.
    * </ol>
    *
    * @param requests one request per target, all for the same table/snapshot
-   * @param staleOk whether to return stats from a prior snapshot when exact stats are absent
    * @param deadlineNanos absolute deadline (from {@link System#nanoTime()}) for sync captures
    * @return map from {@code StatsTargetIdentity.storageId} to resolution result, in request order
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatch(
-      java.util.List<StatsCaptureRequest> requests, boolean staleOk, long deadlineNanos) {
-    return resolvePlannerBatchInGeneration(requests, Optional.empty(), staleOk, deadlineNanos);
+      java.util.List<StatsCaptureRequest> requests, long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(requests, Optional.empty(), deadlineNanos);
   }
 
   /**
    * Planner batch resolution that honors the query's pinned stats generation, with presence-only
    * completeness: a target that exists in the pinned generation is a hit. Delegates to {@link
-   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, boolean, long)} with
-   * no per-target completeness predicates.
+   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, long)} with no
+   * per-target completeness predicates.
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
       java.util.List<StatsCaptureRequest> requests,
       Optional<String> pinnedGenerationToken,
-      boolean staleOk,
       long deadlineNanos) {
     return resolvePlannerBatchInGeneration(
-        requests, pinnedGenerationToken, java.util.Map.of(), staleOk, deadlineNanos);
+        requests, pinnedGenerationToken, java.util.Map.of(), deadlineNanos);
   }
 
   /**
@@ -293,9 +282,7 @@ public class StatsOrchestrator {
    *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
    *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
    *       it wins; if not, the pinned partial is served (consistency prefers the pin between
-   *       equally incomplete records) — partial records never fall through to stale or capture;
-   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk}), for targets
-   *       with no record at the pinned snapshot at all;
+   *       equally incomplete records) — partial records never fall through to capture;
    *   <li>sync/async capture.
    * </ol>
    *
@@ -318,18 +305,16 @@ public class StatsOrchestrator {
       Optional<String> pinnedGenerationToken,
       java.util.Map<String, java.util.function.Predicate<TargetStatsRecord>>
           completenessByStorageId,
-      boolean staleOk,
       long deadlineNanos) {
     if (requests == null || requests.isEmpty()) {
       return java.util.Map.of();
     }
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
-    // Store rungs (cache → pinned/primary → newest gap-fill → stale) live in the resolver; only
+    // Store rungs (cache → pinned/primary → newest gap-fill) live in the resolver; only
     // capture policy remains here.
     PlannerStatsResolver.Resolution resolution =
-        plannerResolver.resolveFromStore(
-            requests, pinnedGenerationToken, completenessByStorageId, staleOk);
+        plannerResolver.resolveFromStore(requests, pinnedGenerationToken, completenessByStorageId);
     PlannerLookupDiagnostics diagnostics = resolution.diagnostics();
     java.util.Map<String, StatsResolutionResult> out =
         new java.util.LinkedHashMap<>(resolution.resolved());

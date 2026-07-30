@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,7 +91,9 @@ class SnapshotPlanBlobStoreTest {
                             44L,
                             IcebergDeleteContent.EQUALITY,
                             7,
-                            List.of(3, 4))))));
+                            List.of(3, 4),
+                            "iceberg-delete-v1:8:2")),
+                    "iceberg-data-v1:7:10")));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -113,6 +116,12 @@ class SnapshotPlanBlobStoreTest {
         SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", List.of(group)),
         persistedTask.fileGroupPlanBlobUri());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()));
+    String storedJson =
+        new String(
+            blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
+    assertFalse(storedJson.contains("reusableFileStats"));
+    assertFalse(storedJson.contains("reusableAuxiliaryStats"));
+    assertFalse(storedJson.contains("reusableIndexArtifact"));
 
     List<PlannedFileGroupJob> roundTripped = store.loadPlanJobs(persistedTask);
     assertEquals(1, roundTripped.size());
