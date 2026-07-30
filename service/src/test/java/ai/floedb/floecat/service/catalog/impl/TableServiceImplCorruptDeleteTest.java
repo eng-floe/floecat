@@ -114,7 +114,7 @@ class TableServiceImplCorruptDeleteTest {
 
     // Retryable, not a silent success: the caller must not read this as "the table is gone".
     assertEquals(Status.Code.ABORTED, ex.getStatus().getCode());
-    verify(recursiveDropper, never()).cleanupDeletedTable(any(), any());
+    verify(recursiveDropper, never()).cleanupDeletedTable(any());
   }
 
   @Test
@@ -137,7 +137,7 @@ class TableServiceImplCorruptDeleteTest {
                     .indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(recursiveDropper, never()).cleanupDeletedTable(any(), any());
+    verify(recursiveDropper, never()).cleanupDeletedTable(any());
   }
 
   @Test
@@ -150,7 +150,6 @@ class TableServiceImplCorruptDeleteTest {
             .indefinitely();
 
     assertEquals(SAFE_POINTER_VERSION, response.getMeta().getPointerVersion());
-    // The table blob was unreadable, so the enclosing namespace is unknown and no marker is bumped.
-    verify(recursiveDropper).cleanupDeletedTable(eq(TABLE_ID), eq(null));
+    verify(recursiveDropper).cleanupDeletedTable(eq(TABLE_ID));
   }
 }

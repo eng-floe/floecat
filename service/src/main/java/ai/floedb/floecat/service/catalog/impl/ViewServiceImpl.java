@@ -419,9 +419,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
                     // The destination marker was advanced inside the update batch by the guard.
-                    // Only the source still needs a bump, and moving a relation OUT can never
-                    // orphan it, so that one stays a plain post-hoc bump.
-                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
+                    // The source marker is deliberately left alone: losing a child is not a
+                    // publish,
+                    // so bumping it would only break a concurrent delete of the source namespace.
                   }
                   metadataGraph.invalidate(viewId);
 
@@ -453,13 +453,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   catalogSurfaceWritePolicy()
                       .requireWritableViewForDelete(viewId, correlationId, callerCares);
 
-                  View existing = null;
-                  try {
-                    existing = viewRepo.getById(viewId).orElse(null);
-                  } catch (BaseResourceRepository.CorruptionException ignore) {
-                    // Marker bump is best-effort; permit deletion of a missing or corrupt blob.
-                  }
-
                   MutationMeta meta;
                   try {
                     meta = viewRepo.metaFor(viewId);
@@ -472,9 +465,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                         correlationId, safe, request.getPrecondition());
                     topology.evict(viewId);
                     metadataGraph.invalidate(viewId);
-                    if (existing != null) {
-                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                    }
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -490,9 +480,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   topology.evict(viewId);
                   metadataGraph.invalidate(viewId);
-                  if (existing != null) {
-                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                  }
+                  // No children-marker bump: a view leaving its namespace is not a child publish,
+                  // and advancing the fence would break a concurrent DeleteNamespace unretryably.
+                  // See RecursiveResourceDropper#cleanupDeletedTable.
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())

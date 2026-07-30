@@ -59,6 +59,9 @@ class BackendStorageIT {
   @GrpcClient("floecat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
+  @GrpcClient("floecat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
+
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
 
@@ -591,6 +594,60 @@ class BackendStorageIT {
 
     assertTrue(ptr.get(childById).isEmpty(), "the corrupt child namespace must be removed");
     assertTrue(ptr.get(parentById).isEmpty(), "and its parent with it");
+  }
+
+  /**
+   * The children marker is the child-publish fence and nothing else, so removing a relation must
+   * leave it where it is.
+   *
+   * <p>{@code DeleteNamespace} reads the marker, scans for children, then advances it from the
+   * version it read, and its delete batch asserts that same version. A relation delete that bumped
+   * the marker landed in that window as "a child was published" — which is unretryable by design,
+   * since only the caller's scan can decide whether the delete is still legal — so a plain
+   * namespace delete racing nothing but a table or view going away failed with
+   * NAMESPACE_CHILDREN_CHANGED. Asserting the marker directly keeps the race out of the test: the
+   * window cannot be hit deterministically, but the bump that makes it hittable can be.
+   */
+  @Test
+  void deletingARelationDoesNotAdvanceTheNamespaceChildFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_fence_" + clock.millis(), "fence");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_fence"), "fence");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            nsId,
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var vw = TestSupport.createView(view, cat.getResourceId(), nsId, "v", "select 1", "d");
+
+    // Both publishes advanced it, in their own batches — that half of the protocol is what makes a
+    // stale emptiness scan detectable.
+    long afterPublish = ptr.get(markerKey).orElseThrow().getVersion();
+    assertTrue(afterPublish > 0L, "publishing a child must advance the fence");
+
+    TestSupport.deleteTable(table, nsId, tbl.getResourceId());
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "deleting a table must not advance the fence");
+
+    TestSupport.deleteView(view, vw.getResourceId());
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "deleting a view must not advance the fence");
+
+    // And the emptied namespace is still deletable through the plain path.
+    namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
+    assertTrue(ptr.get(Keys.namespacePointerById(nsId.getAccountId(), nsId.getId())).isEmpty());
   }
 
   /**

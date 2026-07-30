@@ -457,9 +457,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
                     // The destination marker was advanced inside the update batch by the guard.
-                    // Only the source still needs a bump, and moving a relation OUT can never
-                    // orphan it, so that one stays a plain post-hoc bump.
-                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
+                    // The source marker is deliberately left alone: losing a child is not a
+                    // publish,
+                    // so bumping it would only break a concurrent delete of the source namespace.
                   }
 
                   var outMeta = tableRepo.metaForSafe(tableId);
@@ -494,13 +494,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   catalogSurfaceWritePolicy()
                       .requireWritableTableForDelete(tableId, correlationId, callerCares);
 
-                  Table existing = null;
-                  try {
-                    existing = tableRepo.getById(tableId).orElse(null);
-                  } catch (BaseResourceRepository.CorruptionException ignore) {
-                    // marker bump is best-effort; allow delete to proceed even if blob is missing
-                  }
-
                   MutationMeta meta;
                   try {
                     meta = tableRepo.metaFor(tableId);
@@ -512,8 +505,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    recursiveDropper.cleanupDeletedTable(
-                        tableId, existing == null ? null : existing.getNamespaceId());
+                    recursiveDropper.cleanupDeletedTable(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
                     var safe = tableRepo.metaForSafe(tableId);
@@ -543,8 +535,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       throw new BaseResourceRepository.AbortRetryableException(
                           "table pointer changed during corrupt-blob delete: " + tableId.getId());
                     }
-                    recursiveDropper.cleanupDeletedTable(
-                        tableId, existing == null ? null : existing.getNamespaceId());
+                    recursiveDropper.cleanupDeletedTable(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -558,8 +549,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  recursiveDropper.cleanupDeletedTable(
-                      tableId, existing == null ? null : existing.getNamespaceId());
+                  recursiveDropper.cleanupDeletedTable(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())

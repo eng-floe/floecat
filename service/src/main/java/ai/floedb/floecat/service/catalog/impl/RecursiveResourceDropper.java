@@ -177,18 +177,20 @@ public class RecursiveResourceDropper {
     return dropNamespaceTree(namespace);
   }
 
-  /** Removes a table after its pointer has already been deleted through a public mutation. */
-  public void cleanupDeletedTable(ResourceId tableId, ResourceId namespaceId) {
-    cleanupDeletedTable(tableId, namespaceId, true);
-  }
-
-  private void cleanupDeletedTable(
-      ResourceId tableId, ResourceId namespaceId, boolean bumpNamespaceMarker) {
+  /**
+   * Removes a table after its pointer has already been deleted through a public mutation.
+   *
+   * <p>Deliberately does not touch the owning namespace's children marker. That marker is the
+   * child-publish fence and nothing else: {@code namespaceChildGuard} advances it inside the batch
+   * that publishes a child, and {@code namespaceDeleteGuard} refuses a namespace delete whose
+   * emptiness scan predates such an advance. A table leaving the namespace is the opposite of a
+   * publish, so advancing the marker here would break a concurrent {@code DeleteNamespace} that
+   * nothing had invalidated — and losing that guard is not retryable, so a non-recursive delete
+   * would report NAMESPACE_CHILDREN_CHANGED to a caller racing nothing but a table going away.
+   */
+  public void cleanupDeletedTable(ResourceId tableId) {
     topology.evict(tableId);
     metadataGraph.invalidate(tableId);
-    if (bumpNamespaceMarker && namespaceId != null) {
-      markerStore.bumpNamespaceMarker(namespaceId);
-    }
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
     // Per-snapshot stats live under /snapshots/ (removed by the prefix above); the table-level and
     // per-target "latest committed" stats pointers/blobs live outside it and must be purged too, or
@@ -681,7 +683,7 @@ public class RecursiveResourceDropper {
         // table that no longer exists.
         reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
       }
-      cleanupDeletedTable(tableId, null, false);
+      cleanupDeletedTable(tableId);
       summary.tablesDeleted++;
       summary.snapshotPrefixesDeleted++;
       CLEANUP_LOG.infof(
@@ -703,10 +705,8 @@ public class RecursiveResourceDropper {
     // Committed delete, or unguarded account teardown. In teardown there is no survivor to protect
     // — the account, its catalogs, and namespaces are all going away — so purge owned state
     // unconditionally even when delete lost the CAS, or the table pointer and its root-resync
-    // marker outlive account deletion as durable orphans. The enclosing namespace is about to be
-    // deleted, so cleanup must not bump its marker (false) and look like a concurrent child
-    // mutation.
-    cleanupDeletedTable(tableId, null, false);
+    // marker outlive account deletion as durable orphans.
+    cleanupDeletedTable(tableId);
     // Purged unconditionally above, but counted only when this call removed the table. A retried
     // account delete re-runs cleanup over tables an earlier pass already took, and counting those
     // again inflates the audit record of an irreversible operation.
