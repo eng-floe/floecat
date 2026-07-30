@@ -1785,6 +1785,7 @@ public class UserObjectBundleService {
     @Override
     public UserObjectsBundleChunk next() {
       beginProducerStep();
+      String terminalOutcome = null;
       try {
         if (!headerEmitted) {
           headerEmitted = true;
@@ -1814,8 +1815,13 @@ public class UserObjectBundleService {
         }
 
         throw new NoSuchElementException();
+      } catch (RuntimeException | Error failure) {
+        if (!(failure instanceof CancellationException)) {
+          terminalOutcome = "failed";
+        }
+        throw failure;
       } finally {
-        finishProducerStep();
+        finishProducerStep(terminalOutcome);
       }
     }
 
@@ -1938,14 +1944,16 @@ public class UserObjectBundleService {
       }
     }
 
-    private void finishProducerStep() {
+    private void finishProducerStep(String terminalOutcome) {
       boolean publishCancellation;
       synchronized (producerStateLock) {
         producerActive = false;
-        publishCancellation = cancellationTelemetryPending;
+        publishCancellation = terminalOutcome == null && cancellationTelemetryPending;
         cancellationTelemetryPending = false;
       }
-      if (publishCancellation) {
+      if (terminalOutcome != null) {
+        publishStreamTelemetry(terminalOutcome);
+      } else if (publishCancellation) {
         publishCancellationTelemetry();
       }
     }

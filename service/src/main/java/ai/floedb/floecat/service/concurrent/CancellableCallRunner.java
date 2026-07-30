@@ -319,6 +319,7 @@ public final class CancellableCallRunner {
   /** Owns cancellation state for one submitted callable. */
   private static final class CallLifecycle {
     private final AtomicBoolean operationStarted = new AtomicBoolean();
+    private final AtomicBoolean runnerInstalled = new AtomicBoolean();
     private final AtomicBoolean cancellationRequested = new AtomicBoolean();
     private final AtomicBoolean timedOut = new AtomicBoolean();
     private final AtomicBoolean operationFinished = new AtomicBoolean();
@@ -399,8 +400,27 @@ public final class CancellableCallRunner {
     }
 
     @Override
+    public void run() {
+      // Mark this before FutureTask installs its runner. Cancellation can otherwise observe a
+      // cancelled task between FutureTask's runner CAS and the submitted Runnable's first line,
+      // incorrectly classify live work as executor-discarded, and release its admission early.
+      lifecycle.runnerInstalled.set(true);
+      super.run();
+      // A cancellation before FutureTask invokes the submitted Runnable leaves no runnable
+      // finally block to release the admission. At this point run() has returned, so the task did
+      // not enter the downstream operation and is safe to discard.
+      if (!lifecycle.operationStarted.get()) {
+        if (isCancelled()) {
+          result.completeExceptionally(new CancellationException(cancellationMessage));
+        }
+        lifecycle.operationFinished();
+        permitLease.release();
+      }
+    }
+
+    @Override
     protected void done() {
-      if (isCancelled() && !lifecycle.operationStarted.get()) {
+      if (isCancelled() && !lifecycle.runnerInstalled.get()) {
         result.completeExceptionally(new CancellationException(cancellationMessage));
         lifecycle.operationFinished();
         permitLease.release();
