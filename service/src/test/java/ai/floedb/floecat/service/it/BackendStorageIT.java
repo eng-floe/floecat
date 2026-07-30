@@ -476,6 +476,40 @@ class BackendStorageIT {
   }
 
   /**
+   * The children marker is a pointer row of its own, under /accounts/{a}/namespaces/{n}/ — outside
+   * every prefix the pointer GC and account teardown sweep. Left behind it is unreachable forever,
+   * and the emptiness gate creates one even for a namespace that never had a child.
+   */
+  @Test
+  void deletingANamespaceRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_marker_" + clock.millis(), "marker");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_marker"), "marker ns");
+    String markerKey =
+        Keys.namespaceChildrenMarker(ns.getResourceId().getAccountId(), ns.getResourceId().getId());
+
+    // Publishing a child creates it; the delete below must take it away again.
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        ns.getResourceId(),
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+    assertTrue(ptr.get(markerKey).isPresent(), "a child publish advances the marker");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(ns.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(markerKey).isEmpty(), "the marker row must not outlive its namespace");
+  }
+
+  /**
    * Deleting the corrupt namespace directly cannot work — its children are keyed by a catalog id
    * that only the unreadable blob carries — but it must not look like a service defect either. It
    * reports a conflict naming the namespace, and the recursive delete of its parent is what

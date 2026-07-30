@@ -826,6 +826,7 @@ public class RecursiveResourceDropper {
       throw namespaceChanged(namespaceId);
     }
     reclaimStrandedNamespacePath(namespace);
+    markerStore.deleteNamespaceMarker(namespaceId);
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);

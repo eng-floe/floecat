@@ -51,6 +51,22 @@ public class MarkerStore {
     bumpMarker(key);
   }
 
+  /**
+   * Removes a namespace's children marker, which is a pointer row in its own right and otherwise
+   * outlives the namespace it belongs to. Its key sits under {@code /accounts/{a}/namespaces/{n}/},
+   * outside every prefix the pointer GC and account teardown sweep, so an abandoned one is
+   * unreachable for good — and the emptiness gate creates one even for a namespace that never had a
+   * child.
+   *
+   * <p>Call only once the namespace pointer is gone. Until then a concurrent publish may still be
+   * fencing against this key; afterwards none can, because {@link #namespaceChildGuard} refuses to
+   * build a guard for a namespace with no live pointer.
+   */
+  public void deleteNamespaceMarker(ResourceId namespaceId) {
+    pointerStore.delete(
+        Keys.namespaceChildrenMarker(namespaceId.getAccountId(), namespaceId.getId()));
+  }
+
   public boolean advanceCatalogMarker(ResourceId catalogId, long expectedVersion) {
     String key = Keys.catalogChildrenMarker(catalogId.getAccountId(), catalogId.getId());
     return advanceMarker(key, expectedVersion);

@@ -692,6 +692,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             Map.of());
                       }
 
+                      // This namespace's own marker goes with it. The dropper does the same for
+                      // every
+                      // descendant it removes, but the root is deleted here, so without this the
+                      // row
+                      // survives every delete — see MarkerStore#deleteNamespaceMarker.
+                      markerStore.deleteNamespaceMarker(namespaceId);
                       topology.evictRelationRefs(namespaceId);
                       topology.evictNamespaceRefs(catalogId);
                       metadataGraph.invalidate(namespaceId);
