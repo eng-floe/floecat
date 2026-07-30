@@ -220,9 +220,8 @@ public class QueryInputResolverTest {
     var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
 
     CompletableFuture<Throwable> resolution =
-        CompletableFuture.supplyAsync(
-            () -> {
-              try {
+        resolveCancellable(
+            () ->
                 withStore.resolveInputs(
                     "q-cancel",
                     "cid",
@@ -233,12 +232,7 @@ public class QueryInputResolverTest {
                     Optional.empty(),
                     new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
                     null,
-                    cancelled::get);
-                return null;
-              } catch (Throwable failure) {
-                return failure;
-              }
-            });
+                    cancelled::get));
 
     try {
       assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));

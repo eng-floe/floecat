@@ -418,6 +418,7 @@ public final class BoundedFanout {
     return new CancellationException("fan-out cancelled");
   }
 
+  /** One submitted input and the future through which its completion is observed. */
   private static final class CompletionSlot<O> {
     private final int index;
     private CompletableFuture<O> completion;
@@ -428,6 +429,7 @@ public final class BoundedFanout {
     }
   }
 
+  /** The successful result or unwrapped failure captured for one input. */
   private record TaskOutcome<O>(O result, Throwable failure) {
     private static <O> TaskOutcome<O> success(O result) {
       return new TaskOutcome<>(result, null);

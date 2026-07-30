@@ -923,7 +923,8 @@ public class UserObjectBundleService {
                     logicalSchemaForRelation(
                             correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
-                : overlay.tableSchema(relation.node().id());
+                : Optional.ofNullable(overlay.tableSchema(relation.node().id()))
+                    .orElseGet(List::of);
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
@@ -998,6 +999,8 @@ public class UserObjectBundleService {
         } finally {
           timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
         }
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         relationDecorationSucceeded = false;
         LOG.debugf(
@@ -1023,6 +1026,8 @@ public class UserObjectBundleService {
           } finally {
             timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
           }
+        } catch (CancellationException e) {
+          throw e;
         } catch (RuntimeException e) {
           viewDecorationSucceeded = false;
           LOG.debugf(
@@ -1076,6 +1081,8 @@ public class UserObjectBundleService {
           timings.addDecoratePersistColumnsNanos(
               decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
         }
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         completeRelationSucceeded = false;
         LOG.debugf(
@@ -1311,6 +1318,8 @@ public class UserObjectBundleService {
                       "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
                       "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
         }
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         ColumnFailure failure = mapFailure(e, ctx);
         LOG.debugf(

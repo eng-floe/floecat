@@ -45,6 +45,10 @@ public final class CancellableCallRunner {
   /**
    * Run {@code operation} under {@code permits}, polling {@code cancelled} while awaiting both
    * admission and completion. The operation receives the caller's propagated request context.
+   *
+   * <p>Returns the operation result, propagates operation and executor failures unchanged, and
+   * throws {@link CancellationException} when cancellation or interruption wins. Admission remains
+   * held until the operation exits, including when the caller has already returned.
    */
   public static <T> T call(
       Executor executor,
@@ -54,39 +58,17 @@ public final class CancellableCallRunner {
       String cancellationMessage,
       String interruptionMessage) {
     acquire(permits, cancelled, cancellationMessage, interruptionMessage);
-    PropagatedContext context = PropagatedContext.capture();
-    CompletableFuture<T> result = new CompletableFuture<>();
-    CallLifecycle lifecycle = new CallLifecycle();
-    PermitLease permitLease = new PermitLease(permits);
-    SubmittedCall submitted =
-        new SubmittedCall(
-            () -> {
-              lifecycle.operationStarted.set(true);
-              try {
-                if (lifecycle.cancellationRequested.get()) {
-                  throw new CancellationException(cancellationMessage);
-                }
-                throwIfCancelled(cancelled, cancellationMessage);
-                result.complete(context.supply(operation));
-              } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-              } finally {
-                permitLease.release();
-              }
-            },
-            result,
-            lifecycle,
-            permitLease,
-            cancellationMessage);
-    lifecycle.task = submitted;
-    try {
-      // An explicit FutureTask prevents ForkJoinPool from help-running a submitted lambda inline
-      // on the caller, which would bypass this method's cancellation polling loop.
-      executor.execute(submitted);
-    } catch (RuntimeException | Error submissionFailure) {
-      permitLease.release();
-      throw submissionFailure;
-    }
+    SubmittedCallHandle<T> submitted =
+        submit(
+            executor,
+            permits,
+            operation,
+            cancelled,
+            true,
+            cancellationMessage,
+            TimeoutListener.NOOP);
+    CompletableFuture<T> result = submitted.result;
+    CallLifecycle lifecycle = submitted.lifecycle;
     try {
       while (true) {
         if (cancelled.getAsBoolean()) {
@@ -118,7 +100,9 @@ public final class CancellableCallRunner {
    * <p>This keeps potentially carrier-pinning store calls off a virtual planning thread while
    * preserving legacy synchronous completion semantics. On timeout the caller is released and the
    * task is interrupted, but admission remains held until an interruption-insensitive operation
-   * truly exits.
+   * truly exits. Returns the operation result and propagates operation and executor failures
+   * unchanged; throws {@link CallTimeoutException} when admission or completion outlives the
+   * supplied timeout, and {@link CancellationException} if the waiting thread is interrupted.
    */
   public static <T> T callUncancellable(
       Executor executor,
@@ -170,34 +154,11 @@ public final class CancellableCallRunner {
       throw new CancellationException(interruptionMessage);
     }
 
-    PropagatedContext context = PropagatedContext.capture();
-    CompletableFuture<T> result = new CompletableFuture<>();
-    CallLifecycle lifecycle = new CallLifecycle(timeoutListener);
-    PermitLease permitLease = new PermitLease(permits);
-    SubmittedCall submitted =
-        new SubmittedCall(
-            () -> {
-              lifecycle.operationStarted.set(true);
-              try {
-                result.complete(context.supply(operation));
-              } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-              } finally {
-                lifecycle.operationFinished();
-                permitLease.release();
-              }
-            },
-            result,
-            lifecycle,
-            permitLease,
-            cancellationMessage);
-    lifecycle.task = submitted;
-    try {
-      executor.execute(submitted);
-    } catch (RuntimeException | Error submissionFailure) {
-      permitLease.release();
-      throw submissionFailure;
-    }
+    SubmittedCallHandle<T> submitted =
+        submit(
+            executor, permits, operation, () -> false, false, cancellationMessage, timeoutListener);
+    CompletableFuture<T> result = submitted.result;
+    CallLifecycle lifecycle = submitted.lifecycle;
     try {
       long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
       if (remainingNanos <= 0) {
@@ -288,6 +249,70 @@ public final class CancellableCallRunner {
   private static void throwIfCancelled(BooleanSupplier cancelled, String message) {
     if (cancelled.getAsBoolean()) {
       throw new CancellationException(message);
+    }
+  }
+
+  /**
+   * Capture context and submit an admitted call, retaining its permit until the callable exits or
+   * the executor discards it. A cancellable caller asks the worker to reject a task that starts
+   * after cancellation; an uncancellable caller executes even if its waiting thread later times
+   * out.
+   */
+  private static <T> SubmittedCallHandle<T> submit(
+      Executor executor,
+      Semaphore permits,
+      Supplier<T> operation,
+      BooleanSupplier cancelled,
+      boolean rejectCancelledStart,
+      String cancellationMessage,
+      TimeoutListener timeoutListener) {
+    PropagatedContext context = PropagatedContext.capture();
+    CompletableFuture<T> result = new CompletableFuture<>();
+    CallLifecycle lifecycle = new CallLifecycle(timeoutListener);
+    PermitLease permitLease = new PermitLease(permits);
+    SubmittedCall task =
+        new SubmittedCall(
+            () -> {
+              lifecycle.operationStarted.set(true);
+              try {
+                if (rejectCancelledStart) {
+                  if (lifecycle.cancellationRequested.get()) {
+                    throw new CancellationException(cancellationMessage);
+                  }
+                  throwIfCancelled(cancelled, cancellationMessage);
+                }
+                result.complete(context.supply(operation));
+              } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+              } finally {
+                lifecycle.operationFinished();
+                permitLease.release();
+              }
+            },
+            result,
+            lifecycle,
+            permitLease,
+            cancellationMessage);
+    lifecycle.task = task;
+    try {
+      // An explicit FutureTask prevents ForkJoinPool from help-running a submitted lambda inline
+      // on the caller, which would bypass this method's cancellation polling loop.
+      executor.execute(task);
+    } catch (RuntimeException | Error submissionFailure) {
+      permitLease.release();
+      throw submissionFailure;
+    }
+    return new SubmittedCallHandle<>(result, lifecycle);
+  }
+
+  /** Result and cancellation ownership for one submitted callable. */
+  private static final class SubmittedCallHandle<T> {
+    private final CompletableFuture<T> result;
+    private final CallLifecycle lifecycle;
+
+    private SubmittedCallHandle(CompletableFuture<T> result, CallLifecycle lifecycle) {
+      this.result = result;
+      this.lifecycle = lifecycle;
     }
   }
 

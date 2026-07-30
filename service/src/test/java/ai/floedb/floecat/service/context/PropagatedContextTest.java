@@ -29,10 +29,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Off-thread propagation is the whole point of {@link PropagatedContext}: a fan-out worker never
  * inherits the request thread's thread-locals, so without re-establishing them the ambient reads
- * ({@code engineContext()}, the log MDC) read empty — which is how an engine-gated multi-input
- * batch silently misclassified before this existed (eng-floe/floecat#361). These tests capture on a
- * context-bearing thread and assert the body sees that context on a plain executor thread that
- * carries none of its own.
+ * ({@code engineContext()}, the log MDC) read empty. These tests capture on a context-bearing
+ * thread and assert the body sees that context on a plain executor thread that carries none of its
+ * own.
  */
 class PropagatedContextTest {
 

@@ -259,6 +259,29 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void treatsANullOverlaySchemaAsAnEmptySchema() {
+    FakeCatalogOverlay nullSchemaOverlay =
+        new FakeCatalogOverlay() {
+          @Override
+          public List<SchemaColumn> tableSchema(ResourceId tableId) {
+            return null;
+          }
+        };
+    service = serviceWith(nullSchemaOverlay);
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
+    assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolution.getRelation().getColumnsCount()).isZero();
+  }
+
+  @Test
   void resolvedTableCarriesOpaquePinIdentity() {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
