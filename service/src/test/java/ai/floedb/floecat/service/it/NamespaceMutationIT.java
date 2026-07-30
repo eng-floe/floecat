@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -541,5 +542,51 @@ class NamespaceMutationIT {
                 .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(pathB))
                 .build());
     assertEquals(outB.get().getResourceId().getId(), resolvedB.getResourceId().getId());
+  }
+
+  /**
+   * Reparenting to a path that does not exist is unsatisfiable input, not contention. The
+   * destination fence reports a missing parent as retryable — correct where a create has just
+   * ensured the chain — so taking that route here would retry eight times with backoff and answer
+   * ABORTED for a request that can never succeed.
+   */
+  @Test
+  void reparentingToAMissingParentIsRefusedWithoutRetrying() {
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "reparent_cat", "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "leaf", List.of("db_reparent"), "leaf");
+
+    long startedAt = System.nanoTime();
+    var refused =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                namespace.updateNamespace(
+                    UpdateNamespaceRequest.newBuilder()
+                        .setNamespaceId(ns.getResourceId())
+                        .setSpec(
+                            NamespaceSpec.newBuilder()
+                                .setCatalogId(cat.getResourceId())
+                                .setDisplayName("leaf")
+                                // Full path: the last segment is the name, the rest is the parent —
+                                // so this moves "leaf" under a parent that does not exist.
+                                .addAllPath(List.of("db_reparent", "no_such_parent", "leaf")))
+                        .setUpdateMask(FieldMask.newBuilder().addPaths("path"))
+                        .build()));
+    long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
+
+    assertEquals(Status.Code.NOT_FOUND, refused.getStatus().getCode());
+    // Eight retries with backoff would take far longer than this; the point is that it does not
+    // retry.
+    assertTrue(elapsedMs < 500, "should fail immediately, took " + elapsedMs + "ms");
+    // And the namespace stays where it was.
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerByPath(
+                    cat.getResourceId().getAccountId(),
+                    cat.getResourceId().getId(),
+                    List.of("db_reparent", "leaf")))
+            .isPresent());
   }
 }

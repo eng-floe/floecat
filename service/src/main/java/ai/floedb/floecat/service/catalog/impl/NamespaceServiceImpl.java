@@ -439,10 +439,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           || !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
                   var destinationGuard =
                       reparented
-                          ? parentNamespaceGuard(
+                          ? reparentDestinationGuard(
                               desired.getResourceId().getAccountId(),
                               desired.getCatalogId(),
-                              desired.getParentsList())
+                              desired.getParentsList(),
+                              corr)
                           : BatchGuard.NONE;
 
                   try {
@@ -1011,6 +1012,33 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             () ->
                 new BaseResourceRepository.BatchGuardFailedException(
                     "parent namespace no longer exists: " + String.join(".", parentPath)));
+  }
+
+  /**
+   * The destination fence for a reparent, refusing a path that does not exist.
+   *
+   * <p>{@link #parentNamespaceGuard} treats a missing parent as retryable, which is right where it
+   * is used on the create paths: the parent chain was just ensured, so its absence means a
+   * concurrent delete raced. A reparent takes the destination straight from the caller, and "that
+   * path does not exist" is not a race — retrying cannot make it appear, so the guard's retryable
+   * failure would spend the whole budget and answer ABORTED for a request that can never succeed.
+   * Report it as the missing parent it is.
+   */
+  private BatchGuard reparentDestinationGuard(
+      String accountId, ResourceId catalogId, List<String> parentPath, String correlationId) {
+    if (parentPath == null || parentPath.isEmpty()) {
+      return BatchGuard.NONE;
+    }
+    var parent =
+        namespaceRepo
+            .getByPath(accountId, catalogId.getId(), parentPath)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE,
+                        Map.of("id", String.join(".", parentPath))));
+    return markerStore.namespaceChildGuard(parent.getResourceId());
   }
 
   private void bumpParentNamespaceMarker(
