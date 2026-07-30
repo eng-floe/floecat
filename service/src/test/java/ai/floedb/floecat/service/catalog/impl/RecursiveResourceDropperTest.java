@@ -476,6 +476,9 @@ class RecursiveResourceDropperTest {
             new PointerStore.CasDelete(byPathKey, 2L)),
         batch.getValue());
     verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    // Its children marker goes too. Nothing else ever names this namespace again — the row sits
+    // outside every prefix the GC and teardown sweep — so skipping it here leaks it for good.
+    verify(markerStore).deleteNamespaceMarker(eq(childId));
   }
 
   /**

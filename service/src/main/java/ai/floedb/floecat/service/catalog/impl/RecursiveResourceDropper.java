@@ -238,6 +238,10 @@ public class RecursiveResourceDropper {
       // relation's own canonical version, which still fails a CAS for anything reparented out.
       dropNamespaceRelations(namespace, summary, true, BatchGuard.NONE);
       reclaimStrandedNamespacePath(namespace);
+      // Its children marker is a pointer row in its own right, outside every prefix the GC and
+      // teardown sweep, so whoever removed the canonical pointer without it left a row nothing can
+      // ever reach again. This is the last walk that knows the id.
+      markerStore.deleteNamespaceMarker(namespaceId);
       return;
     }
     var subtreePin = markerStore.namespacePinnedGuard(namespaceId, pinned.get().pointerVersion());

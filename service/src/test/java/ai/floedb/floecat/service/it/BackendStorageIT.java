@@ -513,6 +513,44 @@ class BackendStorageIT {
   }
 
   /**
+   * The same row, reached through the idempotent-success path: the namespace pointer is already
+   * gone, so DeleteNamespace reports OK without deleting anything. That answer is the last
+   * operation that will ever name this namespace, so it has to take the marker with it — the row
+   * lives under {@code /accounts/{a}/namespaces/{n}/}, outside every prefix the pointer GC and
+   * account teardown sweep, and no later delete can be asked to clean up a namespace nothing can
+   * enumerate.
+   */
+  @Test
+  void deletingAnAlreadyGoneNamespaceStillRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_orphmark_" + clock.millis(), "marker");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_orphmark"), "marker ns");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+    String byId = Keys.namespacePointerById(nsId.getAccountId(), nsId.getId());
+
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        nsId,
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+    assertTrue(ptr.get(markerKey).isPresent(), "a child publish advances the marker");
+
+    // Whatever removed the canonical pointer left the marker behind — the shape a partial delete of
+    // an older build, or a delete that could not read the blob, leaves in the store.
+    assertTrue(ptr.delete(byId));
+
+    var response =
+        namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
+    assertEquals(0L, response.getMeta().getPointerVersion(), "idempotent success, nothing deleted");
+    assertTrue(ptr.get(markerKey).isEmpty(), "and the orphaned marker row is reclaimed");
+  }
+
+  /**
    * Deleting the corrupt namespace directly cannot work — its children are keyed by a catalog id
    * that only the unreadable blob carries — but it must not look like a service defect either. It
    * reports a conflict naming the namespace, and the recursive delete of its parent is what

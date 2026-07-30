@@ -569,6 +569,15 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         }
                         MutationOps.BaseServiceChecks.enforcePreconditions(
                             correlationId, safe, request.getPrecondition());
+                        if (safe.getPointerVersion() == 0L) {
+                          // Already gone, and this idempotent success is the last operation that
+                          // will ever name it: whoever removed the pointer without its children
+                          // marker left a row that no GC or teardown prefix reaches. Deleting it is
+                          // safe only because the pointer is provably absent — a live namespace may
+                          // still have a publish fencing on that key, so the catalog-less case,
+                          // where the pointer survives, must leave it alone.
+                          markerStore.deleteNamespaceMarker(namespaceId);
+                        }
                         topology.evictRelationRefs(namespaceId);
                         metadataGraph.invalidate(namespaceId);
                         return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
