@@ -139,26 +139,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .containsExactly(11L);
   }
 
-  void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
-    Set<Long> metadataOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, false, Set.of(10L, 11L), snapshotId -> false);
-    Set<Long> metadataAndStats =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), snapshotId -> snapshotId == 10L);
-    Set<Long> statsOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), snapshotId -> false);
-    Set<Long> fullRescan =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            true, true, Set.of(10L, 11L), snapshotId -> true);
-
-    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(metadataAndStats).containsExactly(10L);
-    assertThat(statsOnly).isEmpty();
-    assertThat(fullRescan).isEmpty();
-  }
-
   @Test
   void activeConnectorRehydratesStoredCredentialsIntoResolvedConfig() {
     Connector connector =

@@ -37,6 +37,8 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -183,8 +185,9 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
@@ -209,11 +212,38 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationTableId()).isEqualTo(request.tableId().getId());
     assertThat(scope.destinationCaptureRequests()).hasSize(1);
     assertThat(scope.capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.TABLE_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
     assertThat(scope.capturePolicy().columns())
         .extracting(ReconcileCapturePolicy.Column::selector)
         .containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
+    assertThat(scope.capturePolicy().selectorsForIndex()).isEmpty();
+    assertThat(scope.capturePolicy().properties()).isEmpty();
+  }
+
+  @Test
+  void queryCaptureDisabledByDefaultDoesNotEnqueueSyncAsyncOrBatchWork() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
+    StatsCaptureRequest request =
+        tableRequest(StatsExecutionMode.SYNC, Optional.of(Duration.ofSeconds(1)));
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+
+    StatsResolutionResult single = orchestrator.resolve(request);
+    List<StatsResolutionResult> batch =
+        orchestrator.resolveBatch(StatsCaptureBatchRequest.of(List.of(request)));
+
+    assertThat(single.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(single.outcomeDetail()).isEqualTo("query_capture_disabled");
+    assertThat(batch)
+        .singleElement()
+        .matches(result -> result.outcomeDetail().equals("query_capture_disabled"));
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
 
   @Test
@@ -221,8 +251,16 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryMissing());
+        new StatsOrchestrator(
+            statsStore,
+            jobStore,
+            tableRepository,
+            connectorRepositoryMissing(),
+            syncCapture,
+            true,
+            null);
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
@@ -233,6 +271,34 @@ class StatsOrchestratorTest {
 
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
     assertThat(result.stats()).isEmpty();
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  void plannerMissDoesNotEnqueueWhenConnectorPolicyIsDisabled() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore,
+            jobStore,
+            tableRepository,
+            connectorRepositoryDisabled(),
+            syncCapture,
+            true,
+            null);
+
+    StatsCaptureRequest request = columnRequest(42L, 7L);
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+
+    Map<String, StatsResolutionResult> result =
+        orchestrator.resolvePlannerBatch(List.of(request), false, Long.MAX_VALUE);
+
+    assertThat(result.get(StatsTargetIdentity.storageId(request.target())).outcome())
+        .isEqualTo(StatsSyncOutcome.SKIPPED);
+    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
     verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
 
@@ -283,7 +349,9 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationCaptureRequests()).hasSize(2);
     assertThat(scope.capturePolicy().outputs())
         .containsExactlyInAnyOrder(
-            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scope.capturePolicy().selectorsForStats())
         .containsExactlyInAnyOrder("id", "region", "#9");
   }
@@ -322,8 +390,11 @@ class StatsOrchestratorTest {
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
             scopeCaptor.capture());
     assertThat(scopeCaptor.getValue().capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.COLUMN_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats()).containsExactly("#9");
+    assertThat(scopeCaptor.getValue().capturePolicy().selectorsForIndex()).containsExactly("#9");
   }
 
   @Test
@@ -588,13 +659,22 @@ class StatsOrchestratorTest {
 
   private static ConnectorRepository connectorRepositoryWith() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(true);
+    when(connectorRepository.getById(any()))
+        .thenReturn(Optional.of(Connector.getDefaultInstance()));
     return connectorRepository;
   }
 
   private static ConnectorRepository connectorRepositoryMissing() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(false);
+    when(connectorRepository.getById(any())).thenReturn(Optional.empty());
+    return connectorRepository;
+  }
+
+  private static ConnectorRepository connectorRepositoryDisabled() {
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    Connector connector =
+        Connector.newBuilder().setPolicy(ReconcilePolicy.newBuilder().setEnabled(false)).build();
+    when(connectorRepository.getById(any())).thenReturn(Optional.of(connector));
     return connectorRepository;
   }
 
@@ -643,6 +723,27 @@ class StatsOrchestratorTest {
   // ---------------------------------------------------------------------------
   // resolvePlannerBatch — cache correctness tests
   // ---------------------------------------------------------------------------
+
+  @Test
+  void queryCaptureDisabledDoesNotEnqueuePlannerMiss() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            store, jobStore, Mockito.mock(TableRepository.class), connectorRepositoryWith());
+    StatsCaptureRequest request = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(request.target());
+    when(store.getTargetStatsBatch(
+            request.tableId(), request.snapshotId(), List.of(request.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+
+    Map<String, StatsResolutionResult> result =
+        orchestrator.resolvePlannerBatch(List.of(request), false, Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(result.get(storageId).outcomeDetail()).isEqualTo("query_capture_disabled");
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
 
   @Test
   void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {

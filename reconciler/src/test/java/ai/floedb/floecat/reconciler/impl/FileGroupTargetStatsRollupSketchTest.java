@@ -27,14 +27,20 @@ import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
+import ai.floedb.floecat.catalog.rpc.StatsCoverage;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import com.google.protobuf.ByteString;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.Set;
+import org.apache.datasketches.hll.HllSketch;
+import org.apache.datasketches.hll.TgtHllType;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.junit.jupiter.api.Test;
 
@@ -274,6 +280,127 @@ class FileGroupTargetStatsRollupSketchTest {
   }
 
   @Test
+  void partialMerge_unionsHllAndTupleAcrossGroups() {
+    ScalarStats first =
+        scalarWithNdvSketches(
+            50,
+            ndvPayload("apache-datasketches-hll-v1", SketchRole.SKETCH_ROLE_NDV, hllBytes("a", "b"))
+                .toBuilder()
+                .putParams("lg_k", "12")
+                .build(),
+            ndvPayload("floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, tupleBytes(1L))
+                .toBuilder()
+                .putParams("nominal_entries", "4096")
+                .putParams("version", "2")
+                .build());
+    ScalarStats second =
+        scalarWithNdvSketches(
+            70,
+            ndvPayload("apache-datasketches-hll-v1", SketchRole.SKETCH_ROLE_NDV, hllBytes("c", "d"))
+                .toBuilder()
+                .putParams("lg_k", "12")
+                .build(),
+            ndvPayload("floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, tupleBytes(2L))
+                .toBuilder()
+                .putParams("nominal_entries", "4096")
+                .putParams("version", "2")
+                .build());
+
+    List<TargetStatsRecord> result =
+        FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE,
+            1L,
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            List.of(
+                TargetStatsRecords.columnRecord(TABLE, 1L, 1L, first, null),
+                TargetStatsRecords.columnRecord(TABLE, 1L, 1L, second, null)));
+
+    ScalarStats merged = onlyScalar(result);
+    assertEquals("apache-datasketches-hll", merged.getNdv().getApprox().getMethod());
+    assertEquals(4.0, merged.getNdv().getApprox().getEstimate(), 0.1);
+    SketchPayload mergedHll =
+        merged.getNdv().getSketchesList().stream()
+            .filter(sketch -> sketch.getSketchType().equals("apache-datasketches-hll-v1"))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(4.0, HllSketch.heapify(mergedHll.getData().toByteArray()).getEstimate(), 0.1);
+    assertEquals("12", mergedHll.getParamsOrThrow("lg_k"));
+    SketchPayload mergedTuple =
+        merged.getNdv().getSketchesList().stream()
+            .filter(sketch -> sketch.getSketchType().equals("floedb-tuple-v2"))
+            .findFirst()
+            .orElseThrow();
+    ByteBuffer tuple =
+        ByteBuffer.wrap(mergedTuple.getData().toByteArray()).order(ByteOrder.LITTLE_ENDIAN);
+    assertEquals(2L, tuple.getLong(16));
+    assertEquals("4096", mergedTuple.getParamsOrThrow("nominal_entries"));
+    assertEquals("2", mergedTuple.getParamsOrThrow("version"));
+  }
+
+  @Test
+  void partialMerge_usesTupleEstimateWhenNoThetaOrHllExists() {
+    ScalarStats first =
+        scalarWithNdvSketches(
+            50,
+            ndvPayload("floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, tupleBytes(1L))
+                .toBuilder()
+                .putParams("nominal_entries", "4096")
+                .build());
+    ScalarStats second =
+        scalarWithNdvSketches(
+            70,
+            ndvPayload("floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, tupleBytes(2L))
+                .toBuilder()
+                .putParams("nominal_entries", "4096")
+                .build());
+
+    ScalarStats merged =
+        onlyScalar(
+            FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(
+                    TargetStatsRecords.columnRecord(TABLE, 1L, 1L, first, null),
+                    TargetStatsRecords.columnRecord(TABLE, 1L, 1L, second, null))));
+
+    assertEquals("floedb-tuple", merged.getNdv().getApprox().getMethod());
+    assertEquals(2.0, merged.getNdv().getApprox().getEstimate(), 0.01);
+  }
+
+  @Test
+  void partialMerge_coverageMatchesDirectFileRollup() {
+    Set<FloecatConnector.StatsTargetKind> requested =
+        Set.of(FloecatConnector.StatsTargetKind.TABLE, FloecatConnector.StatsTargetKind.COLUMN);
+    TargetStatsRecord first = fileRecord(1L, scalarWithSketches(50, null, null));
+    TargetStatsRecord second = fileRecord(1L, scalarWithSketches(70, null, null));
+
+    List<TargetStatsRecord> partials =
+        java.util.stream.Stream.concat(
+                FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
+                    TABLE, 1L, requested, List.of(first))
+                    .stream(),
+                FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
+                    TABLE, 1L, requested, List.of(second))
+                    .stream())
+            .toList();
+    List<TargetStatsRecord> merged =
+        FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(TABLE, 1L, requested, partials);
+    List<TargetStatsRecord> direct =
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+            TABLE, 1L, requested, List.of(first, second));
+
+    assertEquals(
+        direct.stream().map(TargetStatsRecord::getMetadata).toList(),
+        merged.stream().map(TargetStatsRecord::getMetadata).toList());
+    StatsCoverage coverage = merged.getFirst().getMetadata().getCoverage();
+    assertEquals(120L, coverage.getRowsScanned());
+    assertEquals(2L, coverage.getFilesScanned());
+    assertEquals(4L, coverage.getRowGroupsSampled());
+    assertEquals(960L, coverage.getBytesScanned());
+  }
+
+  @Test
   void complete_preservesFinalColumnRecordWithOpaqueSketchPayloads() {
     ScalarStats finalColumnStats =
         scalarWithSketches(
@@ -304,6 +431,14 @@ class FileGroupTargetStatsRollupSketchTest {
     return TargetStatsRecord.newBuilder()
         .setTableId(TABLE)
         .setSnapshotId(1L)
+        .setMetadata(
+            StatsMetadata.newBuilder()
+                .setCoverage(
+                    StatsCoverage.newBuilder()
+                        .setRowsScanned(scalar.getRowCount())
+                        .setFilesScanned(1L)
+                        .setRowGroupsSampled(2L)
+                        .setBytesScanned(scalar.getRowCount() * 8L)))
         .setFile(
             FileTargetStats.newBuilder()
                 .setTableId(TABLE)
@@ -350,6 +485,15 @@ class FileGroupTargetStatsRollupSketchTest {
         .build();
   }
 
+  private static ScalarStats scalarWithNdvSketches(long rowCount, SketchPayload... ndvSketches) {
+    return ScalarStats.newBuilder()
+        .setDisplayName("col")
+        .setLogicalType("LONG")
+        .setRowCount(rowCount)
+        .setNdv(Ndv.newBuilder().addAllSketches(List.of(ndvSketches)))
+        .build();
+  }
+
   private static SketchPayload ndvPayload(String type, SketchRole role, byte[] data) {
     return SketchPayload.newBuilder()
         .setRole(role)
@@ -380,6 +524,27 @@ class FileGroupTargetStatsRollupSketchTest {
       sketch.update(value);
     }
     return sketch.compact().toByteArray();
+  }
+
+  private static byte[] hllBytes(String... values) {
+    HllSketch sketch = new HllSketch(12, TgtHllType.HLL_8);
+    for (String value : values) {
+      sketch.update(value);
+    }
+    return sketch.toCompactByteArray();
+  }
+
+  private static byte[] tupleBytes(long... hashes) {
+    ByteBuffer tuple = ByteBuffer.allocate(24 + hashes.length * 24).order(ByteOrder.LITTLE_ENDIAN);
+    tuple.putLong(Long.MAX_VALUE);
+    tuple.putLong(hashes.length);
+    tuple.putLong(hashes.length);
+    for (long hash : hashes) {
+      tuple.putLong(hash);
+      tuple.putLong(1L);
+      tuple.putLong(8L);
+    }
+    return tuple.array();
   }
 
   private static ScalarStats onlyScalar(List<TargetStatsRecord> records) {

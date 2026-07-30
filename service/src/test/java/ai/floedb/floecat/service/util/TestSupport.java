@@ -33,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Any;
@@ -41,6 +42,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import io.smallrye.mutiny.Multi;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -214,6 +216,37 @@ public final class TestSupport {
                                 .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
                         .build()));
     return resp.getSnapshot();
+  }
+
+  public static Snapshot createFinalizedSnapshot(
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotMutation,
+      MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statsMutation,
+      ResourceId tableId,
+      long snapshotId,
+      long upstreamCreatedAtMs) {
+    Snapshot snapshot = createSnapshot(snapshotMutation, tableId, snapshotId, upstreamCreatedAtMs);
+    TargetStatsRecord completionMarker =
+        TargetStatsRecords.tableRecord(
+            tableId,
+            snapshot.getSnapshotId(),
+            TableValueStats.newBuilder()
+                .setRowCount(0L)
+                .setDataFileCount(0L)
+                .setTotalSizeBytes(0L)
+                .build(),
+            null);
+    statsMutation
+        .putTargetStats(
+            Multi.createFrom()
+                .item(
+                    PutTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(snapshot.getSnapshotId())
+                        .addRecords(completionMarker)
+                        .build()))
+        .await()
+        .atMost(GRPC_READY_TIMEOUT);
+    return snapshot;
   }
 
   public static View createView(

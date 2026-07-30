@@ -32,5 +32,13 @@ public interface CaptureEngine {
     return capabilities().supports(request);
   }
 
-  Optional<CaptureEngineResult> capture(CaptureEngineRequest request);
+  /**
+   * Captures one file group, publishing each file-scoped stats record to the caller as soon as it
+   * is available.
+   *
+   * <p>The returned result contains only group-scoped aggregate partials and index outputs. File
+   * stats must not be retained in the result.
+   */
+  Optional<CaptureEngineResult> capture(
+      CaptureEngineRequest request, CaptureFileResultConsumer fileResultConsumer);
 }

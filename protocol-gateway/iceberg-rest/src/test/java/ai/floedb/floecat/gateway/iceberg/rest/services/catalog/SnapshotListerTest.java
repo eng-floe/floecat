@@ -33,6 +33,36 @@ import org.junit.jupiter.api.Test;
 class SnapshotListerTest {
 
   @Test
+  void allModeDeduplicatesSnapshotsAndUsesCanonicalCurrentValue() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Snapshot staleCurrent =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(40).setSchemaId(1).build();
+    Snapshot duplicateCurrent =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(40).setSchemaId(2).build();
+    Snapshot canonicalCurrent =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(40).setSchemaId(0).build();
+    GrpcServiceFacade grpc = mock(GrpcServiceFacade.class);
+    when(grpc.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(staleCurrent)
+                .addSnapshots(duplicateCurrent)
+                .build());
+    when(grpc.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(canonicalCurrent).build());
+
+    List<Snapshot> snapshots = SnapshotLister.fetchSnapshots(grpc, table, SnapshotLister.Mode.ALL);
+
+    assertEquals(List.of(canonicalCurrent), snapshots);
+  }
+
+  @Test
   void refsModeIncludesPointerCurrentSnapshotHistoryInsteadOfTableProperty() {
     ResourceId tableId =
         ResourceId.newBuilder()

@@ -1478,7 +1478,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void metadataExecutionReturnsOnlyCaptureIncompleteSnapshotsFromSingleEnumeration() {
+  void captureOnlyReturnsSelectedSnapshotsWithoutPhysicalStatsDeduplication() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -1488,6 +1488,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
     class Backend extends DefaultBackend {
       Set<Long> capturedKnownSnapshotIds = Set.of();
+      int indexCompletenessCalls;
 
       @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
@@ -1554,6 +1555,13 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
+      public boolean indexCaptureComplete(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        indexCompletenessCalls++;
+        return true;
+      }
+
+      @Override
       public void updateConnectorDestination(
           ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
@@ -1599,7 +1607,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             new SnapshotBundle(
                 42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
             new SnapshotBundle(
-                43L, 42L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                43L, 42L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
+            new SnapshotBundle(
+                44L, 43L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -1611,15 +1621,19 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             List.of(),
             tableId.getId(),
             List.of(),
-            ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(
+                    ReconcileCapturePolicy.Output.FILE_STATS,
+                    ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
 
     var result =
-        reconcileTableTask(
-            tableId, false, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+        reconcileTableTask(tableId, false, scope, ReconcilerService.CaptureMode.CAPTURE_ONLY);
 
     assertThat(result.ok()).isTrue();
-    assertThat(backend.capturedKnownSnapshotIds).containsExactly(43L);
-    assertThat(result.captureSnapshotIds()).containsExactly(42L);
+    assertThat(backend.capturedKnownSnapshotIds).isEmpty();
+    assertThat(result.captureSnapshotIds()).containsExactly(42L, 43L);
+    assertThat(backend.indexCompletenessCalls).isZero();
   }
 
   @Test

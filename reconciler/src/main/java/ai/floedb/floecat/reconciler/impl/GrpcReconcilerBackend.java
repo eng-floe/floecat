@@ -21,15 +21,12 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.GetIndexArtifactRequest;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
-import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -567,6 +564,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         request.tableId(),
         CaptureEngineResult.empty(),
         (source, sourceCtx) -> {
+          List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> fileStats =
+              new java.util.ArrayList<>();
+          List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
+              new java.util.ArrayList<>();
           CaptureEngineResult capture =
               captureEngineRegistry.capture(
                   new CaptureEngineRequest(
@@ -586,19 +587,28 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       Optional.of(sourceCtx.storageLocation()),
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
-                      ctx.executionLeaseEpoch()));
+                      ctx.executionLeaseEpoch(),
+                      () -> false),
+                  (completedFileStats, completedPageIndexEntries) -> {
+                    fileStats.addAll(completedFileStats);
+                    pageIndexEntries.addAll(completedPageIndexEntries);
+                  });
+          List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> stats =
+              new java.util.ArrayList<>(capture.statsRecords().size() + fileStats.size());
+          stats.addAll(capture.statsRecords());
+          stats.addAll(fileStats);
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
-            return capture;
+            return CaptureEngineResult.of(stats, pageIndexEntries, capture.stagedIndexArtifacts());
           }
           return CaptureEngineResult.of(
-              capture.statsRecords(),
+              stats,
               List.of(),
               FileGroupIndexArtifactStager.stage(
                   request.tableId(),
                   request.snapshotId(),
                   request.plannedFilePaths(),
-                  capture.statsRecords(),
-                  capture.pageIndexEntries()));
+                  fileStats,
+                  pageIndexEntries));
         });
   }
 
@@ -794,52 +804,21 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public boolean indexArtifactsCapturedForFilePaths(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> filePaths,
-      Set<String> selectors) {
-    if (filePaths == null || filePaths.isEmpty()) {
-      return true;
-    }
+  public boolean indexCaptureComplete(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
     Set<String> normalizedSelectors = normalizeIndexSelectors(selectors);
     if (normalizedSelectors == null) {
       return false;
     }
-    try {
-      for (String filePath : filePaths) {
-        if (filePath == null || filePath.isBlank()) {
-          return false;
-        }
-        var response =
-            index(ctx)
-                .getIndexArtifact(
-                    GetIndexArtifactRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                        .setTarget(
-                            IndexTarget.newBuilder()
-                                .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
-                                .build())
-                        .build());
-        if (response == null
-            || !response.hasRecord()
-            || response.getRecord().getState() != IndexArtifactState.IAS_READY) {
-          return false;
-        }
-        if (!normalizedSelectors.isEmpty()
-            && !persistedIndexSelectors(response.getRecord()).containsAll(normalizedSelectors)) {
-          return false;
-        }
-      }
-      return true;
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return false;
-      }
-      throw e;
-    }
+    var response =
+        index(ctx)
+            .getIndexCaptureStatus(
+                GetIndexCaptureStatusRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                    .addAllSelectors(normalizedSelectors)
+                    .build());
+    return response != null && response.getComplete();
   }
 
   @Override
@@ -967,24 +946,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       normalized.add(trimmed);
     }
     return Set.copyOf(normalized);
-  }
-
-  private static Set<String> persistedIndexSelectors(
-      ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
-    if (record == null) {
-      return Set.of();
-    }
-    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
-    if (encoded.isBlank()) {
-      return Set.of();
-    }
-    LinkedHashSet<String> selectors = new LinkedHashSet<>();
-    for (String token : encoded.split(",")) {
-      if (token != null && !token.isBlank()) {
-        selectors.add(token.trim());
-      }
-    }
-    return Set.copyOf(selectors);
   }
 
   private static List<PutIndexArtifactsRequest> groupIndexArtifactRequests(

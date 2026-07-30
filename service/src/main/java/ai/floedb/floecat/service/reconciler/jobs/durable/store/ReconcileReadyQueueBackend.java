@@ -16,14 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileReadyQueueBackend {
   record ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType indexType, String filterValue) {}
-
-  record ReadyQueueScanPage(
-      List<ReconcileReadyQueueStore.ReadyQueueEntry> entries, String nextPageToken) {}
 
   ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
       ReadyQueueSlice slice,
@@ -31,9 +27,9 @@ public interface ReconcileReadyQueueBackend {
       String pageToken,
       ReconcileReadyQueueStore.LeaseScanStats scanStats);
 
-  ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken);
-
-  boolean deleteReadyEntry(String readyPointerKey);
+  boolean deleteReadyEntry(
+      ReconcileReadyQueueStore.ReadyQueueEntry expected,
+      CanonicalPointerSnapshot expectedCanonicalSnapshot);
 
   Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
       String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats);

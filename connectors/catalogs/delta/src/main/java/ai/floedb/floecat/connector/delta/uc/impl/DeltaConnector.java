@@ -249,7 +249,7 @@ abstract class DeltaConnector implements FloecatConnector {
             : EnumSet.copyOf(includeTargetKinds);
     requestedKinds.remove(StatsTargetKind.EXPRESSION);
     if (requestedKinds.isEmpty()) {
-      return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0));
+      return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0, List.of()));
     }
 
     final String storageLocation = storageLocation(namespaceFq, tableName);
@@ -325,6 +325,21 @@ abstract class DeltaConnector implements FloecatConnector {
         planSnapshotFiles(namespaceFq, tableName, destinationTableId, snapshotId)
             .map(plan -> plan.dataFiles().size() + plan.deleteFiles().size())
             .orElse(0);
+    Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
+    if (requestedKinds.contains(StatsTargetKind.COLUMN)) {
+      var columnIds =
+          LogicalSchemaMapper.buildColumnOrdinals(
+              ColumnIdAlgorithm.CID_PATH_ORDINAL,
+              TableFormat.TF_DELTA,
+              snapshotSchemaJson(snapshot));
+      for (String name : includeNames) {
+        realizedStatsSelectors.add(name);
+        long columnId = columnIds.getOrDefault(name, 0);
+        if (columnId > 0L) {
+          realizedStatsSelectors.add("#" + columnId);
+        }
+      }
+    }
     return Optional.of(
         DirectSnapshotStatsCapture.of(
             buildTargetStats(
@@ -337,7 +352,8 @@ abstract class DeltaConnector implements FloecatConnector {
                 requestedKinds,
                 Set.of(),
                 false),
-            sourceFileCount));
+            sourceFileCount,
+            List.copyOf(realizedStatsSelectors)));
   }
 
   @Override
@@ -394,11 +410,25 @@ abstract class DeltaConnector implements FloecatConnector {
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
             plannedFilePaths);
+    Set<StatsTargetKind> requestedKinds =
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? Set.of(StatsTargetKind.FILE)
+            : includeTargetKinds;
+    List<String> realizedStatsSelectors =
+        requestedKinds.contains(StatsTargetKind.COLUMN)
+            ? FloecatConnector.resolveIncludedColumns(
+                    List.copyOf(DeltaTypeMapper.deltaTypeMap(snapshot.getSchema()).keySet()),
+                    includeColumns,
+                    columnSelectorPolicy)
+                .stream()
+                .sorted()
+                .toList()
+            : List.of();
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
             ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
             : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
   }
 
   @Override
@@ -409,11 +439,9 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     final String storageLocation = storageLocation(namespaceFq, tableName);
     final Table table = loadTable(storageLocation);
-    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
-    if (snapshot == null) {
+    if (table.getSnapshotAsOfVersion(engine, snapshotId) == null) {
       return Optional.empty();
     }
-
     try (var planner =
         new DeltaPlanner(
             engine,
@@ -428,9 +456,13 @@ abstract class DeltaConnector implements FloecatConnector {
             true)) {
       List<SnapshotFileEntry> dataFiles = new ArrayList<>();
       for (PlannedFile<String> planned : planner) {
-        dataFiles.add(toDataScanFile(planned));
+        dataFiles.add(toDataScanFile(planned, planner.deletionVectorForFile(planned.path())));
       }
-      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), List.of()));
+      return Optional.of(
+          new SnapshotFilePlan(
+              List.copyOf(dataFiles),
+              List.of(),
+              DataTypeJsonSerDe.serializeStructType(planner.schema())));
     }
   }
 
@@ -474,6 +506,11 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private static SnapshotFileEntry toDataScanFile(PlannedFile<String> planned) {
+    return toDataScanFile(planned, null);
+  }
+
+  private static SnapshotFileEntry toDataScanFile(
+      PlannedFile<String> planned, DeletionVectorDescriptor deletionVector) {
     return new SnapshotFileEntry(
         planned.path(),
         planned.format(),
@@ -483,7 +520,15 @@ abstract class DeltaConnector implements FloecatConnector {
         planned.partitionDataJson(),
         planned.partitionSpecId(),
         List.of(),
-        planned.sequenceNumber());
+        planned.sequenceNumber(),
+        deletionVector == null
+            ? null
+            : new SnapshotDeletionVector(
+                deletionVector.getStorageType(),
+                deletionVector.getPathOrInlineDv(),
+                deletionVector.getOffset().orElse(null),
+                deletionVector.getSizeInBytes(),
+                deletionVector.getCardinality()));
   }
 
   protected Table loadTable(String storageLocation) {
@@ -608,9 +653,20 @@ abstract class DeltaConnector implements FloecatConnector {
     switch (selectionKind) {
       case CURRENT -> candidates.add(latestVersion);
       case LATEST_N -> {
-        long start = Math.max(0L, latestVersion - Math.max(0, latestN) + 1L);
-        for (long version = start; version <= latestVersion; version++) {
-          candidates.add(version);
+        int keep = Math.max(0, latestN);
+        if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
+          List<Long> eligibleTargets =
+              targetSnapshotIds.stream()
+                  .filter(version -> version != null && version >= 0L && version <= latestVersion)
+                  .sorted()
+                  .toList();
+          int from = Math.max(0, eligibleTargets.size() - keep);
+          candidates.addAll(eligibleTargets.subList(from, eligibleTargets.size()));
+        } else {
+          long start = Math.max(0L, latestVersion - keep + 1L);
+          for (long version = start; version <= latestVersion; version++) {
+            candidates.add(version);
+          }
         }
       }
       case EXPLICIT ->

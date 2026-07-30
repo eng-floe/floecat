@@ -68,6 +68,11 @@ class MemoryReconcileLeaseBackendTest {
         new MemoryReconcileLeaseBackend(pointers, jobIndexBackend);
     ReconcileJobIndexCleanupManifest manifest =
         new ReconcileJobIndexCleanupManifest(List.of("index-1"), List.of("ready-1"));
+    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, "parent-1");
+    PointerStore.UnconditionalUpsert markerTouch =
+        new PointerStore.UnconditionalUpsert(
+            markerKey,
+            PointerReferences.opaqueMarkerPointer(markerKey, ACCOUNT_ID + "\nparent-1\n1\n0", 7L));
 
     boolean committed =
         leaseBackend.compareAndSetBatch(
@@ -75,11 +80,13 @@ class MemoryReconcileLeaseBackendTest {
             new ReconcileLeaseBackend.LeaseWriteBatch(
                 List.of(
                     new ReconcileLeaseBackend.LeaseRecordUpsert(
-                        ACCOUNT_ID, JOB_ID, 1L, "inline:lease:e30"))));
+                        ACCOUNT_ID, JOB_ID, 1L, "inline:lease:e30"))),
+            List.of(markerTouch));
 
     assertFalse(committed);
     assertTrue(jobIndexBackend.loadIndexEntry(CANONICAL_KEY).isEmpty());
     assertTrue(jobIndexBackend.loadCleanupManifest(CANONICAL_KEY).isEmpty());
+    assertTrue(pointers.get(markerKey).isEmpty());
   }
 
   @Test
@@ -109,6 +116,28 @@ class MemoryReconcileLeaseBackendTest {
                     op instanceof PointerStore.CasCheck check
                         && leaseKey.equals(check.key())
                         && check.expectedVersion() == 1L));
+  }
+
+  @Test
+  void leaseTransactionIncludesUnconditionalProjectionMarkerTouch() {
+    RecordingPointerStore pointers = new RecordingPointerStore();
+    MemoryReconcileJobIndexBackend jobIndexBackend = new MemoryReconcileJobIndexBackend(pointers);
+    MemoryReconcileLeaseBackend leaseBackend =
+        new MemoryReconcileLeaseBackend(pointers, jobIndexBackend);
+    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, "parent-1");
+    PointerStore.UnconditionalUpsert markerTouch =
+        new PointerStore.UnconditionalUpsert(
+            markerKey,
+            PointerReferences.opaqueMarkerPointer(markerKey, ACCOUNT_ID + "\nparent-1\n1\n0", 7L));
+
+    assertTrue(
+        leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            ReconcileLeaseBackend.LeaseWriteBatch.empty(),
+            List.of(markerTouch)));
+
+    assertEquals(7L, pointers.get(markerKey).orElseThrow().getVersion());
+    assertTrue(pointers.lastOps.contains(markerTouch));
   }
 
   private static ReconcileJobIndexStore.JobIndexWriteBatch canonicalUpsert(

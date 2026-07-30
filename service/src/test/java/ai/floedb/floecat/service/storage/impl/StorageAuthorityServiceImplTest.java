@@ -70,6 +70,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -238,6 +239,29 @@ class StorageAuthorityServiceImplTest {
 
     verify(repo).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong());
     assertEquals("sa-1", secretsManager.lastSecretId);
+  }
+
+  @Test
+  void deleteRetriesAnUnconditionalConcurrentMutation() {
+    AtomicInteger attempts = new AtomicInteger();
+    when(repo.deleteWithPrecondition(eq(AUTHORITY_ID), anyLong()))
+        .thenAnswer(
+            _ -> {
+              if (attempts.getAndIncrement() == 0) {
+                version.incrementAndGet();
+                return false;
+              }
+              return true;
+            });
+
+    service
+        .deleteStorageAuthority(
+            DeleteStorageAuthorityRequest.newBuilder().setAuthorityId(AUTHORITY_ID).build())
+        .await()
+        .indefinitely();
+
+    verify(repo, times(2)).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong());
+    assertTrue(secretsManager.deleteCalled);
   }
 
   @Test

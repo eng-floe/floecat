@@ -171,6 +171,16 @@ public interface ReconcileJobIndexBackend {
 
   JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken);
 
+  default JobIndexQueryPage listTerminalRetentionEntries(
+      String accountId, int limit, String pageToken) {
+    return new JobIndexQueryPage(List.of(), "");
+  }
+
+  default JobIndexQueryPage listTerminalRetentionEntries(
+      String accountId, long cutoffMs, int limit, String pageToken) {
+    return listTerminalRetentionEntries(accountId, limit, pageToken);
+  }
+
   JobIndexQueryPage listParentEntries(
       String accountId, String parentJobId, int limit, String pageToken);
 

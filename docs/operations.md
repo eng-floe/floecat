@@ -110,6 +110,7 @@ floecat.reconciler.executor.remote-planner.enabled
 floecat.reconciler.executor.remote-default.enabled
 floecat.reconciler.executor.remote-snapshot-planner.enabled
 floecat.reconciler.executor.remote-file-group.enabled
+floecat.reconciler.executor.remote-snapshot-finalize.enabled
 floecat.reconciler.executor.snapshot-finalize.enabled
 floecat.reconciler.authorization.header
 floecat.reconciler.oidc.issuer
@@ -140,8 +141,9 @@ Worker gRPC auth boundary:
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
 and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through
-`SubmitLeasedFileGroupExecutionResult`, which requires `result_id` so the control plane can
-enforce replay safety across worker retries.
+`CommitLeasedFileGroupResult`, which requires `result_id` so the control plane can enforce replay
+safety across worker retries. Success idempotently protects the referenced objects before completing
+the child job; these are ordered operations rather than one atomic storage transaction.
 
 For `floecat.kv=dynamodb`, the durable reconcile hot paths now use native queue-oriented storage
 layouts rather than broad generic prefix scans:

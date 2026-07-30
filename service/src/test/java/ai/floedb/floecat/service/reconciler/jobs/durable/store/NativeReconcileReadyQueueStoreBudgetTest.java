@@ -320,7 +320,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     assertTrue(leased.isEmpty());
     assertEquals(1, stats.leaseRaceRunningSkipCount);
-    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(queued.readyPointerKey);
+    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(any(), any());
   }
 
   @Test
@@ -357,7 +357,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     assertTrue(leased.isEmpty());
     assertEquals(1, stats.leaseRaceTerminalSkipCount);
-    verify(backend).deleteReadyEntry(queued.readyPointerKey);
+    verify(backend).deleteReadyEntry(eq(candidate), eq(snapshot));
   }
 
   @Test
@@ -397,7 +397,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     assertTrue(leased.isEmpty());
     assertEquals(1, stats.skipCounts().get("lease_conflict_cas_conflict"));
-    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(queued.readyPointerKey);
+    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(any(), any());
   }
 
   @Test
@@ -515,12 +515,9 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
       throw new UnsupportedOperationException();
     }
 
@@ -581,13 +578,10 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
-      deleted.add(readyPointerKey);
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+      deleted.add(expected.readyPointerKey());
       return true;
     }
 
@@ -614,12 +608,9 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
       return true;
     }
 
@@ -654,13 +645,10 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
-      deleted.add(readyPointerKey);
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+      deleted.add(expected.readyPointerKey());
       return true;
     }
 
@@ -698,13 +686,10 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean deleteReadyEntry(String readyPointerKey) {
-      deleted.add(readyPointerKey);
+    public boolean deleteReadyEntry(
+        ReconcileReadyQueueStore.ReadyQueueEntry expected,
+        CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+      deleted.add(expected.readyPointerKey());
       return true;
     }
 

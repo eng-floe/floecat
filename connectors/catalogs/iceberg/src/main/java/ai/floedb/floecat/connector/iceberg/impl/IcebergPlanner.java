@@ -64,6 +64,7 @@ final class IcebergPlanner implements Planner<Integer> {
 
   private final List<PlannedFile<Integer>> files = new ArrayList<>();
   private final List<DeleteFileStat> deleteFiles = new ArrayList<>();
+  private final Map<String, List<DeleteFileStat>> deleteFilesByDataFile = new HashMap<>();
   private final Map<Integer, String> idToName = new HashMap<>();
   private final Map<Integer, LogicalType> idToLogical = new HashMap<>();
   private final Map<Integer, Type> idToIceType = new HashMap<>();
@@ -111,24 +112,11 @@ final class IcebergPlanner implements Planner<Integer> {
           String dataPath = task.file().location().toString();
           if (this.plannedFilePaths.isEmpty() || this.plannedFilePaths.contains(dataPath)) {
             files.add(toPlanned(task.file()));
-          }
-          for (var deleteFile : task.deletes()) {
-            String deletePath = deleteFile.location().toString();
-            if (!this.plannedFilePaths.isEmpty() && !this.plannedFilePaths.contains(deletePath)) {
-              continue;
+            deleteFilesByDataFile.put(
+                dataPath, task.deletes().stream().map(IcebergPlanner::toDeleteFileStat).toList());
+            for (var deleteFile : task.deletes()) {
+              deleteFiles.add(toDeleteFileStat(deleteFile));
             }
-            List<Integer> equalityFieldIds =
-                deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                    ? List.copyOf(deleteFile.equalityFieldIds())
-                    : List.of();
-            deleteFiles.add(
-                new DeleteFileStat(
-                    deleteFile.location().toString(),
-                    deleteFile.recordCount(),
-                    deleteFile.fileSizeInBytes(),
-                    deleteFile.content(),
-                    deleteFile.fileSequenceNumber(),
-                    equalityFieldIds));
           }
         }
       } catch (Exception e) {
@@ -164,6 +152,14 @@ final class IcebergPlanner implements Planner<Integer> {
     return List.copyOf(deleteFiles);
   }
 
+  List<DeleteFileStat> deleteFilesForDataFile(String dataFilePath) {
+    return deleteFilesByDataFile.getOrDefault(dataFilePath, List.of());
+  }
+
+  Schema schema() {
+    return schema;
+  }
+
   @Override
   public void close() {}
 
@@ -192,8 +188,24 @@ final class IcebergPlanner implements Planner<Integer> {
       long recordCount,
       long fileSizeInBytes,
       org.apache.iceberg.FileContent content,
+      int partitionSpecId,
       Long fileSequenceNumber,
       List<Integer> equalityFieldIds) {}
+
+  private static DeleteFileStat toDeleteFileStat(org.apache.iceberg.DeleteFile deleteFile) {
+    List<Integer> equalityFieldIds =
+        deleteFile.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+            ? List.copyOf(deleteFile.equalityFieldIds())
+            : List.of();
+    return new DeleteFileStat(
+        deleteFile.location().toString(),
+        deleteFile.recordCount(),
+        deleteFile.fileSizeInBytes(),
+        deleteFile.content(),
+        deleteFile.specId(),
+        deleteFile.fileSequenceNumber(),
+        equalityFieldIds);
+  }
 
   private void collectFieldMetadata(Types.NestedField field) {
     if (field == null) {

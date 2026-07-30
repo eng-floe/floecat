@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -26,6 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -122,12 +124,21 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             0,
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
+      List<StatsObjectDescriptor> fileStats = new ArrayList<>();
+      StandaloneFileGroupExecutionPayload executionPayload = payload;
       var captured =
-          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
+          runner.execute(
+              payload,
+              context.shouldStop(),
+              fileStat -> fileStats.add(workerClient.publishFileStats(executionPayload, fileStat)));
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
-              successResultId, captured.statsRecords(), captured.stagedIndexArtifacts());
+              successResultId,
+              captured.statsRecords(),
+              fileStats,
+              captured.stagedIndexArtifacts(),
+              captured.realizedStatsSelectors());
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
         throw new IllegalStateException(
             "page-index capture produced no staged artifacts for file group " + payload.groupId());
@@ -150,7 +161,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
                   + String.join(", ", missingArtifactFiles));
         }
       }
-      long statsProcessed = captured.statsRecords().size();
+      long statsProcessed = fileStats.size();
       return submitTerminalSuccess(
           context,
           lease,
@@ -159,6 +170,8 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
           result,
           statsProcessed,
           "Executed file group " + payload.groupId());
+    } catch (CancellationException e) {
+      return stopRequestedResult(payload);
     } catch (ReconcileFailureException e) {
       throw e;
     } catch (RuntimeException e) {

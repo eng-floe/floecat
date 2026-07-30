@@ -20,14 +20,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +58,10 @@ class CasBlobGcSchedulerTest {
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.casBlobGc = () -> gc;
-    scheduler.observability = new TestObservability();
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    StorageUsageMetrics storageUsageMetrics = new StorageUsageMetrics(observability);
+    scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
 
     // Test config disables CAS GC; a system property (higher config ordinal) re-enables it for the
@@ -69,6 +77,37 @@ class CasBlobGcSchedulerTest {
     assertEquals(2, gc.accountIds.size());
     assertTrue(gc.accountIds.contains("acct-a"));
     assertTrue(gc.accountIds.contains("acct-b"));
+    assertEquals(
+        2L,
+        observability
+            .gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_POINTERS)
+            .get()
+            .longValue());
+  }
+
+  @Test
+  void poisonedSweepDoesNotPublishATruncatedStorageEstimate() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of(account("acct-a")));
+    RecordingGc gc = new RecordingGc();
+    gc.poisonAccountId = "acct-a";
+    StorageUsageMetrics storageUsageMetrics = mock(StorageUsageMetrics.class);
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    scheduler.observability = new TestObservability();
+    scheduler.storageUsageMetrics = () -> storageUsageMetrics;
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    verify(storageUsageMetrics, never())
+        .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
   }
 
   private static Account account(String accountId) {
@@ -82,14 +121,18 @@ class CasBlobGcSchedulerTest {
   private static final class RecordingGc extends CasBlobGc {
     private final List<String> accountIds = new ArrayList<>();
     private String failAccountId;
+    private String poisonAccountId;
 
     @Override
-    public Result runForAccount(String accountId) {
+    public Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
       }
-      return new Result(0, 0, 0, 0, 0, 0, false, false);
+      if (accountId.equals(poisonAccountId)) {
+        return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
+      }
+      return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
     }
   }
 }

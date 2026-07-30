@@ -26,9 +26,11 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CurrentSnapshotPointerService {
+  private static final Logger LOG = Logger.getLogger(CurrentSnapshotPointerService.class);
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRootWriter rootWriter;

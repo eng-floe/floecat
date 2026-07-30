@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueSpec;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScopeCanonicalizer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
@@ -55,11 +56,6 @@ import org.jboss.logging.Logger;
 public class ReconcileJobEnqueuer {
   private static final Logger LOG = Logger.getLogger(ReconcileJobEnqueuer.class);
 
-  @FunctionalInterface
-  public interface ResultPayloadWriter {
-    String write(String accountId, String jobId, ReconcileFileGroupTask fileGroupTask);
-  }
-
   private BlobStore blobStore;
   private ReconcilePayloadStore payloadStore;
   private ReconcileJobProjector projector;
@@ -70,7 +66,6 @@ public class ReconcileJobEnqueuer {
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
-  private ResultPayloadWriter writeFileGroupResultPayload;
 
   @FunctionalInterface
   public interface ReadyPointerKeyForDue {
@@ -87,8 +82,7 @@ public class ReconcileJobEnqueuer {
           materializeSnapshotPlanFileGroups,
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
-      ReadyPointerKeyForDue readyPointerKeyForDue,
-      ResultPayloadWriter writeFileGroupResultPayload) {
+      ReadyPointerKeyForDue readyPointerKeyForDue) {
     this.blobStore = blobStore;
     this.payloadStore = payloadStore;
     this.projector = projector;
@@ -98,7 +92,6 @@ public class ReconcileJobEnqueuer {
     this.readyPointerKeys = readyPointerKeys;
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
-    this.writeFileGroupResultPayload = writeFileGroupResultPayload;
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
@@ -238,7 +231,6 @@ public class ReconcileJobEnqueuer {
         entry.readyKeys,
         entry.stateKeys,
         entry.connectorIndexKey,
-        entry.resultBlobUri,
         entry.record);
   }
 
@@ -253,7 +245,6 @@ public class ReconcileJobEnqueuer {
             entry.readyKeys,
             entry.stateKeys,
             entry.connectorIndexKey,
-            entry.resultBlobUri,
             entry.record));
   }
 
@@ -307,7 +298,7 @@ public class ReconcileJobEnqueuer {
     String jobId = UUID.randomUUID().toString();
     if (effectiveJobKind == ReconcileJobKind.EXEC_FILE_GROUP) {
       LOG.infof(
-          "enqueue EXEC_FILE_GROUP identity jobId=%s parentJobId=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d paths=%d results=%d",
+          "enqueue EXEC_FILE_GROUP identity jobId=%s parentJobId=%s planId=%s groupId=%s tableId=%s snapshotId=%d fileCount=%d paths=%d",
           jobId,
           spec.parentJobId,
           effectiveFileGroupTask.planId(),
@@ -315,8 +306,7 @@ public class ReconcileJobEnqueuer {
           effectiveFileGroupTask.tableId(),
           effectiveFileGroupTask.snapshotId(),
           effectiveFileGroupTask.fileCount(),
-          effectiveFileGroupTask.filePaths().size(),
-          effectiveFileGroupTask.fileResults().size());
+          effectiveFileGroupTask.filePaths().size());
     }
     requireExplicitSnapshotCoverage(effectiveJobKind, effectiveSnapshotTask);
     requireExecFileGroupIdentity(effectiveJobKind, effectiveFileGroupTask);
@@ -326,6 +316,12 @@ public class ReconcileJobEnqueuer {
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask);
+    ReconcileScope identityScope =
+        ReconcileScopeCanonicalizer.resolvedWorkScope(
+            scope,
+            effectiveJobKind,
+            effectiveSnapshotTask,
+            spec.captureMode == CaptureMode.CAPTURE_ONLY);
     ReconcileExecutionPolicy policy =
         spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
     String laneKey =
@@ -354,7 +350,7 @@ public class ReconcileJobEnqueuer {
             spec.connectorId,
             spec.fullRescan,
             spec.captureMode,
-            scope,
+            identityScope,
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
@@ -391,6 +387,10 @@ public class ReconcileJobEnqueuer {
             indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
             definition,
             snapshotPlanBlobUri);
+    record.snapshotTaskIndexPredecessorPinPending =
+        effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT
+            && scope.capturePolicy().requestsIndexes()
+            && effectiveSnapshotTask.indexPredecessor() == null;
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
       LOG.debugf(
           "enqueue persisted PLAN_SNAPSHOT jobId=%s parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
@@ -414,11 +414,6 @@ public class ReconcileJobEnqueuer {
         record.connectorIndexPointerKey,
         snapshotPlanBlobUri,
         snapshotPlanBlob(snapshotPlanFileGroups),
-        effectiveJobKind == ReconcileJobKind.EXEC_FILE_GROUP
-            ? effectiveFileGroupTask
-            : effectiveFileGroupTask.fileResults().isEmpty()
-                ? ReconcileFileGroupTask.empty()
-                : effectiveFileGroupTask,
         record);
   }
 
@@ -467,11 +462,25 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceTable = effectiveSnapshotTask.sourceTable();
     rec.snapshotTaskFileGroupPlanRecorded = effectiveSnapshotTask.fileGroupPlanRecorded();
     rec.snapshotTaskCompletionMode = effectiveSnapshotTask.completionMode().name();
+    rec.snapshotTaskFileGroupCount = effectiveSnapshotTask.fileGroupCount();
     rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
-    rec.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
-        effectiveSnapshotTask.directStatsPersistedRecordCountsByChunk();
+    rec.snapshotTaskSourceRevision = blankToEmpty(effectiveSnapshotTask.sourceRevision());
+    rec.snapshotTaskMetadataFingerprint = blankToEmpty(effectiveSnapshotTask.metadataFingerprint());
+    rec.snapshotTaskRequestedCoverage = effectiveSnapshotTask.requestedCoverage();
+    var snapshotIndexPredecessor = effectiveSnapshotTask.indexPredecessor();
+    rec.snapshotTaskIndexPredecessorPresent = snapshotIndexPredecessor != null;
+    rec.snapshotTaskIndexPredecessorGenerationId =
+        snapshotIndexPredecessor == null ? "" : snapshotIndexPredecessor.generationId();
+    rec.snapshotTaskIndexPredecessorActivePointerVersion =
+        snapshotIndexPredecessor == null ? 0L : snapshotIndexPredecessor.activePointerVersion();
+    rec.snapshotTaskIndexPredecessorCaptureManifestUri =
+        snapshotIndexPredecessor == null ? "" : snapshotIndexPredecessor.captureManifestUri();
+    rec.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+        snapshotIndexPredecessor == null
+            ? 0L
+            : snapshotIndexPredecessor.captureManifestPointerVersion();
     rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
     rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
     rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());
@@ -504,7 +513,6 @@ public class ReconcileJobEnqueuer {
     rec.laneKey = laneKey;
     rec.dedupeKeyHash = dedupeKeyHash;
     rec.readyPointerKey = readyPointerKey;
-    rec.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
     rec.connectorIndexPointerKey = connectorIndexPointerKey;
     rec.createdAtMs = now;
     rec.updatedAtMs = now;
@@ -519,12 +527,6 @@ public class ReconcileJobEnqueuer {
           "Failed to persist snapshot plan payload");
       entry.snapshotPlanWritten = true;
     }
-    if (!entry.resultPayloadTask.isEmpty()) {
-      entry.resultBlobUri =
-          writeFileGroupResultPayload.write(
-              entry.record.accountId, entry.record.jobId, entry.resultPayloadTask);
-      entry.record.fileGroupResultBlobUri = entry.resultBlobUri;
-    }
   }
 
   private void rollbackFailedBulkEnqueue(PendingBulkEnqueue entry) {
@@ -533,9 +535,6 @@ public class ReconcileJobEnqueuer {
     }
     if (entry.snapshotPlanWritten) {
       blobStore.delete(entry.snapshotPlanBlobUri);
-    }
-    if (entry.resultBlobUri != null && !entry.resultBlobUri.isBlank()) {
-      blobStore.delete(entry.resultBlobUri);
     }
   }
 
@@ -736,13 +735,24 @@ public class ReconcileJobEnqueuer {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
+    boolean coalesceStatsOnlyCapture =
+        jobKind == ReconcileJobKind.PLAN_CONNECTOR
+            && captureMode == CaptureMode.CAPTURE_ONLY
+            && scope.capturePolicy().requestsStats()
+            && !scope.capturePolicy().requestsIndexes()
+            && !scope.destinationCaptureRequests().isEmpty();
     String captureRequests =
-        scope.destinationCaptureRequests().stream()
-            .map(ReconcileJobEnqueuer::canonicalCaptureRequest)
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("");
-    String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
+        coalesceStatsOnlyCapture
+            ? canonicalStatsOnlyCaptureRequests(scope.destinationCaptureRequests())
+            : scope.destinationCaptureRequests().stream()
+                .map(ReconcileJobEnqueuer::canonicalCaptureRequest)
+                .sorted()
+                .reduce((a, b) -> a + "," + b)
+                .orElse("");
+    String capturePolicy =
+        coalesceStatsOnlyCapture
+            ? canonicalStatsOnlyCapturePolicy(scope.capturePolicy())
+            : canonicalCapturePolicy(scope.capturePolicy());
     String snapshotSelection = canonicalSnapshotSelection(scope.snapshotSelection());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
@@ -865,9 +875,7 @@ public class ReconcileJobEnqueuer {
               + " fileCount="
               + effective.fileCount()
               + " paths="
-              + effective.filePaths().size()
-              + " results="
-              + effective.fileResults().size());
+              + effective.filePaths().size());
     }
   }
 
@@ -898,6 +906,28 @@ public class ReconcileJobEnqueuer {
         + selectors;
   }
 
+  private static String canonicalStatsOnlyCaptureRequests(
+      List<ReconcileScope.ScopedCaptureRequest> requests) {
+    return requests.stream()
+        .map(request -> request.tableId() + "|" + request.snapshotId())
+        .distinct()
+        .sorted()
+        .reduce((a, b) -> a + "," + b)
+        .orElse("");
+  }
+
+  private static String canonicalStatsOnlyCapturePolicy(ReconcileCapturePolicy policy) {
+    String outputs =
+        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
+    return outputs
+        + "|"
+        + policy.properties().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .map(entry -> entry.getKey() + "=" + entry.getValue())
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
+  }
+
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
     if (policy == null || policy.isEmpty()) {
       return "";
@@ -918,7 +948,13 @@ public class ReconcileJobEnqueuer {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + policy.properties().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .map(entry -> entry.getKey() + "=" + entry.getValue())
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
@@ -988,10 +1024,8 @@ public class ReconcileJobEnqueuer {
     final String connectorIndexKey;
     final String snapshotPlanBlobUri;
     final SnapshotPlanBlob snapshotPlanPayload;
-    final ReconcileFileGroupTask resultPayloadTask;
     final StoredReconcileJob record;
     boolean snapshotPlanWritten;
-    String resultBlobUri;
 
     private PendingBulkEnqueue(
         int index,
@@ -1004,7 +1038,6 @@ public class ReconcileJobEnqueuer {
         String connectorIndexKey,
         String snapshotPlanBlobUri,
         SnapshotPlanBlob snapshotPlanPayload,
-        ReconcileFileGroupTask resultPayloadTask,
         StoredReconcileJob record) {
       this.index = index;
       this.dedupePointerKey = dedupePointerKey;
@@ -1016,7 +1049,6 @@ public class ReconcileJobEnqueuer {
       this.connectorIndexKey = connectorIndexKey;
       this.snapshotPlanBlobUri = snapshotPlanBlobUri;
       this.snapshotPlanPayload = snapshotPlanPayload;
-      this.resultPayloadTask = resultPayloadTask;
       this.record = record;
     }
   }

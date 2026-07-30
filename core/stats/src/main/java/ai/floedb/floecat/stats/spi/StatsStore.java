@@ -19,6 +19,7 @@ package ai.floedb.floecat.stats.spi;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import com.google.protobuf.Timestamp;
@@ -37,6 +38,43 @@ import java.util.Optional;
  * implementation needs to read or write persisted stats.
  */
 public interface StatsStore {
+  record PrewrittenTargetStatsReference(
+      String targetStorageId, String blobUri, long blobBytes, byte[] blobSha256) {}
+
+  record PrewrittenStatsObject(String blobUri, long blobBytes, byte[] blobSha256) {}
+
+  record StatsGenerationPredecessor(String generationId, long manifestVersion) {
+    public StatsGenerationPredecessor {
+      generationId = generationId == null ? "" : generationId;
+      if (manifestVersion < 0L) {
+        throw new IllegalArgumentException("manifestVersion must be non-negative");
+      }
+    }
+  }
+
+  record PublicationPointerUpdate(String pointerKey, long expectedVersion, Pointer next) {
+    public PublicationPointerUpdate {
+      if (pointerKey == null || pointerKey.isBlank()) {
+        throw new IllegalArgumentException("pointerKey is required");
+      }
+      if (expectedVersion < 0L) {
+        throw new IllegalArgumentException("expectedVersion must be non-negative");
+      }
+      if (next == null) {
+        throw new IllegalArgumentException("next pointer is required");
+      }
+    }
+  }
+
+  record PublicationFence(List<PublicationPointerUpdate> pointerUpdates) {
+    public PublicationFence {
+      pointerUpdates = pointerUpdates == null ? List.of() : List.copyOf(pointerUpdates);
+      if (pointerUpdates.isEmpty()) {
+        throw new IllegalArgumentException("pointerUpdates are required");
+      }
+    }
+  }
+
   enum UnpublishedGenerationDeleteResult {
     DELETED,
     NOT_DELETABLE_PUBLISHED,
@@ -269,6 +307,94 @@ public interface StatsStore {
   }
 
   /**
+   * Registers immutable target-stats objects that a fenced worker already wrote.
+   *
+   * <p>The implementation creates generation-scoped target mappings without rewriting the blob
+   * bytes. The generation remains unpublished until {@link #publishStatsGeneration} succeeds.
+   */
+  default void registerPrewrittenStatsReferencesInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> references) {
+    throw new UnsupportedOperationException("prewritten stats objects are not supported");
+  }
+
+  /** Registers worker-written records and publishes their generation without reading the blobs. */
+  default void publishPrewrittenStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> references) {
+    throw new UnsupportedOperationException("prewritten stats generation publish is not supported");
+  }
+
+  /**
+   * Publishes a generation whose bounded worker references were registered before finalization.
+   *
+   * <p>Only {@code finalReferences}, such as aggregate records produced by the finalizer, are
+   * registered by this call. Implementations must activate the already-prepared generation without
+   * enumerating or reading its worker-written objects.
+   */
+  default boolean publishPreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> finalReferences,
+      StatsGenerationPredecessor predecessor,
+      PublicationFence publicationFence) {
+    throw new UnsupportedOperationException("prepared stats generation publish is not supported");
+  }
+
+  default StatsGenerationPredecessor prepareStatsGenerationForPublication(
+      ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
+    throw new UnsupportedOperationException("prepared stats generation rebasing is not supported");
+  }
+
+  /**
+   * Records that one accepted file-group result finished staging all of its bounded pointer
+   * mappings. This marker contains metadata only and is written after stats and index mappings.
+   */
+  default void markPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    throw new UnsupportedOperationException("prepared file-group markers are not supported");
+  }
+
+  /** Verifies an accepted file group's metadata-only staging completion marker. */
+  default boolean isPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    return false;
+  }
+
+  /**
+   * Protects immutable worker-written stats objects while their generation is still unpublished.
+   *
+   * <p>The protection is scoped to one fenced worker result and is not visible to stats readers.
+   */
+  default void protectPrewrittenStatsObjectsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String protectionId,
+      List<PrewrittenStatsObject> objects) {
+    throw new UnsupportedOperationException("prewritten stats object protection is not supported");
+  }
+
+  /** Removes all temporary worker-object protections after their target mappings are published. */
+  default void clearPrewrittenStatsObjectProtections(
+      ResourceId tableId, long snapshotId, String generationId) {}
+
+  /**
    * Publishes an unpublished generation as the active stats generation for a table snapshot.
    *
    * <p>{@code finalRecords} are written into the generation immediately before publication; callers
@@ -280,6 +406,22 @@ public interface StatsStore {
       String generationId,
       List<TargetStatsRecord> finalRecords) {
     throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Publishes an unpublished generation, optionally enriching it from the active generation.
+   *
+   * <p>Full rescans pass {@code false}: their output is authoritative and must not read payloads
+   * from the generation being replaced. Incremental publication retains the default enrichment
+   * behavior.
+   */
+  default void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords,
+      boolean carryForwardSupersededSketches) {
+    publishStatsGeneration(tableId, snapshotId, generationId, finalRecords);
   }
 
   /**
@@ -320,6 +462,15 @@ public interface StatsStore {
     }
   }
 
+  /** Replaces a snapshot generation, optionally enriching it from the generation being replaced. */
+  default void replaceAllStatsForSnapshot(
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> records,
+      boolean carryForwardSupersededSketches) {
+    replaceAllStatsForSnapshot(tableId, snapshotId, records);
+  }
+
   /**
    * Returns mutation metadata for an exact table/snapshot/target key.
    *
@@ -332,12 +483,31 @@ public interface StatsStore {
    * Immutable page container for {@link #listTargetStats}.
    *
    * <p>Records are defensively copied; {@code nextPageToken} is normalized to empty-string when
-   * null.
+   * null. Implementations that may serve the gRPC list endpoint provide one continuation token per
+   * record so response byte-bounding can resume after the last emitted record without skipping over
+   * fetched records.
    */
-  record StatsStorePage(List<TargetStatsRecord> records, String nextPageToken) {
+  record StatsStorePage(
+      List<TargetStatsRecord> records, String nextPageToken, List<String> continuationTokens) {
+    public StatsStorePage(List<TargetStatsRecord> records, String nextPageToken) {
+      this(records, nextPageToken, List.of());
+    }
+
     public StatsStorePage {
       records = records == null ? List.of() : List.copyOf(records);
       nextPageToken = nextPageToken == null ? "" : nextPageToken;
+      continuationTokens = continuationTokens == null ? List.of() : List.copyOf(continuationTokens);
+      if (!continuationTokens.isEmpty() && continuationTokens.size() != records.size()) {
+        throw new IllegalArgumentException(
+            "continuationTokens must be empty or match the record count");
+      }
+    }
+
+    public String continuationTokenAfter(int recordIndex) {
+      if (continuationTokens.isEmpty()) {
+        throw new IllegalStateException("store did not provide per-record continuation tokens");
+      }
+      return continuationTokens.get(recordIndex);
     }
   }
 }

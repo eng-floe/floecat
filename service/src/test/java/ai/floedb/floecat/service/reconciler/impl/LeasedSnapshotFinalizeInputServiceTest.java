@@ -28,7 +28,9 @@ import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -37,9 +39,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -66,7 +70,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.childStateService = childStateService;
-    service.coverageService = coverageService;
     childStateService.jobs = jobs;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
@@ -77,7 +80,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"));
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(
             Optional.of(
                 finalizeJob(
@@ -100,10 +103,14 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_RUNNING", plannedGroup, ReconcileFileGroupTask.empty())), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_RUNNING", plannedGroup, ReconcileFileGroupTask.empty()),
+                        null)),
+                ""));
 
     StatusRuntimeException error =
         assertThrows(
@@ -134,7 +141,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 1L)))
             .withPartialAggregateRecords(List.of(partialAggregateRecord()));
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(
             Optional.of(
                 finalizeJob(
@@ -157,10 +164,14 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_SUCCEEDED", plannedGroup, persistedGroup)), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_SUCCEEDED", plannedGroup, persistedGroup),
+                        resultDescriptor(plannedGroup))),
+                ""));
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
@@ -169,10 +180,10 @@ class LeasedSnapshotFinalizeInputServiceTest {
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
     assertFalse(payload.fullRescan());
-    assertEquals(1, payload.snapshotTask().fileGroups().size());
+    assertEquals(1, payload.fileGroupCount());
     assertEquals(
-        List.of(partialAggregateRecord()),
-        payload.snapshotTask().fileGroups().get(0).partialAggregateRecords());
+        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+        payload.snapshotPlanUri());
   }
 
   @Test
@@ -192,7 +203,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
             "/accounts/acct/reconcile/jobs/parent-job/direct-stats/blob.json",
             2);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(Optional.of(finalizeJob("JS_RUNNING", false, directStatsTask)));
     when(coverageService.expectedCoverage(directStatsTask))
         .thenReturn(
@@ -243,7 +254,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
             "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
             1);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(Optional.of(finalizeJob("JS_RUNNING", false, durableSnapshotTask)));
     when(coverageService.expectedCoverage(durableSnapshotTask))
         .thenReturn(
@@ -252,19 +263,24 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_SUCCEEDED", plannedGroup, persistedGroup)), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_SUCCEEDED", plannedGroup, persistedGroup),
+                        resultDescriptor(plannedGroup))),
+                ""));
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
     assertEquals(
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
+    assertEquals(1, payload.fileGroupCount());
     assertEquals(
-        List.of(partialAggregateRecord()),
-        payload.snapshotTask().fileGroups().get(0).partialAggregateRecords());
+        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+        payload.snapshotPlanUri());
   }
 
   @Test
@@ -281,7 +297,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
             "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
             0);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask)));
     when(coverageService.expectedCoverage(emptyTask))
         .thenReturn(
@@ -300,8 +316,83 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertTrue(payload.fullRescan());
   }
 
+  @Test
+  void resolveExplicitEmptyIndexSnapshotUsesPinnedPredecessor() {
+    var pinnedPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    ReconcileSnapshotTask emptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    emptyTask = emptyTask.withIndexPredecessor(pinnedPredecessor);
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask, scope)));
+    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L),
+        payload.indexPredecessor());
+  }
+
+  @Test
+  void resolveRejectsIndexSnapshotWithoutPinnedPredecessor() {
+    ReconcileSnapshotTask emptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask, scope)));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH));
+
+    assertEquals(
+        "FAILED_PRECONDITION: snapshot index generation predecessor was not pinned before fan-out",
+        error.getMessage());
+  }
+
   private static ReconcileJobStore.ReconcileJob finalizeJob(
       String state, boolean fullRescan, ReconcileSnapshotTask snapshotTask) {
+    return finalizeJob(state, fullRescan, snapshotTask, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJob(
+      String state, boolean fullRescan, ReconcileSnapshotTask snapshotTask, ReconcileScope scope) {
     return new ReconcileJobStore.ReconcileJob(
         FINALIZE_JOB_ID,
         ACCOUNT_ID,
@@ -319,7 +410,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "",
         ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
@@ -358,6 +449,36 @@ class LeasedSnapshotFinalizeInputServiceTest {
         ReconcileSnapshotTask.empty(),
         persistedTask.isEmpty() ? taskRef : persistedTask,
         PARENT_JOB_ID);
+  }
+
+  private static ReconcileFileGroupResultDescriptor resultDescriptor(
+      ReconcileFileGroupTask plannedGroup) {
+    return new ReconcileFileGroupResultDescriptor(
+        1,
+        ACCOUNT_ID,
+        "connector",
+        PARENT_JOB_ID,
+        "child-job",
+        plannedGroup.planId(),
+        plannedGroup.groupId(),
+        plannedGroup.tableId(),
+        plannedGroup.snapshotId(),
+        "child-lease",
+        "result-1",
+        "/accounts/acct/reconcile/jobs/child-job/file-group-result/result.pb",
+        100L,
+        "dGVzdA==",
+        plannedGroup.fileCount(),
+        plannedGroup.fileCount(),
+        0,
+        0,
+        0,
+        0,
+        "/accounts/acct/reconcile/jobs/child-job/file-group-result/stats/",
+        plannedGroup.fileCount(),
+        "0".repeat(64),
+        null,
+        1L);
   }
 
   private static TargetStatsRecord partialAggregateRecord() {

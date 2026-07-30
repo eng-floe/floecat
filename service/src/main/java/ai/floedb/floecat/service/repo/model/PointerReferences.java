@@ -54,6 +54,14 @@ public final class PointerReferences {
   }
 
   public static Pointer blobPointer(
+      String key, String blobUri, long version, long referencedObjectSizeBytes) {
+    return asBlobPointer(
+            Pointer.newBuilder().setKey(blankToEmpty(key)).setVersion(version), blobUri)
+        .setReferencedObjectSizeBytes(Math.max(0L, referencedObjectSizeBytes))
+        .build();
+  }
+
+  public static Pointer blobPointer(
       String key, String blobUri, long version, ResourceId resourceId, String displayName) {
     return asBlobPointer(
             Pointer.newBuilder()
@@ -61,6 +69,24 @@ public final class PointerReferences {
                 .setVersion(version)
                 .setResourceId(resourceId)
                 .setDisplayName(blankToEmpty(displayName)),
+            blobUri)
+        .build();
+  }
+
+  public static Pointer blobPointer(
+      String key,
+      String blobUri,
+      long version,
+      ResourceId resourceId,
+      String displayName,
+      long referencedObjectSizeBytes) {
+    return asBlobPointer(
+            Pointer.newBuilder()
+                .setKey(blankToEmpty(key))
+                .setVersion(version)
+                .setResourceId(resourceId)
+                .setDisplayName(blankToEmpty(displayName))
+                .setReferencedObjectSizeBytes(Math.max(0L, referencedObjectSizeBytes)),
             blobUri)
         .build();
   }

@@ -166,19 +166,7 @@ public final class DummyConnector implements FloecatConnector {
             .setTotalSizeBytes(2048)
             .build();
 
-    Set<String> normalized =
-        (includeColumns == null || includeColumns.isEmpty())
-            ? null
-            : includeColumns.stream()
-                .filter(s -> s != null && !s.isBlank())
-                .collect(Collectors.toSet());
-
-    List<Col> selected =
-        (normalized == null)
-            ? LEAF_COLS
-            : LEAF_COLS.stream()
-                .filter(c -> normalized.contains("#" + c.colId) || normalized.contains(c.name))
-                .collect(Collectors.toList());
+    List<Col> selected = selectedColumns(includeColumns);
 
     List<ColumnStatsView> cstats = new ArrayList<>();
     for (Col c : selected) {
@@ -336,7 +324,30 @@ public final class DummyConnector implements FloecatConnector {
                 null));
       }
     }
-    return FileGroupCaptureResult.of(stats, List.copyOf(entries));
+    List<String> realizedStatsSelectors =
+        includeTargetKinds != null && includeTargetKinds.contains(StatsTargetKind.COLUMN)
+            ? selectedColumns(includeColumns).stream()
+                .flatMap(column -> java.util.stream.Stream.of("#" + column.colId, column.name))
+                .sorted()
+                .toList()
+            : List.of();
+    return FileGroupCaptureResult.of(stats, List.copyOf(entries), realizedStatsSelectors);
+  }
+
+  private static List<Col> selectedColumns(Set<String> includeColumns) {
+    Set<String> normalized =
+        (includeColumns == null || includeColumns.isEmpty())
+            ? null
+            : includeColumns.stream()
+                .filter(selector -> selector != null && !selector.isBlank())
+                .collect(Collectors.toSet());
+    return normalized == null
+        ? LEAF_COLS
+        : LEAF_COLS.stream()
+            .filter(
+                column ->
+                    normalized.contains("#" + column.colId) || normalized.contains(column.name))
+            .toList();
   }
 
   @Override

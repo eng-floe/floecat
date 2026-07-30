@@ -20,8 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -95,6 +97,68 @@ class IcebergConnectorIssuesTest {
             resolved,
             Set.of("old_col", "shared_col"),
             FloecatConnector.ColumnSelectorPolicy.defaults()));
+  }
+
+  @Test
+  void rejectsSnapshotWhoseDeclaredSchemaIsMissing() {
+    Schema currentSchema =
+        new Schema(20, List.of(Types.NestedField.optional(3, "new_col", Types.IntegerType.get())));
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> currentSchema;
+                      case "schemas" -> Map.of(20, currentSchema);
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> 10;
+                      case "snapshotId" -> 123L;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class, () -> IcebergConnector.schemaForSnapshot(table, snapshot));
+
+    assertEquals("Snapshot 123 references missing schema ID 10", failure.getMessage());
+  }
+
+  @Test
+  void snapshotWithoutSchemaIdUsesTheCurrentTableSchema() {
+    Schema currentSchema =
+        new Schema(20, List.of(Types.NestedField.optional(3, "new_col", Types.IntegerType.get())));
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> currentSchema;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    assertEquals(currentSchema, IcebergConnector.schemaForSnapshot(table, snapshot));
   }
 
   @Test
@@ -352,10 +416,12 @@ class IcebergConnectorIssuesTest {
       var plan =
           connector.planSnapshotFiles("iceberg", "trino_test", tableId, snapshotId).orElseThrow();
       assertFalse(
-          plan.deleteFiles().isEmpty(),
-          "expected current fixture snapshot to include delete files");
+          plan.dataFiles().isEmpty(), "expected current fixture snapshot to include data files");
+      assertTrue(
+          plan.dataFiles().stream().anyMatch(file -> !file.icebergDeleteFiles().isEmpty()),
+          "expected current fixture snapshot data files to include attached delete files");
       Set<String> plannedFilePaths =
-          java.util.stream.Stream.concat(plan.dataFiles().stream(), plan.deleteFiles().stream())
+          plan.dataFiles().stream()
               .map(FloecatConnector.SnapshotFileEntry::filePath)
               .collect(java.util.stream.Collectors.toSet());
 
@@ -391,6 +457,12 @@ class IcebergConnectorIssuesTest {
                       !fileColumn.getScalar().getDisplayName().isBlank()
                           && !fileColumn.getScalar().getLogicalType().isBlank()),
           () -> "file-column stats should preserve name/type: " + captured.statsRecords());
+      assertTrue(
+          captured.statsRecords().stream()
+              .filter(TargetStatsRecord::hasFile)
+              .anyMatch(
+                  record -> record.getFile().getFileContent() == FileContent.FC_POSITION_DELETES),
+          () -> "capture should emit attached position-delete stats: " + captured.statsRecords());
     }
   }
 

@@ -33,6 +33,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,9 +52,15 @@ public final class SnapshotLister {
       GrpcServiceFacade snapshotClient, Table table, Mode mode) {
     try {
       ResourceId tableId = table == null ? null : table.getResourceId();
-      List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
+      Snapshot currentSnapshot = currentSnapshot(snapshotClient, tableId);
+      List<Snapshot> snapshots = dedupeSnapshots(fetchAllSnapshots(snapshotClient, tableId));
+      if (currentSnapshot != null) {
+        snapshots = replaceById(snapshots, currentSnapshot);
+      }
       if (mode == Mode.REFS) {
-        Set<Long> refIds = referencedSnapshotIds(snapshotClient, table, snapshots);
+        Set<Long> refIds =
+            referencedSnapshotIds(
+                table, snapshots, currentSnapshot == null ? null : currentSnapshot.getSnapshotId());
         if (refIds.isEmpty()) {
           return List.of();
         }
@@ -68,7 +75,7 @@ public final class SnapshotLister {
   }
 
   private static Set<Long> referencedSnapshotIds(
-      GrpcServiceFacade snapshotClient, Table table, List<Snapshot> snapshots) {
+      Table table, List<Snapshot> snapshots, Long currentSnapshotId) {
     if (table == null) {
       return Set.of();
     }
@@ -79,7 +86,6 @@ public final class SnapshotLister {
             .map(ref -> TableMappingUtil.asLong(ref.get("snapshot-id")))
             .filter(id -> id != null && id >= 0L)
             .collect(Collectors.toSet());
-    Long currentSnapshotId = currentSnapshotId(snapshotClient, table.getResourceId());
     if (currentSnapshotId != null && currentSnapshotId >= 0L) {
       refHeads.add(currentSnapshotId);
     }
@@ -111,7 +117,7 @@ public final class SnapshotLister {
     return reachable;
   }
 
-  private static Long currentSnapshotId(GrpcServiceFacade snapshotClient, ResourceId tableId) {
+  private static Snapshot currentSnapshot(GrpcServiceFacade snapshotClient, ResourceId tableId) {
     if (snapshotClient == null || tableId == null) {
       return null;
     }
@@ -127,10 +133,36 @@ public final class SnapshotLister {
           || response.getSnapshot().getSnapshotId() < 0) {
         return null;
       }
-      return response.getSnapshot().getSnapshotId();
+      return response.getSnapshot();
     } catch (StatusRuntimeException e) {
       return null;
     }
+  }
+
+  private static List<Snapshot> dedupeSnapshots(List<Snapshot> snapshots) {
+    if (snapshots == null || snapshots.isEmpty()) {
+      return List.of();
+    }
+    Map<Long, Snapshot> byId = new LinkedHashMap<>();
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot != null && snapshot.getSnapshotId() >= 0L) {
+        byId.putIfAbsent(snapshot.getSnapshotId(), snapshot);
+      }
+    }
+    return List.copyOf(byId.values());
+  }
+
+  private static List<Snapshot> replaceById(List<Snapshot> snapshots, Snapshot replacement) {
+    Map<Long, Snapshot> byId = new LinkedHashMap<>();
+    if (snapshots != null) {
+      for (Snapshot snapshot : snapshots) {
+        if (snapshot != null && snapshot.getSnapshotId() >= 0L) {
+          byId.putIfAbsent(snapshot.getSnapshotId(), snapshot);
+        }
+      }
+    }
+    byId.put(replacement.getSnapshotId(), replacement);
+    return List.copyOf(byId.values());
   }
 
   private static List<Snapshot> fetchAllSnapshots(

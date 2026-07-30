@@ -1141,8 +1141,10 @@ class TransactionsServiceImplTest {
                         && "table-1".equals(reconcileScope.destinationTableId())
                         && reconcileScope.snapshotSelection().kind()
                             == ReconcileSnapshotSelection.Kind.CURRENT),
-            org.mockito.ArgumentMatchers.any(
-                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.argThat(
+                policy ->
+                    policy != null
+                        && "tx-1".equals(policy.attributes().get("post_commit_transaction_id"))),
             org.mockito.ArgumentMatchers.eq(""));
   }
 
@@ -1176,8 +1178,10 @@ class TransactionsServiceImplTest {
                         && reconcileScope.snapshotSelection().kind()
                             == ReconcileSnapshotSelection.Kind.EXPLICIT
                         && reconcileScope.snapshotSelection().snapshotIds().equals(List.of(123L))),
-            org.mockito.ArgumentMatchers.any(
-                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.argThat(
+                policy ->
+                    policy != null
+                        && "tx-1".equals(policy.attributes().get("post_commit_transaction_id"))),
             org.mockito.ArgumentMatchers.eq(""));
   }
 

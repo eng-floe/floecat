@@ -84,12 +84,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (canonicalPointer == null) {
       return Optional.empty();
     }
-    var canonicalRec =
-        readRecord(
-            new CanonicalPointerSnapshot(
-                canonicalPointer.pointerKey(),
-                canonicalPointer.blobUri(),
-                canonicalPointer.version()));
+    CanonicalPointerSnapshot canonicalSnapshot =
+        new CanonicalPointerSnapshot(
+            canonicalPointer.pointerKey(), canonicalPointer.blobUri(), canonicalPointer.version());
+    var canonicalRec = readRecord(canonicalSnapshot);
     if (canonicalRec.isEmpty()) {
       return Optional.empty();
     }
@@ -208,6 +206,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
                 canonicalPointer.version()));
     if (record.isEmpty()) {
       return Optional.empty();
+    }
+    if (!isDedupeActiveState(record.get().state) && retainsLogicalSnapshotFinalizer(record.get())) {
+      return record;
     }
     if (!isDedupeActiveState(record.get().state)
         && !blank(acceptedTerminalParentJobId)
@@ -460,6 +461,22 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return new StoredJobPage(List.copyOf(out), page.nextPageToken());
   }
 
+  @Override
+  public StoredJobPage listStoredJobsPendingStatsCleanup(int pageSize, String pageToken) {
+    int limit = Math.max(1, pageSize);
+    String token = pageToken == null ? "" : pageToken;
+    var page =
+        jobIndexBackend.listGlobalStateEntries(
+            ReconcileJobIndexes.STATS_CLEANUP_PENDING_INDEX_STATE, limit, token);
+    List<StoredReconcileJob> out = new ArrayList<>(page.entries().size());
+    for (JobIndexEntrySnapshot ptr : page.entries()) {
+      readCurrentRecordFromIndexPointer(ptr)
+          .filter(record -> ptr.pointerKey().equals(indexes.statsCleanupPendingPointerKey(record)))
+          .ifPresent(out::add);
+    }
+    return new StoredJobPage(List.copyOf(out), page.nextPageToken());
+  }
+
   public StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken) {
     if (blank(accountId) || blank(parentJobId)) {
@@ -535,6 +552,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         previous == null ? List.of() : indexes.statePointerKeys(previous),
         indexes.statePointerKeys(current),
         canonicalPointerKey);
+    appendReferenceTransition(
+        ops,
+        previous == null ? "" : indexes.statsCleanupPendingPointerKey(previous),
+        indexes.statsCleanupPendingPointerKey(current),
+        canonicalPointerKey);
+    appendReferenceTransition(
+        ops,
+        previous == null ? "" : indexes.terminalRetentionPointerKey(previous),
+        indexes.terminalRetentionPointerKey(current),
+        canonicalPointerKey);
     String previousDedupePointerKey = previous == null ? "" : indexes.dedupePointerKey(previous);
     String currentDedupePointerKey = indexes.dedupePointerKey(current);
     // A direct child keeps its dedupe ownership through terminal state. Parent-first planner
@@ -572,31 +599,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return buildJobDeleteBatch(currentSnapshot, ReconcileJobIndexCleanupManifest.EMPTY);
   }
 
-  @Override
-  public JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord) {
-    if (currentSnapshot == null
-        || readableRecord == null
-        || blank(currentSnapshot.canonicalPointerKey())
-        || blank(readableRecord.accountId)
-        || blank(readableRecord.jobId)
-        || !currentSnapshot
-            .canonicalPointerKey()
-            .equals(Keys.reconcileJobPointerById(readableRecord.accountId, readableRecord.jobId))) {
-      return JobIndexWriteBatch.empty();
-    }
-    return buildJobDeleteBatch(currentSnapshot, cleanupManifest(readableRecord));
-  }
-
-  @Override
-  public JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest) {
-    if (currentSnapshot == null || blank(currentSnapshot.canonicalPointerKey())) {
-      return JobIndexWriteBatch.empty();
-    }
-    return buildJobDeleteBatch(currentSnapshot, manifest);
-  }
-
   private JobIndexWriteBatch buildJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest fallbackManifest) {
     var session = jobIndexBackend.beginJobCleanup(currentSnapshot, fallbackManifest).orElse(null);
@@ -630,10 +632,21 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (record == null) {
       return IndexBackfillResult.unchanged();
     }
+    return backfillStoredJobIndexes(snapshot, record);
+  }
+
+  @Override
+  public IndexBackfillResult backfillStoredJobIndexes(
+      CanonicalPointerSnapshot snapshot, StoredReconcileJob record) {
+    if (snapshot == null || record == null || blank(snapshot.canonicalPointerKey())) {
+      return IndexBackfillResult.unchanged();
+    }
+    String canonicalPointerKey = snapshot.canonicalPointerKey();
     List<String> desiredKeys = new ArrayList<>();
     try {
       desiredKeys.add(connectorIndexPointerKey(record));
       desiredKeys.addAll(indexes.statePointerKeys(record));
+      desiredKeys.add(indexes.terminalRetentionPointerKey(record));
     } catch (RuntimeException ignored) {
       return new IndexBackfillResult(false, true);
     }
@@ -651,9 +664,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           new JobIndexUpsert(
               pointerKey, 0L, canonicalPointerKey, PointerReferenceKind.PRK_POINTER_KEY));
     }
-    if (writes.isEmpty()) {
-      return IndexBackfillResult.unchanged();
-    }
     ReconcileJobIndexCleanupManifest manifest;
     try {
       manifest = cleanupManifest(record);
@@ -665,14 +675,21 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         return new IndexBackfillResult(false, true);
       }
     }
-    writes.add(
-        0,
-        new JobIndexUpsert(
-            canonicalPointerKey,
-            snapshot.version(),
-            snapshot.blobUri(),
-            PointerReferenceKind.PRK_INLINE_JSON,
-            manifest));
+    ReconcileJobIndexCleanupManifest storedManifest =
+        jobIndexBackend.loadCleanupManifest(canonicalPointerKey);
+    if (!manifest.equals(storedManifest)) {
+      writes.add(
+          0,
+          new JobIndexUpsert(
+              canonicalPointerKey,
+              snapshot.version(),
+              snapshot.blobUri(),
+              PointerReferenceKind.PRK_INLINE_JSON,
+              manifest));
+    }
+    if (writes.isEmpty()) {
+      return IndexBackfillResult.unchanged();
+    }
     boolean committed =
         jobIndexBackend.compareAndSetBatch(
             new JobIndexWriteBatch(List.copyOf(writes), ReadyQueueMutation.empty()));
@@ -751,11 +768,20 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
     List<JobWriteChunk<T>> chunks = new ArrayList<>();
     List<JobIndexWriteOp> referenceWrites = new ArrayList<>();
+    List<JobIndexWriteOp> finalWrites = new ArrayList<>();
+    finalWrites.add(canonicalDelete);
     List<String> readyDeletes = new ArrayList<>();
     int referenceItems = 0;
     int referenceCapacity = ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS - 1;
     for (JobIndexWriteOp write : plan.indexBatch().writes()) {
       if (write == canonicalDelete) {
+        continue;
+      }
+      if (write instanceof JobIndexDelete delete
+          && JobIndexBackendSupport.parseTerminalRetentionKey(delete.pointerKey()) != null) {
+        // Keep the due row until the canonical delete commits. It is the durable resume handle
+        // for an oversized cleanup that spans ticks.
+        finalWrites.add(write);
         continue;
       }
       int itemCount = physicalWriteItemCount(write);
@@ -783,7 +809,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
 
     JobIndexWriteBatch finalBatch =
-        new JobIndexWriteBatch(List.of(canonicalDelete), ReadyQueueMutation.empty());
+        new JobIndexWriteBatch(List.copyOf(finalWrites), ReadyQueueMutation.empty());
     JobWritePlan<T> finalPlan =
         new JobWritePlan<>(plan.subject(), finalBatch, plan.extraPointerOps());
     if (writeItemCount(finalBatch, plan.extraPointerOps())
@@ -851,19 +877,56 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.snapshotTaskSourceTable = source.snapshotTaskSourceTable;
     copy.snapshotTaskFileGroupPlanRecorded = source.snapshotTaskFileGroupPlanRecorded;
     copy.snapshotTaskCompletionMode = source.snapshotTaskCompletionMode;
+    copy.snapshotTaskFileGroupCount = source.snapshotTaskFileGroupCount;
     copy.snapshotTaskSourceFileCount = source.snapshotTaskSourceFileCount;
     copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
     copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
-    copy.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
-        source.snapshotTaskDirectStatsPersistedRecordCountsByChunk == null
-            ? java.util.Map.of()
-            : java.util.Map.copyOf(source.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
+    copy.snapshotTaskSourceRevision = source.snapshotTaskSourceRevision;
+    copy.snapshotTaskMetadataFingerprint = source.snapshotTaskMetadataFingerprint;
+    copy.snapshotTaskRequestedCoverage =
+        source.snapshotTaskRequestedCoverage == null
+            ? java.util.List.of()
+            : java.util.List.copyOf(source.snapshotTaskRequestedCoverage);
+    copy.snapshotTaskCoverageFrozen = source.snapshotTaskCoverageFrozen;
+    copy.snapshotTaskIndexPredecessorPinPending = source.snapshotTaskIndexPredecessorPinPending;
+    copy.snapshotTaskIndexPredecessorPresent = source.snapshotTaskIndexPredecessorPresent;
+    copy.snapshotTaskIndexPredecessorGenerationId = source.snapshotTaskIndexPredecessorGenerationId;
+    copy.snapshotTaskIndexPredecessorActivePointerVersion =
+        source.snapshotTaskIndexPredecessorActivePointerVersion;
+    copy.snapshotTaskIndexPredecessorCaptureManifestUri =
+        source.snapshotTaskIndexPredecessorCaptureManifestUri;
+    copy.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+        source.snapshotTaskIndexPredecessorCaptureManifestPointerVersion;
     copy.fileGroupPlanId = source.fileGroupPlanId;
     copy.fileGroupGroupId = source.fileGroupGroupId;
     copy.fileGroupTableId = source.fileGroupTableId;
     copy.fileGroupSnapshotId = source.fileGroupSnapshotId;
     copy.fileGroupFileCount = source.fileGroupFileCount;
-    copy.fileGroupResultBlobUri = source.fileGroupResultBlobUri;
+    copy.fileGroupResultFormatVersion = source.fileGroupResultFormatVersion;
+    copy.fileGroupResultLeaseEpoch = source.fileGroupResultLeaseEpoch;
+    copy.fileGroupResultId = source.fileGroupResultId;
+    copy.fileGroupResultPayloadUri = source.fileGroupResultPayloadUri;
+    copy.fileGroupResultPayloadBytes = source.fileGroupResultPayloadBytes;
+    copy.fileGroupResultPayloadSha256 = source.fileGroupResultPayloadSha256;
+    copy.fileGroupResultPlannedFileCount = source.fileGroupResultPlannedFileCount;
+    copy.fileGroupResultSucceededFileCount = source.fileGroupResultSucceededFileCount;
+    copy.fileGroupResultFailedFileCount = source.fileGroupResultFailedFileCount;
+    copy.fileGroupResultSkippedFileCount = source.fileGroupResultSkippedFileCount;
+    copy.fileGroupResultPartialAggregateRecordCount =
+        source.fileGroupResultPartialAggregateRecordCount;
+    copy.fileGroupResultIndexArtifactCount = source.fileGroupResultIndexArtifactCount;
+    copy.fileGroupStatsObjectPrefix = source.fileGroupStatsObjectPrefix;
+    copy.fileGroupStatsRecordCount = source.fileGroupStatsRecordCount;
+    copy.fileGroupArtifactReferencesSha256 = source.fileGroupArtifactReferencesSha256;
+    copy.fileGroupIndexPredecessorPresent = source.fileGroupIndexPredecessorPresent;
+    copy.fileGroupIndexPredecessorGenerationId = source.fileGroupIndexPredecessorGenerationId;
+    copy.fileGroupIndexPredecessorActivePointerVersion =
+        source.fileGroupIndexPredecessorActivePointerVersion;
+    copy.fileGroupIndexPredecessorCaptureManifestUri =
+        source.fileGroupIndexPredecessorCaptureManifestUri;
+    copy.fileGroupIndexPredecessorCaptureManifestPointerVersion =
+        source.fileGroupIndexPredecessorCaptureManifestPointerVersion;
+    copy.fileGroupResultCreatedAtMs = source.fileGroupResultCreatedAtMs;
     copy.definition = cloneDefinition(source.definition);
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
     copy.state = source.state;
@@ -898,7 +961,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.laneKey = source.laneKey;
     copy.dedupeKeyHash = source.dedupeKeyHash;
     copy.readyPointerKey = source.readyPointerKey;
-    copy.readyIndexVersion = source.readyIndexVersion;
     copy.connectorIndexPointerKey = source.connectorIndexPointerKey;
     copy.canonicalPointerKey = source.canonicalPointerKey;
     copy.createdAtMs = source.createdAtMs;
@@ -987,6 +1049,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         source.capturePolicyOutputs == null ? List.of() : List.copyOf(source.capturePolicyOutputs);
     copy.capturePolicyDefaultColumnScope = source.capturePolicyDefaultColumnScope;
     copy.capturePolicyMaxDefaultColumns = source.capturePolicyMaxDefaultColumns;
+    copy.capturePolicyProperties =
+        source.capturePolicyProperties == null
+            ? java.util.Map.of()
+            : java.util.Map.copyOf(source.capturePolicyProperties);
     copy.snapshotSelectionKind = source.snapshotSelectionKind;
     copy.snapshotSelectionSnapshotIds =
         source.snapshotSelectionSnapshotIds == null
@@ -1043,9 +1109,22 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
               ? record.nextAttemptAtMs
               : parseDueMillis(blankToEmpty(record.readyPointerKey));
       if (dueAtMs != INVALID_ORDERED_POINTER_MS && dueAtMs > 0L) {
-        readyKeys.addAll(
-            ReadyQueueKeys.readyPointerKeys(
-                record, dueAtMs, NativeReconcileJobIndexStore::requiresReadyPointer));
+        readyKeys.addAll(ReadyQueueKeys.readyPointerKeys(record, dueAtMs, ignored -> true));
+        if (!blank(record.executionClass)) {
+          readyKeys.add(
+              Keys.reconcileReadyByExecutionClassPointerByDue(
+                  dueAtMs, record.executionClass, record.accountId, record.jobId));
+        }
+        if (!blank(record.executionLane)) {
+          readyKeys.add(
+              Keys.reconcileReadyByExecutionLanePointerByDue(
+                  dueAtMs, record.executionLane, record.accountId, record.jobId));
+        }
+        if (!blank(record.jobKind)) {
+          readyKeys.add(
+              Keys.reconcileReadyByJobKindPointerByDue(
+                  dueAtMs, record.jobKind, record.accountId, record.jobId));
+        }
       }
     }
     readyKeys.removeIf(NativeReconcileJobIndexStore::blank);
@@ -1138,6 +1217,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
     indexKeys.add(connectorIndexPointerKey(record));
     indexKeys.addAll(indexes.statePointerKeys(record));
+    indexKeys.add(indexes.statsCleanupPendingPointerKey(record));
+    indexKeys.add(indexes.terminalRetentionPointerKey(record));
     indexKeys.add(indexes.dedupePointerKey(record));
     indexKeys.removeIf(NativeReconcileJobIndexStore::blank);
     return List.copyOf(indexKeys);
@@ -1218,6 +1299,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   private static boolean retainsDedupeOwnership(StoredReconcileJob record) {
     return record != null && (isDedupeActiveState(record.state) || !blank(record.parentJobId));
+  }
+
+  private static boolean retainsLogicalSnapshotFinalizer(StoredReconcileJob record) {
+    return record != null
+        && "FINALIZE_SNAPSHOT_CAPTURE".equals(record.jobKind)
+        && !blank(record.parentJobId)
+        && !"JS_CANCELLED".equals(record.state);
   }
 
   private JobIndexWriteBatch queuedJobInsertOps(
@@ -1494,7 +1582,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (batch == null) {
       return 0;
     }
-    int count = batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size();
+    // Dynamo stores one maintenance representative beside every physical ready row so secondary
+    // orphans remain discoverable. Count both items when chunking; memory uses the same
+    // conservative
+    // bound to keep backend semantics aligned.
+    int count =
+        2 * (batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size());
     for (JobIndexWriteOp write : batch.writes()) {
       count += physicalWriteItemCount(write);
     }

@@ -83,6 +83,9 @@ class QueryScanServiceIT {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub stats;
+
+  @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @GrpcClient("floecat")
@@ -122,8 +125,8 @@ class QueryScanServiceIT {
             "scan table");
 
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 501L, System.currentTimeMillis() - 1000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 501L, System.currentTimeMillis() - 1000L);
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "bundle");
     attachConnectorToTable(tbl.getResourceId(), connector);
@@ -180,8 +183,8 @@ class QueryScanServiceIT {
 
     var metadataLocation = "s3://bucket/meta/scan_meta.metadata.json";
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 602L, System.currentTimeMillis() - 2000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 602L, System.currentTimeMillis() - 2000L);
     FieldMask mask = FieldMask.newBuilder().addPaths("metadata_location").build();
     snap =
         snapshot
@@ -296,8 +299,8 @@ class QueryScanServiceIT {
             "nf other table");
 
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tblA.getResourceId(), 777L, System.currentTimeMillis() - 5000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tblA.getResourceId(), 777L, System.currentTimeMillis() - 5000L);
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "reject");
     attachConnectorToTable(tblA.getResourceId(), connector);
@@ -430,8 +433,9 @@ class QueryScanServiceIT {
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "scan table");
     var snap =
-        TestSupport.createSnapshot(
+        TestSupport.createFinalizedSnapshot(
             snapshot,
+            stats,
             tbl.getResourceId(),
             SNAPSHOT_SEQ.getAndIncrement(),
             System.currentTimeMillis());

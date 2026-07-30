@@ -45,8 +45,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.IdempotencyRepositoryImpl;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -55,14 +57,17 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 class LeasedPlannerWorkerServiceTest {
   private LeasedPlannerWorkerService service;
   private ReconcileJobStore jobs;
   private ConnectorRepository connectorRepo;
+  private IndexArtifactRepository indexArtifactRepository;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -70,8 +75,10 @@ class LeasedPlannerWorkerServiceTest {
     service = new LeasedPlannerWorkerService();
     jobs = mock(ReconcileJobStore.class);
     connectorRepo = mock(ConnectorRepository.class);
+    indexArtifactRepository = mock(IndexArtifactRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
+    service.indexArtifactRepository = indexArtifactRepository;
     service.idempotencyStore =
         new IdempotencyRepositoryImpl(new InMemoryPointerStore(), new InMemoryBlobStore());
     when(principal.getCorrelationId()).thenReturn("corr");
@@ -92,6 +99,75 @@ class LeasedPlannerWorkerServiceTest {
               }
               return new ReconcileJobStore.BulkEnqueueResult(items);
             });
+  }
+
+  @Test
+  void persistPlanTableSnapshotChunkDefersIndexPredecessorPinUntilSnapshotLease() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events")
+            .withIndexPredecessor(
+                new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+                    .IndexGenerationPredecessor("stale-generation", 1L, "/stale.pb", 2L));
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE, scope)));
+
+    assertTrue(
+        service.persistPlanTableSnapshotChunk(
+            principal,
+            "job-1",
+            "lease-1",
+            SubmitLeasedPlanTableResultRequest.Chunk.newBuilder().setChunkIndex(0).build(),
+            List.of(new LeasedPlannerWorkerService.PlannedSnapshotJob(scope, snapshotTask))));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<ReconcileJobStore.BulkEnqueueSpec>> specs =
+        ArgumentCaptor.forClass(List.class);
+    verify(jobs).bulkEnqueue(specs.capture());
+    assertEquals(null, specs.getValue().getFirst().snapshotTask.indexPredecessor());
+    verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlanSnapshotPinsIndexPredecessorAfterLease() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    var predecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+    var pinnedPredecessor =
+        new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+            .IndexGenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(
+            java.util.Optional.of(
+                job("job-1", ReconcileJobKind.PLAN_SNAPSHOT, scope, snapshotTask)));
+    when(indexArtifactRepository.captureGenerationInput(
+            eq(tableId("table-1")), eq(55L), eq(List.of())))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(predecessor, List.of()));
+    when(jobs.pinSnapshotIndexPredecessor("job-1", "lease-1", pinnedPredecessor))
+        .thenReturn(java.util.Optional.of(snapshotTask.withIndexPredecessor(pinnedPredecessor)));
+    ReconcileJobStore.LeasedJob frozenLease = snapshotLease(scope, snapshotTask);
+    when(jobs.freezeSnapshotPlanCoverage("job-1", "lease-1"))
+        .thenReturn(java.util.Optional.of(frozenLease));
+
+    var payload = service.resolvePlanSnapshot(principal, "job-1", "lease-1");
+
+    assertEquals(pinnedPredecessor, payload.snapshotTask().indexPredecessor());
+    verify(jobs).pinSnapshotIndexPredecessor("job-1", "lease-1", pinnedPredecessor);
   }
 
   @Test
@@ -1529,6 +1605,19 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   private static ReconcileJobStore.ReconcileJob job(String jobId, ReconcileJobKind jobKind) {
+    return job(jobId, jobKind, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId, ReconcileJobKind jobKind, ReconcileScope scope) {
+    return job(jobId, jobKind, scope, ReconcileSnapshotTask.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId,
+      ReconcileJobKind jobKind,
+      ReconcileScope scope,
+      ReconcileSnapshotTask snapshotTask) {
     return new ReconcileJobStore.ReconcileJob(
         jobId,
         "acct",
@@ -1546,14 +1635,14 @@ class LeasedPlannerWorkerServiceTest {
         CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "remote-executor",
         "remote_snapshot_planner_worker",
         jobKind,
         ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
         ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
-        ReconcileSnapshotTask.empty(),
+        snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-1");
   }
@@ -1570,6 +1659,27 @@ class LeasedPlannerWorkerServiceTest {
         "lease-1",
         "remote-executor",
         "remote_snapshot_planner_worker");
+  }
+
+  private static ReconcileJobStore.LeasedJob snapshotLease(
+      ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {
+    return new ReconcileJobStore.LeasedJob(
+        "job-1",
+        "acct",
+        "connector-1",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "lease-1",
+        "remote-executor",
+        "remote_snapshot_planner_worker",
+        ReconcileJobKind.PLAN_SNAPSHOT,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        snapshotTask,
+        ReconcileFileGroupTask.empty(),
+        "parent-1");
   }
 
   private void stagePlanSnapshotChunk(

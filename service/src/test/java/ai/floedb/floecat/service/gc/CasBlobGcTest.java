@@ -82,6 +82,139 @@ class CasBlobGcTest {
   }
 
   @Test
+  void estimatesKnownReferencedBytesFromPointersAlreadyScannedByTheMark() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    String connectorBlob = Keys.connectorBlobUri(ACCOUNT_ID, "connector-1", "sha-connector");
+    blobs.put(tableBlob, new byte[5], "application/x-protobuf");
+    blobs.put(connectorBlob, new byte[7], "application/x-protobuf");
+    String tablePointer = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String connectorPointer = Keys.connectorPointerById(ACCOUNT_ID, "connector-1");
+    assertTrue(
+        pointers.compareAndSet(
+            tablePointer, 0L, PointerReferences.blobPointer(tablePointer, tableBlob, 1L, 5L)));
+    assertTrue(
+        pointers.compareAndSet(
+            connectorPointer,
+            0L,
+            PointerReferences.blobPointer(connectorPointer, connectorBlob, 1L)));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(2, result.pointersScanned());
+    assertEquals(5L, result.referencedBytes());
+    assertEquals(1, result.sizedBlobPointers());
+    assertEquals(2, result.blobPointers());
+  }
+
+  @Test
+  void keepsUnreferencedWorkerUploadForGenerationCleanup() {
+    String workerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "worker-uploads/child/lease/target/stats.pb";
+    blobs.put(workerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(workerObject).isPresent(),
+        "worker uploads are owned and reclaimed by stats-generation cleanup");
+  }
+
+  @Test
+  void keepsUnreferencedFinalizerOutputForGenerationPublication() {
+    String finalizerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "finalizer-outputs/finalize-job/lease/target/stats.pb";
+    blobs.put(finalizerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(finalizerObject).isPresent(),
+        "finalizer outputs are owned and reclaimed by stats-generation cleanup");
+  }
+
+  @Test
+  void givesGenerationCleanupABoundedSliceAfterTheAccountDeadline() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    java.util.concurrent.atomic.AtomicLong observedDeadline =
+        new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs) {
+            observedDeadline.set(deadlineMs);
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    long startedAt = System.currentTimeMillis();
+
+    gc.runForAccount(ACCOUNT_ID, 0L);
+
+    assertTrue(
+        observedDeadline.get() > startedAt,
+        "the rotated first table must receive generation-cleanup time even after the main deadline");
+  }
+
+  @Test
+  void generationCleanupCursorSurvivesGcRecreation() {
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-a"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-a", "sha-a"));
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-b"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-b", "sha-b"));
+    java.util.ArrayList<String> visited = new java.util.ArrayList<>();
+    ai.floedb.floecat.service.repo.impl.StatsRepository recordingStats =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs) {
+            visited.add(tableId.getId());
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    gc.statsRepository = recordingStats;
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 1_000L);
+    assertEquals(
+        "tbl-b",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+
+    CasBlobGc recreated = new CasBlobGc();
+    recreated.pointerStore = pointers;
+    recreated.blobStore = blobs;
+    recreated.queryContextStore = queryContextStore;
+    recreated.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    recreated.statsRepository = recordingStats;
+    visited.clear();
+
+    recreated.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 1_000L);
+
+    assertEquals("tbl-b", visited.getFirst());
+  }
+
+  @Test
   void keyWithoutADerivableOwnerIsNeverDeletedInANonDeferringPass() {
     // A candidate that passes a family's segment filter but whose key shape yields no owner
     // pointer (malformed/blank rid) must NOT take the unconditional-delete path in the
@@ -107,7 +240,8 @@ class CasBlobGcTest {
     // table's root; the ONLY tableRootByTable read is remarkTable's, strictly after the flush's
     // per-table pin snapshot — so the pin the flag then reveals is invisible to that snapshot and
     // only the per-candidate re-read can catch it.
-    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    String fileStatsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-fs");
     blobs.put(
         fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain"); // deferred garbage
     String rootKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
@@ -159,9 +293,14 @@ class CasBlobGcTest {
   @Test
   void statsBlobsGcHonorsPointers() {
     long snapshotId = 1L;
+    String generationId = "gen-1";
     String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
-    String statsBlob = Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, targetId, "sha-stats");
-    String statsPtr = Keys.snapshotTargetStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId, targetId);
+    String statsBlob =
+        Keys.snapshotTargetStatsBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-stats");
+    String statsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId);
 
     seedCurrentTable();
 
@@ -199,6 +338,91 @@ class CasBlobGcTest {
     pointers.delete(constraintsPtr);
     gc.runForAccount(ACCOUNT_ID);
     assertFalse(blobs.head(constraintsBlob).isPresent());
+  }
+
+  @Test
+  void captureManifestGcKeepsActiveAndSweepsSupersededBlob() {
+    long snapshotId = 7L;
+    seedCurrentTable();
+    String active =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-active");
+    String superseded =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-superseded");
+    blobs.put(active, "active".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(superseded, "superseded".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(
+        Keys.snapshotIndexArtifactCaptureManifestPointer(ACCOUNT_ID, TABLE_ID, snapshotId), active);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(active).isPresent(), "the active capture manifest is a GC root");
+    assertFalse(blobs.head(superseded).isPresent(), "a superseded capture manifest is reclaimed");
+  }
+
+  @Test
+  void youngOrphanCaptureManifestSurvivesMinimumAgeWindow() {
+    System.setProperty("floecat.gc.cas.min-age-ms", "3600000");
+    try {
+      seedCurrentTable();
+      String young =
+          Keys.snapshotIndexArtifactCaptureManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-young");
+      blobs.put(young, "young".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+
+      gc.runForAccount(ACCOUNT_ID);
+
+      assertTrue(
+          blobs.head(young).isPresent(),
+          "an unreferenced capture manifest younger than min-age is retained");
+    } finally {
+      System.setProperty("floecat.gc.cas.min-age-ms", "0");
+    }
+  }
+
+  @Test
+  void captureManifestOwnerRecheckRescuesPointerTargetMissedByMark() {
+    long snapshotId = 7L;
+    seedCurrentTable();
+    String pointerKey =
+        Keys.snapshotIndexArtifactCaptureManifestPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
+    String active =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-active");
+    blobs.put(active, "active".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(pointerKey, active);
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(pointerKey));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(active).isPresent(),
+        "the owner recheck protects an active manifest omitted from the pointer scan");
+    assertEquals(1, result.blobsRescued());
+  }
+
+  @Test
+  void generationScopedIndexWrapperIsSweptAfterItsPointerIsRemoved() {
+    long snapshotId = 7L;
+    String generationId = "direct";
+    String targetId = "file:s3://source/data.parquet";
+    seedCurrentTable();
+    String pointerKey =
+        Keys.snapshotIndexArtifactGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId);
+    String wrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-wrapper");
+    blobs.put(wrapper, "wrapper".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(pointerKey, wrapper);
+
+    gc.runForAccount(ACCOUNT_ID);
+    assertTrue(blobs.head(wrapper).isPresent(), "a live generation pointer roots its wrapper");
+
+    pointers.delete(pointerKey);
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(wrapper).isPresent(), "an unreferenced generation wrapper is reclaimed");
   }
 
   @Test
@@ -970,23 +1194,24 @@ class CasBlobGcTest {
 
   @Test
   void aLiveNoOwnerBlobSurvivesARescueElsewhereViaTheFlushRemark() {
-    // A LIVE no-owner family (file-stats, with its own live pointer) sorts BEFORE the table's
-    // definition blob. When the scan misses the table's by-id pointer, the definition is only
-    // rescued AFTER the file-stats was already reached. Deferral keeps the file-stats out of the
-    // inline delete path; the flush then re-proves it against the settled store (its live stats
-    // pointer) and keeps it — and the rescue does NOT poison the flush, so this works even under a
-    // concurrent rescue.
+    // A LIVE generation stats record with no owner derivable from its hashed target path sorts
+    // before the table's definition blob. When the scan misses the table's by-id pointer, the
+    // definition is only rescued AFTER the stats blob was already reached. Deferral keeps the
+    // stats blob out of the inline delete path; the flush then re-proves it against the settled
+    // store and keeps it — and the rescue does NOT poison the flush.
     String tablePtr = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
     String definitionBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def");
-    String fileStatsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
-    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    String fileStatsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1");
+    String fileStatsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-fs");
     blobs.put(definitionBlob, "def".getBytes(StandardCharsets.UTF_8), "text/plain");
     blobs.put(fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(tablePtr, definitionBlob); // live definition (its by-id pointer)
     putPointer(fileStatsPtr, fileStatsBlob); // live file-stats
     // The scan misses only the table's by-id pointer, so the table is absent from tableIds and its
-    // mark-phase stats/root scans never run — the definition and file-stats are both unreferenced
-    // in the stale set. The file-stats pointer itself stays visible for the flush re-mark.
+    // mark-phase stats/root scans never run — the definition and stats record are both unreferenced
+    // in the stale set. The stats pointer itself stays visible for the flush re-mark.
     gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(tablePtr));
 
     var result = gc.runForAccount(ACCOUNT_ID);
@@ -1034,8 +1259,10 @@ class CasBlobGcTest {
     // sweep's stale set: it re-scans the owning table's constraints/stats pointer prefixes
     // against the settled store and keeps anything they reference.
     seedCurrentTable();
-    String statsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
-    String statsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-live");
+    String statsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1");
+    String statsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-live");
     blobs.put(statsBlob, "live".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(statsPtr, statsBlob);
     // The pointer is invisible to the FIRST prefix scan that would return it (the mark scan) and
@@ -1074,8 +1301,10 @@ class CasBlobGcTest {
     // flush. The failure still surfaces on the poisoned gauge (unprovable garbage was left).
     String rootPtrA = Keys.tableRootByTable(ACCOUNT_ID, "tbl-a");
     putPointer(rootPtrA, Keys.tableRootBlobUri(ACCOUNT_ID, "tbl-a", "sha-missing"));
-    String deferredA = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-a", "f", "sha-a");
-    String deferredB = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-b", "f", "sha-b");
+    String deferredA =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, "tbl-a", 7L, "gen-1", "file-f", "sha-a");
+    String deferredB =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, "tbl-b", 7L, "gen-1", "file-f", "sha-b");
     blobs.put(deferredA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
     blobs.put(deferredB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
 

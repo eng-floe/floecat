@@ -346,6 +346,13 @@ public interface ReconcileJobStore {
     return get(jobId);
   }
 
+  Optional<ReconcileJob> getCompactLeaseView(String jobId);
+
+  Optional<ReconcileSnapshotTask> pinSnapshotIndexPredecessor(
+      String jobId,
+      String leaseEpoch,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor);
+
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
@@ -394,6 +401,12 @@ public interface ReconcileJobStore {
     return new ReconcileJobPage(out, "");
   }
 
+  FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
+
+  ChildJobStatePage childJobStatesPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
+
   default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
     return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
   }
@@ -441,6 +454,11 @@ public interface ReconcileJobStore {
   default Optional<LeasedJob> getCompletionLeaseView(
       String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
     return Optional.empty();
+  }
+
+  /** Freezes a snapshot plan's aggregate capture coverage before planning creates child work. */
+  default Optional<LeasedJob> freezeSnapshotPlanCoverage(String jobId, String leaseEpoch) {
+    return getCompletionLeaseView(jobId, leaseEpoch, false);
   }
 
   default ProgressUpdate reportProgress(
@@ -688,15 +706,42 @@ public interface ReconcileJobStore {
       String manifestUri,
       boolean allowExpiredWithinGrace);
 
-  void persistFileGroupResult(
-      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask);
-
-  void persistSnapshotFinalizeDirectStatsProgress(
+  boolean completeFileGroupSuccess(
       String jobId,
       String leaseEpoch,
-      boolean fullRescan,
-      int chunkIndex,
-      int directStatsPersistedRecordCount);
+      ReconcileFileGroupResultDescriptor descriptor,
+      long finishedAtMs,
+      String message);
+
+  /**
+   * Atomically establishes the point of no return for snapshot publication.
+   *
+   * <p>Once accepted, cancellation must not move the job to {@code JS_CANCELLING}. A failed or
+   * expired attempt clears the claim before the job is retried.
+   */
+  default boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    return renewLease(jobId, leaseEpoch);
+  }
+
+  /** Whether this store enforces durable snapshot-publication ownership fences. */
+  default boolean enforcesSnapshotFinalizeOwnership() {
+    return false;
+  }
+
+  boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount,
+      List<String> materializedCoverage,
+      long finishedAtMs,
+      String message);
 
   void markCancelled(
       String jobId,
@@ -1881,6 +1926,27 @@ public interface ReconcileJobStore {
     }
   }
 
+  record ChildJobState(
+      ReconcileJob job, ReconcileFileGroupResultDescriptor fileGroupResultDescriptor) {}
+
+  record ChildJobStatePage(List<ChildJobState> states, String nextPageToken) {
+    public ChildJobStatePage {
+      states = states == null ? List.of() : List.copyOf(states);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  final class FileGroupResultDescriptorPage {
+    public final List<ReconcileFileGroupResultDescriptor> descriptors;
+    public final String nextPageToken;
+
+    public FileGroupResultDescriptorPage(
+        List<ReconcileFileGroupResultDescriptor> descriptors, String nextPageToken) {
+      this.descriptors = descriptors == null ? List.of() : List.copyOf(descriptors);
+      this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
   final class FinalizedSnapshotEvent {
     public final String eventId;
     public final String accountId;
@@ -1888,6 +1954,13 @@ public interface ReconcileJobStore {
     public final long snapshotId;
     public final long finalizedAtMs;
     public final String finalizerJobId;
+    public final int formatVersion;
+    public final String connectorId;
+    public final String sourceNamespace;
+    public final String sourceTable;
+    public final String sourceRevision;
+    public final String metadataFingerprint;
+    public final List<String> captureCoverage;
 
     public FinalizedSnapshotEvent(
         String eventId,
@@ -1902,6 +1975,43 @@ public interface ReconcileJobStore {
       this.snapshotId = Math.max(0L, snapshotId);
       this.finalizedAtMs = Math.max(0L, finalizedAtMs);
       this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+      this.formatVersion = 1;
+      this.connectorId = "";
+      this.sourceNamespace = "";
+      this.sourceTable = "";
+      this.sourceRevision = "";
+      this.metadataFingerprint = "";
+      this.captureCoverage = List.of();
+    }
+
+    public FinalizedSnapshotEvent(
+        String eventId,
+        String accountId,
+        String tableId,
+        long snapshotId,
+        long finalizedAtMs,
+        String finalizerJobId,
+        int formatVersion,
+        String connectorId,
+        String sourceNamespace,
+        String sourceTable,
+        String sourceRevision,
+        String metadataFingerprint,
+        List<String> captureCoverage) {
+      this.eventId = eventId == null ? "" : eventId;
+      this.accountId = accountId == null ? "" : accountId;
+      this.tableId = tableId == null ? "" : tableId;
+      this.snapshotId = Math.max(0L, snapshotId);
+      this.finalizedAtMs = Math.max(0L, finalizedAtMs);
+      this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+      this.formatVersion = Math.max(1, formatVersion);
+      this.connectorId = connectorId == null ? "" : connectorId;
+      this.sourceNamespace = sourceNamespace == null ? "" : sourceNamespace;
+      this.sourceTable = sourceTable == null ? "" : sourceTable;
+      this.sourceRevision = sourceRevision == null ? "" : sourceRevision;
+      this.metadataFingerprint = metadataFingerprint == null ? "" : metadataFingerprint;
+      this.captureCoverage =
+          captureCoverage == null ? List.of() : captureCoverage.stream().sorted().toList();
     }
   }
 

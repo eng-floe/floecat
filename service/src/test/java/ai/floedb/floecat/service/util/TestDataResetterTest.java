@@ -311,7 +311,9 @@ public class TestDataResetterTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {}
+    public int deletePrefix(String prefix) {
+      return 0;
+    }
 
     @Override
     public Page list(String prefix, int limit, String pageToken) {

@@ -125,7 +125,8 @@ public abstract class BaseServiceImpl {
                               try (Scope ignored = otelCtx.makeCurrent()) {
                                 return body.get();
                               }
-                            })));
+                            })))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
   /**

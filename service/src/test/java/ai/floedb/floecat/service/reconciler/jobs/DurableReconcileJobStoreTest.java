@@ -28,8 +28,10 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -37,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
@@ -58,6 +61,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -82,6 +86,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -91,6 +98,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -285,6 +293,34 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueuePlanDoesNotDedupeAcrossDifferentExecutionAttributes() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT, "", Map.of("post_commit_transaction_id", "tx-1")),
+            "");
+    String second =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT, "", Map.of("post_commit_transaction_id", "tx-2")),
+            "");
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
   void enqueuePlanDoesNotDedupeAcrossDifferentExplicitSnapshotSelections() {
     ReconcileScope firstScope =
         ReconcileScope.of(
@@ -309,6 +345,228 @@ class DurableReconcileJobStoreTest {
     String second =
         store.enqueue(
             ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDedupesEquivalentResolvedScopeShapes() {
+    ReconcileCapturePolicy policy = capturePolicy("#11", "#22");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"), captureRequest("tbl", 101L, "column:22"));
+    ReconcileScope queryDerived =
+        ReconcileScope.of(
+            List.of("incidental-namespace"),
+            null,
+            null,
+            requests,
+            policy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope connectorDerived =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(requests.get(1), requests.get(0)),
+            capturePolicy("#22", "#11"),
+            ReconcileSnapshotSelection.explicit(List.of(101L)));
+
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, queryDerived);
+    String second =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, connectorDerived);
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueDedupesCurrentLatestAndExplicitWhenCaptureRequestsResolveSameSnapshot() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+
+    String current =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.current()));
+    String latest =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.latestN(1)));
+    String explicit =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(
+                requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L))));
+
+    assertEquals(current, latest);
+    assertEquals(current, explicit);
+  }
+
+  @Test
+  void enqueueCoalescesOverlappingStatsOnlyCaptureForSameTableSnapshotAndOutput() {
+    ReconcileScope firstScope =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            statsOnlyCapturePolicy("#11"),
+            ReconcileSnapshotSelection.current());
+    ReconcileScope overlappingScope =
+        resolvedCaptureScope(
+            List.of(
+                captureRequest("tbl", 101L, "column:11"), captureRequest("tbl", 101L, "column:22")),
+            statsOnlyCapturePolicy("#11", "#22"),
+            ReconcileSnapshotSelection.current());
+    ReconcileScope otherSnapshot =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 202L, "column:11")),
+            statsOnlyCapturePolicy("#11"),
+            ReconcileSnapshotSelection.current());
+
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, firstScope);
+    String overlapping =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, overlappingScope);
+    String differentSnapshot =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, otherSnapshot);
+
+    assertEquals(first, overlapping);
+    assertNotEquals(first, differentSnapshot);
+  }
+
+  @Test
+  void metadataInclusiveScopeDoesNotTreatCaptureRequestsAsExactTableSelection() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+    ReconcileScope namespaceScope =
+        ReconcileScope.of(
+            List.of("namespace-1"),
+            null,
+            null,
+            requests,
+            policy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope tableScope =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L)));
+
+    String namespaceJob =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, namespaceScope);
+    String tableJob =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, tableScope);
+
+    assertNotEquals(namespaceJob, tableJob);
+  }
+
+  @RepeatedTest(20)
+  void concurrentEquivalentEnqueueAtomicallyDedupes() throws Exception {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+    ReconcileScope current =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.current());
+    ReconcileScope explicit =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L)));
+    CountDownLatch start = new CountDownLatch(1);
+    try (var executor = Executors.newFixedThreadPool(2)) {
+      var first =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueue(
+                    ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, current);
+              });
+      var second =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueue(
+                    ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, explicit);
+              });
+
+      start.countDown();
+
+      assertEquals(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS));
+    }
+    assertEquals(1, store.listRootJobs(ACCOUNT_ID, 10, "", "", null).jobs.size());
+  }
+
+  @Test
+  void enqueueDoesNotDedupeDifferentResolvedSnapshotsPoliciesOrRescanModes() {
+    ReconcileCapturePolicy firstPolicy = capturePolicy("#11");
+    ReconcileCapturePolicy secondPolicy = capturePolicy("#22");
+    ReconcileScope snapshot101 =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            firstPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope snapshot202 =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 202L, "column:11")),
+            firstPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope differentPolicy =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:22")),
+            secondPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope differentPolicyProperties =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            capturePolicy(Map.of("engine.mode", "alternate"), "#11"),
+            ReconcileSnapshotSelection.current());
+
+    String baseline =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, snapshot101);
+    String otherSnapshot =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, snapshot202);
+    String otherPolicy =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, differentPolicy);
+    String otherPolicyProperties =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, differentPolicyProperties);
+    String fullRescan =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, true, CaptureMode.CAPTURE_ONLY, snapshot101);
+
+    assertNotEquals(baseline, otherSnapshot);
+    assertNotEquals(baseline, otherPolicy);
+    assertNotEquals(baseline, otherPolicyProperties);
+    assertNotEquals(baseline, fullRescan);
+  }
+
+  @Test
+  void terminalResolvedWorkDoesNotBlockLaterReconcile() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    ReconcileScope current =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            policy,
+            ReconcileSnapshotSelection.current());
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, current);
+    var lease = store.leaseNext().orElseThrow();
+    store.markSucceeded(first, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 0, 0);
+
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(
+                List.of(captureRequest("tbl", 101L, "column:11")),
+                policy,
+                ReconcileSnapshotSelection.explicit(List.of(101L))));
 
     assertNotEquals(first, second);
   }
@@ -417,7 +675,7 @@ class DurableReconcileJobStoreTest {
     var secondSnapshotLease = leaseJob(second);
     store.markRunning(second, secondSnapshotLease.leaseEpoch, 160L, "executor-snapshot-2");
     store.markSucceeded(second, secondSnapshotLease.leaseEpoch, 170L, 0L, 0L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(
         "JS_SUCCEEDED",
@@ -425,6 +683,161 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         "JS_SUCCEEDED",
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, secondParentJobId)).state);
+  }
+
+  @Test
+  void snapshotIndexPredecessorSurvivesDurableEnqueueReadAndLease() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders").withIndexPredecessor(predecessor);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    assertEquals(
+        predecessor, store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask.indexPredecessor());
+    assertEquals(predecessor, leaseJob(jobId).snapshotTask.indexPredecessor());
+  }
+
+  @Test
+  void leasedSnapshotPinsIndexPredecessorOnceAndPersistsIt() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var laterPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    var lease = leaseJob(jobId);
+
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, firstPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, laterPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask.indexPredecessor());
+    StoredReconcileJob stored = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertTrue(stored.snapshotTaskIndexPredecessorPresent);
+    assertFalse(stored.snapshotTaskIndexPredecessorPinPending);
+    assertEquals(
+        firstPredecessor,
+        store.getCompactLeaseView(jobId).orElseThrow().snapshotTask.indexPredecessor());
+  }
+
+  @Test
+  void legacyUnpinnedSnapshotJobMustBeRecreated() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        jobId,
+        current -> {
+          current.snapshotTaskIndexPredecessorPinPending = false;
+          return current;
+        });
+    var lease = leaseJob(jobId);
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> store.pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, predecessor));
+
+    assertTrue(error.getMessage().contains("recreate the job"));
+  }
+
+  @Test
+  void snapshotPlanRetryCannotReplaceItsPinnedIndexPredecessor() {
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var retryPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+    ReconcileSnapshotTask baseTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    ReconcileScope scope = ReconcileScope.of(List.of(), "table-1");
+
+    String firstJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            baseTask.withIndexPredecessor(firstPredecessor),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String retryJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            baseTask.withIndexPredecessor(retryPredecessor),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    assertEquals(firstJobId, retryJobId);
+    assertEquals(
+        firstPredecessor,
+        store.get(ACCOUNT_ID, firstJobId).orElseThrow().snapshotTask.indexPredecessor());
   }
 
   @Test
@@ -470,6 +883,95 @@ class DurableReconcileJobStoreTest {
     assertEquals(secondJobId, secondLease.jobId);
     assertEquals(ReconcileJobKind.PLAN_SNAPSHOT, secondLease.jobKind);
     assertEquals(202L, secondLease.snapshotTask.snapshotId());
+  }
+
+  @Test
+  void snapshotOwnershipSurvivesWaitingUntilOwnerTerminates() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = leaseJob(first);
+    store.markRunning(first, firstLease.leaseEpoch, 100L, "executor-snapshot-1");
+    store.markWaiting(
+        first,
+        firstLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    assertTrue(
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                    Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+                    Set.of(),
+                    java.util.EnumSet.of(ReconcileJobKind.PLAN_SNAPSHOT)))
+            .isEmpty());
+
+    store.cancel(ACCOUNT_ID, first, "cancel owner");
+    assertEquals(second, leaseJob(second).jobId);
+  }
+
+  @Test
+  void snapshotOwnershipAllowsOnlyOwnerToRetry() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = leaseJob(first);
+    store.markFailed(first, firstLease.leaseEpoch, 100L, "retry owner", 0L, 0L, 0L, 0L, 1L, 0L, 0L);
+
+    assertEquals(first, leaseJob(first).jobId);
+    assertEquals("JS_QUEUED", store.get(ACCOUNT_ID, second).orElseThrow().state);
   }
 
   @Test
@@ -698,7 +1200,11 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals(1L, parentRecord.expectedDirectChildren);
-    assertTrue(parentRecord.projectionRequestedGeneration > 0L);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .isPresent());
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
   }
@@ -1021,6 +1527,7 @@ class DurableReconcileJobStoreTest {
         });
 
     store.markSucceeded(firstChild.jobId, firstLease.leaseEpoch, 400L, 1L, 1L, 0L, 0L, 0L, 0L);
+    runProjectionMaintenance(4);
 
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -1366,9 +1873,8 @@ class DurableReconcileJobStoreTest {
     assertEquals(ReconcileJobKind.EXEC_FILE_GROUP, secondLease.orElseThrow().jobKind);
     assertEquals("plan-1", secondLease.orElseThrow().fileGroupTask.planId());
     assertEquals("group-1", secondLease.orElseThrow().fileGroupTask.groupId());
-    assertEquals(
-        List.of("s3://bucket/data/file-1.parquet"),
-        secondLease.orElseThrow().fileGroupTask.filePaths());
+    assertEquals(1, secondLease.orElseThrow().fileGroupTask.fileCount());
+    assertTrue(secondLease.orElseThrow().fileGroupTask.filePaths().isEmpty());
   }
 
   @Test
@@ -1451,7 +1957,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void terminalChildCommitDoesNotSynchronouslyRollUpParentBeforeDirtyProjectionSignal() {
+  void terminalChildCommitAtomicallyQueuesDirtyParentProjection() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -1491,16 +1997,7 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
 
-    PointerStore originalPointerStore = store.pointerStore;
-    store.pointerStore = new DirtyParentFailingPointerStore(originalPointerStore);
-
-    IllegalStateException thrown =
-        assertThrows(
-            IllegalStateException.class,
-            () ->
-                store.markSucceeded(
-                    tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L));
-    assertTrue(thrown.getMessage().contains("Failed to mark reconcile parent dirty"));
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -1509,6 +2006,11 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_SUCCEEDED", tableCanonical.state);
     assertEquals("JS_WAITING", connectorCanonical.state);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .isPresent());
   }
 
   @Test
@@ -1962,14 +2464,8 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(4);
 
     StoredReconcileJobProjection connectorProjection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
@@ -1978,7 +2474,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_SUCCEEDED", connectorProjection.state());
-    assertEquals("JS_WAITING", tableProjection.state());
+    assertEquals("JS_SUCCEEDED", tableProjection.state());
     assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
@@ -2036,14 +2532,8 @@ class DurableReconcileJobStoreTest {
                 "executor-projection",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
 
     StoredReconcileJob after =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -2108,7 +2598,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorAfterProgress =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
 
-    assertTrue(tableAfterProgress.projectionRequestedGeneration > tableGenerationBefore);
+    assertEquals(tableGenerationBefore, tableAfterProgress.projectionRequestedGeneration);
     assertEquals(connectorGenerationBefore, connectorAfterProgress.projectionRequestedGeneration);
     assertTrue(
         store
@@ -2116,8 +2606,7 @@ class DurableReconcileJobStoreTest {
             .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, tableJobId))
             .isPresent());
 
-    store.runProjectionMaintenanceOnce(1_000L);
-    store.runProjectionMaintenanceOnce(1_000L);
+    runProjectionMaintenance(4);
 
     StoredReconcileJobProjection connectorProjection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
@@ -2165,8 +2654,7 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markProgress(tableJobId, tableLease.leaseEpoch, 0L, 0L, 0L, 0L, 0L, 1L, 0L, "progress");
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
     assertTrue(
         store
             .pointerStore
@@ -2195,28 +2683,10 @@ class DurableReconcileJobStoreTest {
                       return current;
                     }));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
+    requestProjectionRefresh(tableJobId);
+    runProjectionMaintenance(2);
 
-    assertTrue(
-        store
-            .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
-            .isPresent());
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    runProjectionMaintenance(2);
     assertEquals(
         7L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().snapshotsProcessed());
     assertEquals(
@@ -2366,27 +2836,18 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    StoredReconcileJob connectorRecord =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
     StoredReconcileJobProjection projection =
-        (StoredReconcileJobProjection)
-            assertDoesNotThrow(
-                () ->
-                    invokePrivateMethod(
-                        store,
-                        "recomputeSummaryProjection",
-                        new Class<?>[] {StoredReconcileJob.class, boolean.class, boolean.class},
-                        connectorRecord,
-                        false,
-                        true));
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
     assertEquals(1L, projection.tablesScanned());
     assertEquals(1L, projection.tablesChanged());
-    assertEquals(1L, projection.snapshotsProcessed());
+    assertEquals(0L, projection.snapshotsProcessed());
   }
 
   @Test
-  void ancestorRefreshUsesCurrentTerminalChildProjectionWithoutRecomputingSubtree() {
+  void ancestorRefreshIgnoresStoredChildProjection() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2506,22 +2967,13 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    StoredReconcileJob connectorRecord =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
     StoredReconcileJobProjection projection =
-        (StoredReconcileJobProjection)
-            assertDoesNotThrow(
-                () ->
-                    invokePrivateMethod(
-                        store,
-                        "recomputeSummaryProjection",
-                        new Class<?>[] {StoredReconcileJob.class, boolean.class, boolean.class},
-                        connectorRecord,
-                        true,
-                        true));
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
-    assertEquals(7L, projection.statsProcessed());
-    assertEquals(7L, projection.indexesProcessed());
+    assertEquals(0L, projection.statsProcessed());
+    assertEquals(0L, projection.indexesProcessed());
   }
 
   @Test
@@ -2584,6 +3036,13 @@ class DurableReconcileJobStoreTest {
                 current -> {
                   current.state = "JS_SUCCEEDED";
                   current.message = "Succeeded";
+                  current.snapshotsProcessed = 1L;
+                  current.statsProcessed = 1208L;
+                  current.indexesProcessed = 1208L;
+                  current.plannedFileGroups = 85L;
+                  current.plannedFiles = 1208L;
+                  current.completedFileGroups = 85L;
+                  current.completedFiles = 1208L;
                   current.startedAtMs = 120L;
                   current.finishedAtMs = 180L;
                   current.updatedAtMs = 180L;
@@ -2643,23 +3102,17 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
+    requestProjectionRefresh(tableJobId);
+    runProjectionMaintenance(2);
 
     StoredReconcileJobProjection projection =
         projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
+    assertTrue(projection.appliedGeneration() > 796L);
     // The generation advance is only legitimate because the state was re-derived from the children.
     // A counters-only patch used to advance it while republishing the stale JS_WAITING, which froze
     // the projection forever: the applied generation then matched the requested one, so no later
     // refresh or read ever recomputed the state again.
     assertEquals("JS_SUCCEEDED", projection.state());
-    assertEquals(796L, projection.appliedGeneration());
     assertEquals(86L, projection.tablesScanned());
     assertEquals(86L, projection.tablesChanged());
     assertEquals(1208L, projection.statsProcessed());
@@ -2794,19 +3247,13 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
 
     StoredReconcileJobProjection projection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
     assertEquals("JS_SUCCEEDED", projection.state());
-    assertEquals(42L, projection.appliedGeneration());
+    assertTrue(projection.appliedGeneration() > 42L);
     assertEquals(4L, projection.completedFileGroups());
     assertEquals(4L, projection.completedFiles());
     // The production symptom is GetReconcileJob polling forever, and that read prefers the
@@ -2958,25 +3405,39 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void requestProjectionRefreshSkipsObsoleteMissingParent() {
+  void projectionMaintenanceDeletesMarkerForMissingParent() {
     String missingParentJobId = "missing-parent";
     String dirtyMarkerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, missingParentJobId);
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "requestProjectionRefresh",
-                new Class<?>[] {String.class, String.class, long.class},
-                ACCOUNT_ID,
-                missingParentJobId,
-                0L));
-
+    requestProjectionRefresh(missingParentJobId);
+    assertTrue(store.pointerStore.get(dirtyMarkerKey).isPresent());
+    runProjectionMaintenance();
     assertTrue(store.pointerStore.get(dirtyMarkerKey).isEmpty());
   }
 
   @Test
-  void requestProjectionRefreshRevertsGenerationAdvanceWhenMarkerWriteFails() {
+  void projectionRefreshTouchCannotBeConsumedWithAnOlderMarkerToken() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId);
+
+    requestProjectionRefresh(parentJobId);
+    Pointer first = store.pointerStore.get(markerKey).orElseThrow();
+    requestProjectionRefresh(parentJobId);
+    Pointer replacement = store.pointerStore.get(markerKey).orElseThrow();
+
+    assertNotEquals(first.getVersion(), replacement.getVersion());
+    assertFalse(store.pointerStore.compareAndDelete(markerKey, first.getVersion()));
+    assertEquals(replacement, store.pointerStore.get(markerKey).orElseThrow());
+  }
+
+  @Test
+  void requestProjectionRefreshDoesNotMutateCanonicalParentWhenMarkerWriteFails() {
     String parentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2998,10 +3459,9 @@ class DurableReconcileJobStoreTest {
                 invokePrivateMethod(
                     store,
                     "requestProjectionRefresh",
-                    new Class<?>[] {String.class, String.class, long.class},
+                    new Class<?>[] {String.class, String.class},
                     ACCOUNT_ID,
-                    parentJobId,
-                    1L));
+                    parentJobId));
 
     assertTrue(failure.getCause() instanceof IllegalStateException);
     StoredReconcileJob after =
@@ -3108,7 +3568,7 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      assertTrue(deleteReadyEntry(readyKey));
+      assertTrue(findAndDeleteReadyEntry(queued, readyKey));
     }
 
     var filteredLease =
@@ -3431,16 +3891,14 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, firstTableLease.leaseEpoch, 100L, "executor-table");
     store.markFailed(
         tableJobId, firstTableLease.leaseEpoch, 110L, "transient", 1L, 0L, 0L, 0L, 1L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(1L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
 
     var secondTableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, secondTableLease.leaseEpoch, 120L, "executor-table");
     store.markSucceeded(tableJobId, secondTableLease.leaseEpoch, 130L, 1L, 1L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(0L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
   }
@@ -3634,6 +4092,41 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void failedFullRescanSnapshotWithoutChildrenCleansDraftStats() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    Mockito.doReturn(UnpublishedGenerationDeleteResult.DELETED)
+        .when(statsStore)
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+    var lease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, lease.leaseEpoch, 50L, "executor");
+
+    store.markFailedTerminal(
+        snapshotJobId, lease.leaseEpoch, 100L, "failed", 0L, 0L, 0L, 0L, 1L, 0L, 0L);
+    runStatsCleanupMaintenance();
+
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+  }
+
+  @Test
   void fullRescanSnapshotCancellationRetriesDraftStatsCleanupAfterTransientFailure() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     store.statsStore = statsStore;
@@ -3737,12 +4230,46 @@ class DurableReconcileJobStoreTest {
     Mockito.verify(statsStore, Mockito.times(1))
         .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
 
-    runCancellationMaintenance();
+    runProjectionMaintenance();
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runStatsCleanupMaintenance();
     Mockito.verify(statsStore, Mockito.times(2))
         .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
 
-    runCancellationMaintenance();
+    runStatsCleanupMaintenance();
     Mockito.verifyNoMoreInteractions(statsStore);
+  }
+
+  @Test
+  void abandonedStatsCleanupAdvancesPastPartialPageOnNextRun() throws Exception {
+    ReconcileJobIndexStore indexStore = Mockito.mock(ReconcileJobIndexStore.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.jobIndexStore = indexStore;
+    store.statsStore = statsStore;
+    StoredReconcileJob skipped = new StoredReconcileJob();
+
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), "pending-page-2"));
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, "pending-page-2"))
+        .thenAnswer(
+            ignored -> {
+              Thread.sleep(30L);
+              return new ReconcileJobIndexStore.StoredJobPage(List.of(skipped), "pending-page-3");
+            });
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, "pending-page-3"))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(20L);
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(1_000L);
+
+    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsPendingStatsCleanup(128, "");
+    Mockito.verify(indexStore, Mockito.times(1))
+        .listStoredJobsPendingStatsCleanup(128, "pending-page-2");
+    Mockito.verify(indexStore, Mockito.times(1))
+        .listStoredJobsPendingStatsCleanup(128, "pending-page-3");
+    Mockito.verifyNoInteractions(statsStore);
   }
 
   @Test
@@ -3826,7 +4353,9 @@ class DurableReconcileJobStoreTest {
     runCancellationMaintenance();
     runProjectionMaintenance();
 
-    assertEquals("JS_CANCELLING", store.getLeaseView(parentJobId).orElseThrow().state);
+    assertTrue(
+        Set.of("JS_CANCELLING", "JS_CANCELLED")
+            .contains(store.getLeaseView(parentJobId).orElseThrow().state));
     assertEquals("JS_RUNNING", store.getLeaseView(childJobId).orElseThrow().state);
     Optional<StoredReconcileJobProjection> parentProjection =
         projectionStore().load(ACCOUNT_ID, parentJobId);
@@ -3838,7 +4367,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void projectionMaintenanceSkipsDescendantRefreshWhenAncestorCancelled() {
+  void projectionMaintenanceDoesNotScanAncestorsBeforeRefreshingDescendant() {
     String parentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -3872,15 +4401,12 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, parentJobId, "stop");
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                grandchildJobId));
-    assertTrue(projectionStore().load(ACCOUNT_ID, grandchildJobId).isEmpty());
+    requestProjectionRefresh(grandchildJobId);
+    runProjectionMaintenance();
+    assertTrue(projectionStore().load(ACCOUNT_ID, grandchildJobId).isPresent());
+    assertTrue(
+        Set.of("JS_CANCELLING", "JS_CANCELLED")
+            .contains(store.getLeaseView(parentJobId).orElseThrow().state));
   }
 
   @Test
@@ -4136,7 +4662,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4151,10 +4678,13 @@ class DurableReconcileJobStoreTest {
                     2L,
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
-    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    assertEquals(
+        0L,
+        projectionStore()
+            .load(ACCOUNT_ID, tableJobId)
+            .map(StoredReconcileJobProjection::indexesProcessed)
+            .orElse(0L));
+    runProjectionMaintenance(8);
 
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
@@ -4181,7 +4711,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void finalizerSuccessSynchronouslyAdvancesNestedCanonicalParents() {
+  void finalizerSuccessAdvancesNestedCanonicalParentsThroughMaintenance() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -4290,7 +4820,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4300,8 +4831,7 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 2L))));
-    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
-
+    runProjectionMaintenance(4);
     ReconcileJob finalizer =
         store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
@@ -4315,6 +4845,7 @@ class DurableReconcileJobStoreTest {
     var finalizerLease = leaseJob(finalizer.jobId);
     store.markRunning(finalizer.jobId, finalizerLease.leaseEpoch, 250L, "executor-finalizer");
     store.markSucceeded(finalizer.jobId, finalizerLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L, 1L, 2L);
+    runProjectionMaintenance(8);
 
     assertEquals(
         "JS_SUCCEEDED",
@@ -4328,7 +4859,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void persistedFileGroupContributionRollsIntoProjectionBeforeTerminalCompletion() {
+  void atomicFileGroupCompletionRollsContributionIntoProjection() {
     String snapshotJobId =
         store.enqueueSnapshotPlan(
             ACCOUNT_ID,
@@ -4385,7 +4916,8 @@ class DurableReconcileJobStoreTest {
             .pointerStore
             .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId))
             .isEmpty());
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4409,15 +4941,15 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
-    assertEquals("JS_WAITING", snapshotProjection.state());
+    assertEquals("JS_SUCCEEDED", snapshotProjection.state());
     assertEquals(1L, snapshotProjection.completedFileGroups());
     assertEquals(2L, snapshotProjection.completedFiles());
     assertEquals(1L, snapshotProjection.indexesProcessed());
-    assertEquals(5L, snapshotProjection.statsProcessed());
+    assertEquals(2L, snapshotProjection.statsProcessed());
   }
 
   @Test
-  void childProjectionDeltaAdvancesParentCanonicalAggregatesBeforeFullRollup() {
+  void deferredProjectionMaintenanceAdvancesParentCanonicalAggregates() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -4519,7 +5051,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4535,54 +5068,26 @@ class DurableReconcileJobStoreTest {
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 3L))));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                snapshotJobId));
+    runProjectionMaintenance(8);
 
     StoredReconcileJob tableAfterSnapshotProjection =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
-    assertEquals(5L, tableAfterSnapshotProjection.statsProcessed);
+    assertEquals(2L, tableAfterSnapshotProjection.statsProcessed);
     assertEquals(1L, tableAfterSnapshotProjection.indexesProcessed);
     assertEquals(1L, tableAfterSnapshotProjection.completedFileGroups);
     assertEquals(2L, tableAfterSnapshotProjection.completedFiles);
-
-    projectionStore()
-        .upsert(
-            projection(
-                tableJobId,
-                Math.max(0L, tableAfterSnapshotProjection.projectionAppliedGeneration),
-                "JS_WAITING",
-                "Waiting on child work",
-                1L,
-                1L,
-                0L,
-                0L));
-
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
 
     StoredReconcileJobProjection tableProjection =
         projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
     StoredReconcileJob connectorAfterTablePatch =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
 
-    assertEquals("JS_WAITING", tableProjection.state());
-    assertEquals(5L, tableProjection.statsProcessed());
+    assertEquals("JS_SUCCEEDED", tableProjection.state());
+    assertEquals(2L, tableProjection.statsProcessed());
     assertEquals(1L, tableProjection.indexesProcessed());
     assertEquals(1L, tableProjection.completedFileGroups());
     assertEquals(2L, tableProjection.completedFiles());
-    assertEquals(5L, connectorAfterTablePatch.statsProcessed);
+    assertEquals(2L, connectorAfterTablePatch.statsProcessed);
     assertEquals(1L, connectorAfterTablePatch.indexesProcessed);
     assertEquals(1L, connectorAfterTablePatch.completedFileGroups);
     assertEquals(2L, connectorAfterTablePatch.completedFiles);
@@ -4769,6 +5274,139 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancelledFinalizedParentStillCancelsQueuedCanonicalChildren() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLED";
+                      current.message = "Cancelled";
+                      current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                      current.finishedAtMs = Math.max(current.finishedAtMs, 100L);
+                      current.childrenFinalized = true;
+                      current.expectedDirectChildren = Math.max(1L, current.expectedDirectChildren);
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+
+    store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
+
+    String cleanupKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    assertTrue(store.pointerStore.get(cleanupKey).isPresent());
+
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(tableJobId).orElseThrow().state);
+    assertTrue(store.pointerStore.get(cleanupKey).isEmpty());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+  }
+
+  @Test
+  void cancelledFinalizedHierarchyStillCancelsQueuedGrandchildren() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 1L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+
+    for (String jobId : List.of(connectorJobId, tableJobId)) {
+      assertDoesNotThrow(
+          () ->
+              invokePrivateMethod(
+                  store,
+                  "mutateByCanonicalPointerReturningRecord",
+                  new Class<?>[] {String.class, UnaryOperator.class},
+                  Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
+                  (UnaryOperator<StoredReconcileJob>)
+                      current -> {
+                        current.state = "JS_CANCELLED";
+                        current.message = "Cancelled";
+                        current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                        current.finishedAtMs = Math.max(current.finishedAtMs, 100L);
+                        current.childrenFinalized = true;
+                        current.expectedDirectChildren =
+                            Math.max(1L, current.expectedDirectChildren);
+                        current.readyPointerKey = null;
+                        current.nextAttemptAtMs = 0L;
+                        return current;
+                      }));
+    }
+
+    store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
+
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(tableJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .isEmpty());
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, tableJobId))
+            .isEmpty());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+  }
+
+  @Test
   void enqueueDoesNotDedupeToStaleCancellingRoot() {
     String connectorJobId =
         store.enqueue(
@@ -4896,7 +5534,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void repeatedSnapshotFinalizationResetsFinalizedStatusUntilNewFinalizerSucceeds() {
+  void repeatedSnapshotFinalizationPreservesLastSuccessUntilNewFinalizerSucceeds() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
 
@@ -4934,7 +5572,10 @@ class DurableReconcileJobStoreTest {
             "");
 
     assertNotEquals(firstJobId, secondJobId);
-    assertFalse(store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L).isPresent());
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> whileRecapturing =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(whileRecapturing.isPresent());
+    assertEquals(firstJobId, whileRecapturing.orElseThrow().finalizerJobId);
 
     var secondLease = leaseJob(secondJobId);
     store.markRunning(secondJobId, secondLease.leaseEpoch, 300L, "executor-finalizer-2");
@@ -4948,21 +5589,804 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
-    ReconcileSnapshotTask snapshotTask =
-        ReconcileSnapshotTask.of(
-            "table-1",
-            55L,
-            "db",
-            "orders",
-            List.of(),
+  void snapshotContentStateSkipsExactWorkAndLeasesOnlyMissingOrChangedContent() {
+    ReconcileScope capturedScope =
+        captureScope(
+            Set.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> capturedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.METADATA_AND_CAPTURE, capturedScope);
+    ReconcileSnapshotTask capturedTask = contentTask("revision-1", "metadata-1", capturedCoverage);
+    publishFinalizedContent(
+        CaptureMode.METADATA_AND_CAPTURE, capturedScope, capturedTask, 100L, 200L);
+
+    String exactJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            capturedScope,
+            capturedTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    assertTrue(store.leaseNext().isEmpty());
+    ReconcileJob exact = store.get(ACCOUNT_ID, exactJob).orElseThrow();
+    assertEquals("JS_SUCCEEDED", exact.state);
+    assertEquals(0L, exact.snapshotsProcessed);
+
+    ReconcileScope supersetScope =
+        captureScope(
+            Set.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.COLUMN_STATS));
+    List<String> supersetCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.METADATA_AND_CAPTURE, supersetScope);
+    String supersetJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            supersetScope,
+            contentTask("revision-1", "metadata-1", supersetCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var supersetLease = store.leaseNext().orElseThrow();
+    List<String> missing =
+        ReconcileSnapshotContentState.missingCoverage(supersetCoverage, capturedCoverage);
+    assertEquals(missing, supersetLease.snapshotTask.requestedCoverage());
+    assertEquals(
+        missing, store.get(ACCOUNT_ID, supersetJob).orElseThrow().snapshotTask.requestedCoverage());
+    store.markRunning(supersetJob, supersetLease.leaseEpoch, 300L, "snapshot-planner");
+    store.markSucceeded(supersetJob, supersetLease.leaseEpoch, 310L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    ReconcileSnapshotTask metadataOnly = contentTask("revision-1", "metadata-1", List.of());
+    String unchangedMetadataJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            metadataOnly,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    assertTrue(store.leaseNext().isEmpty());
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, unchangedMetadataJob).orElseThrow().state);
+
+    String changedMetadataJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            contentTask("revision-1", "metadata-2", List.of()),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var changedMetadataLease = store.leaseNext().orElseThrow();
+    assertTrue(changedMetadataLease.snapshotTask.requestedCoverage().isEmpty());
+    store.markRunning(
+        changedMetadataJob, changedMetadataLease.leaseEpoch, 400L, "snapshot-planner");
+    store.markSucceeded(
+        changedMetadataJob, changedMetadataLease.leaseEpoch, 410L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    String changedRevisionJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            capturedScope,
+            contentTask("revision-2", "", capturedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var changedRevisionLease = store.leaseNext().orElseThrow();
+    assertEquals(capturedCoverage, changedRevisionLease.snapshotTask.requestedCoverage());
+    store.markRunning(
+        changedRevisionJob, changedRevisionLease.leaseEpoch, 500L, "snapshot-planner");
+    store.markSucceeded(
+        changedRevisionJob, changedRevisionLease.leaseEpoch, 510L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    String fullRescanJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
             true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
-            "blob://planner-direct-stats",
-            0,
-            0,
-            "blob://planner-direct-stats",
-            3);
+            CaptureMode.METADATA_AND_CAPTURE,
+            capturedScope,
+            capturedTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var fullRescanLease = store.leaseNext().orElseThrow();
+    assertEquals(capturedCoverage, fullRescanLease.snapshotTask.requestedCoverage());
+    assertEquals(fullRescanJob, fullRescanLease.jobId);
+  }
+
+  @Test
+  void snapshotContentStateSkipsStatsOnlyWorkCoveredByEarlierIndexCapture() {
+    ReconcileScope.ScopedCaptureRequest request =
+        new ReconcileScope.ScopedCaptureRequest("table-1", 55L, "column:11", List.of());
+    ReconcileScope indexCaptureScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(request), capturePolicy("#11"));
+    List<String> materializedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.METADATA_AND_CAPTURE, indexCaptureScope);
+    publishFinalizedContent(
+        CaptureMode.METADATA_AND_CAPTURE,
+        indexCaptureScope,
+        contentTask("revision-1", "metadata-1", materializedCoverage),
+        100L,
+        200L);
+
+    ReconcileScope statsOnlyScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(request), statsOnlyCapturePolicy("#11"));
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, statsOnlyScope);
+    String statsOnlyJob =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            statsOnlyScope,
+            contentTask("revision-1", "", requestedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertTrue(store.leaseNext().isEmpty());
+    ReconcileJob completed = store.get(ACCOUNT_ID, statsOnlyJob).orElseThrow();
+    assertEquals("JS_SUCCEEDED", completed.state);
+    assertEquals(0L, completed.snapshotsProcessed);
+    assertTrue(
+        ReconcileSnapshotContentState.missingCoverage(
+                requestedCoverage,
+                store
+                    .getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L)
+                    .orElseThrow()
+                    .captureCoverage)
+            .isEmpty());
+  }
+
+  @Test
+  void snapshotContentStateSkipsExplicitColumnCoveredByWildcardOnUnchangedRevision() {
+    ReconcileCapturePolicy policy = statsOnlyCapturePolicy("#11");
+    ReconcileScope wildcardScope = ReconcileScope.of(List.of(), "table-1", List.of(), policy);
+    String wildcardPolicyAtom =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, wildcardScope).getFirst();
+    String semantics = wildcardPolicyAtom.substring(wildcardPolicyAtom.lastIndexOf('|') + 1);
+    List<String> materializedCoverage = List.of(coverageAtom("COLUMN_STATS", "*", "", semantics));
+    publishFinalizedContent(
+        CaptureMode.CAPTURE_ONLY,
+        wildcardScope,
+        contentTask("revision-1", "", materializedCoverage),
+        100L,
+        200L);
+
+    ReconcileScope explicitScope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest("table-1", 55L, "column:11", List.of())),
+            policy);
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, explicitScope);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            explicitScope,
+            contentTask("revision-1", "", requestedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertTrue(store.leaseNext().isEmpty());
+    ReconcileJob completed = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals("JS_SUCCEEDED", completed.state);
+    assertEquals(0L, completed.snapshotsProcessed);
+  }
+
+  @Test
+  void sameRevisionIndexRecaptureIncludesPreviouslyMaterializedColumns() {
+    ReconcileCapturePolicy materializedPolicy =
+        ReconcileCapturePolicy.of(
+            List.of(
+                new ReconcileCapturePolicy.Column("a", false, true),
+                new ReconcileCapturePolicy.Column("b", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope materializedScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(), materializedPolicy);
+    List<String> materializedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, materializedScope);
+    publishFinalizedContent(
+        CaptureMode.CAPTURE_ONLY,
+        materializedScope,
+        contentTask("revision-1", "", materializedCoverage),
+        100L,
+        200L);
+    ReconcileCapturePolicy requestedPolicy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("c", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope requestedScope =
+        ReconcileScope.of(List.of(), "table-1", List.of(), requestedPolicy);
+    List<String> requestedCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, requestedScope);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            requestedScope,
+            contentTask("revision-1", "", requestedCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = store.leaseNext().orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals(requestedCoverage, lease.snapshotTask.requestedCoverage());
+    assertEquals(
+        Set.of("a", "b", "c"),
+        lease.scope.capturePolicy().columns().stream()
+            .map(ReconcileCapturePolicy.Column::selector)
+            .collect(java.util.stream.Collectors.toSet()));
+  }
+
+  @Test
+  void queuedCompatibleSnapshotPlansCoalesceCoverageWithoutHidingFollowerJobs() {
+    ReconcileScope firstScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope secondScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> firstCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, firstScope);
+    List<String> secondCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, secondScope);
+
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            firstScope,
+            contentTask("revision-1", "", firstCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            secondScope,
+            contentTask("revision-1", "", secondCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertNotEquals(first, second);
+    assertTrue(store.get(ACCOUNT_ID, second).isPresent());
+    assertEquals(
+        ReconcileSnapshotContentState.unionCoverage(firstCoverage, secondCoverage),
+        store.get(ACCOUNT_ID, first).orElseThrow().snapshotTask.requestedCoverage());
+  }
+
+  @Test
+  void terminalSnapshotCoverageClaimOwnerDoesNotContaminateReplacement() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var firstLease = leaseJob(first);
+    store.markRunning(first, firstLease.leaseEpoch, 100L, "snapshot-planner");
+    store.markSucceeded(first, firstLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    String replacement =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            fileScope,
+            contentTask("revision-1", "", fileCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(
+        fileCoverage,
+        store.get(ACCOUNT_ID, replacement).orElseThrow().snapshotTask.requestedCoverage());
+    assertEquals(
+        Set.of(ReconcileCapturePolicy.Output.FILE_STATS),
+        store.get(ACCOUNT_ID, replacement).orElseThrow().scope.capturePolicy().outputs());
+  }
+
+  @Test
+  void leasedAggregateAcceptsCoverageUntilFreezeThenUsesOneSuccessor() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    ReconcileScope columnScope = captureScope(Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+    List<String> columnCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, columnScope);
+
+    String aggregate =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var aggregateLease = leaseJob(aggregate);
+    String beforeFreezeFollower =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            fileScope,
+            contentTask("revision-1", "", fileCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    assertEquals(
+        ReconcileSnapshotContentState.unionCoverage(tableCoverage, fileCoverage),
+        store.get(ACCOUNT_ID, aggregate).orElseThrow().snapshotTask.requestedCoverage());
+
+    var frozen =
+        store.freezeSnapshotPlanCoverage(aggregate, aggregateLease.leaseEpoch).orElseThrow();
+    List<String> frozenCoverage = frozen.snapshotTask.requestedCoverage();
+    String successor =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            columnScope,
+            contentTask("revision-1", "", columnCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String successorFollower =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertNotEquals(beforeFreezeFollower, successor);
+    assertNotEquals(successor, successorFollower);
+    assertEquals(
+        frozenCoverage,
+        store.get(ACCOUNT_ID, aggregate).orElseThrow().snapshotTask.requestedCoverage());
+    assertEquals(
+        ReconcileSnapshotContentState.unionCoverage(frozenCoverage, columnCoverage),
+        store.get(ACCOUNT_ID, successor).orElseThrow().snapshotTask.requestedCoverage());
+    assertEquals(
+        Set.of(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.FILE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS),
+        store.get(ACCOUNT_ID, successor).orElseThrow().scope.capturePolicy().outputs());
+  }
+
+  @RepeatedTest(10)
+  void concurrentRequestsAfterFreezeCoalesceIntoOneCoverageSuccessor() throws Exception {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    ReconcileScope columnScope = captureScope(Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+    List<String> columnCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, columnScope);
+    List<String> accumulated =
+        ReconcileSnapshotContentState.unionCoverage(
+            ReconcileSnapshotContentState.unionCoverage(tableCoverage, fileCoverage),
+            columnCoverage);
+    String owner =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var ownerLease = leaseJob(owner);
+    store.freezeSnapshotPlanCoverage(owner, ownerLease.leaseEpoch).orElseThrow();
+    CountDownLatch start = new CountDownLatch(1);
+    String first;
+    String second;
+    try (var executor = Executors.newFixedThreadPool(2)) {
+      var firstFuture =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueueSnapshotPlan(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.CAPTURE_ONLY,
+                    fileScope,
+                    contentTask("revision-1", "", fileCoverage),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    "");
+              });
+      var secondFuture =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueueSnapshotPlan(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.CAPTURE_ONLY,
+                    columnScope,
+                    contentTask("revision-1", "", columnCoverage),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    "");
+              });
+      start.countDown();
+      first = firstFuture.get(10, TimeUnit.SECONDS);
+      second = secondFuture.get(10, TimeUnit.SECONDS);
+    }
+
+    assertNotEquals(first, second);
+    assertEquals(
+        tableCoverage, store.get(ACCOUNT_ID, owner).orElseThrow().snapshotTask.requestedCoverage());
+    List<ReconcileJob> successors =
+        List.of(first, second).stream()
+            .map(jobId -> store.get(ACCOUNT_ID, jobId).orElseThrow())
+            .toList();
+    long accumulatedSuccessors =
+        successors.stream()
+            .filter(job -> accumulated.equals(job.snapshotTask.requestedCoverage()))
+            .count();
+    assertEquals(
+        1L,
+        accumulatedSuccessors,
+        () ->
+            "successor coverage="
+                + successors.stream()
+                    .map(job -> job.snapshotTask.requestedCoverage().toString())
+                    .toList());
+  }
+
+  @Test
+  void lateIndexCoverageCanBePinnedAfterCoverageFreeze() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope indexScope =
+        captureScope(Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    String owner =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask(
+                "revision-1",
+                "",
+                ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope)),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var ownerLease = leaseJob(owner);
+    store.enqueueSnapshotPlan(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.CAPTURE_ONLY,
+        indexScope,
+        contentTask(
+            "revision-1",
+            "",
+            ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, indexScope)),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        "");
+    var frozen = store.freezeSnapshotPlanCoverage(owner, ownerLease.leaseEpoch).orElseThrow();
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+
+    var pinned =
+        store.pinSnapshotIndexPredecessor(owner, ownerLease.leaseEpoch, predecessor).orElseThrow();
+
+    assertTrue(frozen.scope.capturePolicy().requestsIndexes());
+    assertEquals(predecessor, pinned.indexPredecessor());
+  }
+
+  @Test
+  void explicitEmptySnapshotPlanEnqueuesFinalizerForMetadataReceipt() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true)
+            .withContentState("revision-1", "metadata-1", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on explicit-empty finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    runProjectionMaintenance();
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_QUEUED", finalizers.getFirst().state);
+    assertEquals(0, finalizers.getFirst().snapshotTask.fileGroupCount());
+  }
+
+  @Test
+  void finalizerTerminalFailuresRetryWithBackoffThenFailParentWithoutReplacement() {
+    configureRetryPolicy(2, 100L, 100L);
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true)
+            .withContentState("revision-1", "metadata-1", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on explicit-empty finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    runProjectionMaintenance();
+    String finalizerJobId =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .findFirst()
+            .orElseThrow()
+            .jobId;
+
+    var firstLease = leaseJob(finalizerJobId);
+    store.markRunning(finalizerJobId, firstLease.leaseEpoch, 100L, "finalizer-1");
+    store.markFailedTerminal(
+        finalizerJobId,
+        firstLease.leaseEpoch,
+        110L,
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+    StoredReconcileJob retrying =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    assertEquals("JS_QUEUED", retrying.state);
+    assertEquals(1, retrying.attempt);
+    assertTrue(retrying.nextAttemptAtMs > System.currentTimeMillis());
+    assertFalse(retrying.readyPointerKey.isBlank());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+
+    makeQueuedJobDueNow(finalizerJobId);
+    var secondLease = leaseJob(finalizerJobId);
+    store.markRunning(finalizerJobId, secondLease.leaseEpoch, 120L, "finalizer-2");
+    store.markFailedTerminal(
+        finalizerJobId,
+        secondLease.leaseEpoch,
+        130L,
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+    String replayedFinalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    assertEquals(finalizerJobId, replayedFinalizerJobId);
+    runProjectionMaintenance(3);
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_FAILED", finalizers.getFirst().state);
+    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, snapshotJobId).orElseThrow().state);
+    runProjectionMaintenance(3);
+    assertEquals(
+        1L,
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .count());
+  }
+
+  @Test
+  void snapshotFinalizeCommitRequiresParentSnapshotOwnership() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+
+    assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+
+    String parentCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId);
+    leaseManager()
+        .clearSnapshotOwnershipIfOwned(readStoredRecord(parentCanonical), parentCanonical);
+    assertFalse(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+  }
+
+  @Test
+  void expiredSnapshotCoverageClaimDoesNotRetainOldAggregateOwner() {
+    store.snapshotCoverageClaimRetentionMs = -1L;
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String follower =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            fileScope,
+            contentTask("revision-1", "", fileCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(
+        tableCoverage, store.get(ACCOUNT_ID, first).orElseThrow().snapshotTask.requestedCoverage());
+    assertEquals(
+        ReconcileSnapshotContentState.unionCoverage(tableCoverage, fileCoverage),
+        store.get(ACCOUNT_ID, follower).orElseThrow().snapshotTask.requestedCoverage());
+  }
+
+  @Test
+  void atomicSnapshotFinalizeSuccessRecordsFinalizedSnapshot() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
 
     String jobId =
         store.enqueueSnapshotFinalization(
@@ -4978,22 +6402,31 @@ class DurableReconcileJobStoreTest {
 
     var lease = leaseJob(jobId);
     store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            jobId,
+            lease.leaseEpoch,
+            "result-1",
+            "s3://bucket/capture-manifest.pb",
+            123L,
+            "manifest-sha256",
+            1,
+            3,
+            4L,
+            2L,
+            List.of("materialized-index-coverage"),
+            200L,
+            "Finalized snapshot capture 55"));
 
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
-
-    ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(
-        Map.of(0, 1, 1, 1, 2, 1),
-        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
-
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
-
-    ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> finalized =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(finalized.isPresent());
+    assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
+    assertEquals(200L, finalized.orElseThrow().finalizedAtMs);
+    assertEquals(List.of("materialized-index-coverage"), finalized.orElseThrow().captureCoverage);
+    var completedJob = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals(4L, completedJob.statsProcessed);
+    assertEquals(2L, completedJob.indexesProcessed);
   }
 
   @Test
@@ -5053,6 +6486,69 @@ class DurableReconcileJobStoreTest {
     assertTrue(finalized.isPresent());
     assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
     assertEquals(400L, finalized.orElseThrow().finalizedAtMs);
+  }
+
+  @Test
+  void finalizerDependencyWaitExhaustsRetryBudget() {
+    configureRetryPolicy(2, 0L, 0L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var firstLease = leaseJob(jobId);
+    store.markRunning(jobId, firstLease.leaseEpoch, 100L, "executor-finalizer-1");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            firstLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
+            110L,
+            "Waiting for snapshot file groups",
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+    StoredReconcileJob retrying = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_QUEUED", retrying.state);
+    assertEquals(1, retrying.attempt);
+
+    makeQueuedJobDueNow(jobId);
+    var secondLease = leaseJob(jobId);
+    store.markRunning(jobId, secondLease.leaseEpoch, 120L, "executor-finalizer-2");
+    assertTrue(
+        store.applyLeaseOutcome(
+            jobId,
+            secondLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
+            130L,
+            "Waiting for snapshot file groups",
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    StoredReconcileJob exhausted =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_FAILED", exhausted.state);
+    assertEquals(2, exhausted.attempt);
+    assertEquals(0L, exhausted.nextAttemptAtMs);
+    assertTrue(exhausted.readyPointerKey == null || exhausted.readyPointerKey.isBlank());
   }
 
   @Test
@@ -5122,9 +6618,13 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
+    ReconcileJobIndexStore observedJobIndexStore = Mockito.spy(store.jobIndexStore);
+    store.jobIndexStore = observedJobIndexStore;
+
     var firstLease = leaseJob(firstExecJobId);
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         firstExecJobId,
         firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5134,17 +6634,27 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.markSucceeded(firstExecJobId, firstLease.leaseEpoch, 150L, 0L, 0L, 0L, 0L, 0L, 1L);
-
+    assertEquals(
+        0L,
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
+            .completedFileGroups);
+    Mockito.verify(observedJobIndexStore, Mockito.never())
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
     assertEquals(
         0L,
         store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
             .count());
+    Mockito.clearInvocations(observedJobIndexStore);
 
     var secondLease = leaseJob(secondExecJobId);
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         secondExecJobId,
         secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5154,8 +6664,23 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
-    store.markSucceeded(secondExecJobId, secondLease.leaseEpoch, 250L, 0L, 0L, 0L, 0L, 0L, 1L);
-
+    assertEquals(
+        0L,
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
+            .completedFileGroups);
+    Mockito.verify(observedJobIndexStore, Mockito.never())
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
+    runProjectionMaintenance();
+    Mockito.verify(observedJobIndexStore, Mockito.atLeastOnce())
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
     List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs;
     List<ReconcileJob> finalizers =
         children.stream()
@@ -5163,6 +6688,14 @@ class DurableReconcileJobStoreTest {
             .toList();
     assertEquals(1, finalizers.size());
     assertEquals("JS_QUEUED", finalizers.get(0).state);
+    assertEquals(2, finalizers.get(0).snapshotTask.fileGroupCount());
+    assertEquals(
+        2,
+        store
+            .getCompactLeaseView(finalizers.get(0).jobId)
+            .orElseThrow()
+            .snapshotTask
+            .fileGroupCount());
   }
 
   @Test
@@ -5263,7 +6796,8 @@ class DurableReconcileJobStoreTest {
 
     var firstLease = leaseJob(firstExecJobId);
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         firstExecJobId,
         firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5273,11 +6807,10 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.markSucceeded(firstExecJobId, firstLease.leaseEpoch, 150L, 0L, 0L, 0L, 0L, 0L, 1L);
-
     var secondLease = leaseJob(secondExecJobId);
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         secondExecJobId,
         secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5287,8 +6820,7 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
-    store.markSucceeded(secondExecJobId, secondLease.leaseEpoch, 250L, 0L, 0L, 0L, 0L, 0L, 1L);
-
+    runProjectionMaintenance(2);
     List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs;
     List<ReconcileJob> finalizers =
         children.stream()
@@ -5421,7 +6953,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 100L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5439,7 +6972,6 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob execCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
     store.blobStore.delete(snapshotCanonical.snapshotPlanBlobUri);
-    store.blobStore.delete(execCanonical.fileGroupResultBlobUri);
 
     ReconcileJob snapshotJob =
         assertDoesNotThrow(() -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow());
@@ -5461,6 +6993,78 @@ class DurableReconcileJobStoreTest {
     assertEquals(2, execLeaseView.fileGroupTask.fileCount());
     assertTrue(execLeaseView.fileGroupTask.filePaths().isEmpty());
     assertTrue(execLeaseView.fileGroupTask.fileResults().isEmpty());
+  }
+
+  private ReconcileScope captureScope(Set<ReconcileCapturePolicy.Output> outputs) {
+    return ReconcileScope.of(
+        List.of(), "table-1", List.of(), ReconcileCapturePolicy.of(List.of(), outputs));
+  }
+
+  private ReconcileSnapshotTask contentTask(
+      String sourceRevision, String metadataFingerprint, List<String> requestedCoverage) {
+    return ReconcileSnapshotTask.of("table-1", 55L, "db", "orders")
+        .withContentState(sourceRevision, metadataFingerprint, requestedCoverage);
+  }
+
+  @Test
+  void snapshotPlanPersistenceRejectsFileGroupsAboveServerCeiling() {
+    List<String> filePaths =
+        java.util.stream.IntStream.range(0, 129)
+            .mapToObj(index -> "s3://bucket/data/file-" + index + ".parquet")
+            .toList();
+    ReconcileFileGroupTask fileGroup =
+        ReconcileFileGroupTask.of("plan-1", "group-1", "table-1", 55L, filePaths);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(fileGroup),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> store.persistSnapshotPlanManifest(ACCOUNT_ID, "job-oversized", snapshotTask));
+
+    assertTrue(failure.getMessage().contains("exceeds server ceiling"), failure::getMessage);
+  }
+
+  private void publishFinalizedContent(
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileSnapshotTask snapshotTask,
+      long startedAtMs,
+      long finishedAtMs) {
+    ReconcileSnapshotTask finalizedTask =
+        ReconcileSnapshotTask.of(
+                snapshotTask.tableId(),
+                snapshotTask.snapshotId(),
+                snapshotTask.sourceNamespace(),
+                snapshotTask.sourceTable(),
+                List.of(),
+                true)
+            .withContentState(
+                snapshotTask.sourceRevision(),
+                snapshotTask.metadataFingerprint(),
+                snapshotTask.requestedCoverage());
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            captureMode,
+            scope,
+            finalizedTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, startedAtMs, "snapshot-finalizer");
+    store.markSucceeded(jobId, lease.leaseEpoch, finishedAtMs, 0L, 0L, 0L, 0L, 1L, 1L);
   }
 
   private ReconcileJobStore.LeasedJob leaseJob(String jobId) {
@@ -5509,9 +7113,35 @@ class DurableReconcileJobStoreTest {
         .anyMatch(upsert -> canonicalPointerKey.equals(upsert.pointerKey()));
   }
 
-  private boolean deleteReadyEntry(String readyPointerKey) {
-    assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
-    return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
+  private boolean findAndDeleteReadyEntry(StoredReconcileJob record, String readyPointerKey) {
+    List<ReconcileReadyQueueBackend.ReadyQueueSlice> slices =
+        List.of(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
+                record.executionPolicy().executionClass().name()),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, record.laneKey),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, record.pinnedExecutorId()),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, record.jobKind().name()));
+    for (ReconcileReadyQueueBackend.ReadyQueueSlice slice : slices) {
+      var page = store.readyQueueBackend.scanReadySlice(slice, 100, "", null);
+      for (var entry : page.entries()) {
+        if (!readyPointerKey.equals(entry.readyPointerKey())) {
+          continue;
+        }
+        var canonical =
+            store
+                .readyQueueBackend
+                .loadCanonicalSnapshot(entry.canonicalPointerKey(), null)
+                .orElse(null);
+        return store.readyQueueBackend.deleteReadyEntry(entry, canonical);
+      }
+    }
+    return false;
   }
 
   private ReconcileLeaseStore leaseManager() {
@@ -5592,8 +7222,29 @@ class DurableReconcileJobStoreTest {
     store.runProjectionMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
+  private void runProjectionMaintenance(int passes) {
+    for (int pass = 0; pass < passes; pass++) {
+      runProjectionMaintenance();
+    }
+  }
+
+  private void requestProjectionRefresh(String parentJobId) {
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "requestProjectionRefresh",
+                new Class<?>[] {String.class, String.class},
+                ACCOUNT_ID,
+                parentJobId));
+  }
+
   private void runCancellationMaintenance() {
     store.runCancellationMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void runStatsCleanupMaintenance() {
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
   private void requestCancellationCleanup(String accountId, String rootJobId) {
@@ -5699,6 +7350,14 @@ class DurableReconcileJobStoreTest {
 
     @Override
     public boolean compareAndSetBatch(List<CasOp> ops) {
+      if (ops != null
+          && ops.stream()
+              .filter(UnconditionalUpsert.class::isInstance)
+              .map(UnconditionalUpsert.class::cast)
+              .anyMatch(
+                  upsert -> upsert.key().startsWith(Keys.reconcileDirtyParentPointerPrefix()))) {
+        return false;
+      }
       return delegate.compareAndSetBatch(ops);
     }
 
@@ -6022,6 +7681,116 @@ class DurableReconcileJobStoreTest {
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private static void persistFileGroupResult(
+      ReconcileJobStore store, String jobId, String leaseEpoch, ReconcileFileGroupTask task) {
+    ReconcileJobStore.ReconcileJob job = store.getLeaseView(jobId).orElseThrow();
+    int succeeded =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.SUCCEEDED)
+                .count();
+    int failed =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.FAILED)
+                .count();
+    int skipped =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.SKIPPED)
+                .count();
+    int indexArtifacts =
+        task.fileResults().stream()
+            .mapToInt(result -> result.indexArtifact().isEmpty() ? 0 : 1)
+            .sum();
+    store.completeFileGroupSuccess(
+        jobId,
+        leaseEpoch,
+        new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor(
+            1,
+            job.accountId,
+            job.connectorId,
+            job.parentJobId,
+            jobId,
+            task.planId(),
+            task.groupId(),
+            task.tableId(),
+            task.snapshotId(),
+            leaseEpoch,
+            "test-result-" + jobId,
+            "/test-results/" + jobId + ".pb",
+            1L,
+            "dGVzdA==",
+            task.fileCount(),
+            succeeded,
+            failed,
+            skipped,
+            task.partialAggregateRecords().size(),
+            indexArtifacts,
+            "/test-results/" + jobId + "/stats/",
+            task.fileCount(),
+            "0".repeat(64),
+            null,
+            System.currentTimeMillis()),
+        System.currentTimeMillis(),
+        "Succeeded");
+  }
+
+  private static ReconcileScope resolvedCaptureScope(
+      List<ReconcileScope.ScopedCaptureRequest> requests,
+      ReconcileCapturePolicy policy,
+      ReconcileSnapshotSelection selection) {
+    return ReconcileScope.of(List.of(), "tbl", null, requests, policy, selection);
+  }
+
+  private static ReconcileScope.ScopedCaptureRequest captureRequest(
+      String tableId, long snapshotId, String targetSpec) {
+    return new ReconcileScope.ScopedCaptureRequest(tableId, snapshotId, targetSpec, List.of());
+  }
+
+  private static ReconcileCapturePolicy capturePolicy(String... selectors) {
+    return capturePolicy(Map.of(), selectors);
+  }
+
+  private static ReconcileCapturePolicy capturePolicy(
+      Map<String, String> properties, String... selectors) {
+    return ReconcileCapturePolicy.of(
+        java.util.Arrays.stream(selectors)
+            .map(selector -> new ReconcileCapturePolicy.Column(selector, true, true))
+            .toList(),
+        Set.of(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+        properties);
+  }
+
+  private static ReconcileCapturePolicy statsOnlyCapturePolicy(String... selectors) {
+    return ReconcileCapturePolicy.of(
+        java.util.Arrays.stream(selectors)
+            .map(selector -> new ReconcileCapturePolicy.Column(selector, true, false))
+            .toList(),
+        Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
+  }
+
+  private static String coverageAtom(
+      String output, String target, String selector, String semantics) {
+    return output
+        + "|"
+        + target.length()
+        + ":"
+        + target
+        + "|"
+        + selector.length()
+        + ":"
+        + selector
+        + "|"
+        + semantics;
   }
 
   private static ResourceId connectorResourceId() {

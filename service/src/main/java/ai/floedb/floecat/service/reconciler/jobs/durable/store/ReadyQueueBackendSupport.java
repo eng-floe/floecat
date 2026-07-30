@@ -79,6 +79,19 @@ final class ReadyQueueBackendSupport {
         blankToEmpty(slice.filterValue()));
   }
 
+  static boolean pointerBelongsToSlice(
+      String readyPointerKey, ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
+    if (slice == null || blankToEmpty(readyPointerKey).isBlank()) {
+      return false;
+    }
+    ReconcileReadyQueueBackend.ReadyQueueSlice actual = sliceForReadyPointerKey(readyPointerKey);
+    if (actual == null || actual.indexType() != slice.indexType()) {
+      return false;
+    }
+    return slice.indexType() == ReconcileReadyQueueStore.ReadyIndexType.GLOBAL
+        || blankToEmpty(actual.filterValue()).equals(blankToEmpty(slice.filterValue()));
+  }
+
   static ReadyQueueRow toReadyQueueRow(String readyPointerKey, String canonicalPointerKey) {
     ReconcileReadyQueueBackend.ReadyQueueSlice slice = sliceForReadyPointerKey(readyPointerKey);
     if (slice == null) {

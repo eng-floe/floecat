@@ -216,7 +216,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri) {
-    var reserve = PointerReferences.blobPointer(key, blobUri, 1L);
+    return reserveIndexOrIdempotent(key, blobUri, -1L);
+  }
+
+  private boolean reserveIndexOrIdempotent(String key, String blobUri, long referencedBytes) {
+    var reserve =
+        referencedBytes >= 0L
+            ? PointerReferences.blobPointer(key, blobUri, 1L, referencedBytes)
+            : PointerReferences.blobPointer(key, blobUri, 1L);
 
     if (pointerStore.compareAndSet(key, 0L, reserve)) {
       return true;
@@ -236,12 +243,16 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void reserveAllOrRollback(String... keyBlobPairs) {
+    reserveAllOrRollback(-1L, keyBlobPairs);
+  }
+
+  protected void reserveAllOrRollback(long referencedBytes, String... keyBlobPairs) {
     final var createdKeys = new ArrayList<String>(keyBlobPairs.length / 2);
     try {
       for (int i = 0; i < keyBlobPairs.length; i += 2) {
         final var key = keyBlobPairs[i];
         final var blobUri = keyBlobPairs[i + 1];
-        if (reserveIndexOrIdempotent(key, blobUri)) {
+        if (reserveIndexOrIdempotent(key, blobUri, referencedBytes)) {
           createdKeys.add(key);
         }
       }
@@ -263,6 +274,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void writeBlob(String blobUri, T value) {
+    writeBlobAndGetSize(blobUri, value);
+  }
+
+  /** Writes and verifies a blob, returning the serialized byte count already available to us. */
+  protected int writeBlobAndGetSize(String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
     String want = sha256B64(bytes);
 
@@ -276,6 +292,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
+    return bytes.length;
   }
 
   protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
@@ -382,8 +399,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository("ref_by_pointer", () -> pointerStore.get(key));
   }
 
+  public record KeyedValue<T>(String key, T value) {}
+
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut).stream()
+        .map(KeyedValue::value)
+        .toList();
+  }
+
+  protected List<KeyedValue<T>> listByPrefixWithKeys(
+      String prefix, int limit, String token, StringBuilder nextOut) {
     return observeRepository(
         "list_by_prefix",
         () -> {
@@ -405,12 +431,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           }
           var blobsMap =
               missUris.isEmpty() ? Map.<String, byte[]>of() : blobStore.getBatch(missUris);
-          var blobs = new ArrayList<T>(rows.size());
+          var blobs = new ArrayList<KeyedValue<T>>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
             T hit = cached.get(blobUri);
             if (hit != null) {
-              blobs.add(hit);
+              blobs.add(new KeyedValue<>(row.getKey(), hit));
               continue;
             }
             byte[] bytes = blobsMap.get(blobUri);
@@ -427,7 +453,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               if (blobCacheable()) {
                 blobCache.put(blobUri, parsed);
               }
-              blobs.add(parsed);
+              blobs.add(new KeyedValue<>(row.getKey(), parsed));
             } catch (Exception e) {
               throw new CorruptionException("parse failed: " + blobUri, e);
             }

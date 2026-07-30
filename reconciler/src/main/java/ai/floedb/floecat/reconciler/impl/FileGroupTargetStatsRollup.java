@@ -22,6 +22,8 @@ import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
+import ai.floedb.floecat.catalog.rpc.StatsCoverage;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -33,13 +35,18 @@ import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.ByteString;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Set;
-import org.jboss.logging.Logger;
+import java.util.TreeMap;
+import org.apache.datasketches.hll.HllSketch;
+import org.apache.datasketches.hll.TgtHllType;
 
 /**
  * Derives complete table/column/file target stats for a file-group from file-target records.
@@ -49,8 +56,15 @@ import org.jboss.logging.Logger;
  * file-scoped primitives.
  */
 public final class FileGroupTargetStatsRollup {
-  private static final Logger LOG = Logger.getLogger(FileGroupTargetStatsRollup.class);
   private static final String WIDTH_WEIGHT_ROWS_PROPERTY = "floecat.rollup.avg_width_weight_rows";
+  private static final String HLL_SKETCH_TYPE = "apache-datasketches-hll-v1";
+  private static final String TUPLE_SKETCH_TYPE = "floedb-tuple-v2";
+  private static final int DEFAULT_HLL_LG_K = 12;
+  private static final int MIN_HLL_LG_K = 4;
+  private static final int MAX_HLL_LG_K = 21;
+  private static final int DEFAULT_TUPLE_NOMINAL_ENTRIES = 4096;
+  private static final int MIN_TUPLE_NOMINAL_ENTRIES = 16;
+  private static final int MAX_TUPLE_NOMINAL_ENTRIES = 1 << 26;
 
   public List<TargetStatsRecord> complete(
       ResourceId tableId,
@@ -152,14 +166,14 @@ public final class FileGroupTargetStatsRollup {
     long rowCount = 0L;
     long sizeBytes = 0L;
     long dataFileCount = 0L;
-    TargetStatsRecord metadataSource = null;
+    MetadataAccumulator metadata = new MetadataAccumulator();
 
     for (TargetStatsRecord record : fileRecords) {
       FileTargetStats file = record.getFile();
       if (isDeleteFile(file)) {
         continue;
       }
-      metadataSource = metadataSource == null ? record : metadataSource;
+      metadata.add(record);
       rowCount += Math.max(0L, file.getRowCount());
       sizeBytes += Math.max(0L, file.getSizeBytes());
       dataFileCount++;
@@ -170,7 +184,7 @@ public final class FileGroupTargetStatsRollup {
     }
 
     return buildTableRecord(
-        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadataSource);
+        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadata.finish());
   }
 
   private static List<TargetStatsRecord> aggregateColumns(
@@ -199,7 +213,7 @@ public final class FileGroupTargetStatsRollup {
     long rowCount = 0L;
     long sizeBytes = 0L;
     long dataFileCount = 0L;
-    TargetStatsRecord metadataSource = null;
+    MetadataAccumulator metadata = new MetadataAccumulator();
     boolean sawTable = false;
     for (TargetStatsRecord record : partials) {
       if (record == null || !record.hasTable()) {
@@ -207,7 +221,7 @@ public final class FileGroupTargetStatsRollup {
       }
       TableValueStats table = record.getTable();
       sawTable = true;
-      metadataSource = metadataSource == null ? record : metadataSource;
+      metadata.add(record);
       rowCount += Math.max(0L, table.getRowCount());
       sizeBytes += Math.max(0L, table.getTotalSizeBytes());
       dataFileCount += Math.max(0L, table.getDataFileCount());
@@ -216,7 +230,7 @@ public final class FileGroupTargetStatsRollup {
       return null;
     }
     return buildTableRecord(
-        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadataSource);
+        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadata.finish());
   }
 
   private static List<TargetStatsRecord> aggregateColumnsFromPartials(
@@ -243,7 +257,7 @@ public final class FileGroupTargetStatsRollup {
       long rowCount,
       long dataFileCount,
       long sizeBytes,
-      TargetStatsRecord metadataSource) {
+      StatsMetadata metadata) {
     TargetStatsRecord.Builder builder =
         TargetStatsRecords.tableRecord(
             tableId,
@@ -255,8 +269,8 @@ public final class FileGroupTargetStatsRollup {
                 .build(),
             null)
             .toBuilder();
-    if (metadataSource != null && metadataSource.hasMetadata()) {
-      builder.setMetadata(metadataSource.getMetadata());
+    if (metadata != null) {
+      builder.setMetadata(metadata);
     }
     return builder.build();
   }
@@ -272,9 +286,9 @@ public final class FileGroupTargetStatsRollup {
       TargetStatsRecord.Builder builder =
           TargetStatsRecords.columnRecord(tableId, snapshotId, entry.getKey(), scalar, null)
               .toBuilder();
-      if (entry.getValue().metadataSource != null
-          && entry.getValue().metadataSource.hasMetadata()) {
-        builder.setMetadata(entry.getValue().metadataSource.getMetadata());
+      StatsMetadata metadata = entry.getValue().metadata.finish();
+      if (metadata != null) {
+        builder.setMetadata(metadata);
       }
       out.add(builder.build());
     }
@@ -287,8 +301,75 @@ public final class FileGroupTargetStatsRollup {
             || file.getFileContent() == FileContent.FC_EQUALITY_DELETES);
   }
 
+  private static long saturatedNonnegativeAdd(long left, long right) {
+    long normalizedLeft = Math.max(0L, left);
+    long normalizedRight = Math.max(0L, right);
+    return normalizedLeft > Long.MAX_VALUE - normalizedRight
+        ? Long.MAX_VALUE
+        : normalizedLeft + normalizedRight;
+  }
+
+  private static final class MetadataAccumulator {
+    private StatsMetadata base;
+    private StatsCoverage coverageBase;
+    private boolean rowsScannedPresent;
+    private boolean filesScannedPresent;
+    private boolean rowGroupsSampledPresent;
+    private boolean bytesScannedPresent;
+    private long rowsScanned;
+    private long filesScanned;
+    private long rowGroupsSampled;
+    private long bytesScanned;
+
+    void add(TargetStatsRecord record) {
+      if (record == null || !record.hasMetadata()) {
+        return;
+      }
+      StatsMetadata metadata = record.getMetadata();
+      if (base == null) {
+        base = metadata;
+      }
+      if (!metadata.hasCoverage()) {
+        return;
+      }
+      StatsCoverage coverage = metadata.getCoverage();
+      if (coverageBase == null) {
+        coverageBase = coverage;
+      }
+      if (coverage.hasRowsScanned()) {
+        rowsScannedPresent = true;
+        rowsScanned = saturatedNonnegativeAdd(rowsScanned, coverage.getRowsScanned());
+      }
+      if (coverage.hasFilesScanned()) {
+        filesScannedPresent = true;
+        filesScanned = saturatedNonnegativeAdd(filesScanned, coverage.getFilesScanned());
+      }
+      if (coverage.hasRowGroupsSampled()) {
+        rowGroupsSampledPresent = true;
+        rowGroupsSampled =
+            saturatedNonnegativeAdd(rowGroupsSampled, coverage.getRowGroupsSampled());
+      }
+      if (coverage.hasBytesScanned()) {
+        bytesScannedPresent = true;
+        bytesScanned = saturatedNonnegativeAdd(bytesScanned, coverage.getBytesScanned());
+      }
+    }
+
+    StatsMetadata finish() {
+      if (base == null || coverageBase == null) {
+        return base;
+      }
+      StatsCoverage.Builder coverage = coverageBase.toBuilder();
+      if (rowsScannedPresent) coverage.setRowsScanned(rowsScanned);
+      if (filesScannedPresent) coverage.setFilesScanned(filesScanned);
+      if (rowGroupsSampledPresent) coverage.setRowGroupsSampled(rowGroupsSampled);
+      if (bytesScannedPresent) coverage.setBytesScanned(bytesScanned);
+      return base.toBuilder().setCoverage(coverage).build();
+    }
+  }
+
   private static final class ColumnAccumulator {
-    private TargetStatsRecord metadataSource;
+    private final MetadataAccumulator metadata = new MetadataAccumulator();
     private String displayName = "";
     private String logicalType = "";
 
@@ -317,7 +398,11 @@ public final class FileGroupTargetStatsRollup {
     private String min;
     private String max;
     private final ColumnNdv ndv = new ColumnNdv();
-    private final Set<String> droppedNonThetaNdvTypes = new java.util.LinkedHashSet<>();
+    private org.apache.datasketches.hll.Union hllUnion;
+    private Integer hllLgK;
+    private TupleNdvUnion tupleUnion;
+    private Integer tupleNominalEntries;
+    private boolean hasTheta;
     private Double fallbackNdvEstimate;
     private long ndvRowsSeen = 0L;
     private long ndvRowsTotal = 0L;
@@ -330,9 +415,7 @@ public final class FileGroupTargetStatsRollup {
       // Exactly one contributor means its stats describe the whole column (see soleSource); a
       // second contributor voids that claim for good.
       soleSource = contributors == 1 ? scalar : null;
-      if (source != null && metadataSource == null && source.hasMetadata()) {
-        metadataSource = source;
-      }
+      metadata.add(source);
       if (scalar.getDisplayName() != null
           && !scalar.getDisplayName().isBlank()
           && displayName.isBlank()) {
@@ -421,15 +504,57 @@ public final class FileGroupTargetStatsRollup {
             sketch.getSketchType() == null ? "" : sketch.getSketchType().toLowerCase(Locale.ROOT);
         byte[] data = sketch.getData().toByteArray();
         if (type.contains("theta")) {
+          hasTheta = true;
           ndv.mergeTheta(data);
-        } else if (!type.isBlank()) {
-          // Only theta sketches can be unioned here; HLL/tuple NDV sketches from a multi-file group
-          // are not mergeable, so they are not folded in. Record the type so aggregateNdv can flag
-          // that the emitted estimate is a floor for mixed-format inputs rather than dropping it
-          // silently. (Irrelevant for a sole source, whose envelope is returned verbatim.)
-          droppedNonThetaNdvTypes.add(sketch.getSketchType());
+        } else if (sketch.getRole() == ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_NDV
+            && type.equals(HLL_SKETCH_TYPE)) {
+          mergeHll(sketch);
+        } else if (sketch.getRole()
+                == ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_TUPLE_NDV
+            && type.equals(TUPLE_SKETCH_TYPE)) {
+          mergeTuple(sketch);
         }
       }
+    }
+
+    private void mergeHll(ai.floedb.floecat.catalog.rpc.SketchPayload sketch) {
+      int incomingLgK =
+          normalizedIntParam(
+              sketch.getParamsMap(), "lg_k", DEFAULT_HLL_LG_K, MIN_HLL_LG_K, MAX_HLL_LG_K);
+      try {
+        HllSketch incoming = HllSketch.heapify(sketch.getData().toByteArray());
+        if (hllUnion == null) {
+          hllLgK = incomingLgK;
+          hllUnion = new org.apache.datasketches.hll.Union(incomingLgK);
+        }
+        hllUnion.update(incoming);
+      } catch (RuntimeException ignored) {
+        // Rust's HLL union ignores payloads it cannot deserialize. Keep the reference behavior
+        // identical so an opaque or corrupt optional sketch does not discard usable scalar stats.
+      }
+    }
+
+    private void mergeTuple(ai.floedb.floecat.catalog.rpc.SketchPayload sketch) {
+      int incomingNominalEntries =
+          normalizedPowerOfTwoParam(
+              sketch.getParamsMap(),
+              "nominal_entries",
+              DEFAULT_TUPLE_NOMINAL_ENTRIES,
+              MIN_TUPLE_NOMINAL_ENTRIES,
+              MAX_TUPLE_NOMINAL_ENTRIES);
+      int effectiveEntries =
+          tupleNominalEntries == null
+              ? incomingNominalEntries
+              : Math.min(tupleNominalEntries, incomingNominalEntries);
+      if (tupleUnion == null || tupleNominalEntries != effectiveEntries) {
+        byte[] previous = tupleUnion == null ? null : tupleUnion.serialize();
+        tupleUnion = new TupleNdvUnion(effectiveEntries);
+        tupleNominalEntries = effectiveEntries;
+        if (previous != null) {
+          tupleUnion.update(previous);
+        }
+      }
+      tupleUnion.update(sketch.getData().toByteArray());
     }
 
     private void collectNdvFallback(Ndv ndvValue) {
@@ -463,37 +588,26 @@ public final class FileGroupTargetStatsRollup {
         return soleSource.hasNdv() ? soleSource.getNdv() : null;
       }
       ndv.finalizeTheta();
-      if (!droppedNonThetaNdvTypes.isEmpty()) {
-        // Non-theta NDV sketches across multiple files could not be merged, so the aggregate
-        // estimate reflects only the theta-bearing (or rollup-max) subset — a floor, not exact.
-        LOG.warnf(
-            "NDV rollup could not merge non-theta sketch type(s) %s across %d sources; "
-                + "aggregate NDV estimate is a floor for this column",
-            droppedNonThetaNdvTypes, contributors);
-      }
-      if (ndv.approx != null || (ndv.sketches != null && !ndv.sketches.isEmpty())) {
+      HllSketch hllResult = hllUnion == null ? null : hllUnion.getResult(TgtHllType.HLL_8);
+      byte[] tupleResult = tupleUnion == null ? null : tupleUnion.serialize();
+      if (hasTheta || hllResult != null || tupleResult != null) {
         Ndv.Builder builder = Ndv.newBuilder();
-        if (ndv.approx != null) {
-          if (ndv.approx.rowsSeen == null && ndvRowsSeen > 0) {
-            ndv.approx.rowsSeen = ndvRowsSeen;
-          }
-          if (ndv.approx.rowsTotal == null && ndvRowsTotal > 0) {
-            ndv.approx.rowsTotal = ndvRowsTotal;
-          }
-          NdvApprox.Builder approx = NdvApprox.newBuilder();
-          setIfPresent(ndv.approx.estimate, approx::setEstimate);
+        NdvApprox.Builder approx = NdvApprox.newBuilder();
+        if (hasTheta && ndv.approx != null && ndv.approx.estimate != null) {
+          approx.setEstimate(ndv.approx.estimate).setMethod("apache-datasketches-theta");
           setIfPresent(ndv.approx.rse, approx::setRelativeStandardError);
-          setIfPresent(ndv.approx.ciLower, approx::setConfidenceLower);
-          setIfPresent(ndv.approx.ciUpper, approx::setConfidenceUpper);
-          setIfPresent(ndv.approx.ciLevel, approx::setConfidenceLevel);
-          setIfPresent(ndv.approx.rowsSeen, approx::setRowsSeen);
-          setIfPresent(ndv.approx.rowsTotal, approx::setRowsTotal);
-          setIfPresent(ndv.approx.method, approx::setMethod);
-          if (ndv.approx.params != null && !ndv.approx.params.isEmpty()) {
-            approx.putAllProperties(ndv.approx.params);
-          }
-          builder.setApprox(approx);
+        } else if (hllResult != null) {
+          int effectiveLgK = hllLgK == null ? DEFAULT_HLL_LG_K : hllLgK;
+          approx
+              .setEstimate(hllResult.getEstimate())
+              .setRelativeStandardError(1.04 / Math.sqrt(1L << effectiveLgK))
+              .setMethod("apache-datasketches-hll");
+        } else if (tupleUnion != null) {
+          approx.setEstimate(tupleUnion.estimate()).setMethod("floedb-tuple");
         }
+        if (ndvRowsSeen > 0) approx.setRowsSeen(ndvRowsSeen);
+        if (ndvRowsTotal > 0) approx.setRowsTotal(ndvRowsTotal);
+        builder.setApprox(approx);
         if (ndv.sketches != null) {
           for (var sketch : ndv.sketches) {
             var sb =
@@ -510,6 +624,25 @@ public final class FileGroupTargetStatsRollup {
             if (sketch.params != null && !sketch.params.isEmpty()) sb.putAllParams(sketch.params);
             builder.addSketches(sb.build());
           }
+        }
+        if (hllResult != null) {
+          builder.addSketches(
+              ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
+                  .setRole(ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_NDV)
+                  .setSketchType(HLL_SKETCH_TYPE)
+                  .setData(ByteString.copyFrom(hllResult.toCompactByteArray()))
+                  .putParams("lg_k", Integer.toString(hllLgK == null ? DEFAULT_HLL_LG_K : hllLgK))
+                  .setCompleteness(StatsCompleteness.SC_COMPLETE));
+        }
+        if (tupleResult != null) {
+          builder.addSketches(
+              ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
+                  .setRole(ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_TUPLE_NDV)
+                  .setSketchType(TUPLE_SKETCH_TYPE)
+                  .setData(ByteString.copyFrom(tupleResult))
+                  .putParams("nominal_entries", Integer.toString(tupleNominalEntries))
+                  .putParams("version", "2")
+                  .setCompleteness(StatsCompleteness.SC_COMPLETE));
         }
         return builder.build();
       }
@@ -552,6 +685,103 @@ public final class FileGroupTargetStatsRollup {
      */
     private static <T> void setIfPresent(T value, java.util.function.Consumer<T> setter) {
       if (value != null) setter.accept(value);
+    }
+  }
+
+  private static int normalizedIntParam(
+      Map<String, String> params, String name, int defaultValue, int minimum, int maximum) {
+    String encoded = params == null ? null : params.get(name);
+    if (encoded == null || encoded.isBlank()) {
+      return defaultValue;
+    }
+    try {
+      return Math.max(minimum, Math.min(maximum, Integer.parseInt(encoded)));
+    } catch (NumberFormatException ignored) {
+      return defaultValue;
+    }
+  }
+
+  private static int normalizedPowerOfTwoParam(
+      Map<String, String> params, String name, int defaultValue, int minimum, int maximum) {
+    int value = normalizedIntParam(params, name, defaultValue, minimum, maximum);
+    int highest = Integer.highestOneBit(value);
+    int rounded = highest == value ? value : highest << 1;
+    return Math.max(minimum, Math.min(maximum, rounded));
+  }
+
+  /** Java implementation of the Rust {@code floedb-tuple-v2} union wire contract. */
+  private static final class TupleNdvUnion {
+    private static final long MAX_THETA = Long.MAX_VALUE;
+
+    private final int nominalEntries;
+    private final NavigableMap<Long, TupleSummary> entries = new TreeMap<>();
+    private long theta = MAX_THETA;
+    private long rowsHashed;
+
+    TupleNdvUnion(int nominalEntries) {
+      this.nominalEntries = nominalEntries;
+    }
+
+    void update(byte[] serialized) {
+      if (serialized == null || serialized.length < 24) {
+        return;
+      }
+      ByteBuffer input = ByteBuffer.wrap(serialized).order(ByteOrder.LITTLE_ENDIAN);
+      long incomingTheta = input.getLong();
+      long incomingRowsHashed = input.getLong();
+      long entryCount = input.getLong();
+      if (incomingTheta <= 0 || incomingRowsHashed < 0 || entryCount < 0) {
+        return;
+      }
+
+      rowsHashed = saturatedNonnegativeAdd(rowsHashed, incomingRowsHashed);
+      theta = Math.min(theta, incomingTheta);
+      entries.tailMap(theta, true).clear();
+      for (long i = 0; i < entryCount; i++) {
+        if (input.remaining() < 24) {
+          break;
+        }
+        long hash = input.getLong();
+        long count = input.getLong();
+        long sumWidth = input.getLong();
+        if (hash > 0 && hash < theta && count >= 0 && sumWidth >= 0) {
+          entries.computeIfAbsent(hash, ignored -> new TupleSummary()).add(count, sumWidth);
+        }
+      }
+      while (entries.size() > nominalEntries) {
+        long removedHash = entries.lastKey();
+        entries.pollLastEntry();
+        theta = Math.min(theta, removedHash);
+      }
+    }
+
+    byte[] serialize() {
+      ByteBuffer output =
+          ByteBuffer.allocate(24 + entries.size() * 24).order(ByteOrder.LITTLE_ENDIAN);
+      output.putLong(theta);
+      output.putLong(rowsHashed);
+      output.putLong(entries.size());
+      for (Map.Entry<Long, TupleSummary> entry : entries.entrySet()) {
+        output.putLong(entry.getKey());
+        output.putLong(entry.getValue().count);
+        output.putLong(entry.getValue().sumWidth);
+      }
+      return output.array();
+    }
+
+    double estimate() {
+      double fraction = (double) theta / (double) MAX_THETA;
+      return fraction >= 1.0 ? entries.size() : entries.size() / fraction;
+    }
+  }
+
+  private static final class TupleSummary {
+    private long count;
+    private long sumWidth;
+
+    void add(long incomingCount, long incomingSumWidth) {
+      count = saturatedNonnegativeAdd(count, incomingCount);
+      sumWidth = saturatedNonnegativeAdd(sumWidth, incomingSumWidth);
     }
   }
 }

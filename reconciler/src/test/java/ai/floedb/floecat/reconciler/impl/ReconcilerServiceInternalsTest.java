@@ -19,12 +19,43 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalsTest {
+
+  @Test
+  void captureOnlyCurrentPreservesConnectorSelectionAndRestrictsEligibilityToKnownSnapshots() {
+    Set<Long> eligible =
+        ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(Set.of(17L, 42L, 91L), Set.of());
+
+    FloecatConnector.SnapshotEnumerationOptions options =
+        ReconcilerService.snapshotEnumerationOptions(
+            ReconcileSnapshotSelection.current(), true, Set.of(), eligible);
+
+    assertThat(options.selectionKind()).isEqualTo(FloecatConnector.SnapshotSelectionKind.CURRENT);
+    assertThat(options.targetSnapshotIds()).containsExactlyInAnyOrder(17L, 42L, 91L);
+    assertThat(options.selectionSnapshotIds()).isEmpty();
+  }
+
+  @Test
+  void captureOnlyLatestNPreservesConnectorSelectionAndIntersectsScopedTargetsWithKnownSnapshots() {
+    Set<Long> eligible =
+        ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(
+            Set.of(17L, 42L, 91L), Set.of(42L, 73L, 91L));
+
+    FloecatConnector.SnapshotEnumerationOptions options =
+        ReconcilerService.snapshotEnumerationOptions(
+            ReconcileSnapshotSelection.latestN(2), true, Set.of(), eligible);
+
+    assertThat(options.selectionKind()).isEqualTo(FloecatConnector.SnapshotSelectionKind.LATEST_N);
+    assertThat(options.latestN()).isEqualTo(2);
+    assertThat(options.targetSnapshotIds()).containsExactlyInAnyOrder(42L, 91L);
+    assertThat(options.selectionSnapshotIds()).isEmpty();
+  }
 
   @Test
   void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForIncrementalCaptureOnly() {
@@ -66,37 +97,6 @@ class ReconcilerServiceInternalsTest {
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
         .containsExactly(11L, 12L);
-  }
-
-  @Test
-  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsForMetadataOnlyRuns() {
-    Set<Long> metadataOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, false, Set.of(10L, 11L), id -> false);
-    Set<Long> fullRescan =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            true, false, Set.of(10L, 11L), id -> false);
-
-    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(fullRescan).isEmpty();
-  }
-
-  @Test
-  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsWithoutStatsEnumerable() {
-    Set<Long> statsOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), id -> false);
-
-    assertThat(statsOnly).isEmpty();
-  }
-
-  @Test
-  void knownSnapshotIdsForEnumerationPrunesOnlyKnownSnapshotsWithCapturedStats() {
-    Set<Long> statsOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), id -> id == 10L);
-
-    assertThat(statsOnly).containsExactly(10L);
   }
 
   private static FloecatConnector.SnapshotBundle bundle(

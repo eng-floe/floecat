@@ -382,7 +382,7 @@ public final class StatsProviderFactory {
     @WithDefault("1s")
     Duration latencyBudget();
 
-    @WithDefault("true")
+    @WithDefault("false")
     boolean enabled();
 
     @WithDefault("10s")
@@ -410,7 +410,7 @@ public final class StatsProviderFactory {
 
       @Override
       public boolean enabled() {
-        return true;
+        return false;
       }
 
       @Override

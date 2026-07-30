@@ -21,10 +21,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
@@ -32,6 +37,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -42,15 +48,18 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.of("Bearer worker-token");
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
+    BooleanSupplier shouldStop = () -> false;
 
-    runner.execute(payload());
+    runner.execute(payload(), shouldStop, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().authorizationToken()).contains("Bearer worker-token");
     assertThat(request.getValue().storageLocation()).contains("s3://bucket/path");
+    assertThat(request.getValue().shouldStop()).isSameAs(shouldStop);
   }
 
   @Test
@@ -58,13 +67,14 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload());
+    runner.execute(payload(), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().authorizationToken()).isEmpty();
   }
 
@@ -74,15 +84,16 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider =
         accountId -> Optional.of("Bearer worker-token-" + accountId);
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload("acct-a"));
-    runner.execute(payload("acct-b"));
+    runner.execute(payload("acct-a"), () -> false, ignored -> {});
+    runner.execute(payload("acct-b"), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
     org.mockito.Mockito.verify(runner.captureEngineRegistry, org.mockito.Mockito.times(2))
-        .capture(request.capture());
+        .capture(request.capture(), any());
     assertThat(request.getAllValues())
         .extracting(CaptureEngineRequest::authorizationToken)
         .containsExactly(
@@ -94,17 +105,94 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload());
+    runner.execute(payload(), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().requestedStatsTargetKinds())
         .containsExactlyInAnyOrder(
             ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE,
             ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+  }
+
+  @Test
+  void executePublishesCompletedFileStatsThroughCallerSink() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    TargetStatsRecord fileStats =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setFile(
+                        FileStatsTarget.newBuilder().setFilePath("s3://bucket/path/file.parquet")))
+            .setFile(FileTargetStats.newBuilder().setFilePath("s3://bucket/path/file.parquet"))
+            .build();
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(fileStats), List.of());
+              return CaptureEngineResult.empty();
+            });
+    List<TargetStatsRecord> published = new java.util.ArrayList<>();
+
+    CaptureEngineResult result = runner.execute(payload(), () -> false, published::add);
+
+    assertThat(published).containsExactly(fileStats);
+    assertThat(result.statsRecords()).isEmpty();
+  }
+
+  @Test
+  void executeStagesIndexesOnlyForFilesInTheLeasedGroup() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    String associatedDeleteFile = "s3://bucket/path/delete.parquet";
+    TargetStatsRecord plannedStats = fileStats(plannedFile);
+    TargetStatsRecord deleteStats = fileStats(associatedDeleteFile);
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(
+                  List.of(plannedStats, deleteStats),
+                  List.of(pageIndexEntry(plannedFile), pageIndexEntry(associatedDeleteFile)));
+              return CaptureEngineResult.empty();
+            });
+
+    CaptureEngineResult result = runner.execute(indexPayload(), () -> false, ignored -> {});
+
+    assertThat(result.stagedIndexArtifacts())
+        .extracting(artifact -> artifact.record().getTarget().getFile().getFilePath())
+        .containsExactly(plannedFile);
+  }
+
+  @Test
+  void executeDoesNotStageEmptyBootstrapIndexArtifacts() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(fileStats(plannedFile)), List.of());
+              return CaptureEngineResult.empty();
+            });
+
+    CaptureEngineResult result = runner.execute(indexPayload(), () -> false, ignored -> {});
+
+    assertThat(result.stagedIndexArtifacts()).isEmpty();
   }
 
   private static StandaloneFileGroupExecutionPayload payload() {
@@ -128,7 +216,56 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         1L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats.pb",
         List.of("s3://bucket/path/file.parquet"),
+        "",
+        List.of(),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexPayload() {
+    StandaloneFileGroupExecutionPayload base = payload();
+    return new StandaloneFileGroupExecutionPayload(
+        base.jobId(),
+        base.leaseEpoch(),
+        base.parentJobId(),
+        base.sourceConnector(),
+        base.sourceNamespace(),
+        base.sourceTable(),
+        base.storageLocation(),
+        base.tableId(),
+        base.snapshotId(),
+        base.planId(),
+        base.groupId(),
+        base.resultPayloadUri(),
+        base.statsObjectPrefix(),
+        base.plannedFilePaths(),
+        base.executionSchemaJson(),
+        base.fileExecutionPlans(),
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
+  private static TargetStatsRecord fileStats(String filePath) {
+    return TargetStatsRecord.newBuilder()
+        .setTarget(
+            StatsTarget.newBuilder().setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
+        .setFile(
+            FileTargetStats.newBuilder()
+                .setFilePath(filePath)
+                .setFileFormat("PARQUET")
+                .setRowCount(1L)
+                .setSizeBytes(1L))
+        .build();
+  }
+
+  private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(String filePath) {
+    return new FloecatConnector.ParquetPageIndexEntry(
+        filePath, "id", 0, 0, 0L, 1, 1, 16L, 32, 8L, 8, true, "INT64", "ZSTD", (short) 1, (short) 0,
+        null, null, null);
   }
 }

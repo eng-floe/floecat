@@ -584,6 +584,30 @@ public class SnapshotRepository {
     return firstByTimeAtOrAfter(tableId, pointerStore.pageTokenAfterKey(boundary));
   }
 
+  /**
+   * Resolves AS_OF through the immutable table root and applies the same finalize gate as query
+   * pinning. A rootless legacy table falls back to the by-time index.
+   */
+  public Optional<Snapshot> getQueryableAsOf(ResourceId tableId, Timestamp asOf) {
+    long asOfMs = Timestamps.toMillis(asOf);
+    if (asOfMs < 0) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()) {
+      return getAsOf(tableId, asOf);
+    }
+    if (lookup.root() == null) {
+      return Optional.empty();
+    }
+    var head =
+        lookup.root().hasSnapshotManifestRef() ? lookup.root().getSnapshotManifestRef() : null;
+    return SnapshotManifests.entryAsOf(
+            roots, head, asOfMs, StatsVisibilityGate.gateOnFinalize(statsStore))
+        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank())
+        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
+  }
+
   public List<Snapshot> list(
       ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
     String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());

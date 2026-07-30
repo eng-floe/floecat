@@ -195,8 +195,7 @@ message ReconcileSnapshotTask {
   string source_namespace = 3;
   // Upstream source table name.
   string source_table = 4;
-  // Immutable grouped file plan persisted on the PLAN_SNAPSHOT job after planning completes.
-  repeated ReconcileFileGroupTask file_groups = 5;
+  reserved 5;
   // True when the snapshot planner explicitly persisted the file-group plan, including a
   // legitimate zero-group plan.
   bool file_group_plan_recorded = 6;
@@ -208,10 +207,19 @@ message ReconcileSnapshotTask {
   uint32 file_group_count = 9;
   // Number of source files expected to be represented for this snapshot capture.
   uint32 source_file_count = 12;
+  // Index generation baseline pinned before file-group fan-out. Required when index capture is
+  // requested so every file group inherits artifacts from the same generation.
+  IndexGenerationPredecessor index_predecessor = 13;
   // Optional blob URI for persisted direct target stats results.
   string direct_stats_blob_uri = 10;
   // Number of direct target stats records persisted in the blob.
   uint32 direct_stats_record_count = 11;
+  // Connector-derived immutable source-content revision. Snapshot id alone is not sufficient.
+  string source_revision = 14;
+  // Canonical fingerprint of the desired snapshot metadata, excluding incidental ingest fields.
+  string metadata_fingerprint = 15;
+  // Canonical set-like capture coverage requested by this snapshot plan.
+  repeated string requested_coverage = 16;
 }
 
 // One grouped file execution unit emitted by snapshot planning.
@@ -247,14 +255,183 @@ message ReconcileFileGroupTask {
   uint64 snapshot_id = 4;
   // Files assigned to this execution group.
   repeated string file_paths = 5;
-  // Per-file execution results persisted on the EXEC_FILE_GROUP job.
-  repeated ReconcileFileResult file_results = 6;
-  // Engine-produced partial table/column aggregate stats for this file group.
-  //
-  // These records are opaque to Floecat. They are carried through snapshot finalization so the
-  // capture engine can merge engine-owned sketch formats without requiring standalone Floecat to
-  // understand those formats.
-  repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 7;
+  reserved 6, 7;
+  string execution_schema_json = 8;
+  repeated FileExecutionPlan file_execution_plans = 9;
+}
+
+message DeltaDeletionVector {
+  // Delta storage discriminator: `u` and `p` identify on-disk vectors; `i` is inline.
+  string storage_type = 1;
+  // Exact file-stat target path for an on-disk vector, or encoded bytes for an inline vector.
+  string path_or_inline_dv = 2;
+  optional int32 offset = 3;
+  uint32 size_in_bytes = 4;
+  uint64 cardinality = 5;
+}
+
+message FileExecutionPlan {
+  // Planned data file. This is also the unit of ReconcileFileResult progress reporting.
+  string file_path = 1;
+  uint64 file_size_in_bytes = 2;
+  string partition_data_json = 3;
+  // Optional Delta vector attached to file_path. When stats are requested, on-disk vectors are
+  // additional file-stats targets but are not additional planned/succeeded files or index targets.
+  DeltaDeletionVector deletion_vector = 4;
+  string file_format = 5;
+  int32 partition_spec_id = 6;
+  // Iceberg delete files attached to file_path. When stats are requested, distinct delete paths
+  // are additional file-stats targets but are not additional planned/succeeded files or index
+  // targets. One delete path may be attached to data files in multiple groups.
+  repeated IcebergDeleteFile iceberg_delete_files = 7;
+}
+
+// Immutable index-generation state against which an additive sidecar capture was planned.
+// Workers echo this value through their result descriptors; Floecat activates the replacement
+// generation only while this predecessor remains active.
+message IndexGenerationPredecessor {
+  string generation_id = 1;
+  uint64 active_pointer_version = 2;
+  string capture_manifest_uri = 3;
+  uint64 capture_manifest_pointer_version = 4;
+}
+
+message IcebergDeleteFile {
+  enum Content {
+    IDFC_UNSPECIFIED = 0;
+    IDFC_POSITION = 1;
+    IDFC_EQUALITY = 2;
+  }
+
+  string file_path = 1;
+  uint64 file_size_in_bytes = 2;
+  Content content = 3;
+  int32 partition_spec_id = 4;
+  repeated int32 equality_field_ids = 5;
+}
+
+// Compact reference to one immutable artifact record written directly by a worker.
+message StatsObjectDescriptor {
+  // Canonical opaque storage identity. File-stats targets use file-<sha256>; file index targets use
+  // file:<source-file-path>.
+  string target_storage_id = 1;
+  string payload_uri = 2;
+  uint64 payload_bytes = 3;
+  bytes payload_sha256 = 4;
+}
+
+// Immutable result metadata written directly by a file-group executor. File stats are stored as
+// individual objects; this bounded file-group payload carries only their compact references.
+message FileGroupResultPayload {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string file_group_job_id = 5;
+  string plan_id = 6;
+  string group_id = 7;
+  string table_id = 8;
+  uint64 snapshot_id = 9;
+  string lease_epoch = 10;
+  string result_id = 11;
+  repeated ReconcileFileResult file_results = 12;
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
+  repeated StatsObjectDescriptor index_artifacts = 14;
+  // Exact group stats coverage: planned data files plus distinct attached Iceberg delete files and
+  // on-disk Delta deletion vectors when stats are requested.
+  repeated StatsObjectDescriptor file_stats = 15;
+  IndexGenerationPredecessor index_predecessor = 16;
+  // Concrete column selectors present in this file group's published index artifacts.
+  repeated string realized_index_selectors = 17;
+  // Concrete column selectors represented by this file group's column-stat aggregates.
+  repeated string realized_stats_selectors = 18;
+}
+
+// Immutable publication unit produced by the snapshot-finalize executor after it has verified all
+// child artifacts. File stats and index-wrapper mappings are staged by bounded file-group commits
+// and represented here only by group descriptors and counts. Aggregate stats produced by the
+// finalizer are individual objects referenced here.
+message SnapshotCaptureManifest {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  CapturePolicy capture_policy = 10;
+  repeated FileGroupResultDescriptor file_groups = 11;
+  repeated StatsObjectDescriptor final_stats = 12;
+  reserved 13, 14;
+  uint32 source_file_count = 15;
+  // Unique snapshot-level file-stats target count after deduplicating targets repeated across
+  // file groups.
+  uint32 file_stats_record_count = 16;
+  uint32 partial_aggregate_record_count = 17;
+  uint32 final_stats_record_count = 18;
+  uint32 index_artifact_count = 19;
+  IndexGenerationPredecessor index_predecessor = 20;
+  // Concrete column selectors present in the activated index generation.
+  repeated string realized_index_selectors = 21;
+  // Concrete column selectors present in the activated stats generation.
+  repeated string realized_stats_selectors = 22;
+}
+
+// Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
+// finalizer execution.
+message SnapshotCaptureManifestDescriptor {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  string manifest_uri = 10;
+  uint64 manifest_bytes = 11;
+  bytes manifest_sha256 = 12;
+  uint32 file_group_count = 13;
+  uint32 source_file_count = 14;
+  uint32 stats_record_count = 15;
+  uint32 index_artifact_count = 16;
+}
+
+// Compact durable reference to one committed FileGroupResultPayload object. Floecat persists and
+// pages this descriptor without deserializing the payload object.
+message FileGroupResultDescriptor {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string file_group_job_id = 5;
+  string plan_id = 6;
+  string group_id = 7;
+  string table_id = 8;
+  uint64 snapshot_id = 9;
+  string lease_epoch = 10;
+  string result_id = 11;
+  string payload_uri = 12;
+  uint64 payload_bytes = 13;
+  bytes payload_sha256 = 14;
+  uint32 planned_file_count = 15;
+  uint32 succeeded_file_count = 16;
+  uint32 failed_file_count = 17;
+  uint32 skipped_file_count = 18;
+  uint32 partial_aggregate_record_count = 19;
+  uint32 index_artifact_count = 20;
+  google.protobuf.Timestamp created_at = 21;
+  string stats_object_prefix = 22;
+  reserved 23, 24;
+  // Group-level descriptor count, including distinct auxiliary delete targets in this group.
+  uint32 file_stats_record_count = 25;
+  // SHA-256 over the canonical file-stats and index-artifact descriptor sets.
+  // Binds the bounded commit-time mappings to this durable result descriptor.
+  bytes artifact_references_sha256 = 26;
+  IndexGenerationPredecessor index_predecessor = 27;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -482,14 +659,35 @@ message LeasedSnapshotFinalizeInput {
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
-  // Effective snapshot task for this finalize execution. For file-group snapshots this includes
-  // completed child group results and engine-produced partial aggregate stats.
-  ReconcileSnapshotTask snapshot_task = 10;
+  reserved 10;
+  reserved "snapshot_task";
+  // Immutable snapshot plan object. File-group results are obtained from the paged descriptor RPC.
+  string snapshot_plan_uri = 19;
   bool full_rescan = 11;
+  uint32 file_group_count = 12;
+  // Server-allocated immutable prefix for this fenced finalizer's individual stats objects.
+  string stats_object_prefix = 13;
+  // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
+  string capture_manifest_uri = 14;
+  // Index-generation state captured directly for a finalizer with no file-group children.
+  // Non-empty captures continue to derive and cross-check this value from file-group results.
+  IndexGenerationPredecessor index_predecessor = 15;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
   LeasedSnapshotFinalizeInput input = 1;
+}
+
+message ListLeasedSnapshotFileGroupResultsRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListLeasedSnapshotFileGroupResultsResponse {
+  repeated FileGroupResultDescriptor descriptors = 1;
+  string next_page_token = 2;
 }
 
 message GetLeasedPlanConnectorInputRequest {
@@ -733,32 +931,35 @@ message LeasedFileGroupExecution {
   repeated string file_paths = 11;
   CapturePolicy capture_policy = 12;
   string storage_location = 13;
+  // Server-allocated immutable object URI for this fenced execution's packed result.
+  string result_payload_uri = 14;
+  // Server-allocated immutable prefix for this fenced execution's individual stats objects.
+  string stats_object_prefix = 15;
+  string execution_schema_json = 16;
+  repeated FileExecutionPlan file_execution_plans = 17;
+  // Active wrapper metadata for this group's files. Floecat never reads the referenced sidecar
+  // content; the remote executor owns additive sidecar reconstruction.
+  IndexGenerationPredecessor index_predecessor = 18;
+  repeated ai.floedb.floecat.catalog.IndexArtifactRecord predecessor_index_artifacts = 19;
 }
 
 message GetLeasedFileGroupExecutionResponse {
   LeasedFileGroupExecution execution = 1;
 }
 
-message LeasedFileGroupIndexArtifact {
-  ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
-  bytes content = 2;
-  string content_type = 3;
-}
-
-message SubmitLeasedFileGroupExecutionResultRequest {
-  message Chunk {
-    string result_id = 1;
-    uint32 chunk_index = 2;
-    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
-    repeated LeasedFileGroupIndexArtifact index_artifacts = 4;
-  }
-
+// A successful outcome first durably accepts the immutable result and completes the leased job,
+// then idempotently stages its object-pointer metadata and writes a prepared marker. These steps are
+// ordered, not one atomic storage transaction. Snapshot finalization waits for the prepared marker,
+// so a retry can safely finish staging after an uncertain response. The service never reads the
+// referenced objects during this control-plane call. After an uncertain or retryable outcome, the
+// worker must replay the exact same result_id, descriptor, and descriptor lists even if the job is
+// terminal.
+message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
-    repeated ReconcileFileResult file_results = 2;
-    // Number of chunk messages successfully staged before this completion.
-    // Floecat reloads exactly these chunks and commits their aggregate state once.
-    uint32 chunk_count = 3;
+    FileGroupResultDescriptor result_descriptor = 2;
+    repeated StatsObjectDescriptor file_stats = 3;
+    repeated StatsObjectDescriptor index_artifacts = 4;
   }
 
   message Failure {
@@ -770,25 +971,23 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Chunk chunk = 3;
     Success success = 4;
     Failure failure = 5;
   }
+  reserved 3;
 }
 
-message SubmitLeasedFileGroupExecutionResultResponse {
+message CommitLeasedFileGroupResultResponse {
   bool accepted = 1;
 }
 
+// Finalization reads the manifest once and requires a digest-bound prepared marker for every file
+// group before activating its stats and index generations. It does not read file-group payloads or
+// per-file objects. A missing marker is retryable and requires an exact replay of this result.
 message SubmitLeasedSnapshotFinalizeResultRequest {
-  message Chunk {
-    string result_id = 1;
-    uint32 chunk_index = 2;
-    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
-  }
-
   message Success {
     string result_id = 1;
+    SnapshotCaptureManifestDescriptor manifest_descriptor = 2;
   }
 
   message Failure {
@@ -800,10 +999,10 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Chunk chunk = 3;
     Success success = 4;
     Failure failure = 5;
   }
+  reserved 3;
 }
 
 message SubmitLeasedSnapshotFinalizeResultResponse {
@@ -1034,12 +1233,15 @@ service ReconcileExecutorControl {
   // Returns the standalone worker payload for one leased EXEC_FILE_GROUP job.
   rpc GetLeasedFileGroupExecution(GetLeasedFileGroupExecutionRequest)
       returns (GetLeasedFileGroupExecutionResponse);
-  // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
-  rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
-      returns (SubmitLeasedFileGroupExecutionResultResponse);
+  // Protects one standalone worker result; success then completes its EXEC_FILE_GROUP job.
+  rpc CommitLeasedFileGroupResult(CommitLeasedFileGroupResultRequest)
+      returns (CommitLeasedFileGroupResultResponse);
   // Returns compact child-result manifests for one leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc GetLeasedSnapshotFinalizeInput(GetLeasedSnapshotFinalizeInputRequest)
       returns (GetLeasedSnapshotFinalizeInputResponse);
+  // Pages compact committed file-group payload descriptors without hydrating result objects.
+  rpc ListLeasedSnapshotFileGroupResults(ListLeasedSnapshotFileGroupResultsRequest)
+      returns (ListLeasedSnapshotFileGroupResultsResponse);
   // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
       returns (SubmitLeasedSnapshotFinalizeResultResponse);

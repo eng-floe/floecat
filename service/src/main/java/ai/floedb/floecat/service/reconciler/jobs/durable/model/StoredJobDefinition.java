@@ -22,6 +22,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
+import java.util.Map;
 
 public class StoredJobDefinition {
   public String sourceNamespace;
@@ -41,6 +42,7 @@ public class StoredJobDefinition {
   public List<String> capturePolicyOutputs = List.of();
   public String capturePolicyDefaultColumnScope;
   public int capturePolicyMaxDefaultColumns;
+  public Map<String, String> capturePolicyProperties = Map.of();
   public String snapshotSelectionKind;
   public List<Long> snapshotSelectionSnapshotIds = List.of();
   public int snapshotSelectionLatestN;
@@ -76,6 +78,7 @@ public class StoredJobDefinition {
     definition.capturePolicyDefaultColumnScope =
         effectiveScope.capturePolicy().defaultColumnScope().name();
     definition.capturePolicyMaxDefaultColumns = effectiveScope.capturePolicy().maxDefaultColumns();
+    definition.capturePolicyProperties = effectiveScope.capturePolicy().properties();
     ReconcileSnapshotSelection snapshotSelection = effectiveScope.snapshotSelection();
     definition.snapshotSelectionKind = snapshotSelection.kind().name();
     definition.snapshotSelectionSnapshotIds = snapshotSelection.snapshotIds();
@@ -108,7 +111,8 @@ public class StoredJobDefinition {
                 ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
                 : ReconcileCapturePolicy.DefaultColumnScope.valueOf(
                     capturePolicyDefaultColumnScope),
-            capturePolicyMaxDefaultColumns),
+            capturePolicyMaxDefaultColumns,
+            capturePolicyProperties),
         snapshotSelection);
   }
 

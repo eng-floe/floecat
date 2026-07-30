@@ -83,15 +83,6 @@ public class TableRootWriter {
     if (snapshotRef == null) {
       return; // snapshot blob not resolvable; nothing coherent to record
     }
-    SnapshotManifestEntry.Builder entry =
-        SnapshotManifestEntry.newBuilder()
-            .setSnapshotId(candidate.getSnapshotId())
-            .setSnapshotRef(snapshotRef)
-            .setSchemaFingerprint(
-                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate));
-    if (candidate.hasUpstreamCreatedAt()) {
-      entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
-    }
     // Root currency tracks the committed current-snapshot selection immediately. Query readers
     // still require the selected manifest entry to carry a stats generation before pinning it, so
     // logical Iceberg metadata can move current without exposing an unfinalized scan.
@@ -101,9 +92,22 @@ public class TableRootWriter {
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
-            entry.build(),
+            snapshotEntry(candidate, snapshotRef),
             BlobRefs.refFrom(tables.metaForSafe(tableId)),
             advanceAtRegistration));
+  }
+
+  private static SnapshotManifestEntry snapshotEntry(Snapshot candidate, BlobRef snapshotRef) {
+    SnapshotManifestEntry.Builder entry =
+        SnapshotManifestEntry.newBuilder()
+            .setSnapshotId(candidate.getSnapshotId())
+            .setSnapshotRef(snapshotRef)
+            .setSchemaFingerprint(
+                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate));
+    if (candidate.hasUpstreamCreatedAt()) {
+      entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
+    }
+    return entry.build();
   }
 
   /** Removes a deleted snapshot's entry from the root manifest. */

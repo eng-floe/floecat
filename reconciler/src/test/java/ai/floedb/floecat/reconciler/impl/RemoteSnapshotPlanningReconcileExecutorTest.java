@@ -42,6 +42,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
@@ -83,7 +85,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             55L,
                             TableValueStats.newBuilder().setRowCount(7L).build(),
                             null)),
-                    5)));
+                    5,
+                    List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -145,8 +148,17 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             "",
                             0,
                             List.of(),
-                            null)),
-                    List.of())));
+                            null,
+                            new FloecatConnector.SnapshotDeletionVector("i", "encoded", null, 7, 2),
+                            List.of(
+                                new FloecatConnector.SnapshotIcebergDeleteFile(
+                                    "s3://bucket/delete-1.parquet",
+                                    4L,
+                                    ai.floedb.floecat.catalog.rpc.FileContent.FC_EQUALITY_DELETES,
+                                    3,
+                                    List.of(7))))),
+                    List.of(),
+                    "{\"type\":\"struct\",\"fields\":[]}")));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -167,7 +179,33 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         && snapshotTask.completionMode()
                             == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
                         && snapshotTask.fileGroups().size() == 1),
-            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 1),
+            argThat(
+                fileGroupJobs ->
+                    fileGroupJobs != null
+                        && fileGroupJobs.size() == 1
+                        && fileGroupJobs.getFirst().fileGroupTask().fileExecutionPlans().size() == 1
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .executionSchemaJson()
+                            .contains("struct")
+                        && fileGroupJobs
+                                .getFirst()
+                                .fileGroupTask()
+                                .fileExecutionPlans()
+                                .getFirst()
+                                .deletionVector()
+                                .cardinality()
+                            == 2
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .fileExecutionPlans()
+                            .getFirst()
+                            .icebergDeleteFiles()
+                            .getFirst()
+                            .equalityFieldIds()
+                            .equals(List.of(7))),
             argThat(stats -> stats != null && stats.isEmpty()));
   }
 
@@ -251,7 +289,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             55L,
                             TableValueStats.newBuilder().setRowCount(7L).build(),
                             null)),
-                    5)));
+                    5,
+                    List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any()))
         .thenThrow(
             new RemoteLeasePreconditionFailedException(
@@ -320,6 +359,59 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             .allMatch(group -> group.filePaths().size() <= 2)),
             argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 20),
             argThat(stats -> stats != null && stats.isEmpty()));
+  }
+
+  @Test
+  void partitionByEstimatedWorkBalancesSkewedFilesWithinConfiguredFileLimit() {
+    List<FloecatConnector.SnapshotFileEntry> files =
+        List.of(
+            snapshotFile("large-a", 100L),
+            snapshotFile("large-b", 90L),
+            snapshotFile("large-c", 80L),
+            snapshotFile("small-a", 3L),
+            snapshotFile("small-b", 2L),
+            snapshotFile("small-c", 1L));
+
+    List<List<FloecatConnector.SnapshotFileEntry>> groups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(files, 2);
+
+    assertThat(groups)
+        .extracting(
+            group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+        .containsExactly(
+            List.of("s3://bucket/large-a.parquet", "s3://bucket/small-c.parquet"),
+            List.of("s3://bucket/large-b.parquet", "s3://bucket/small-b.parquet"),
+            List.of("s3://bucket/large-c.parquet", "s3://bucket/small-a.parquet"));
+    assertThat(groups).allMatch(group -> group.size() <= 2);
+    assertThat(
+            groups.stream().flatMap(List::stream).map(FloecatConnector.SnapshotFileEntry::filePath))
+        .containsExactlyInAnyOrderElementsOf(
+            files.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList());
+  }
+
+  @Test
+  void partitionByEstimatedWorkIsDeterministicAcrossInputOrder() {
+    List<FloecatConnector.SnapshotFileEntry> files =
+        List.of(
+            snapshotFile("a", 100L),
+            snapshotFile("b", 90L),
+            snapshotFile("c", 80L),
+            snapshotFile("d", 3L),
+            snapshotFile("e", 2L),
+            snapshotFile("f", 1L));
+    List<FloecatConnector.SnapshotFileEntry> reversed = new ArrayList<>(files);
+    Collections.reverse(reversed);
+
+    List<List<String>> forwardGroups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(files, 2).stream()
+            .map(group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+            .toList();
+    List<List<String>> reversedGroups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(reversed, 2).stream()
+            .map(group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+            .toList();
+
+    assertThat(reversedGroups).isEqualTo(forwardGroups);
   }
 
   @Test
@@ -426,7 +518,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 statsOnlyScope(),
                 snapshotTask()));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
+        .thenReturn(
+            Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0, List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -466,7 +559,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                   snapshotTask());
             });
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
+        .thenReturn(
+            Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0, List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     assertTrue(
@@ -514,6 +608,19 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               null));
     }
     return List.copyOf(out);
+  }
+
+  private static FloecatConnector.SnapshotFileEntry snapshotFile(String name, long sizeBytes) {
+    return new FloecatConnector.SnapshotFileEntry(
+        "s3://bucket/" + name + ".parquet",
+        "PARQUET",
+        sizeBytes,
+        1L,
+        ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+        "",
+        0,
+        List.of(),
+        null);
   }
 
   private static ReconcileJobStore.LeasedJob lease(

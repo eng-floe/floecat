@@ -396,24 +396,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   try {
                     boolean ok = tableRepo.update(desired, meta.getPointerVersion());
                     if (!ok) {
-                      var nowMeta = tableRepo.metaForSafe(tableId);
-                      throw GrpcErrors.preconditionFailed(
+                      throw tableUpdateConflict(
                           corr,
-                          VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                          tableId,
+                          meta.getPointerVersion(),
+                          hasMeaningfulPrecondition(request.getPrecondition()));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.alreadyExists(corr, TABLE_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
-                    var nowMeta = tableRepo.metaForSafe(tableId);
-                    throw GrpcErrors.preconditionFailed(
+                    throw tableUpdateConflict(
                         corr,
-                        VERSION_MISMATCH,
-                        Map.of(
-                            "expected", Long.toString(meta.getPointerVersion()),
-                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                        tableId,
+                        meta.getPointerVersion(),
+                        hasMeaningfulPrecondition(request.getPrecondition()));
                   }
                   topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
@@ -810,6 +806,21 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     // CasBlobGc once the table drops out of the live set. Routed through the repository so the
     // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
     tableRoots.purgeRoot(tableId);
+  }
+
+  private RuntimeException tableUpdateConflict(
+      String corr, ResourceId tableId, long expectedVersion, boolean callerCares) {
+    if (!callerCares) {
+      return new BaseResourceRepository.AbortRetryableException(
+          "unconditional table update conflicted with a concurrent mutation: " + tableId.getId());
+    }
+    var nowMeta = tableRepo.metaForSafe(tableId);
+    return GrpcErrors.preconditionFailed(
+        corr,
+        VERSION_MISMATCH,
+        Map.of(
+            "expected", Long.toString(expectedVersion),
+            "actual", Long.toString(nowMeta.getPointerVersion())));
   }
 
   /** Record the table's (possibly new) immutable definition blob on its root. */

@@ -26,6 +26,9 @@ public final class ReadyQueuePruneSupport {
     CANCELLATION_BLOCKED
   }
 
+  public record ReadyEntryPruneDecision(
+      ReadyEntryPruneReason reason, CanonicalPointerSnapshot canonicalSnapshot) {}
+
   private ReadyQueuePruneSupport() {}
 
   public static ReadyEntryPruneReason readyEntryPruneReason(
@@ -35,21 +38,40 @@ public final class ReadyQueuePruneSupport {
       ReconcileJobIndexStore jobIndexStore,
       Predicate<StoredReconcileJob> blockedByCancellation,
       ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    return readyEntryPruneDecision(
+            readyEntry,
+            readyQueueBackend,
+            readyQueueStore,
+            jobIndexStore,
+            blockedByCancellation,
+            scanStats)
+        .reason();
+  }
+
+  public static ReadyEntryPruneDecision readyEntryPruneDecision(
+      ReconcileReadyQueueStore.ReadyQueueEntry readyEntry,
+      ReconcileReadyQueueBackend readyQueueBackend,
+      ReconcileReadyQueueStore readyQueueStore,
+      ReconcileJobIndexStore jobIndexStore,
+      Predicate<StoredReconcileJob> blockedByCancellation,
+      ReconcileReadyQueueStore.LeaseScanStats scanStats) {
     if (readyEntry == null || blank(readyEntry.readyPointerKey())) {
-      return ReadyEntryPruneReason.NONE;
+      return new ReadyEntryPruneDecision(ReadyEntryPruneReason.NONE, null);
     }
     CanonicalPointerSnapshot canonicalSnapshot =
         readyQueueBackend
             .loadCanonicalSnapshot(readyEntry.canonicalPointerKey(), scanStats)
             .orElse(null);
     if (canonicalSnapshot == null) {
-      return ReadyEntryPruneReason.STALE;
+      return new ReadyEntryPruneDecision(ReadyEntryPruneReason.STALE, null);
     }
     var record = jobIndexStore.readRecord(canonicalSnapshot);
     if (record.isEmpty()) {
-      return ReadyEntryPruneReason.STALE;
+      return new ReadyEntryPruneDecision(ReadyEntryPruneReason.STALE, canonicalSnapshot);
     }
-    return readyEntryPruneReason(readyEntry, readyQueueStore, record.get(), blockedByCancellation);
+    return new ReadyEntryPruneDecision(
+        readyEntryPruneReason(readyEntry, readyQueueStore, record.get(), blockedByCancellation),
+        canonicalSnapshot);
   }
 
   public static ReadyEntryPruneReason readyEntryPruneReason(

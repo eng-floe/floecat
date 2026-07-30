@@ -290,7 +290,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void tableLookupPassesResolvedConnectorTypeToOrchestrator() {
+  void tableLookupUsesQueryCaptureDisabledDefaults() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -326,8 +326,8 @@ class StatsProviderFactoryTest {
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
     Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
-    assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
-    assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
+    assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
+    assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
   }
 
   @Test

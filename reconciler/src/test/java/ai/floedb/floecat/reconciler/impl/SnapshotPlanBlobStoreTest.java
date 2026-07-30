@@ -23,6 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.DeltaDeletionVector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.IcebergDeleteContent;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.IcebergDeleteFile;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
@@ -61,7 +65,32 @@ class SnapshotPlanBlobStoreTest {
             ReconcileSnapshotSelection.current());
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/path/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/path/file-1.parquet"),
+            List.of(),
+            List.of(),
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/path/file-1.parquet",
+                    123L,
+                    "{\"p\":\"one\"}",
+                    new DeltaDeletionVector("u", "prefix01234567890123456789", 4, 16, 2),
+                    "PARQUET",
+                    7,
+                    List.of(
+                        new IcebergDeleteFile(
+                            "s3://bucket/path/delete-1.parquet",
+                            44L,
+                            IcebergDeleteContent.EQUALITY,
+                            7,
+                            List.of(3, 4))))));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -97,6 +126,7 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
+    assertEquals(List.of(group), store.loadFileGroupsByUri(persistedTask.fileGroupPlanBlobUri()));
   }
 
   @Test
@@ -166,8 +196,10 @@ class SnapshotPlanBlobStoreTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
+    public int deletePrefix(String prefix) {
+      int before = bytesByUri.size();
       bytesByUri.keySet().removeIf(key -> key.startsWith(prefix));
+      return before - bytesByUri.size();
     }
 
     @Override

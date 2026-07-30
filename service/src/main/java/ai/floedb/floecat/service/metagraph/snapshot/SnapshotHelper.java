@@ -250,25 +250,8 @@ public class SnapshotHelper {
    * walk is bounded by the table's history and happens once per query pin.
    */
   private Optional<SnapshotManifestEntry> entryAsOf(TableRoot root, Timestamp asOf) {
-    long asOfMs = Timestamps.toMillis(asOf);
-    boolean gate = gateOnFinalize();
-    SnapshotManifestEntry[] best = new SnapshotManifestEntry[1];
-    SnapshotManifests.forEachEntry(
-        roots,
-        manifestHead(root),
-        entry -> {
-          if (!entry.hasUpstreamCreatedAt()
-              || Timestamps.toMillis(entry.getUpstreamCreatedAt()) > asOfMs) {
-            return;
-          }
-          if (gate && !entry.hasStatsGenerationRef()) {
-            return; // not yet finalized: invisible to AS_OF like every other pin kind
-          }
-          if (best[0] == null || SnapshotManifests.newer(entry, best[0])) {
-            best[0] = entry;
-          }
-        });
-    return Optional.ofNullable(best[0]);
+    return SnapshotManifests.entryAsOf(
+        roots, manifestHead(root), Timestamps.toMillis(asOf), gateOnFinalize());
   }
 
   private static ai.floedb.floecat.catalog.rpc.BlobRef manifestHead(TableRoot root) {

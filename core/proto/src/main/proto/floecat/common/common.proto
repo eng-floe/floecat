@@ -105,6 +105,9 @@ message Pointer {
   // (TABLE, VIEW, NAMESPACE). Empty on legacy pointers; fall back to key/blob-uri parsing.
   ResourceId resource_id = 6;
   string display_name = 7;
+  // Size of the object referenced by blob_uri at the time this pointer was written.
+  // Zero for non-blob pointers and legacy rows that predate incremental storage accounting.
+  optional int64 referenced_object_size_bytes = 8;
 }
 
 message BlobHeader {

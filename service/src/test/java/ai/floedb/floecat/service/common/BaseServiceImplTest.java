@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
@@ -24,6 +25,11 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import io.smallrye.mutiny.Uni;
+import io.vertx.core.Context;
+import io.vertx.core.Vertx;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class BaseServiceImplTest {
@@ -54,9 +60,32 @@ class BaseServiceImplTest {
     assertEquals(ErrorCode.MC_NOT_FOUND, err.getCode());
   }
 
+  @Test
+  void runExecutesSupplierOffEventLoop() throws Exception {
+    TestServiceImpl service = new TestServiceImpl();
+    Vertx vertx = Vertx.vertx();
+    try {
+      CompletableFuture<Boolean> bodyRanOnEventLoop = new CompletableFuture<>();
+      vertx.runOnContext(
+          ignored ->
+              service
+                  .bodyRunsOnEventLoop()
+                  .subscribe()
+                  .with(bodyRanOnEventLoop::complete, bodyRanOnEventLoop::completeExceptionally));
+
+      assertFalse(bodyRanOnEventLoop.get(5, TimeUnit.SECONDS));
+    } finally {
+      vertx.close().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    }
+  }
+
   private static final class TestServiceImpl extends BaseServiceImpl {
     StatusRuntimeException repack(StatusRuntimeException ex, String corrId) {
       return toStatus(ex, corrId);
+    }
+
+    Uni<Boolean> bodyRunsOnEventLoop() {
+      return run(Context::isOnEventLoopThread);
     }
   }
 }

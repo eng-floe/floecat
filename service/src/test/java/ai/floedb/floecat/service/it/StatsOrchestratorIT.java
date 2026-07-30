@@ -359,6 +359,7 @@ class StatsOrchestratorIT {
             .setUri("dummy://ignored")
             .setSource(source)
             .setDestination(destination)
+            .setPolicy(ReconcilePolicy.newBuilder().setEnabled(true))
             .setAuth(AuthConfig.newBuilder().setScheme("none"))
             .build();
     return TestSupport.createConnector(connectors, spec);

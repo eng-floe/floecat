@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -53,6 +54,7 @@ public class CasBlobGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
+  @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -180,7 +182,7 @@ public class CasBlobGcScheduler {
         String accountId = account.getResourceId().getId();
         CasBlobGc.Result result;
         try {
-          result = gc.runForAccount(accountId);
+          result = gc.runForAccount(accountId, deadline);
         } catch (RuntimeException e) {
           // Isolate one account's failure from the rest of the tick. A version-targeted delete
           // throws StorageAbortRetryableException on a transient SDK fault and maps non-404 S3
@@ -201,9 +203,22 @@ public class CasBlobGcScheduler {
           deleteUnsupportedThisTick++;
         } else if (result.poisoned()) {
           poisonedThisTick++;
+        } else if (result.generationCleanupPending()) {
+          // A bounded generation deletion has more work. Keep the backlog clock running until a
+          // later pass drains it instead of reporting this account as fully swept.
         } else {
           // A clean, fully-reached sweep resets this account's backlog age.
           lastCleanSweepMs.put(accountId, System.currentTimeMillis());
+        }
+        if (!result.deletesUnsupported() && !result.poisoned()) {
+          storageUsageMetrics
+              .get()
+              .recordGcEstimate(
+                  accountId,
+                  result.pointersScanned(),
+                  result.referencedBytes(),
+                  result.sizedBlobPointers(),
+                  result.blobPointers());
         }
         gcMetrics.recordCollection(
             result.pointersScanned(), Tag.of(TagKey.RESULT, "pointers-scanned"));

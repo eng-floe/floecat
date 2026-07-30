@@ -30,12 +30,13 @@ public class ReconcileCancellationMaintenanceService {
 
   @FunctionalInterface
   public interface CleanupCancellationRoot {
-    CancellationCleanupResult accept(CancellationCleanupRequest request, int childPageSize);
+    CancellationCleanupResult accept(
+        CancellationCleanupRequest request, int childPageSize, long deadlineMs);
   }
 
   @FunctionalInterface
   public interface IsObsoleteCancellationRoot {
-    boolean test(CancellationCleanupRequest request);
+    boolean test(CancellationCleanupRequest request, long deadlineMs);
   }
 
   private PointerStore pointerStore;
@@ -132,7 +133,7 @@ public class ReconcileCancellationMaintenanceService {
           continue;
         }
         if (marker.request().paused()) {
-          if (isObsoleteCancellationRoot(marker.request())) {
+          if (isObsoleteCancellationRoot(marker.request(), deadlineMs)) {
             if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
               obsoleteDeleted++;
               deleted++;
@@ -146,7 +147,8 @@ public class ReconcileCancellationMaintenanceService {
         }
         try {
           CancellationCleanupResult cleanup =
-              cleanupCancellationRoot.accept(marker.request(), cancellationChildPageSize());
+              cleanupCancellationRoot.accept(
+                  marker.request(), cancellationChildPageSize(), deadlineMs);
           cleaned++;
           if (cleanup.complete()) {
             if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
@@ -218,12 +220,12 @@ public class ReconcileCancellationMaintenanceService {
     }
   }
 
-  private boolean isObsoleteCancellationRoot(CancellationCleanupRequest request) {
+  private boolean isObsoleteCancellationRoot(CancellationCleanupRequest request, long deadlineMs) {
     if (isObsoleteCancellationRoot == null) {
       return false;
     }
     try {
-      return isObsoleteCancellationRoot.test(request);
+      return isObsoleteCancellationRoot.test(request, deadlineMs);
     } catch (RuntimeException e) {
       LOG.warnf(
           e,

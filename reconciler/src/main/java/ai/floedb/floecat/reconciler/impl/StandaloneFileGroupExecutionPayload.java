@@ -16,9 +16,11 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import java.util.List;
 import java.util.Set;
 
@@ -34,8 +36,65 @@ public record StandaloneFileGroupExecutionPayload(
     long snapshotId,
     String planId,
     String groupId,
+    String resultPayloadUri,
+    String statsObjectPrefix,
     List<String> plannedFilePaths,
-    ReconcileCapturePolicy capturePolicy) {
+    String executionSchemaJson,
+    List<ReconcileFileExecutionPlan> fileExecutionPlans,
+    ReconcileCapturePolicy capturePolicy,
+    IndexGenerationPredecessor indexPredecessor,
+    List<IndexArtifactRecord> predecessorIndexArtifacts) {
+  public StandaloneFileGroupExecutionPayload(
+      String jobId,
+      String leaseEpoch,
+      String parentJobId,
+      Connector sourceConnector,
+      String sourceNamespace,
+      String sourceTable,
+      String storageLocation,
+      ResourceId tableId,
+      long snapshotId,
+      String planId,
+      String groupId,
+      String resultPayloadUri,
+      String statsObjectPrefix,
+      List<String> plannedFilePaths,
+      String executionSchemaJson,
+      List<ReconcileFileExecutionPlan> fileExecutionPlans,
+      ReconcileCapturePolicy capturePolicy) {
+    this(
+        jobId,
+        leaseEpoch,
+        parentJobId,
+        sourceConnector,
+        sourceNamespace,
+        sourceTable,
+        storageLocation,
+        tableId,
+        snapshotId,
+        planId,
+        groupId,
+        resultPayloadUri,
+        statsObjectPrefix,
+        plannedFilePaths,
+        executionSchemaJson,
+        fileExecutionPlans,
+        capturePolicy,
+        null,
+        List.of());
+  }
+
+  public record IndexGenerationPredecessor(
+      String generationId,
+      long activePointerVersion,
+      String captureManifestUri,
+      long captureManifestPointerVersion) {
+    public IndexGenerationPredecessor {
+      generationId = generationId == null ? "" : generationId;
+      captureManifestUri = captureManifestUri == null ? "" : captureManifestUri;
+    }
+  }
+
   public StandaloneFileGroupExecutionPayload {
     jobId = jobId == null ? "" : jobId.trim();
     leaseEpoch = leaseEpoch == null ? "" : leaseEpoch.trim();
@@ -46,6 +105,8 @@ public record StandaloneFileGroupExecutionPayload(
     storageLocation = storageLocation == null ? "" : storageLocation.trim();
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
+    resultPayloadUri = resultPayloadUri == null ? "" : resultPayloadUri.trim();
+    statsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
     plannedFilePaths =
         plannedFilePaths == null
             ? List.of()
@@ -53,7 +114,15 @@ public record StandaloneFileGroupExecutionPayload(
                 .filter(path -> path != null && !path.isBlank())
                 .map(String::trim)
                 .toList();
+    executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    fileExecutionPlans = fileExecutionPlans == null ? List.of() : List.copyOf(fileExecutionPlans);
     capturePolicy = capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    indexPredecessor =
+        indexPredecessor == null
+            ? new IndexGenerationPredecessor("", 0L, "", 0L)
+            : indexPredecessor;
+    predecessorIndexArtifacts =
+        predecessorIndexArtifacts == null ? List.of() : List.copyOf(predecessorIndexArtifacts);
   }
 
   public Set<String> statsColumns() {

@@ -77,16 +77,13 @@ public final class ParquetPageIndexReader {
     }
     List<FloecatConnector.ParquetPageIndexEntry> out = new ArrayList<>();
     for (String filePath : plannedFilePaths) {
-      if (!isParquetPath(filePath)) {
-        continue;
-      }
       out.addAll(readEntries(filePath));
     }
     return List.copyOf(out);
   }
 
   public List<FloecatConnector.ParquetPageIndexEntry> readEntries(String filePath) {
-    if (filePath == null || filePath.isBlank() || !isParquetPath(filePath)) {
+    if (filePath == null || filePath.isBlank()) {
       return List.of();
     }
     InputFile inputFile = parquetLookup.apply(filePath);
@@ -327,14 +324,6 @@ public final class ParquetPageIndexReader {
   private static int safeAdd(int left, int right) {
     long sum = (long) left + right;
     return sum > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, sum);
-  }
-
-  private static boolean isParquetPath(String filePath) {
-    if (filePath == null || filePath.isBlank()) {
-      return false;
-    }
-    String normalized = filePath.toLowerCase();
-    return normalized.endsWith(".parquet") || normalized.endsWith(".parq");
   }
 
   private static Long nullIfNegative(long value) {

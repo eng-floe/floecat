@@ -330,31 +330,59 @@ public interface FloecatConnector extends Closeable {
   }
 
   record FileGroupCaptureResult(
-      List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
+      List<TargetStatsRecord> statsRecords,
+      List<ParquetPageIndexEntry> pageIndexEntries,
+      List<String> realizedStatsSelectors) {
     public FileGroupCaptureResult {
       statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
       pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static FileGroupCaptureResult of(
         List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
-      return new FileGroupCaptureResult(statsRecords, pageIndexEntries);
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, List.of());
+    }
+
+    public static FileGroupCaptureResult of(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, realizedStatsSelectors);
     }
 
     public static FileGroupCaptureResult empty() {
-      return new FileGroupCaptureResult(List.of(), List.of());
+      return new FileGroupCaptureResult(List.of(), List.of(), List.of());
     }
   }
 
-  record DirectSnapshotStatsCapture(List<TargetStatsRecord> records, int sourceFileCount) {
+  record DirectSnapshotStatsCapture(
+      List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
     public DirectSnapshotStatsCapture {
       records = records == null ? List.of() : List.copyOf(records);
       sourceFileCount = Math.max(0, sourceFileCount);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static DirectSnapshotStatsCapture of(
-        List<TargetStatsRecord> records, int sourceFileCount) {
-      return new DirectSnapshotStatsCapture(records, sourceFileCount);
+        List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
+      return new DirectSnapshotStatsCapture(records, sourceFileCount, realizedStatsSelectors);
     }
   }
 
@@ -612,7 +640,58 @@ public interface FloecatConnector extends Closeable {
       String partitionDataJson,
       int partitionSpecId,
       List<Integer> equalityFieldIds,
-      Long sequenceNumber) {
+      Long sequenceNumber,
+      SnapshotDeletionVector deletionVector,
+      List<SnapshotIcebergDeleteFile> icebergDeleteFiles) {
+    public SnapshotFileEntry(
+        String filePath,
+        String fileFormat,
+        long fileSizeInBytes,
+        long recordCount,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber) {
+      this(
+          filePath,
+          fileFormat,
+          fileSizeInBytes,
+          recordCount,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          null,
+          List.of());
+    }
+
+    public SnapshotFileEntry(
+        String filePath,
+        String fileFormat,
+        long fileSizeInBytes,
+        long recordCount,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber,
+        SnapshotDeletionVector deletionVector) {
+      this(
+          filePath,
+          fileFormat,
+          fileSizeInBytes,
+          recordCount,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          deletionVector,
+          List.of());
+    }
+
     public SnapshotFileEntry {
       filePath = filePath == null ? "" : filePath;
       fileFormat = fileFormat == null ? "" : fileFormat;
@@ -621,13 +700,51 @@ public interface FloecatConnector extends Closeable {
       fileContent = fileContent == null ? FileContent.FC_DATA : fileContent;
       partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
       equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+      icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
     }
   }
 
-  record SnapshotFilePlan(List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+  record SnapshotIcebergDeleteFile(
+      String filePath,
+      long fileSizeInBytes,
+      FileContent fileContent,
+      int partitionSpecId,
+      List<Integer> equalityFieldIds) {
+    public SnapshotIcebergDeleteFile {
+      filePath = filePath == null ? "" : filePath;
+      fileSizeInBytes = Math.max(0L, fileSizeInBytes);
+      fileContent = fileContent == null ? FileContent.FC_UNSPECIFIED : fileContent;
+      equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+    }
+  }
+
+  record SnapshotDeletionVector(
+      String storageType,
+      String pathOrInlineDv,
+      Integer offset,
+      int sizeInBytes,
+      long cardinality) {
+    public SnapshotDeletionVector {
+      storageType = storageType == null ? "" : storageType.trim();
+      pathOrInlineDv = pathOrInlineDv == null ? "" : pathOrInlineDv;
+      sizeInBytes = Math.max(0, sizeInBytes);
+      cardinality = Math.max(0L, cardinality);
+    }
+  }
+
+  record SnapshotFilePlan(
+      List<SnapshotFileEntry> dataFiles,
+      List<SnapshotFileEntry> deleteFiles,
+      String executionSchemaJson) {
+    public SnapshotFilePlan(
+        List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+      this(dataFiles, deleteFiles, "");
+    }
+
     public SnapshotFilePlan {
       dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
       deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
+      executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
     }
   }
 

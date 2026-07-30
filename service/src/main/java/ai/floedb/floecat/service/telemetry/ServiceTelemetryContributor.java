@@ -76,16 +76,22 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
 
     add(
         defs,
-        Storage.ACCOUNT_POINTERS,
+        Storage.ACCOUNT_GC_ESTIMATED_POINTERS,
         accountTag,
         accountTag,
-        "Per-account pointer count stored in the service.");
+        "Pointer roots traversed by the latest per-account CAS GC mark.");
     add(
         defs,
-        Storage.ACCOUNT_BYTES,
+        Storage.ACCOUNT_GC_ESTIMATED_BYTES,
         accountTag,
         accountTag,
-        "Estimated per-account storage byte consumption (sampled, not exact).");
+        "Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark.");
+    add(
+        defs,
+        Storage.ACCOUNT_GC_SIZE_COVERAGE,
+        accountTag,
+        accountTag,
+        "Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata.");
     Set<String> partialStateTags = Set.of(TagKey.OPERATION, TagKey.RESOURCE);
     add(
         defs,

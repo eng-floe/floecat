@@ -6,6 +6,17 @@ structures for resource identifiers, catalog services, query lifecycle metadata,
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
+### Breaking remote-executor revision
+
+This release removes the chunked
+`ReconcileExecutorControl.SubmitLeasedFileGroupExecutionResult` RPC and replaces it with
+`CommitLeasedFileGroupResult`. The new RPC accepts immutable result, stats, and index-artifact
+descriptors written by the executor; it cannot decode or resume the old chunk/success flow.
+
+There is intentionally no compatibility shim. Remote executor and control-plane versions must be
+cut over together after existing leases are drained. Rolling or split deployments containing both
+protocol versions are unsupported.
+
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
 `connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
 under the `ai.floedb.floecat.*.rpc` packages and are consumed by the Quarkus service, connectors,
@@ -46,7 +57,7 @@ CLI, and reconciler.
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
-| `TableIndexService` | `GetIndexArtifact`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata keyed by table, snapshot, and target file. |
+| `TableIndexService` | `GetIndexArtifact`, `GetIndexCaptureStatus`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
@@ -55,7 +66,7 @@ CLI, and reconciler.
 | `QuerySchemaService` | `DescribeInputs`. |
 | `QueryScanService` | `InitScan`, `StreamDeleteFiles`, `StreamDataFiles`, `CloseScan`. |
 | `ReconcileControl` | `CaptureNow`, `StartCapture`, `GetReconcileJob`, `GetReconcileJobTree`, `ListReconcileJobs`, `GetFinalizedSnapshotStatus`, `CancelReconcileJob`, `GetReconcilerSettings`, `UpdateReconcilerSettings` | Client-facing reconcile control plane for synchronous execution, queued jobs, finalized snapshot status lookup, cancellation, and automatic reconcile defaults. `GetFinalizedSnapshotStatus` returns `FSS_PENDING` when no finalized snapshot record exists yet for the requested table/snapshot pair; `FSS_FINALIZED` includes `finalized_at` and `finalizer_job_id`. |
-| `ReconcileExecutorControl` | `LeaseReconcileJob`, `GetLeasedPlan*Input`, `SubmitLeasedPlan*Result`, `GetLeasedFileGroupExecution`, `SubmitLeasedFileGroupExecutionResult` | Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs. |
+| `ReconcileExecutorControl` | `LeaseReconcileJob`, `GetLeasedPlan*Input`, `SubmitLeasedPlan*Result`, `GetLeasedFileGroupExecution`, `CommitLeasedFileGroupResult` | Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs. |
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
@@ -91,14 +102,52 @@ engine release.
   allows `SS_CURRENT`. Planner RPCs interpret `as_of` timestamps when enumerating snapshots.
 - **File-level stats** – `FileTargetStats` anchors counts and sketches to
   a file path. File stats are written as `TargetStatsRecord` values with `target.file` identity via
-  `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream.
+  `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream. Its
+  canonical target storage ID is `file-<sha256>` over `F`, `0x1f`, and the trimmed UTF-8 file path.
+  This differs from the `file:<source-file-path>` identity used by file index targets.
 - **Index artifact streams** – `PutIndexArtifacts` requires each client stream to target exactly one
   `table_id` and one `snapshot_id`. Multiple snapshots must be written through separate client
   streams.
-- **Leased file-group result submission** – `SubmitLeasedFileGroupExecutionResult.Success` and
-  `.Failure` both require `result_id`. The control plane uses that identifier for top-level replay
-  protection on the entire request payload, while service-side writes also keep per-item
-  idempotency for stats and index artifacts.
+- **Leased file-group result commit** – `CommitLeasedFileGroupResult.Success` and `.Failure` both
+  require `result_id`. Success carries immutable stats/artifact pointers and an
+  `artifact_references_sha256` binding those pointer mappings to the durable descriptor. The
+  control plane first accepts the immutable result and completes the child job, then stages
+  generation-scoped references without reading their objects and writes the prepared marker.
+  Snapshot finalization waits for that marker, so exact replay closes a crash gap without allowing
+  a rejected lease to mutate generation pointers.
+  These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
+  retryable error, or uncertain outcome requires an exact replay of the same success request, even
+  when the child job is already terminal. Snapshot finalization carries only group descriptors,
+  aggregate pointers, and counts; it requires every prepared marker and activates the index
+  generation before committing the stats-generation root, without repeating per-file pointers.
+  The root commit is the snapshot visibility point, so readers cannot observe the snapshot before
+  both generations are active. Successful finalization clears protections; failed or cancelled
+  full rescans delete the unpublished generation.
+  `FileGroupResultPayload.realized_stats_selectors` and `.realized_index_selectors` record the
+  concrete selector aliases materialized by each group. The finalizer aggregates them into the
+  corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later
+  requests expressed through an equivalent name, field ID, or narrower default selection. Every
+  explicitly requested selector must be reported verbatim; equivalent aliases are additional
+  coverage and are not inferred from selector counts.
+  Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
+  but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
+  `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat
+  the leased capture policy exactly, including opaque properties.
+- **File-group delete artifacts** – `FileExecutionPlan` attaches Iceberg position/equality delete
+  files and Delta deletion vectors to a planned data file. When stats are requested, exact group
+  coverage includes the planned data files, each distinct attached Iceberg delete path, and each
+  on-disk Delta deletion vector (`storage_type` `u` or `p`). Inline Delta vectors (`i`) remain
+  unsupported. Auxiliary targets increase stats descriptor counts but do not increase data-file
+  progress counts or page-index coverage, and they are excluded from table/column aggregate
+  rollups. One Iceberg delete file may recur in multiple groups; those repeated references are
+  duplicate work rather than additional logical files. Snapshot finalization verifies their
+  existing descriptor sizes and SHA-256 values and retains one unique target without reading the
+  delete-file content. File-group descriptors retain group-level counts, while
+  `SnapshotCaptureManifest.file_stats_record_count` reports the deduplicated unique-target count.
+- **File-group planning ceiling** – snapshot planning uses at most 128 files per group by default.
+  `floecat.reconciler.snapshot-plan.max-files-per-group` configures that ceiling and is clamped to
+  at least one. The service rejects submitted plans containing a group above the same configured
+  ceiling and validates commits against the immutable planned group.
 - **Executor leasing filters** – `LeaseReconcileJobRequest` accepts execution class, lane, job kind,
   `executor_id`, and repeated `executor_ids` selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run.

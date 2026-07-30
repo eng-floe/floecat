@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +36,7 @@ final class SnapshotMapper {
       log.put(
           "timestamp-ms",
           snapshot.hasUpstreamCreatedAt()
-              ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
+              ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
               : 0L);
       log.put("snapshot-id", snapshot.getSnapshotId());
       out.add(log);
@@ -88,7 +89,7 @@ final class SnapshotMapper {
       }
       long timestampMs =
           snapshot.hasUpstreamCreatedAt()
-              ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
+              ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
               : 0L;
       entry.put("timestamp-ms", timestampMs);
       entry.put(

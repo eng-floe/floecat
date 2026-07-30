@@ -17,11 +17,35 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import java.util.List;
 
 interface RemoteSnapshotFinalizeWorkerClient {
+  StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(RemoteLeasedJob lease);
+
+  List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(RemoteLeasedJob lease);
+
+  PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease,
+      String resultId,
+      String statsObjectPrefix,
+      String captureManifestUri,
+      int sourceFileCount,
+      List<ReconcileFileGroupResultDescriptor> fileGroups,
+      List<StatsObjectDescriptor> fileStats,
+      List<TargetStatsRecord> finalStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
+
   boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease, String resultId, List<TargetStatsRecord> statsRecords);
+      RemoteLeasedJob lease, PreparedSnapshotFinalizeSuccess prepared);
 
   boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
+
+  record PreparedSnapshotFinalizeSuccess(
+      String resultId, SnapshotCaptureManifestDescriptor manifestDescriptor) {}
 }

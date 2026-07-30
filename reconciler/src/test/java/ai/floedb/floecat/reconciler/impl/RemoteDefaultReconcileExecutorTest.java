@@ -27,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -36,11 +37,78 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RemoteDefaultReconcileExecutorTest {
+
+  @Test
+  void sourceRevisionDependsOnlyOnSnapshotId() {
+    var current =
+        new FloecatConnector.SnapshotBundle(
+            42L,
+            41L,
+            1_000L,
+            "schema-v1",
+            null,
+            7L,
+            "s3://bucket/manifests/snapshot-42.avro",
+            Map.of("operation", "append"),
+            3,
+            "s3://bucket/metadata/v7.metadata.json");
+    var historical =
+        new FloecatConnector.SnapshotBundle(
+            42L,
+            41L,
+            2_000L,
+            "schema-v2",
+            null,
+            8L,
+            "s3://bucket/manifests/reported-differently.avro",
+            Map.of("operation", "overwrite"),
+            4,
+            null);
+
+    assertEquals("42", RemoteDefaultReconcileExecutor.sourceRevision(current, 42L));
+    assertEquals(
+        RemoteDefaultReconcileExecutor.sourceRevision(current, 42L),
+        RemoteDefaultReconcileExecutor.sourceRevision(historical, 42L));
+    assertEquals("", RemoteDefaultReconcileExecutor.sourceRevision(null, 42L));
+  }
+
+  @Test
+  void metadataFingerprintIgnoresCurrentMetadataLocation() {
+    var current =
+        new FloecatConnector.SnapshotBundle(
+            42L,
+            41L,
+            1_000L,
+            "schema-v1",
+            null,
+            7L,
+            "s3://bucket/manifests/snapshot-42.avro",
+            Map.of("operation", "append"),
+            3,
+            "s3://bucket/metadata/v7.metadata.json");
+    var historical =
+        new FloecatConnector.SnapshotBundle(
+            42L,
+            41L,
+            1_000L,
+            "schema-v1",
+            null,
+            7L,
+            "s3://bucket/manifests/snapshot-42.avro",
+            Map.of("operation", "append"),
+            3,
+            null);
+
+    assertEquals(
+        RemoteDefaultReconcileExecutor.metadataFingerprint(current, 42L),
+        RemoteDefaultReconcileExecutor.metadataFingerprint(historical, 42L));
+  }
 
   @Test
   void executeTablePlansCaptureFromExactMetadataEnumeration() {

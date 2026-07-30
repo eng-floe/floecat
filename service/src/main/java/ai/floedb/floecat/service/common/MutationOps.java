@@ -218,41 +218,45 @@ public final class MutationOps {
       boolean ok = attempt.run(expected);
       if (!ok) {
         final var nowMeta = safeMetaSupplier.get();
-        if (!callerCares) {
-          return nowMeta;
-        }
-        if (nowMeta.getPointerVersion() == 0L) {
-          throw GrpcErrors.notFound(
-              correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
-        }
-        throw GrpcErrors.preconditionFailed(
-            correlationId,
-            GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-            Map.of(
-                "expected", Long.toString(expected),
-                "actual", Long.toString(nowMeta.getPointerVersion())));
+        return classifyDeleteConflict(
+            callerCares, expected, nowMeta, correlationId, entity, notFoundKVs);
       }
     } catch (BaseResourceRepository.NotFoundException nfe) {
       throw GrpcErrors.notFound(
           correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
     } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = safeMetaSupplier.get();
-      if (!callerCares) {
-        return nowMeta;
-      }
-      if (nowMeta.getPointerVersion() == 0L) {
-        throw GrpcErrors.notFound(
-            correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
-      }
-      throw GrpcErrors.preconditionFailed(
-          correlationId,
-          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-          Map.of(
-              "expected", Long.toString(expected),
-              "actual", Long.toString(nowMeta.getPointerVersion())));
+      return classifyDeleteConflict(
+          callerCares, expected, nowMeta, correlationId, entity, notFoundKVs);
     }
 
     return meta;
+  }
+
+  private static MutationMeta classifyDeleteConflict(
+      boolean callerCares,
+      long expected,
+      MutationMeta nowMeta,
+      String correlationId,
+      String entity,
+      Map<String, String> notFoundKVs) {
+    if (!callerCares) {
+      if (nowMeta.getPointerVersion() == 0L) {
+        return nowMeta;
+      }
+      throw new BaseResourceRepository.AbortRetryableException(
+          "unconditional delete conflicted with a concurrent mutation: " + entity);
+    }
+    if (nowMeta.getPointerVersion() == 0L) {
+      throw GrpcErrors.notFound(
+          correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
+    }
+    throw GrpcErrors.preconditionFailed(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
+        Map.of(
+            "expected", Long.toString(expected),
+            "actual", Long.toString(nowMeta.getPointerVersion())));
   }
 
   private static MutationMeta requireMeta(

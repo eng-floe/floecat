@@ -16,14 +16,15 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -115,12 +116,15 @@ public final class FileGroupExecutionSupport {
 
   public static List<ReconcileFileResult> fileResultsForSuccess(
       ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> stats,
+      List<StatsObjectDescriptor> fileStats,
       List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
     LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
+    HashMap<String, String> fileByStatsTarget = new HashMap<>();
     HashMap<String, ReconcileIndexArtifactResult> artifactsByFile = new HashMap<>();
     for (String filePath : plannedTask.filePaths()) {
       statsByFile.put(filePath, 0L);
+      fileByStatsTarget.put(
+          StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)), filePath);
     }
     for (ReconcilerBackend.StagedIndexArtifact artifact : artifacts) {
       if (artifact == null || artifact.record() == null) {
@@ -141,12 +145,12 @@ public final class FileGroupExecutionSupport {
               record.getArtifactFormat(),
               record.getArtifactFormatVersion()));
     }
-    for (TargetStatsRecord record : stats) {
-      if (!record.hasFile()) {
+    for (StatsObjectDescriptor descriptor : fileStats) {
+      if (descriptor == null) {
         continue;
       }
-      String filePath = record.getFile().getFilePath();
-      if (filePath == null || filePath.isBlank() || !statsByFile.containsKey(filePath)) {
+      String filePath = fileByStatsTarget.get(descriptor.getTargetStorageId());
+      if (filePath == null) {
         continue;
       }
       statsByFile.computeIfPresent(filePath, (ignored, count) -> count + 1L);

@@ -117,13 +117,14 @@ Returns a `StatsResolutionResult` carrying an outcome enum and optional stats pa
    - On success, re-reads the store → **CAPTURED**: returns stats + schedules no follow-up.
    - On timeout (budget exceeded) → **TIMEOUT**: enqueues async follow-up, returns empty.
    - On failure (no connector, job error) → **FAILED**: enqueues async follow-up, returns empty.
-3. Otherwise (ASYNC mode, no budget, or sync disabled) → **SKIPPED**: enqueues async reconcile job
-   and returns empty.
+3. With sync enabled, ASYNC mode or no budget → **SKIPPED**: enqueues an async reconcile job and
+   returns empty. With sync disabled, query resolution is store-only and enqueues no capture work.
 
 `StatsOrchestrator.resolveBatch(batchRequest)`:
 
 Sync is not attempted per item in batch mode (serializing sync over a batch defeats batching).
-Each item is a store read; misses fall back to async enqueue with `SKIPPED` outcome.
+Each item is a store read. With sync enabled, misses fall back to async enqueue with `SKIPPED`
+outcome; with sync disabled, misses return `SKIPPED` without capture.
 
 Async enqueue policy:
 
@@ -131,6 +132,15 @@ Async enqueue policy:
   `table_id` + `snapshot_id` + encoded `target_spec` + `column_selectors`.
 - `columnSelectors` from the original request are preserved unchanged in follow-up enqueues
   (no scope widening).
+- Query-driven column requests ask for `COLUMN_STATS` only; they do not implicitly request
+  `PARQUET_PAGE_INDEX`. Request origin is not encoded in capture-policy properties, so equivalent
+  materialized stats coverage is reusable by query and control-plane callers.
+- Active stats-only jobs with the same table, snapshot, outputs, and capture-policy properties
+  share one durable root job even when their requested target sets overlap rather than match
+  exactly. Different snapshots remain distinct.
+- Content-state coverage determines whether snapshot capture is needed. Missing coverage first
+  attempts connector-native direct stats; when the connector cannot satisfy it directly, snapshot
+  planning falls back to file-group capture.
 - Follow-up enqueues are tagged with a reason: `sync_followup_timeout`, `sync_followup_failed`,
   `sync_followup_partial`, or `async_mode` / `no_budget` / `sync_disabled` for SKIPPED outcomes.
 

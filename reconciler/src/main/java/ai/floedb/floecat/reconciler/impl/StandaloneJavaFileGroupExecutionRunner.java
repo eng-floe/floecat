@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
@@ -23,7 +24,11 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
@@ -34,7 +39,10 @@ public class StandaloneJavaFileGroupExecutionRunner {
   @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
   boolean workerAuthRequired = true;
 
-  public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
+  public CaptureEngineResult execute(
+      StandaloneFileGroupExecutionPayload payload,
+      BooleanSupplier shouldStop,
+      Consumer<TargetStatsRecord> fileStatsPublisher) {
     if (payload == null
         || payload.tableId() == null
         || payload.sourceConnector() == null
@@ -43,6 +51,15 @@ public class StandaloneJavaFileGroupExecutionRunner {
         || payload.plannedFilePaths().isEmpty()) {
       return CaptureEngineResult.empty();
     }
+    BooleanSupplier stop = shouldStop == null ? () -> false : shouldStop;
+    throwIfCancellationRequested(stop);
+    var requestedStatsKinds =
+        FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(payload.capturePolicy());
+    java.util.Optional<String> authorizationHeader =
+        workerAuthorizationHeader(payload.tableId().getAccountId());
+    Consumer<TargetStatsRecord> publisher =
+        java.util.Objects.requireNonNull(fileStatsPublisher, "fileStatsPublisher");
+    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts = new ArrayList<>();
     CaptureEngineResult capture =
         captureEngineRegistry.capture(
             new CaptureEngineRequest(
@@ -57,41 +74,45 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.statsColumns(),
                 payload.indexColumns(),
                 FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
-                FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(
-                    payload.capturePolicy()),
+                requestedStatsKinds,
                 payload.capturePageIndex(),
                 java.util.Optional.of(payload.storageLocation())
                     .filter(location -> !location.isBlank()),
-                workerAuthorizationHeader(
-                    payload.tableId() == null ? "" : payload.tableId().getAccountId()),
+                authorizationHeader,
                 java.util.Optional.of(payload.jobId()),
-                java.util.Optional.of(payload.leaseEpoch())));
-    if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
-      return capture;
-    }
+                java.util.Optional.of(payload.leaseEpoch()),
+                stop),
+            (fileStats, pageIndexEntries) -> {
+              List<TargetStatsRecord> completedFileStats =
+                  fileStats == null ? List.of() : fileStats;
+              List<ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry>
+                  completedPageIndexEntries =
+                      pageIndexEntries == null ? List.of() : pageIndexEntries;
+              throwIfCancellationRequested(stop);
+              for (TargetStatsRecord fileStat : completedFileStats) {
+                throwIfCancellationRequested(stop);
+                publisher.accept(fileStat);
+              }
+              if (payload.capturePageIndex()) {
+                stagedIndexArtifacts.addAll(
+                    FileGroupIndexArtifactStager.stage(
+                        payload.tableId(),
+                        payload.snapshotId(),
+                        payload.plannedFilePaths(),
+                        completedFileStats,
+                        completedPageIndexEntries));
+              }
+              throwIfCancellationRequested(stop);
+            });
+    throwIfCancellationRequested(stop);
+    stagedIndexArtifacts.addAll(capture.stagedIndexArtifacts());
     return CaptureEngineResult.of(
-        capture.statsRecords(),
-        List.of(),
-        FileGroupIndexArtifactStager.stage(
-            payload.tableId(),
-            payload.snapshotId(),
-            payload.plannedFilePaths(),
-            capture.statsRecords(),
-            capture.pageIndexEntries()));
+        capture.statsRecords(), List.of(), stagedIndexArtifacts, capture.realizedStatsSelectors());
   }
 
-  public record PersistableResult(
-      List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> statsRecords,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    public PersistableResult {
-      statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
-      stagedIndexArtifacts =
-          stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
-    }
-
-    public static PersistableResult of(CaptureEngineResult capture) {
-      CaptureEngineResult effective = capture == null ? CaptureEngineResult.empty() : capture;
-      return new PersistableResult(effective.statsRecords(), effective.stagedIndexArtifacts());
+  private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {
+    if (shouldStop.getAsBoolean()) {
+      throw new CancellationException("file-group execution cancelled");
     }
   }
 

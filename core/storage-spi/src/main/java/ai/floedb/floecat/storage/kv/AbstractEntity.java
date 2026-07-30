@@ -19,6 +19,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
 import io.smallrye.mutiny.Uni;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -100,6 +101,26 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
 
   protected Uni<Optional<M>> get(KvStore.Key key) {
     return kv.get(key).map(opt -> opt.map(this::decode));
+  }
+
+  /**
+   * Decodes a batch using the same value contract as {@link #get}: missing or empty values are
+   * absent from the result, while a corrupt encoded value fails the entire read.
+   */
+  protected Uni<Map<KvStore.Key, M>> getBatchRecords(List<KvStore.Key> keys) {
+    return kv.getBatch(keys)
+        .map(
+            records -> {
+              Map<KvStore.Key, M> out = new LinkedHashMap<>();
+              records.forEach(
+                  (key, record) -> {
+                    M decoded = decode(record);
+                    if (decoded != null) {
+                      out.put(key, decoded);
+                    }
+                  });
+              return Map.copyOf(out);
+            });
   }
 
   // ---- CAS helpers

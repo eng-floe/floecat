@@ -67,6 +67,9 @@ class QueryServiceSchemaIT {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub stats;
+
+  @GrpcClient("floecat")
   ViewServiceGrpc.ViewServiceBlockingStub view;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
@@ -109,8 +112,8 @@ class QueryServiceSchemaIT {
 
     // snapshot 1 → schemaV1
     var snap1 =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
 
     // update table schema → schemaV2
     table.updateTable(
@@ -125,8 +128,8 @@ class QueryServiceSchemaIT {
 
     // snapshot 2 → schemaV2
     var snap2 =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
 
     // Fully qualified name
     var name =
@@ -263,8 +266,8 @@ class QueryServiceSchemaIT {
             SchemaParser.toJson(schema),
             "desc");
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 5_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 1L, System.currentTimeMillis() - 5_000L);
 
     var viewNode =
         TestSupport.createView(
@@ -352,8 +355,8 @@ class QueryServiceSchemaIT {
             SchemaParser.toJson(schemaV1),
             "desc");
     var snap1 =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
     table.updateTable(
         UpdateTableRequest.newBuilder()
             .setTableId(tbl.getResourceId())
@@ -364,8 +367,8 @@ class QueryServiceSchemaIT {
             .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json").build())
             .build());
     var snap2 =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
 
     var name =
         NameRef.newBuilder()

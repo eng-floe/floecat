@@ -50,9 +50,13 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -176,6 +180,44 @@ class StatsRepositoryTargetStorageTest {
     List<TargetStatsRecord> listed = page.records();
     assertThat(listed).hasSize(4);
     assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(4);
+  }
+
+  @Test
+  void listHonorsRecordLimitAndCanResumeExactlyAfterAnyConsumedRecord() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 304L;
+    for (int i = 1; i <= 3; i++) {
+      repository.putTargetStats(
+          TargetStatsRecords.fileRecord(
+              TABLE_ID,
+              snapshotId,
+              FileTargetStats.newBuilder()
+                  .setFilePath("s3://bucket/path/file-" + i + ".parquet")
+                  .build()));
+    }
+
+    StatsStore.StatsStorePage first =
+        repository.listTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 2, "");
+    assertThat(first.records()).hasSize(2);
+    assertThat(first.continuationTokens()).hasSize(2);
+
+    StatsStore.StatsStorePage resumed =
+        repository.listTargetStats(
+            TABLE_ID,
+            snapshotId,
+            Optional.of(StatsTargetType.FILE),
+            2,
+            first.continuationTokenAfter(0));
+
+    assertThat(resumed.records()).hasSize(2);
+    assertThat(resumed.records().get(0)).isEqualTo(first.records().get(1));
+    assertThat(
+            List.of(
+                first.records().get(0).getFile().getFilePath(),
+                resumed.records().get(0).getFile().getFilePath(),
+                resumed.records().get(1).getFile().getFilePath()))
+        .doesNotHaveDuplicates();
   }
 
   @Test
@@ -368,6 +410,149 @@ class StatsRepositoryTargetStorageTest {
     assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
         .isEmpty();
     assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
+  }
+
+  @Test
+  void workerObjectProtectionSurvivesGcRootsAndIsRemovedWithAbandonedGeneration() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger batchCalls = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            batchCalls.incrementAndGet();
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 712L;
+    String generationId = "full-rescan-parent";
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+    String secondObjectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/second-stats.pb";
+    byte[] objectBytes = new byte[] {1, 2, 3};
+    blobStore.put(objectUri, objectBytes, "application/x-protobuf");
+    blobStore.put(secondObjectUri, objectBytes, "application/x-protobuf");
+
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        "child:lease",
+        List.of(
+            new StatsStore.PrewrittenStatsObject(objectUri, objectBytes.length, new byte[32]),
+            new StatsStore.PrewrittenStatsObject(
+                secondObjectUri, objectBytes.length, new byte[32])));
+
+    assertThat(batchCalls).hasValue(1);
+    String generationPointerPrefix =
+        Keys.snapshotTargetStatsGenerationPointerPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    List<Pointer> pointers =
+        pointerStore.listPointersByPrefix(generationPointerPrefix, 10, "", new StringBuilder());
+    assertThat(pointers).extracting(Pointer::getBlobUri).contains(objectUri, secondObjectUri);
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+    assertThat(
+            pointerStore.listPointersByPrefix(
+                Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId),
+                10,
+                "",
+                new StringBuilder()))
+        .isEmpty();
+    assertThat(
+            pointerStore.get(
+                Keys.snapshotTargetStatsGenerationLifecyclePointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isPresent();
+    assertThat(blobStore.head(objectUri)).isEmpty();
+    assertThat(blobStore.head(secondObjectUri)).isEmpty();
+  }
+
+  @Test
+  void deletingGenerationReapsWorkerUploadThatArrivesAfterAbandonedCleanup() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 714L;
+    String generationId = "full-rescan-late-upload";
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID, snapshotId, generationId, "child:lease", List.of());
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    blobStore.put(objectUri, new byte[] {1, 2, 3}, "application/x-protobuf");
+    repository.deleteUnreferencedGenerations(TABLE_ID, ignored -> false, Long.MAX_VALUE, 0L);
+
+    assertThat(blobStore.head(objectUri)).isEmpty();
+  }
+
+  @Test
+  void abandonedGenerationCleanupRetriesWhenProtectionDeletionFails() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    long snapshotId = 713L;
+    String generationId = "full-rescan-retry";
+    String protectionPrefix =
+        Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicBoolean failProtectionDelete = new AtomicBoolean(true);
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public int deleteByPrefix(String prefix) {
+            if (protectionPrefix.equals(prefix)
+                && failProtectionDelete.compareAndSet(true, false)) {
+              throw new StorageAbortRetryableException("injected protection deletion failure");
+            }
+            return super.deleteByPrefix(prefix);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+    byte[] objectBytes = new byte[] {1, 2, 3};
+    blobStore.put(objectUri, objectBytes, "application/x-protobuf");
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        "child:lease",
+        List.of(new StatsStore.PrewrittenStatsObject(objectUri, objectBytes.length, new byte[32])));
+
+    assertThatThrownBy(
+            () -> repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isInstanceOf(StorageAbortRetryableException.class)
+        .hasMessageContaining("cleanup failed");
+    assertThat(pointerDelegate.countByPrefix(protectionPrefix)).isEqualTo(1);
+    assertThat(
+            pointerDelegate
+                .get(
+                    Keys.snapshotTargetStatsGenerationLifecyclePointer(
+                        TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId))
+                .orElseThrow()
+                .getBlobUri())
+        .isEqualTo("DELETING");
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+    assertThat(pointerDelegate.countByPrefix(protectionPrefix)).isZero();
+    assertThat(blobStore.head(objectUri)).isEmpty();
   }
 
   @Test
@@ -1149,6 +1334,87 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void publishingReplacementGenerationRepairsCorruptSupersededStats() throws Exception {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 4250L;
+    long columnId = 7L;
+    var columnTarget = StatsTargetIdentity.columnTarget(columnId);
+
+    publishColumn(
+        repository,
+        snapshotId,
+        columnId,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .addSketches(quantileSketch("old"))
+            .build());
+
+    String activeManifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String activeGenerationId = StringValue.parseFrom(blobStore.get(activeManifestUri)).getValue();
+    String activeTargetPointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            activeGenerationId,
+            StatsTargetIdentity.storageId(columnTarget));
+    String corruptBlobUri = pointerStore.get(activeTargetPointer).orElseThrow().getBlobUri();
+    blobStore.put(
+        corruptBlobUri, new byte[] {0x5a, 0x03, 0x0a, 0x01, (byte) 0xff}, "application/x-protobuf");
+
+    String incrementalGenerationId = "incremental-enrichment";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, snapshotId, incrementalGenerationId, List.of(), List.of());
+    assertThatThrownBy(
+            () ->
+                repository.publishStatsGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    incrementalGenerationId,
+                    List.of(
+                        TargetStatsRecords.columnRecord(
+                            TABLE_ID,
+                            snapshotId,
+                            columnId,
+                            ScalarStats.newBuilder()
+                                .setLogicalType("BIGINT")
+                                .setRowCount(2L)
+                                .build(),
+                            null))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+
+    String replacementGenerationId = "full-rescan-replacement";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, snapshotId, replacementGenerationId, List.of(), List.of());
+    repository.publishStatsGeneration(
+        TABLE_ID,
+        snapshotId,
+        replacementGenerationId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(2L)
+                    .addSketches(quantileSketch("replacement"))
+                    .build(),
+                null)),
+        false);
+
+    TargetStatsRecord live =
+        repository.getTargetStats(TABLE_ID, snapshotId, columnTarget).orElseThrow();
+    assertThat(live.getScalar().getRowCount()).isEqualTo(2L);
+    assertThat(live.getScalar().getSketchesList())
+        .extracting(sketch -> sketch.getData().toStringUtf8())
+        .containsExactly("replacement");
+  }
+
+  @Test
   void replaceAllPrefersIncomingPayloadOverSupersededForSameIdentity() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1392,6 +1658,141 @@ class StatsRepositoryTargetStorageTest {
                 .listTargetStats(TABLE_ID, snapshotId, java.util.Optional.empty(), 10, "")
                 .records())
         .hasSize(1);
+  }
+
+  @Test
+  void generationGcKeepsTheActiveIndexGenerationWhenStatsHaveAdvanced() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 779L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String indexManifest =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String indexGeneration =
+        indexManifest.substring(indexManifest.lastIndexOf('/') + 1, indexManifest.length() - 3);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String activeIndexPointer =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    assertThat(
+            pointerStore.compareAndSet(
+                activeIndexPointer,
+                0L,
+                Pointer.newBuilder()
+                    .setKey(activeIndexPointer)
+                    .setBlobUri(indexGeneration)
+                    .setVersion(1L)
+                    .build()))
+        .isTrue();
+
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed).isZero();
+    assertThat(blobStore.get(indexManifest)).isNotNull();
+  }
+
+  @Test
+  void generationGcBoundsBlobDeletesAndResumesAcrossPasses() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 778L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String supersededManifest =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String generationId =
+        supersededManifest.substring(
+            supersededManifest.lastIndexOf('/') + 1, supersededManifest.length() - 3);
+    String generationBlobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    for (int i = 0; i < 3; i++) {
+      blobStore.put(
+          generationBlobPrefix + "worker-uploads/job/lease/object-" + i + ".pb",
+          new byte[] {(byte) i},
+          "application/x-protobuf");
+    }
+    String indexWrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            "file:s3://bucket/data.parquet",
+            "sha-index");
+    blobStore.put(indexWrapper, new byte[] {9}, "application/x-protobuf");
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+
+    StatsRepository.GenerationGcResult result =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
+
+    assertThat(result.blobDeleteAttempts()).isEqualTo(2);
+    assertThat(result.generationsReclaimed()).isZero();
+    assertThat(result.pending()).isTrue();
+    assertThat(blobStore.get(supersededManifest)).isNotNull();
+
+    int passes = 1;
+    int reclaimed = result.generationsReclaimed();
+    while (result.pending() && passes < 10) {
+      result =
+          statsRepository.deleteUnreferencedGenerations(
+              TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
+      assertThat(result.blobDeleteAttempts()).isLessThanOrEqualTo(2);
+      reclaimed += result.generationsReclaimed();
+      passes++;
+    }
+
+    assertThat(result.pending()).isFalse();
+    assertThat(reclaimed).isEqualTo(1);
+    assertThat(blobStore.get(supersededManifest)).isNull();
+    assertThat(blobStore.get(indexWrapper)).isNull();
+    assertThat(blobStore.list(generationBlobPrefix, 1, "").keys()).isEmpty();
+    String lifecyclePointer =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    String deletedFencePointer =
+        Keys.snapshotTargetStatsDeletedGenerationFencePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(pointerStore.get(lifecyclePointer)).isEmpty();
+    assertThat(pointerStore.get(deletedFencePointer).orElseThrow().getBlobUri())
+        .isEqualTo("DELETED");
+    assertThat(pointerStore.get(deletedFencePointer).orElseThrow().hasExpiresAt()).isTrue();
+    assertThatThrownBy(
+            () ->
+                statsRepository.protectPrewrittenStatsObjectsInGeneration(
+                    TABLE_ID, snapshotId, generationId, "late-terminal-replay", List.of()))
+        .hasMessageContaining("state=DELETED");
+
+    StatsRepository.GenerationGcResult repeat =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
+    assertThat(repeat.generationsReclaimed()).isZero();
+    assertThat(repeat.blobDeleteAttempts()).isZero();
+  }
+
+  @Test
+  void generationGcDoesNotScanWhenBlobDeleteBudgetIsZero() {
+    RepoTestPointerStores.CountingPrefixScanPointerStore pointerStore =
+        new RepoTestPointerStores.CountingPrefixScanPointerStore(new InMemoryPointerStore());
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+
+    StatsRepository.GenerationGcResult result =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 0, Long.MAX_VALUE);
+
+    assertThat(result.pending()).isTrue();
+    assertThat(result.blobDeleteAttempts()).isZero();
+    assertThat(pointerStore.listPointersByPrefixCalls()).isZero();
   }
 
   @Test
@@ -1912,8 +2313,8 @@ class StatsRepositoryTargetStorageTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
-      delegate.deletePrefix(prefix);
+    public int deletePrefix(String prefix) {
+      return delegate.deletePrefix(prefix);
     }
 
     @Override
@@ -1925,5 +2326,608 @@ class StatsRepositoryTargetStorageTest {
     public Page list(String prefix, int limit, String pageToken) {
       return delegate.list(prefix, limit, pageToken);
     }
+  }
+
+  @Test
+  void prewrittenStatsReferencesAreCommittedInPointerBatchesWithoutBlobReads() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger batchCalls = new AtomicInteger();
+    AtomicInteger batchReads = new AtomicInteger();
+    AtomicInteger individualReads = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            batchCalls.incrementAndGet();
+            return super.compareAndSetBatch(ops);
+          }
+
+          @Override
+          public Map<String, Pointer> getBatch(List<String> keys) {
+            batchReads.incrementAndGet();
+            return super.getBatch(keys);
+          }
+
+          @Override
+          public Optional<Pointer> get(String key) {
+            individualReads.incrementAndGet();
+            return super.get(key);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 715L;
+    String generationId = "full-rescan-batched-references";
+    String blobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> references = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      String targetStorageId = "column-" + String.format("%019d", index);
+      byte[] binaryDigest = HexFormat.of().parseHex(Hashing.sha256Hex("payload-" + index));
+      String blobUri =
+          blobPrefix
+              + Hashing.sha256Hex(targetStorageId)
+              + "/"
+              + HexFormat.of().formatHex(binaryDigest)
+              + ".pb";
+      references.add(
+          new StatsStore.PrewrittenTargetStatsReference(
+              targetStorageId, blobUri, index, binaryDigest));
+    }
+
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, references);
+
+    assertThat(batchCalls).hasValue(6);
+    assertThat(batchReads).hasValue(3);
+    // Lifecycle and deletion-fence checks are point reads; target pointers are batch-read.
+    assertThat(individualReads).hasValue(3);
+    assertThat(
+            pointerDelegate.countByPrefix(
+                Keys.snapshotTargetStatsGenerationDirectoryPointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isEqualTo(205);
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
+  }
+
+  @Test
+  void preparedStatsPublicationDoesNotEnumerateOrReadStagedFileObjects() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    AtomicInteger blobGets = new AtomicInteger();
+    AtomicInteger blobPuts = new AtomicInteger();
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            blobGets.incrementAndGet();
+            return super.get(uri);
+          }
+
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            blobPuts.incrementAndGet();
+            super.put(uri, bytes, contentType);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 7151L;
+    String generationId = "full-rescan-prepared";
+    List<StatsStore.PrewrittenTargetStatsReference> fileReferences = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      fileReferences.add(
+          prewrittenReference(
+              snapshotId, generationId, "file:s3://bucket/file-" + index, "file-" + index));
+    }
+    StatsStore.PrewrittenTargetStatsReference finalReference =
+        prewrittenReference(snapshotId, generationId, "column:1", "final-column");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, fileReferences);
+
+    for (StatsStore.PrewrittenTargetStatsReference reference : fileReferences) {
+      Pointer latest =
+          pointerStore
+              .get(
+                  Keys.targetStatsLatestSnapshotPointer(
+                      TABLE_ID.getAccountId(), TABLE_ID.getId(), reference.targetStorageId()))
+              .orElseThrow();
+      assertThat(latest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
+    }
+
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(finalReference), predecessor, null);
+
+    assertThat(blobGets).hasValue(0);
+    assertThat(blobPuts)
+        .as("publication retains only the existing single active-generation manifest write")
+        .hasValue(1);
+    assertThat(
+            pointerStore.countByPrefix(
+                Keys.snapshotTargetStatsGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isEqualTo(206);
+  }
+
+  @Test
+  void preparedGenerationPublishesExternalPointersAtomicallyWithStats() {
+    AtomicBoolean failAtomicPublication = new AtomicBoolean(true);
+    long snapshotId = 7154L;
+    String statsPointerKey =
+        Keys.snapshotTargetStatsManifestPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    InMemoryPointerStore pointers =
+        new InMemoryPointerStore() {
+          @Override
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            boolean publication =
+                ops.stream()
+                    .anyMatch(
+                        op ->
+                            op instanceof PointerStore.CasUpsert upsert
+                                && statsPointerKey.equals(upsert.key()));
+            if (publication && failAtomicPublication.compareAndSet(true, false)) {
+              return false;
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    String generationId = "atomic-generation";
+    String indexActiveKey = "/test/index-active";
+    String indexManifestKey = "/test/index-manifest";
+    StatsStore.PublicationFence publicationFence =
+        new StatsStore.PublicationFence(
+            List.of(
+                new StatsStore.PublicationPointerUpdate(
+                    indexActiveKey,
+                    0L,
+                    PointerReferences.opaqueMarkerPointer(indexActiveKey, generationId, 1L)),
+                new StatsStore.PublicationPointerUpdate(
+                    indexManifestKey,
+                    0L,
+                    PointerReferences.blobPointer(indexManifestKey, "/manifest.pb", 1L))));
+    StatsStore.StatsGenerationPredecessor firstPredecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(), firstPredecessor, publicationFence))
+        .isFalse();
+    assertThat(pointers.get(statsPointerKey)).isEmpty();
+    assertThat(pointers.get(indexActiveKey)).isEmpty();
+    assertThat(pointers.get(indexManifestKey)).isEmpty();
+
+    StatsStore.StatsGenerationPredecessor retryPredecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(), retryPredecessor, publicationFence))
+        .isTrue();
+    assertThat(pointers.get(statsPointerKey)).isPresent();
+    assertThat(pointers.get(indexActiveKey).orElseThrow().getBlobUri()).isEqualTo(generationId);
+    assertThat(pointers.get(indexManifestKey).orElseThrow().getBlobUri()).isEqualTo("/manifest.pb");
+  }
+
+  @Test
+  void scopedGenerationInheritsMissingActiveTargetsWithoutOverwritingNewTargets() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    long snapshotId = 7153L;
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(10L).build(), null);
+    TargetStatsRecord oldColumn =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID, snapshotId, 7L, ScalarStats.newBuilder().setDisplayName("old").build(), null);
+    repository.putTargetStats(tableRecord);
+    repository.putTargetStats(oldColumn);
+    String generationId = "full-rescan-scoped";
+    String columnTargetStorageId = StatsTargetIdentity.storageId(oldColumn.getTarget());
+    StatsStore.PrewrittenTargetStatsReference replacement =
+        prewrittenReference(snapshotId, generationId, columnTargetStorageId, "replacement");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(replacement));
+
+    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
+
+    String targetPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(pointers.countByPrefix(targetPrefix)).isEqualTo(2);
+    String inheritedTablePointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            StatsTargetIdentity.storageId(tableRecord.getTarget()));
+    long inheritedVersion = pointers.get(inheritedTablePointer).orElseThrow().getVersion();
+
+    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
+
+    assertThat(pointers.get(inheritedTablePointer).orElseThrow().getVersion())
+        .isEqualTo(inheritedVersion);
+    assertThat(
+            pointers
+                .get(
+                    Keys.snapshotTargetStatsGenerationPointer(
+                        TABLE_ID.getAccountId(),
+                        TABLE_ID.getId(),
+                        snapshotId,
+                        generationId,
+                        columnTargetStorageId))
+                .orElseThrow()
+                .getBlobUri())
+        .isEqualTo(replacement.blobUri());
+  }
+
+  @Test
+  void preparedFileGroupMarkerIsMetadataOnlyAndExact() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    AtomicInteger blobGets = new AtomicInteger();
+    AtomicInteger blobPuts = new AtomicInteger();
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            blobGets.incrementAndGet();
+            return super.get(uri);
+          }
+
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            blobPuts.incrementAndGet();
+            super.put(uri, bytes, contentType);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    String digest = "a".repeat(64);
+
+    repository.markPreparedFileGroup(
+        TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-1", digest);
+
+    assertThat(
+            repository.isPreparedFileGroup(
+                TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-1", digest))
+        .isTrue();
+    assertThat(
+            repository.isPreparedFileGroup(
+                TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-2", digest))
+        .isFalse();
+    assertThat(blobGets).hasValue(0);
+    assertThat(blobPuts).hasValue(0);
+  }
+
+  @Test
+  void prewrittenStatsPublicationBatchesLatestSnapshotPointers() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger latestBatchCalls = new AtomicInteger();
+    AtomicInteger latestSingleCasCalls = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            if (!ops.isEmpty()
+                && ops.stream()
+                    .allMatch(
+                        op ->
+                            op instanceof CasUpsert upsert
+                                && upsert.key().contains("/stats/targets/")
+                                && upsert.key().endsWith("/latest-snapshot"))) {
+              latestBatchCalls.incrementAndGet();
+            }
+            return super.compareAndSetBatch(ops);
+          }
+
+          @Override
+          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+            if (key.contains("/stats/targets/") && key.endsWith("/latest-snapshot")) {
+              latestSingleCasCalls.incrementAndGet();
+            }
+            return super.compareAndSet(key, expectedVersion, next);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 716L;
+    String generationId = "full-rescan-batched-latest";
+    String blobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> references = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      String targetStorageId = "column-" + String.format("%019d", index);
+      byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("payload-" + index));
+      String blobUri =
+          blobPrefix
+              + Hashing.sha256Hex(targetStorageId)
+              + "/"
+              + HexFormat.of().formatHex(digest)
+              + ".pb";
+      references.add(
+          new StatsStore.PrewrittenTargetStatsReference(targetStorageId, blobUri, index, digest));
+    }
+
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, references);
+
+    assertThat(latestBatchCalls).hasValue(3);
+    assertThat(latestSingleCasCalls).hasValue(0);
+    Pointer tableLatest =
+        pointerDelegate
+            .get(Keys.tableStatsLatestSnapshotPointer(TABLE_ID.getAccountId(), TABLE_ID.getId()))
+            .orElseThrow();
+    assertThat(PointerReferences.isOpaqueMarkerPointer(tableLatest)).isTrue();
+    assertThat(tableLatest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
+    long olderSnapshotId = snapshotId - 1;
+    String olderGenerationId = generationId + "-older";
+    String olderBlobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), olderSnapshotId, olderGenerationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> olderReferences = new ArrayList<>();
+    for (int index = 0; index < references.size(); index++) {
+      StatsStore.PrewrittenTargetStatsReference reference = references.get(index);
+      String blobUri =
+          olderBlobPrefix
+              + Hashing.sha256Hex(reference.targetStorageId())
+              + "/"
+              + HexFormat.of().formatHex(reference.blobSha256())
+              + ".pb";
+      olderReferences.add(
+          new StatsStore.PrewrittenTargetStatsReference(
+              reference.targetStorageId(), blobUri, reference.blobBytes(), reference.blobSha256()));
+    }
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, olderSnapshotId, olderGenerationId, olderReferences);
+
+    assertThat(latestBatchCalls).hasValue(3);
+    for (StatsStore.PrewrittenTargetStatsReference reference : references) {
+      String pointerKey =
+          Keys.targetStatsLatestSnapshotPointer(
+              TABLE_ID.getAccountId(), TABLE_ID.getId(), reference.targetStorageId());
+      Pointer pointer = pointerDelegate.get(pointerKey).orElseThrow();
+      assertThat(PointerReferences.isOpaqueMarkerPointer(pointer)).isTrue();
+      assertThat(pointer.getBlobUri()).isEqualTo(Long.toString(snapshotId));
+    }
+    assertThat(
+            blobStore
+                .list(
+                    "/accounts/"
+                        + TABLE_ID.getAccountId()
+                        + "/tables/"
+                        + TABLE_ID.getId()
+                        + "/stats/targets/",
+                    1,
+                    "")
+                .keys())
+        .as("latest-snapshot indexes must not create marker blobs")
+        .isEmpty();
+  }
+
+  @Test
+  void prewrittenStatsPublicationResumesAfterPublishingStateWasPersisted() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    long snapshotId = 717L;
+    String generationId = "full-rescan-retry-before-activation";
+    String manifestPointer =
+        Keys.snapshotTargetStatsManifestPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    AtomicBoolean failActivation = new AtomicBoolean(true);
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+            if (manifestPointer.equals(key) && failActivation.compareAndSet(true, false)) {
+              throw new StorageAbortRetryableException("injected activation failure");
+            }
+            return super.compareAndSet(key, expectedVersion, next);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    List<StatsStore.PrewrittenTargetStatsReference> references =
+        List.of(prewrittenReference(snapshotId, generationId, "column-1", "payload-1"));
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPrewrittenStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, references))
+        .isInstanceOf(StorageAbortRetryableException.class);
+    assertThat(generationLifecycle(pointerDelegate, snapshotId, generationId))
+        .isEqualTo("PUBLISHING");
+
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, references);
+
+    assertThat(generationLifecycle(pointerDelegate, snapshotId, generationId))
+        .isEqualTo("PUBLISHED");
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId))
+        .contains(
+            Keys.snapshotTargetStatsManifestBlobUri(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId));
+  }
+
+  @Test
+  void prewrittenStatsPublicationRepairsLatestIndexesAfterActivation() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    long snapshotId = 718L;
+    String generationId = "full-rescan-retry-after-activation";
+    AtomicBoolean failLatestIndex = new AtomicBoolean(true);
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            if (!ops.isEmpty()
+                && ops.stream()
+                    .allMatch(
+                        op ->
+                            op instanceof CasUpsert upsert
+                                && upsert.key().contains("/stats/targets/")
+                                && upsert.key().endsWith("/latest-snapshot"))
+                && failLatestIndex.compareAndSet(true, false)) {
+              throw new StorageAbortRetryableException("injected latest-index failure");
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    List<StatsStore.PrewrittenTargetStatsReference> references =
+        List.of(prewrittenReference(snapshotId, generationId, "column-1", "payload-1"));
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPrewrittenStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, references))
+        .isInstanceOf(StorageAbortRetryableException.class);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).isPresent();
+    assertThat(generationLifecycle(pointerDelegate, snapshotId, generationId))
+        .isEqualTo("PUBLISHING");
+
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, references);
+
+    String latestPointer =
+        Keys.targetStatsLatestSnapshotPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), "column-1");
+    Pointer latest = pointerDelegate.get(latestPointer).orElseThrow();
+    assertThat(PointerReferences.isOpaqueMarkerPointer(latest)).isTrue();
+    assertThat(latest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
+    assertThat(generationLifecycle(pointerDelegate, snapshotId, generationId))
+        .isEqualTo("PUBLISHED");
+  }
+
+  @Test
+  void prewrittenStatsPublicationRejectsChangedRetryAfterPublishingStarted() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    long snapshotId = 719L;
+    String generationId = "full-rescan-changed-retry";
+    String manifestPointer =
+        Keys.snapshotTargetStatsManifestPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    AtomicBoolean failActivation = new AtomicBoolean(true);
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+            if (manifestPointer.equals(key) && failActivation.compareAndSet(true, false)) {
+              throw new StorageAbortRetryableException("injected activation failure");
+            }
+            return super.compareAndSet(key, expectedVersion, next);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference original =
+        prewrittenReference(snapshotId, generationId, "column-1", "payload-1");
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPrewrittenStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, List.of(original)))
+        .isInstanceOf(StorageAbortRetryableException.class);
+    StatsStore.PrewrittenTargetStatsReference changed =
+        new StatsStore.PrewrittenTargetStatsReference(
+            original.targetStorageId(),
+            original.blobUri(),
+            original.blobBytes() + 1L,
+            original.blobSha256());
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPrewrittenStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, List.of(changed)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("publication intent changed");
+  }
+
+  @Test
+  void publishedActiveGenerationResumesWithoutRevalidatingAttemptReferences() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 720L;
+    String generationId = "full-rescan-published-replacement";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference original =
+        prewrittenReference(snapshotId, generationId, "column-1", "payload-1");
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(original));
+    StatsStore.PrewrittenTargetStatsReference replacementAttempt =
+        new StatsStore.PrewrittenTargetStatsReference(
+            original.targetStorageId(),
+            original.blobUri() + ".replacement",
+            original.blobBytes() + 1L,
+            original.blobSha256());
+
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(replacementAttempt), predecessor, null))
+        .isTrue();
+
+    assertThat(generationLifecycle(pointerStore, snapshotId, generationId)).isEqualTo("PUBLISHED");
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId))
+        .contains(
+            Keys.snapshotTargetStatsManifestBlobUri(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId));
+  }
+
+  @Test
+  void publishedGenerationCannotResumeAfterItIsSuperseded() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 721L;
+    String firstGenerationId = "full-rescan-published-first";
+    String secondGenerationId = "full-rescan-published-second";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference firstReference =
+        prewrittenReference(snapshotId, firstGenerationId, "column-1", "payload-1");
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, firstGenerationId, List.of(firstReference));
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID,
+        snapshotId,
+        secondGenerationId,
+        List.of(prewrittenReference(snapshotId, secondGenerationId, "column-1", "payload-2")));
+
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, snapshotId, firstGenerationId, false);
+
+    assertThatThrownBy(
+            () ->
+                repository.publishPreparedStatsGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    firstGenerationId,
+                    List.of(firstReference),
+                    predecessor,
+                    null))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("published target stats generation is no longer active");
+  }
+
+  private static StatsStore.PrewrittenTargetStatsReference prewrittenReference(
+      long snapshotId, String generationId, String targetStorageId, String payload) {
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(payload));
+    String blobUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/"
+            + Hashing.sha256Hex(targetStorageId)
+            + "/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    return new StatsStore.PrewrittenTargetStatsReference(
+        targetStorageId, blobUri, payload.length(), digest);
+  }
+
+  private static String generationLifecycle(
+      InMemoryPointerStore pointerStore, long snapshotId, String generationId) {
+    return pointerStore
+        .get(
+            Keys.snapshotTargetStatsGenerationLifecyclePointer(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId))
+        .orElseThrow()
+        .getBlobUri();
   }
 }

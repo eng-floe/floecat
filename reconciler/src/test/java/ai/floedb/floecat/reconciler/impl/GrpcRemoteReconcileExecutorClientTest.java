@@ -21,12 +21,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -34,19 +45,30 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput;
+import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
+import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -55,6 +77,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -217,6 +240,309 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void snapshotFinalizeInputAcceptsExplicitEmptyCoverage() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.getLeasedSnapshotFinalizeInput(any()))
+        .thenReturn(
+            GetLeasedSnapshotFinalizeInputResponse.newBuilder()
+                .setInput(
+                    LeasedSnapshotFinalizeInput.newBuilder()
+                        .setJobId("finalize-job")
+                        .setLeaseEpoch("lease-epoch")
+                        .setParentJobId("snapshot-job")
+                        .setTableId(tableId())
+                        .setSnapshotId(55L)
+                        .setFinalizeMode(
+                            LeasedSnapshotFinalizeInput.FinalizeMode.FZM_EXPLICIT_EMPTY)
+                        .setFileGroupCount(0)
+                        .setSourceFileCount(0)
+                        .setStatsObjectPrefix("/stats.pb")
+                        .setCaptureManifestUri("/manifest.pb")
+                        .setIndexPredecessor(
+                            ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                                .setGenerationId("generation-1")
+                                .setActivePointerVersion(7L)
+                                .setCaptureManifestUri("/capture-1.pb")
+                                .setCaptureManifestPointerVersion(9L))
+                        .build())
+                .build());
+
+    StandaloneSnapshotFinalizeExecutionPayload payload =
+        client.getSnapshotFinalizeInput(remoteSnapshotFinalizeLease());
+
+    assertEquals(0, payload.fileGroupCount());
+    assertEquals(0, payload.sourceFileCount());
+    assertEquals("/manifest.pb", payload.captureManifestUri());
+    assertEquals("generation-1", payload.indexPredecessor().generationId());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPublishesZeroGroupManifest() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease();
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            0,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            null);
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertEquals(0, manifest.getFileGroupsCount());
+    assertEquals(0, manifest.getSourceFileCount());
+  }
+
+  @Test
+  void snapshotFinalizeManifestCountsUniqueStatsTargetsAcrossGroups() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    byte[] payloadSha256 = new byte[32];
+    payloadSha256[0] = 1;
+    StatsObjectDescriptor sharedDeleteStats =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("file-delete")
+            .setPayloadUri("/stats/delete.pb")
+            .setPayloadBytes(12L)
+            .setPayloadSha256(ByteString.copyFrom(payloadSha256))
+            .build();
+
+    client.prepareSnapshotFinalizeSuccess(
+        remoteSnapshotFinalizeLease(2),
+        "result-1",
+        "/stats/",
+        "/manifest.pb",
+        2,
+        List.of(
+            fileGroupResultDescriptor("group-a", 1, null),
+            fileGroupResultDescriptor("group-b", 1, null)),
+        List.of(sharedDeleteStats),
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        null);
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.getFileStatsRecordCount()).isEqualTo(1);
+    assertThat(manifest.getFileGroupsList())
+        .allMatch(group -> group.getFileStatsRecordCount() == 1);
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPublishesZeroGroupIndexPredecessor() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease(0, indexCapturePolicy());
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            0,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            indexPredecessor());
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.getFileGroupsCount()).isZero();
+    assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPropagatesConsistentIndexPredecessor() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease(1, indexCapturePolicy());
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            1,
+            List.of(fileGroupResultDescriptor(indexPredecessor())),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of("customer_id"),
+            List.of("customer_id"),
+            null);
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.hasIndexPredecessor()).isTrue();
+    assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
+    assertThat(manifest.getRealizedIndexSelectorsList()).containsExactly("customer_id");
+    assertThat(manifest.getFileGroups(0).getIndexPredecessor())
+        .isEqualTo(manifest.getIndexPredecessor());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessRejectsInconsistentIndexPredecessors() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    var otherPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                client.prepareSnapshotFinalizeSuccess(
+                    remoteSnapshotFinalizeLease(2, indexCapturePolicy()),
+                    "result-1",
+                    "/stats/",
+                    "/manifest.pb",
+                    2,
+                    List.of(
+                        fileGroupResultDescriptor(indexPredecessor()),
+                        fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    null));
+
+    assertThat(error).hasMessageContaining("inconsistent predecessors");
+    verify(client.blobStore, never()).put(any(), any(), any());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessClassifiesUnknownRpcOutcomeAsStateUncertain() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel1 = mock(ManagedChannel.class);
+    ManagedChannel channel2 = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub1 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub2 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel1, stub1);
+    client.enqueueTransport(channel2, stub2);
+    when(stub1.submitLeasedSnapshotFinalizeResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(stub2.submitLeasedSnapshotFinalizeResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    var prepared =
+        new RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess(
+            "result-1", SnapshotCaptureManifestDescriptor.getDefaultInstance());
+
+    ReconcileFailureException error =
+        assertThrows(
+            ReconcileFailureException.class,
+            () -> client.submitSnapshotFinalizeSuccess(remoteSnapshotFinalizeLease(), prepared));
+
+    assertThat(error.retryDisposition())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE);
+    assertThat(error.retryClass())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN);
+    verify(stub1).submitLeasedSnapshotFinalizeResult(any());
+    verify(stub2).submitLeasedSnapshotFinalizeResult(any());
+  }
+
+  @Test
+  void snapshotFileGroupResultPagingRejectsRepeatedTokens() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.listLeasedSnapshotFileGroupResults(any()))
+        .thenReturn(
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .setNextPageToken("repeat")
+                .build(),
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .setNextPageToken("repeat")
+                .build());
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> client.listSnapshotFileGroupResults(remoteSnapshotFinalizeLease(1)));
+
+    assertThat(error).hasMessageContaining("repeated token");
+    verify(stub, times(2)).listLeasedSnapshotFileGroupResults(any());
+  }
+
+  @Test
+  void snapshotFileGroupResultPagingIsBoundedByThePlannedCount() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.listLeasedSnapshotFileGroupResults(any()))
+        .thenReturn(
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .addDescriptors(
+                    ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor.getDefaultInstance())
+                .build());
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> client.listSnapshotFileGroupResults(remoteSnapshotFinalizeLease(0)));
+
+    assertThat(error).hasMessageContaining("exceeds planned count 0");
+  }
+
+  @Test
   void submitPlanSnapshotSuccessOmitsDuplicateSnapshotFileGroupsWhenFileGroupJobsArePresent()
       throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
@@ -238,7 +564,32 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ReconcileFileGroupTask fileGroupTask =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(),
+            List.of(),
+            "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/data/file-1.parquet",
+                    100L,
+                    "{}",
+                    null,
+                    "PARQUET",
+                    3,
+                    List.of(
+                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                            "s3://bucket/data/delete-1.parquet",
+                            10L,
+                            ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY,
+                            3,
+                            List.of(7))))));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -277,6 +628,12 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(chunkRequest.getChunk().getFileGroupJobsCount()).isEqualTo(1);
     assertThat(chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask().getGroupId())
         .isEqualTo("group-1");
+    var protoTask = chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask();
+    assertThat(protoTask.getExecutionSchemaJson()).contains("schema-id");
+    assertThat(protoTask.getFileExecutionPlans(0).getFileFormat()).isEqualTo("PARQUET");
+    assertThat(
+            protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getEqualityFieldIdsList())
+        .containsExactly(7);
 
     verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
@@ -290,7 +647,6 @@ class GrpcRemoteReconcileExecutorClientTest {
         .isEqualTo(
             SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)));
     assertThat(success.getSnapshotTask().getFileGroupCount()).isEqualTo(1);
-    assertThat(success.getSnapshotTask().getFileGroupsCount()).isZero();
     assertThat(success.getChunkCount()).isEqualTo(1);
   }
 
@@ -607,11 +963,10 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.enqueueTransport(channel2, stub2);
     when(stub1.withInterceptors(any())).thenReturn(stub1);
     when(stub2.withInterceptors(any())).thenReturn(stub2);
-    when(stub1.submitLeasedFileGroupExecutionResult(any()))
+    when(stub1.commitLeasedFileGroupResult(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
-    when(stub2.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub2.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
 
     boolean accepted =
         client.submitSuccess(
@@ -620,133 +975,219 @@ class GrpcRemoteReconcileExecutorClientTest {
             StandaloneFileGroupExecutionResult.empty("result-1"));
 
     assertThat(accepted).isTrue();
-    verify(stub1).submitLeasedFileGroupExecutionResult(any());
-    verify(stub2).submitLeasedFileGroupExecutionResult(any());
+    verify(stub1).commitLeasedFileGroupResult(any());
+    verify(stub2).commitLeasedFileGroupResult(any());
   }
 
   @Test
-  void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() throws Exception {
+  void submitFileGroupSuccessRejectsBlankResultIdBeforeRpc() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
-    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
-
     assertThrows(
-        StatusRuntimeException.class,
+        IllegalArgumentException.class,
         () ->
             client.submitSuccess(
                 remoteFileGroupLease(),
                 fileGroupPayload("s3://bucket/file.parquet"),
                 StandaloneFileGroupExecutionResult.empty("  ")));
 
-    verify(stub).submitLeasedFileGroupExecutionResult(any());
-    verify(channel).shutdown();
-    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
-    assertThat(client.transportFailureLogs())
-        .containsExactly("submitLeasedFileGroupExecutionResult@cached#1");
+    verify(stub, org.mockito.Mockito.never()).commitLeasedFileGroupResult(any());
+    assertThat(client.transportFailureLogs()).isEmpty();
   }
 
   @Test
-  void submitFileGroupSuccessSendsInlineManifestFields() throws Exception {
+  void submitFileGroupSuccessSendsResultDescriptor() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
-    var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of());
+    var result =
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(), List.of());
 
     assertThat(
             client.submitSuccess(
                 remoteFileGroupLease(), fileGroupPayload("s3://bucket/file.parquet"), result))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
-    assertThat(success.getFileResultsCount()).isEqualTo(1);
-    assertThat(success.getFileResults(0).getFilePath()).isEqualTo("s3://bucket/file.parquet");
+    assertThat(success.getResultDescriptor().getPlannedFileCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getSucceededFileCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getPayloadUri()).isEqualTo("/result.pb");
   }
 
   @Test
-  void submitFileGroupSuccessSendsChunkedFileStats() throws Exception {
+  void submitFileGroupSuccessPropagatesIndexPredecessor() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
-    when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
-    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
-
-    var result =
-        new StandaloneFileGroupExecutionResult(
-            "result-1",
-            List.of(
-                ai.floedb.floecat.stats.identity.TargetStatsRecords.fileRecord(
-                    ResourceId.newBuilder()
-                        .setAccountId("acct")
-                        .setKind(ResourceKind.RK_TABLE)
-                        .setId("table-1")
-                        .build(),
-                    55L,
-                    ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
-                        .setFilePath("s3://bucket/data/file-1.parquet")
-                        .setRowCount(3L)
-                        .build(),
-                    null)),
-            List.of());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
+    var predecessor =
+        new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var payload = indexFileGroupPayload(predecessor);
 
     assertThat(
             client.submitSuccess(
                 remoteFileGroupLease(),
-                fileGroupPayload("s3://bucket/data/file-1.parquet"),
-                result))
+                payload,
+                StandaloneFileGroupExecutionResult.empty("result-1")))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub, org.mockito.Mockito.atLeastOnce())
-        .submitLeasedFileGroupExecutionResult(requestCaptor.capture());
-    assertThat(
-            requestCaptor.getAllValues().stream()
-                .anyMatch(SubmitLeasedFileGroupExecutionResultRequest::hasChunk))
-        .isTrue();
-    var success =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasSuccess)
-            .findFirst()
-            .orElseThrow()
-            .getSuccess();
-    assertThat(success.getResultId()).isEqualTo("result-1");
-    assertThat(success.getChunkCount()).isEqualTo(1);
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
+    var descriptorPredecessor =
+        requestCaptor.getValue().getSuccess().getResultDescriptor().getIndexPredecessor();
+    assertThat(descriptorPredecessor.getGenerationId()).isEqualTo("generation-1");
+    assertThat(descriptorPredecessor.getActivePointerVersion()).isEqualTo(7L);
+
+    ArgumentCaptor<byte[]> payloadBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/result.pb"), payloadBytes.capture(), eq("application/x-protobuf"));
+    FileGroupResultPayload packedPayload =
+        FileGroupResultPayload.parseFrom(payloadBytes.getValue());
+    assertThat(packedPayload.getIndexPredecessor()).isEqualTo(descriptorPredecessor);
   }
 
   @Test
-  void submitFileGroupSuccessSplitsLargeResultsIntoMultipleChunks() throws Exception {
+  void submitFileGroupSuccessRejectsDefaultIndexArtifactWithoutResolvedColumns() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.ALL,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void explicitIndexArtifactMayRealizeNoKnownSelectors() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
+  }
+
+  @Test
+  void submitFileGroupSuccessRejectsDefaultIndexArtifactExceedingFirstNLimit() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            2);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "a,b,c")));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void progressiveFileStatsPublicationWritesObjectBeforeTerminalDescriptorSubmission()
+      throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    var payload = fileGroupPayload("s3://bucket/data/file-1.parquet");
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.fileRecord(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_TABLE)
+                .setId("table-1")
+                .build(),
+            55L,
+            ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                .setFilePath("s3://bucket/data/file-1.parquet")
+                .setRowCount(3L)
+                .build(),
+            null);
+    var descriptor = client.publishFileStats(payload, record);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1", List.of(), List.of(descriptor), List.of());
+
+    assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
+
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
+    var success = requestCaptor.getValue().getSuccess();
+    assertThat(success.getResultId()).isEqualTo("result-1");
+    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getStatsObjectPrefix()).isEqualTo("/stats/");
+    ArgumentCaptor<String> blobUris = ArgumentCaptor.forClass(String.class);
+    verify(client.blobStore, times(2))
+        .put(blobUris.capture(), any(byte[].class), eq("application/x-protobuf"));
+    assertThat(blobUris.getAllValues()).contains("/result.pb");
+    assertThat(blobUris.getAllValues())
+        .anyMatch(uri -> uri.startsWith("/stats/") && uri.endsWith(".pb"));
+  }
+
+  @Test
+  void submitFileGroupSuccessDoesNotSendLargeStatsOverGrpc() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     String largeFilePath = "s3://bucket/" + "x".repeat(16 * 1024) + ".parquet";
@@ -763,30 +1204,74 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .setRowCount(3L)
                 .build(),
             null);
+    var payload = fileGroupPayload(largeFilePath);
+    var descriptor = client.publishFileStats(payload, record);
     var result =
         new StandaloneFileGroupExecutionResult(
-            "result-1", java.util.Collections.nCopies(12, record), List.of());
+            "result-1", List.of(), java.util.Collections.nCopies(12, descriptor), List.of());
+
+    assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
+
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
+    var success = requestCaptor.getValue().getSuccess();
+    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(12);
+  }
+
+  @Test
+  void submitFileGroupSuccessPreservesOverriddenIndexArtifactDestination() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
+    String artifactUri = "s3://bucket/file.parquet.idx";
+    when(client.blobStore.head(artifactUri))
+        .thenReturn(
+            java.util.Optional.of(
+                BlobHeader.newBuilder().setContentLength(3).setEtag("etag-1").build()));
+    var artifact =
+        new ReconcilerBackend.StagedIndexArtifact(
+            IndexArtifactRecord.newBuilder()
+                .setTarget(
+                    IndexTarget.newBuilder()
+                        .setFile(
+                            IndexFileTarget.newBuilder()
+                                .setFilePath("s3://source/file.parquet")
+                                .build())
+                        .build())
+                .setArtifactUri(artifactUri)
+                .setArtifactFormat("parquet")
+                .setArtifactFormatVersion(1)
+                .build(),
+            null,
+            "application/x-parquet");
+    var result =
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(), List.of(artifact));
 
     assertThat(
-            client.submitSuccess(remoteFileGroupLease(), fileGroupPayload(largeFilePath), result))
+            client.submitSuccess(
+                remoteFileGroupLease(), fileGroupPayload("s3://bucket/file.parquet"), result))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub, org.mockito.Mockito.atLeast(3))
-        .submitLeasedFileGroupExecutionResult(requestCaptor.capture());
-    long chunkCount =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasChunk)
-            .count();
-    assertThat(chunkCount).isGreaterThan(1L);
-    var success =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasSuccess)
-            .findFirst()
-            .orElseThrow()
-            .getSuccess();
-    assertThat(success.getChunkCount()).isEqualTo((int) chunkCount);
+    verify(client.blobStore, times(1)).head(artifactUri);
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
+    String payloadUri = requestCaptor.getValue().getSuccess().getResultDescriptor().getPayloadUri();
+    ArgumentCaptor<String> uriCaptor = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore, times(2))
+        .put(uriCaptor.capture(), bytesCaptor.capture(), eq("application/x-protobuf"));
+    int metadataIndex = uriCaptor.getAllValues().get(0).equals(payloadUri) ? 1 : 0;
+    assertThat(uriCaptor.getAllValues().get(metadataIndex)).startsWith("/stats/index-artifacts/");
+    assertThat(
+            IndexArtifactRecord.parseFrom(bytesCaptor.getAllValues().get(metadataIndex))
+                .getArtifactUri())
+        .isEqualTo(artifactUri);
   }
 
   private static ResourceId connectorId() {
@@ -794,6 +1279,14 @@ class GrpcRemoteReconcileExecutorClientTest {
         .setAccountId("acct")
         .setKind(ResourceKind.RK_CONNECTOR)
         .setId("connector-1")
+        .build();
+  }
+
+  private static ResourceId tableId() {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_TABLE)
+        .setId("table-1")
         .build();
   }
 
@@ -860,6 +1353,45 @@ class GrpcRemoteReconcileExecutorClientTest {
             ""));
   }
 
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease() {
+    return remoteSnapshotFinalizeLease(0);
+  }
+
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease(int fileGroupCount) {
+    return remoteSnapshotFinalizeLease(fileGroupCount, ReconcileCapturePolicy.empty());
+  }
+
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease(
+      int fileGroupCount, ReconcileCapturePolicy capturePolicy) {
+    return new RemoteLeasedJob(
+        new ReconcileJobStore.LeasedJob(
+            "finalize-job",
+            "acct",
+            "connector-1",
+            false,
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            ReconcileScope.of(List.of(), "table-1", List.of(), capturePolicy),
+            null,
+            "lease-epoch",
+            "",
+            "",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            null,
+            null,
+            ReconcileSnapshotTask.of(
+                "table-1",
+                55L,
+                "db",
+                "events",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "",
+                fileGroupCount),
+            null,
+            "snapshot-job"));
+  }
+
   private static StandaloneFileGroupExecutionPayload fileGroupPayload(String... filePaths) {
     return new StandaloneFileGroupExecutionPayload(
         "job-lease",
@@ -877,8 +1409,132 @@ class GrpcRemoteReconcileExecutorClientTest {
         55L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats/",
         List.of(filePaths),
+        "",
+        List.of(),
         ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexFileGroupPayload(
+      StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor predecessor) {
+    return new StandaloneFileGroupExecutionPayload(
+        "job-lease",
+        "lease-epoch",
+        "",
+        ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+        "db",
+        "events",
+        "s3://bucket/path",
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build(),
+        55L,
+        "plan-1",
+        "group-1",
+        "/result.pb",
+        "/stats/",
+        List.of(),
+        "",
+        List.of(),
+        indexCapturePolicy(),
+        predecessor,
+        List.of());
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexFileGroupPayload(
+      String filePath, ReconcileCapturePolicy policy) {
+    return new StandaloneFileGroupExecutionPayload(
+        "job-lease",
+        "lease-epoch",
+        "",
+        ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+        "db",
+        "events",
+        "s3://bucket/path",
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build(),
+        55L,
+        "plan-1",
+        "group-1",
+        "/result.pb",
+        "/stats/",
+        List.of(filePath),
+        "",
+        List.of(),
+        policy,
+        new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L),
+        List.of());
+  }
+
+  private static ReconcilerBackend.StagedIndexArtifact indexArtifact(
+      String filePath, String indexedColumns) {
+    IndexArtifactRecord.Builder record =
+        IndexArtifactRecord.newBuilder()
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
+            .setState(IndexArtifactState.IAS_READY)
+            .setArtifactUri(filePath + ".idx");
+    if (indexedColumns != null && !indexedColumns.isBlank()) {
+      record.putProperties("indexed_columns", indexedColumns);
+    }
+    return new ReconcilerBackend.StagedIndexArtifact(
+        record.build(), new byte[] {1}, "application/x-parquet");
+  }
+
+  private static ReconcileCapturePolicy indexCapturePolicy() {
+    return ReconcileCapturePolicy.of(
+        List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor() {
+    return new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+        "generation-1", 7L, "/capture-1.pb", 9L);
+  }
+
+  private static ReconcileFileGroupResultDescriptor fileGroupResultDescriptor(
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return fileGroupResultDescriptor("group-1", 0, predecessor);
+  }
+
+  private static ReconcileFileGroupResultDescriptor fileGroupResultDescriptor(
+      String groupId,
+      int fileStatsRecordCount,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return new ReconcileFileGroupResultDescriptor(
+        1,
+        "acct",
+        "connector-1",
+        "snapshot-job",
+        "file-group-job-" + groupId,
+        "plan-1",
+        groupId,
+        "table-1",
+        55L,
+        "file-group-lease-" + groupId,
+        "file-group-result-" + groupId,
+        "/result-" + groupId + ".pb",
+        1L,
+        java.util.Base64.getEncoder().encodeToString(new byte[32]),
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        "/stats/",
+        fileStatsRecordCount,
+        ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest.sha256(List.of(), List.of()),
+        predecessor,
+        1L);
   }
 
   private static final class ExplicitTransportClient extends GrpcRemoteReconcileExecutorClient {
@@ -893,6 +1549,7 @@ class GrpcRemoteReconcileExecutorClientTest {
           "worker-host",
           9100,
           ignored -> java.util.Optional.of("Bearer worker-token"));
+      blobStore = mock(BlobStore.class);
     }
 
     private void enqueueTransport(

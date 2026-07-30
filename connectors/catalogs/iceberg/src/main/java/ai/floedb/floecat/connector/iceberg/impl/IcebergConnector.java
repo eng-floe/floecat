@@ -445,12 +445,29 @@ public abstract class IcebergConnector implements FloecatConnector {
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
             plannedFilePaths);
+    Set<StatsTargetKind> requestedKinds =
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? Set.of(StatsTargetKind.FILE)
+            : includeTargetKinds;
+    List<String> realizedStatsSelectors = List.of();
+    if (requestedKinds.contains(StatsTargetKind.COLUMN)) {
+      Schema schema = schemaForSnapshot(table, snapshot);
+      Set<String> aliases = new java.util.TreeSet<>();
+      for (int fieldId : resolveIncludedFieldIds(schema, includeColumns, columnSelectorPolicy)) {
+        aliases.add("#" + fieldId);
+        String columnName = schema.findColumnName(fieldId);
+        if (columnName != null && !columnName.isBlank()) {
+          aliases.add(columnName);
+        }
+      }
+      realizedStatsSelectors = List.copyOf(aliases);
+    }
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
             ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
                 .readEntries(plannedFilePaths)
             : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
   }
 
   @Override
@@ -468,11 +485,11 @@ public abstract class IcebergConnector implements FloecatConnector {
     try (var planner = new IcebergPlanner(table, snapshotId, Set.of(), Set.of(), null, true)) {
       List<SnapshotFileEntry> dataFiles = new ArrayList<>();
       for (PlannedFile<Integer> planned : planner) {
-        dataFiles.add(toDataScanFile(planned));
+        dataFiles.add(toDataScanFile(planned, planner.deleteFilesForDataFile(planned.path())));
       }
-      List<SnapshotFileEntry> deleteFiles =
-          planner.deleteFiles().stream().map(IcebergConnector::toDeleteScanFile).toList();
-      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), deleteFiles));
+      return Optional.of(
+          new SnapshotFilePlan(
+              List.copyOf(dataFiles), List.of(), SchemaParser.toJson(planner.schema())));
     }
   }
 
@@ -1066,7 +1083,8 @@ public abstract class IcebergConnector implements FloecatConnector {
       Map<Integer, LogicalType> logicalTypes,
       List<IcebergPlanner.DeleteFileStat> deleteFiles) {}
 
-  private static SnapshotFileEntry toDataScanFile(PlannedFile<Integer> planned) {
+  private static SnapshotFileEntry toDataScanFile(
+      PlannedFile<Integer> planned, List<IcebergPlanner.DeleteFileStat> deleteFiles) {
     return new SnapshotFileEntry(
         planned.path(),
         planned.format(),
@@ -1076,37 +1094,19 @@ public abstract class IcebergConnector implements FloecatConnector {
         planned.partitionDataJson(),
         planned.partitionSpecId(),
         List.of(),
-        planned.sequenceNumber());
+        planned.sequenceNumber(),
+        null,
+        deleteFiles.stream().map(IcebergConnector::toSnapshotIcebergDeleteFile).toList());
   }
 
-  private static SnapshotFileEntry toDeleteScanFile(IcebergPlanner.DeleteFileStat deleteFile) {
-    return new SnapshotFileEntry(
+  private static FloecatConnector.SnapshotIcebergDeleteFile toSnapshotIcebergDeleteFile(
+      IcebergPlanner.DeleteFileStat deleteFile) {
+    return new FloecatConnector.SnapshotIcebergDeleteFile(
         deleteFile.location(),
-        inferDeleteFormat(deleteFile.location()),
         deleteFile.fileSizeInBytes(),
-        deleteFile.recordCount(),
         mapDeleteContent(deleteFile.content()),
-        "",
-        0,
-        deleteFile.equalityFieldIds(),
-        deleteFile.fileSequenceNumber());
-  }
-
-  private static String inferDeleteFormat(String location) {
-    if (location == null || location.isBlank()) {
-      return "";
-    }
-    String lower = location.toLowerCase(Locale.ROOT);
-    if (lower.endsWith(".parquet") || lower.endsWith(".parq")) {
-      return "PARQUET";
-    }
-    if (lower.endsWith(".avro")) {
-      return "AVRO";
-    }
-    if (lower.endsWith(".orc")) {
-      return "ORC";
-    }
-    return "";
+        deleteFile.partitionSpecId(),
+        deleteFile.equalityFieldIds());
   }
 
   private static FileContent mapDeleteContent(org.apache.iceberg.FileContent content) {
@@ -1194,12 +1194,23 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (table == null) {
       throw new IllegalArgumentException("table is required");
     }
-    Integer snapshotSchemaId = snapshot == null ? null : snapshot.schemaId();
-    int schemaId =
-        snapshotSchemaId != null && snapshotSchemaId >= 0
-            ? snapshotSchemaId
-            : table.schema().schemaId();
-    return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    if (snapshot == null) {
+      throw new IllegalArgumentException("snapshot is required");
+    }
+    Integer schemaId = snapshot.schemaId();
+    if (schemaId == null) {
+      return table.schema();
+    }
+    if (schemaId < 0) {
+      throw new IllegalStateException(
+          "Snapshot " + snapshot.snapshotId() + " does not declare a valid schema ID");
+    }
+    Schema schema = table.schemas().get(schemaId);
+    if (schema == null) {
+      throw new IllegalStateException(
+          "Snapshot " + snapshot.snapshotId() + " references missing schema ID " + schemaId);
+    }
+    return schema;
   }
 
   static Set<Integer> resolveIncludedFieldIds(

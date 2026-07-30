@@ -21,10 +21,27 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import com.google.protobuf.util.Timestamps;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class SnapshotMapperTest {
+
+  @Test
+  void timestampsPreserveMillisecondPrecision() {
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(10L)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(1_785_112_476_659L))
+            .build();
+
+    assertEquals(
+        1_785_112_476_659L,
+        SnapshotMapper.snapshotLog(List.of(snapshot)).getFirst().get("timestamp-ms"));
+    assertEquals(
+        1_785_112_476_659L,
+        SnapshotMapper.snapshots(List.of(snapshot)).getFirst().get("timestamp-ms"));
+  }
 
   @Test
   void snapshotsOmitUnsetParentSnapshotIdButPreserveExplicitZero() {

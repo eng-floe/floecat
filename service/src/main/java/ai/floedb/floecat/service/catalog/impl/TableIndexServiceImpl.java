@@ -20,6 +20,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.GetIndexArtifactRequest;
 import ai.floedb.floecat.catalog.rpc.GetIndexArtifactResponse;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
@@ -51,6 +53,7 @@ import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -98,6 +101,30 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
                                       tableId.getId(),
                                       "snapshot_id",
                                       Long.toString(snapshotId))));
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetIndexCaptureStatusResponse> getIndexCaptureStatus(
+      GetIndexCaptureStatusRequest request) {
+    var L = LogHelper.start(LOG, "GetIndexCaptureStatus");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "catalog.read");
+                  ResourceId tableId = request.getTableId();
+                  long snapshotId = resolveSnapshotId(tableId, request.getSnapshot());
+                  boolean complete =
+                      indexArtifacts.indexCaptureComplete(
+                          tableId, snapshotId, new LinkedHashSet<>(request.getSelectorsList()));
+                  return GetIndexCaptureStatusResponse.newBuilder().setComplete(complete).build();
                 }),
             correlationId())
         .onFailure()
@@ -379,7 +406,7 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
       }
       case AS_OF ->
           snapshots
-              .getAsOf(tableId, ref.getAsOf())
+              .getQueryableAsOf(tableId, ref.getAsOf())
               .map(Snapshot::getSnapshotId)
               .orElseThrow(
                   () ->

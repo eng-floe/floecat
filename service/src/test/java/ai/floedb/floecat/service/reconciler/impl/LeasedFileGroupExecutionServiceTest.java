@@ -23,26 +23,20 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
-import ai.floedb.floecat.catalog.rpc.IndexTarget;
-import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
-import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -55,35 +49,39 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
-import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.lang.reflect.Method;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatchers;
 
 class LeasedFileGroupExecutionServiceTest {
   private static final String ACCOUNT_ID = "acct";
@@ -102,6 +100,7 @@ class LeasedFileGroupExecutionServiceTest {
   private CredentialResolver credentialResolver;
   private IdempotencyRepository idempotencyStore;
   private StatsStore statsStore;
+  private IndexArtifactRepository indexArtifactRepository;
   private StatsOrchestrator statsOrchestrator;
   private PrincipalContext principal;
 
@@ -115,6 +114,7 @@ class LeasedFileGroupExecutionServiceTest {
     credentialResolver = mock(CredentialResolver.class);
     idempotencyStore = mock(IdempotencyRepository.class);
     statsStore = mock(StatsStore.class);
+    indexArtifactRepository = mock(IndexArtifactRepository.class);
     statsOrchestrator = mock(StatsOrchestrator.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
@@ -124,26 +124,19 @@ class LeasedFileGroupExecutionServiceTest {
     service.credentialResolver = credentialResolver;
     service.idempotencyStore = idempotencyStore;
     service.statsStore = statsStore;
-    service.statsOrchestrator = statsOrchestrator;
+    service.indexArtifactRepository = indexArtifactRepository;
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
     when(idempotencyStore.createPending(
             anyString(), anyString(), anyString(), anyString(), any(), any()))
         .thenReturn(true);
-    when(jobs.applyLeaseOutcome(
+    when(jobs.completeFileGroupSuccess(
             anyString(),
             anyString(),
-            any(),
+            any(ReconcileFileGroupResultDescriptor.class),
             anyLong(),
-            anyString(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong()))
+            anyString()))
         .thenReturn(true);
   }
 
@@ -151,7 +144,32 @@ class LeasedFileGroupExecutionServiceTest {
   void resolveUsesParentSnapshotTaskFileGroupsFromDurableJobView() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(),
+            List.of(),
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/data/file-1.parquet",
+                    123L,
+                    "{}",
+                    null,
+                    "PARQUET",
+                    3,
+                    List.of(
+                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                            "s3://bucket/data/delete-1.parquet",
+                            10L,
+                            ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                            3,
+                            List.of())))));
 
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID))
@@ -190,45 +208,17 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals("plan-1", payload.planId());
     assertEquals("group-1", payload.groupId());
     assertEquals(List.of("s3://bucket/data/file-1.parquet"), payload.plannedFilePaths());
+    assertEquals("{\"type\":\"struct\",\"fields\":[]}", payload.executionSchemaJson());
+    assertEquals(1, payload.fileExecutionPlans().size());
+    assertEquals(123L, payload.fileExecutionPlans().getFirst().fileSizeInBytes());
+    assertEquals("PARQUET", payload.fileExecutionPlans().getFirst().fileFormat());
+    assertEquals(
+        ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+        payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
   }
 
   @Test
-  void mergePersistedChildResultPreservesChildPartialsWhileHydratingPlannedFilePaths() {
-    TargetStatsRecord partialAggregate =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
-            .build();
-    ReconcileFileGroupTask group =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileFileGroupTask persistedChild =
-        group.withPartialAggregateRecords(List.of(partialAggregate));
-
-    ReconcileFileGroupTask merged =
-        LeasedFileGroupExecutionService.mergePersistedChildResult(group, persistedChild);
-
-    assertEquals(List.of("s3://bucket/data/file-1.parquet"), merged.filePaths());
-    assertEquals(List.of(partialAggregate), merged.partialAggregateRecords());
-  }
-
-  @Test
-  void persistChunkStagesPartialsWithoutMutatingTheJobRow() {
-    TargetStatsRecord partialAggregate =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
-            .build();
+  void persistSuccessProtectsReferencedStatsObjectsBeforeRegisteringDescriptor() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -255,31 +245,115 @@ class LeasedFileGroupExecutionServiceTest {
                 1),
             ReconcileFileGroupTask.empty(),
             "");
-
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
 
     boolean accepted =
-        service.persistChunk(
+        service.persistSuccess(
             principal,
             CHILD_JOB_ID,
             LEASE_EPOCH,
             "result-1",
-            0,
-            List.of(partialAggregate),
+            resultDescriptor(List.of()),
+            List.of(),
             List.of());
 
     assertTrue(accepted);
-    verify(jobs, never()).persistFileGroupResult(anyString(), anyString(), any());
+    ArgumentCaptor<ReconcileFileGroupResultDescriptor> persisted =
+        ArgumentCaptor.forClass(ReconcileFileGroupResultDescriptor.class);
+    verify(jobs)
+        .completeFileGroupSuccess(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            persisted.capture(),
+            anyLong(),
+            eq("Executed file group group-1"));
+    assertEquals(1, persisted.getValue().plannedFileCount());
+    assertEquals(1, persisted.getValue().succeededFileCount());
+    assertEquals(resultPayloadUri(), persisted.getValue().payloadUri());
+    verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
+            eq(List.of()));
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()), eq(SNAPSHOT_ID), eq("full-rescan-" + PARENT_JOB_ID), eq(List.of()));
+    verify(indexArtifactRepository)
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(statsObjectPrefix() + "index-artifacts/"),
+            eq(List.of()));
+    verify(statsStore)
+        .markPreparedFileGroup(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            eq(resultDescriptor(List.of()).artifactReferencesSha256()));
+    var order = inOrder(jobs, statsStore, indexArtifactRepository);
+    order
+        .verify(jobs)
+        .completeFileGroupSuccess(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            eq("Executed file group group-1"));
+    order
+        .verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
+    order
+        .verify(statsStore)
+        .markPreparedFileGroup(
+            any(), anyLong(), anyString(), anyString(), anyString(), anyString());
+    verify(idempotencyStore, never())
+        .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
   }
 
   @Test
-  void persistChunkIncrementalSkipsExistingFileStats() {
-    TargetStatsRecord fileStats = fileStatsRecord("s3://bucket/data/file-1.parquet", 3L);
+  void persistSuccessAllowsAttachedIcebergDeleteFileStatsTarget() {
+    String dataFile = "s3://bucket/data/file-1.parquet";
+    String deleteFile = "s3://bucket/data/delete-1.parquet";
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of(dataFile),
+            List.of(),
+            List.of(),
+            "",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    dataFile,
+                    123L,
+                    "{}",
+                    null,
+                    "PARQUET",
+                    3,
+                    List.of(
+                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                            deleteFile,
+                            10L,
+                            ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                            3,
+                            List.of())))));
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,
@@ -287,51 +361,76 @@ class LeasedFileGroupExecutionServiceTest {
             ReconcileSnapshotTask.empty(),
             plannedGroup.asReference(),
             PARENT_JOB_ID);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "");
-
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-    when(statsStore.putTargetStatsBatchIfAbsent(tableId(), SNAPSHOT_ID, List.of(fileStats)))
-        .thenReturn(List.of());
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    List<TargetStatsRecord> records =
+        List.of(fileStatsRecord(dataFile, 10L), fileStatsRecord(deleteFile, 2L));
+    List<StatsObjectDescriptor> descriptors = statsObjectDescriptors(records);
 
-    boolean accepted =
-        service.persistChunk(
-            principal, CHILD_JOB_ID, LEASE_EPOCH, "result-1", 0, List.of(fileStats), List.of());
+    assertTrue(
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            resultDescriptor(records),
+            descriptors,
+            List.of()));
 
-    assertTrue(accepted);
-    verify(statsStore).putTargetStatsBatchIfAbsent(tableId(), SNAPSHOT_ID, List.of(fileStats));
-    verify(statsStore, never())
-        .replaceTargetStatsInGeneration(any(), anyLong(), anyString(), any(), any());
-    verify(statsOrchestrator, never())
-        .invalidateStatsCache(
-            eq(tableId()), eq(SNAPSHOT_ID), ArgumentMatchers.<List<TargetStatsRecord>>any());
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            org.mockito.ArgumentMatchers.argThat(references -> references.size() == 2));
   }
 
   @Test
-  void persistChunkIncrementalRejectsStatsForDifferentSnapshot() {
-    TargetStatsRecord fileStats =
-        fileStatsRecord("s3://bucket/data/file-1.parquet", 3L).toBuilder()
-            .setSnapshotId(SNAPSHOT_ID + 1)
-            .build();
+  void persistSuccessAllowsAttachedDeltaDeletionVectorStatsTarget() {
+    String dataFile = "s3://bucket/data/file-1.parquet";
+    String deletionVectorFile = "s3://bucket/data/deletion-vector-1.bin";
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of(dataFile),
+            List.of(),
+            List.of(),
+            "",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    dataFile,
+                    123L,
+                    "{}",
+                    new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                        "p", deletionVectorFile, 4, 16, 2),
+                    "PARQUET",
+                    0,
+                    List.of())));
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,
@@ -339,51 +438,134 @@ class LeasedFileGroupExecutionServiceTest {
             ReconcileSnapshotTask.empty(),
             plannedGroup.asReference(),
             PARENT_JOB_ID);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "");
-
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-    when(statsStore.putTargetStatsBatchIfAbsent(tableId(), SNAPSHOT_ID, List.of(fileStats)))
-        .thenThrow(new IllegalArgumentException("target stats do not match table snapshot"));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    List<TargetStatsRecord> records =
+        List.of(fileStatsRecord(dataFile, 10L), fileStatsRecord(deletionVectorFile, 2L));
+    List<StatsObjectDescriptor> descriptors = statsObjectDescriptors(records);
+
+    assertTrue(
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            resultDescriptor(records),
+            descriptors,
+            List.of()));
+
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            org.mockito.ArgumentMatchers.argThat(references -> references.size() == 2));
+  }
+
+  @Test
+  void exactTerminalReplayFinishesStagingAfterCompletionCrash() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob terminal = terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED");
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
+
+    assertTrue(
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            resultDescriptor(List.of()),
+            List.of(),
+            List.of()));
+
+    var order = inOrder(jobs, statsStore);
+    order
+        .verify(jobs)
+        .completeFileGroupSuccess(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            eq("Executed file group"));
+    order
+        .verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
+    order
+        .verify(statsStore)
+        .markPreparedFileGroup(
+            any(), anyLong(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  void rejectedTerminalReplayCannotMutateGenerationState() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(Optional.of(terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED")));
+    when(jobs.completeFileGroupSuccess(
+            anyString(),
+            anyString(),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            anyString()))
+        .thenReturn(false);
 
     assertThrows(
-        IllegalArgumentException.class,
+        StatusRuntimeException.class,
         () ->
-            service.persistChunk(
+            service.persistSuccess(
                 principal,
                 CHILD_JOB_ID,
                 LEASE_EPOCH,
                 "result-1",
-                0,
-                List.of(fileStats),
+                resultDescriptor(List.of()),
+                List.of(),
                 List.of()));
-    verify(statsOrchestrator, never())
-        .invalidateStatsCache(
-            eq(tableId()), eq(SNAPSHOT_ID), ArgumentMatchers.<List<TargetStatsRecord>>any());
+
+    verifyNoInteractions(statsStore, indexArtifactRepository);
   }
 
   @Test
-  void persistChunkFullOnlyStagesFileStats() {
-    TargetStatsRecord fileStats = fileStatsRecord("s3://bucket/data/file-1.parquet", 3L);
+  void persistSuccessRejectsIndexPredecessorThatDiffersFromParentPin() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    var submitted =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,
@@ -391,215 +573,28 @@ class LeasedFileGroupExecutionServiceTest {
             ReconcileSnapshotTask.empty(),
             plannedGroup.asReference(),
             PARENT_JOB_ID,
-            true);
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope);
     ReconcileJobStore.ReconcileJob parent =
         job(
             PARENT_JOB_ID,
             ReconcileJobKind.PLAN_SNAPSHOT,
             ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "",
-            true);
-
-    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-
-    boolean accepted =
-        service.persistChunk(
-            principal, CHILD_JOB_ID, LEASE_EPOCH, "result-1", 0, List.of(fileStats), List.of());
-
-    assertTrue(accepted);
-    verify(statsStore, never()).putTargetStatsIfAbsent(any());
-    verify(statsStore, never())
-        .replaceTargetStatsInGeneration(any(), anyLong(), anyString(), any(), any());
-    verify(statsOrchestrator, never())
-        .invalidateStatsCache(
-            eq(tableId()), eq(SNAPSHOT_ID), ArgumentMatchers.<List<TargetStatsRecord>>any());
-  }
-
-  @Test
-  void persistSuccessMergesStagedChunkPartialsOnceAtCompletion() {
-    TargetStatsRecord partialAggregate =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
-            .build();
-    ReconcileFileGroupTask plannedGroup =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileJobStore.ReconcileJob childLeaseView =
-        job(
-            CHILD_JOB_ID,
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            ReconcileSnapshotTask.empty(),
-            plannedGroup.asReference(),
-            PARENT_JOB_ID);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
+                    TABLE_ID,
+                    SNAPSHOT_ID,
+                    "db",
+                    "events",
+                    List.of(plannedGroup),
+                    true,
+                    ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                    "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                    1)
+                .withIndexPredecessor(pinned),
             ReconcileFileGroupTask.empty(),
             "");
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(partialAggregate))));
-
-    boolean accepted =
-        service.persistSuccess(
-            principal,
-            CHILD_JOB_ID,
-            LEASE_EPOCH,
-            "result-1",
-            1,
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)));
-
-    assertTrue(accepted);
-    ArgumentCaptor<ReconcileFileGroupTask> persisted =
-        ArgumentCaptor.forClass(ReconcileFileGroupTask.class);
-    verify(jobs).persistFileGroupResult(eq(CHILD_JOB_ID), eq(LEASE_EPOCH), persisted.capture());
-    verify(jobs)
-        .applyLeaseOutcome(
-            eq(CHILD_JOB_ID),
-            eq(LEASE_EPOCH),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
-            anyLong(),
-            eq("Executed file group group-1"),
-            eq(0L),
-            eq(0L),
-            eq(0L),
-            eq(0L),
-            eq(0L),
-            eq(0L),
-            eq(3L));
-    assertEquals(
-        List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)),
-        persisted.getValue().fileResults());
-    assertEquals(List.of(partialAggregate), persisted.getValue().partialAggregateRecords());
-  }
-
-  @Test
-  void persistSuccessFullWritesFileStatsToDraftGeneration() {
-    TargetStatsRecord fileStats = fileStatsRecord("s3://bucket/data/file-1.parquet", 3L);
-    ReconcileFileGroupTask plannedGroup =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileJobStore.ReconcileJob childLeaseView =
-        job(
-            CHILD_JOB_ID,
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            ReconcileSnapshotTask.empty(),
-            plannedGroup.asReference(),
-            PARENT_JOB_ID,
-            true);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "",
-            true);
-    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(fileStats))));
-
-    boolean accepted =
-        service.persistSuccess(
-            principal,
-            CHILD_JOB_ID,
-            LEASE_EPOCH,
-            "result-1",
-            1,
-            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)));
-
-    assertTrue(accepted);
-    verify(statsStore)
-        .replaceTargetStatsInGeneration(
-            eq(tableId()),
-            eq(SNAPSHOT_ID),
-            eq("full-rescan-" + PARENT_JOB_ID),
-            eq(List.of(fileStats.getTarget())),
-            eq(List.of(fileStats)));
-    verify(statsStore, never()).putTargetStatsIfAbsent(any());
-  }
-
-  @Test
-  void persistSuccessFullRejectsFileStatsOutsidePlannedGroup() {
-    TargetStatsRecord fileStats = fileStatsRecord("s3://bucket/data/file-2.parquet", 3L);
-    ReconcileFileGroupTask plannedGroup =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileJobStore.ReconcileJob childLeaseView =
-        job(
-            CHILD_JOB_ID,
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            ReconcileSnapshotTask.empty(),
-            plannedGroup.asReference(),
-            PARENT_JOB_ID,
-            true);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "",
-            true);
-    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
-    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(fileStats))));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -609,36 +604,172 @@ class LeasedFileGroupExecutionServiceTest {
                 CHILD_JOB_ID,
                 LEASE_EPOCH,
                 "result-1",
-                1,
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
-    verify(statsStore, never())
-        .replaceTargetStatsInGeneration(any(), anyLong(), anyString(), any(), any());
+                resultDescriptor(List.of(), List.of(), List.of(), submitted),
+                List.of(),
+                List.of()));
+
+    verify(jobs, never())
+        .completeFileGroupSuccess(
+            anyString(),
+            anyString(),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            anyString());
   }
 
   @Test
-  void statsGenerationIdRequiresParentJobId() {
-    ReconcileJobStore.LeasedJob lease =
-        new ReconcileJobStore.LeasedJob(
+  void persistSuccessProtectsEachIndividualStatsObjectWithoutReadingIt() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
             CHILD_JOB_ID,
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            true,
-            CaptureMode.METADATA_ONLY,
-            ReconcileScope.empty(),
-            ReconcileExecutionPolicy.defaults(),
-            LEASE_EPOCH,
-            "",
-            "executor",
             ReconcileJobKind.EXEC_FILE_GROUP,
-            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
-            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
             ReconcileSnapshotTask.empty(),
-            ReconcileFileGroupTask.empty(),
-            "");
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> LeasedFileGroupExecutionService.statsGenerationId(lease));
+    assertTrue(
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            resultDescriptor(List.of(record)),
+            statsObjectDescriptors(List.of(record)),
+            List.of()));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
+        ArgumentCaptor.forClass(List.class);
+    verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
+            objects.capture());
+    assertEquals(1, objects.getValue().size());
+    assertEquals(statsObjectPrefix() + "0.pb", objects.getValue().getFirst().blobUri());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<StatsStore.PrewrittenTargetStatsReference>> references =
+        ArgumentCaptor.forClass(List.class);
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            references.capture());
+    assertEquals(1, references.getValue().size());
+  }
+
+  @Test
+  void persistSuccessAllowsStatsAndIndexPointersForTheSameTarget() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+
+    TargetStatsRecord record = fileStatsRecord(filePath, 10L);
+    StatsObjectDescriptor fileStats = statsObjectDescriptors(List.of(record)).getFirst();
+    byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    String indexArtifactObjectPrefix = statsObjectPrefix() + "index-artifacts/";
+    StatsObjectDescriptor indexArtifact =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("file:" + filePath)
+            .setPayloadUri(
+                indexArtifactObjectPrefix
+                    + Hashing.sha256Hex(fileStats.getTargetStorageId())
+                    + "/"
+                    + HexFormat.of().formatHex(sha256(indexBytes))
+                    + ".pb")
+            .setPayloadBytes(indexBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
+            .build();
+
+    assertTrue(
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            resultDescriptor(List.of(record), List.of(fileStats), List.of(indexArtifact)),
+            List.of(fileStats),
+            List.of(indexArtifact)));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
+        ArgumentCaptor.forClass(List.class);
+    verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
+            objects.capture());
+    assertEquals(2, objects.getValue().size());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<IndexArtifactRepository.PrewrittenIndexArtifactReference>> references =
+        ArgumentCaptor.forClass(List.class);
+    verify(indexArtifactRepository)
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(indexArtifactObjectPrefix),
+            references.capture());
+    assertEquals(1, references.getValue().size());
+    assertEquals("file:" + filePath, references.getValue().getFirst().targetStorageId());
   }
 
   @Test
@@ -673,21 +804,12 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of())));
-    when(jobs.applyLeaseOutcome(
+    when(jobs.completeFileGroupSuccess(
             anyString(),
             anyString(),
-            any(),
+            any(ReconcileFileGroupResultDescriptor.class),
             anyLong(),
-            anyString(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong()))
+            anyString()))
         .thenReturn(false);
 
     StatusRuntimeException error =
@@ -699,27 +821,24 @@ class LeasedFileGroupExecutionServiceTest {
                     CHILD_JOB_ID,
                     LEASE_EPOCH,
                     "result-1",
-                    1,
-                    List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
+                    resultDescriptor(List.of()),
+                    List.of(),
+                    List.of()));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(statsStore, never())
+        .protectPrewrittenStatsObjectsInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
+    verify(indexArtifactRepository, never())
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
   }
 
   @Test
-  void persistSuccessRejectsTooLowChunkCountThatWouldDropStagedChunks() {
-    TargetStatsRecord partialAggregate =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
-            .build();
+  void persistSuccessRejectsDigestMismatchAndUnplannedStatsTarget() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -730,32 +849,32 @@ class LeasedFileGroupExecutionServiceTest {
             ReconcileSnapshotTask.empty(),
             plannedGroup.asReference(),
             PARENT_JOB_ID);
-    ReconcileJobStore.ReconcileJob parent =
-        job(
-            PARENT_JOB_ID,
-            ReconcileJobKind.PLAN_SNAPSHOT,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedGroup),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            ReconcileFileGroupTask.empty(),
-            "");
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    // Two chunks staged (indices 0 and 1) but the success declares chunk_count=1: chunk 1's
-    // partials would be silently dropped. persistSuccess must reject the mismatch, not under-count.
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(partialAggregate))));
-    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 1)))
-        .thenReturn(Optional.of(stagedChunkRecord("result-1", 1, List.of(partialAggregate))));
+    TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
+    StatsObjectDescriptor changed =
+        statsObjectDescriptors(List.of(record)).getFirst().toBuilder()
+            .setPayloadUri(statsObjectPrefix() + "changed.pb")
+            .build();
 
     assertThrows(
         IllegalArgumentException.class,
@@ -765,100 +884,59 @@ class LeasedFileGroupExecutionServiceTest {
                 CHILD_JOB_ID,
                 LEASE_EPOCH,
                 "result-1",
-                1,
-                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
-  }
+                resultDescriptor(List.of(record)),
+                List.of(changed),
+                List.of()));
 
-  @Test
-  void mergedPartialAggregatesReplacesExistingTargetWithLatestChunkPartial() throws Exception {
-    TargetStatsRecord previousAggregate =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(10L).build())
+    StatsObjectDescriptor unplannedTarget =
+        changed.toBuilder()
+            .setTargetStorageId(
+                StatsTargetIdentity.storageId(
+                    StatsTargetIdentity.fileTarget("s3://bucket/data/not-in-group.parquet")))
             .build();
-    TargetStatsRecord chunkAggregate =
-        previousAggregate.toBuilder()
-            .setTable(TableValueStats.newBuilder().setRowCount(5L).build())
+    IllegalArgumentException outsideGroup =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    CHILD_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    resultDescriptor(List.of(record), List.of(unplannedTarget), List.of()),
+                    List.of(unplannedTarget),
+                    List.of()));
+    assertTrue(outsideGroup.getMessage().contains("outside the leased file group"));
+
+    byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    StatsObjectDescriptor unplannedIndex =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("file:s3://bucket/data/not-in-group.parquet")
+            .setPayloadUri(
+                statsObjectPrefix()
+                    + "index-artifacts/unplanned/"
+                    + HexFormat.of().formatHex(sha256(indexBytes))
+                    + ".pb")
+            .setPayloadBytes(indexBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
             .build();
-    ReconcileFileGroupTask plannedTask =
-        ReconcileFileGroupTask.of(
-                "plan-1",
-                "group-1",
-                TABLE_ID,
-                SNAPSHOT_ID,
-                List.of("s3://bucket/data/file-1.parquet"))
-            .withPartialAggregateRecords(List.of(previousAggregate));
+    IllegalArgumentException outsideIndexGroup =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    CHILD_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    resultDescriptor(List.of(), List.of(), List.of(unplannedIndex)),
+                    List.of(),
+                    List.of(unplannedIndex)));
+    assertTrue(outsideIndexGroup.getMessage().contains("outside the leased file group"));
 
-    List<TargetStatsRecord> merged =
-        invokeMergedPartialAggregates(plannedTask, List.of(chunkAggregate));
-
-    assertEquals(1, merged.size());
-    assertEquals(5L, merged.getFirst().getTable().getRowCount());
-  }
-
-  @Test
-  void mergedPartialAggregatesAcceptsNonFileStatsInFileGroupChunks() throws Exception {
-    ReconcileFileGroupTask plannedTask =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    TargetStatsRecord aggregateRecord =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
-                    .build())
-            .setTable(TableValueStats.newBuilder().setRowCount(5L).build())
-            .build();
-
-    List<TargetStatsRecord> merged =
-        invokeMergedPartialAggregates(plannedTask, List.of(aggregateRecord));
-
-    assertEquals(List.of(aggregateRecord), merged);
-  }
-
-  @Test
-  void mergedPartialAggregatesPreservesProducerOwnedSketchPayloads() throws Exception {
-    ReconcileFileGroupTask plannedTask =
-        ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    TargetStatsRecord aggregateRecord =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setColumn(
-                        ai.floedb.floecat.catalog.rpc.ColumnStatsTarget.newBuilder()
-                            .setColumnId(1L)
-                            .build())
-                    .build())
-            .setScalar(
-                ScalarStats.newBuilder()
-                    .setRowCount(10L)
-                    .setNdv(
-                        Ndv.newBuilder()
-                            .addSketches(
-                                sketch(SketchRole.SKETCH_ROLE_NDV, "apache-datasketches-hll-v1")))
-                    .addSketches(
-                        sketch(SketchRole.SKETCH_ROLE_QUANTILES, "apache-datasketches-tdigest-v1"))
-                    .addSketches(
-                        sketch(
-                            SketchRole.SKETCH_ROLE_MCV, "apache-datasketches-frequencies-utf8-v1")))
-            .build();
-
-    List<TargetStatsRecord> merged =
-        invokeMergedPartialAggregates(plannedTask, List.of(aggregateRecord));
-
-    assertEquals(List.of(aggregateRecord), merged);
-    assertEquals(1, merged.getFirst().getScalar().getNdv().getSketchesCount());
-    assertEquals(2, merged.getFirst().getScalar().getSketchesCount());
+    verify(jobs, never())
+        .completeFileGroupSuccess(anyString(), anyString(), any(), anyLong(), anyString());
+    verifyNoInteractions(indexArtifactRepository);
   }
 
   @Test
@@ -962,6 +1040,72 @@ class LeasedFileGroupExecutionServiceTest {
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
 
     assertEquals(scopedCapture.capturePolicy(), payload.capturePolicy());
+  }
+
+  @Test
+  void resolveLoadsIndexArtifactsFromPinnedSnapshotGeneration() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    var repositoryPredecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scope)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                            TABLE_ID,
+                            SNAPSHOT_ID,
+                            "db",
+                            "events",
+                            List.of(group),
+                            true,
+                            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                            1)
+                        .withIndexPredecessor(pinned),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
+    when(indexArtifactRepository.loadGenerationInput(
+            eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath))))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(repositoryPredecessor, List.of()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals("generation-1", payload.indexPredecessor().generationId());
+    assertEquals(7L, payload.indexPredecessor().activePointerVersion());
+    verify(indexArtifactRepository)
+        .loadGenerationInput(
+            eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath)));
+    verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
   }
 
   @Test
@@ -1137,101 +1281,6 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals("test-token", payload.sourceConnector().getPropertiesOrThrow("s3.session-token"));
   }
 
-  @Test
-  void parseIndexArtifactsAllowsDirectUploadedArtifactWithoutInlineContent() throws Exception {
-    IndexArtifactRecord record =
-        IndexArtifactRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                IndexTarget.newBuilder()
-                    .setFile(IndexFileTarget.newBuilder().setFilePath("s3://bucket/file-1.parquet"))
-                    .build())
-            .setArtifactUri("s3://floescan-sidecars/acct/table-1/55/file-1.parquet")
-            .setArtifactFormat("parquet")
-            .setArtifactFormatVersion(1)
-            .setState(IndexArtifactState.IAS_READY)
-            .build();
-    LeasedFileGroupIndexArtifact artifact =
-        LeasedFileGroupIndexArtifact.newBuilder().setRecord(record).build();
-
-    List<ReconcilerBackend.StagedIndexArtifact> staged =
-        invokeParseIndexArtifacts(List.of(artifact));
-
-    assertEquals(1, staged.size());
-    assertEquals(record, staged.getFirst().record());
-    assertEquals(0, staged.getFirst().content().length);
-    assertTrue(staged.getFirst().contentType().isEmpty());
-  }
-
-  @Test
-  void prepareIndexArtifactRecordSkipsBlobWriteWhenArtifactWasAlreadyUploaded() throws Exception {
-    service.blobStore = mock(ai.floedb.floecat.storage.spi.BlobStore.class);
-
-    IndexArtifactRecord record =
-        IndexArtifactRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                IndexTarget.newBuilder()
-                    .setFile(IndexFileTarget.newBuilder().setFilePath("s3://bucket/file-1.parquet"))
-                    .build())
-            .setArtifactUri("s3://floescan-sidecars/acct/table-1/55/file-1.parquet")
-            .setArtifactFormat("parquet")
-            .setArtifactFormatVersion(1)
-            .setState(IndexArtifactState.IAS_READY)
-            .build();
-    PutIndexArtifactItem item =
-        PutIndexArtifactItem.newBuilder().setRecord(record).setContent(ByteString.empty()).build();
-
-    when(service.blobStore.head(record.getArtifactUri())).thenReturn(Optional.empty());
-
-    IndexArtifactRecord prepared = invokePrepareIndexArtifactRecord(item);
-
-    verify(service.blobStore, never()).put(anyString(), any(byte[].class), anyString());
-    verify(service.blobStore).head(record.getArtifactUri());
-    assertEquals(record.toBuilder().setContentEtag("").build(), prepared);
-  }
-
-  @SuppressWarnings("unchecked")
-  private List<ReconcilerBackend.StagedIndexArtifact> invokeParseIndexArtifacts(
-      List<LeasedFileGroupIndexArtifact> artifacts) throws Exception {
-    Method method =
-        LeasedFileGroupExecutionService.class.getDeclaredMethod("parseIndexArtifacts", List.class);
-    method.setAccessible(true);
-    return (List<ReconcilerBackend.StagedIndexArtifact>) method.invoke(service, artifacts);
-  }
-
-  private IndexArtifactRecord invokePrepareIndexArtifactRecord(PutIndexArtifactItem item)
-      throws Exception {
-    Class<?> metricsClass =
-        Class.forName(
-            "ai.floedb.floecat.service.reconciler.impl.LeasedFileGroupExecutionService$ChunkPersistMetrics");
-    var ctor = metricsClass.getDeclaredConstructor();
-    ctor.setAccessible(true);
-    Object metrics = ctor.newInstance();
-    Method method =
-        LeasedFileGroupExecutionService.class.getDeclaredMethod(
-            "prepareIndexArtifactRecord", PutIndexArtifactItem.class, metricsClass);
-    method.setAccessible(true);
-    return (IndexArtifactRecord) method.invoke(service, item, metrics);
-  }
-
-  @SuppressWarnings("unchecked")
-  private List<TargetStatsRecord> invokeMergedPartialAggregates(
-      ReconcileFileGroupTask plannedTask, List<TargetStatsRecord> chunkStats) throws Exception {
-    Method method =
-        LeasedFileGroupExecutionService.class.getDeclaredMethod(
-            "mergedPartialAggregates",
-            ResourceId.class,
-            long.class,
-            ReconcileFileGroupTask.class,
-            List.class);
-    method.setAccessible(true);
-    return (List<TargetStatsRecord>)
-        method.invoke(service, tableId(), SNAPSHOT_ID, plannedTask, chunkStats);
-  }
-
   private static ReconcileJobStore.ReconcileJob job(
       String jobId,
       ReconcileJobKind kind,
@@ -1239,6 +1288,45 @@ class LeasedFileGroupExecutionServiceTest {
       ReconcileFileGroupTask fileGroupTask,
       String parentJobId) {
     return job(jobId, kind, snapshotTask, fileGroupTask, parentJobId, false);
+  }
+
+  private static ReconcileJobStore.ReconcileJob terminalFileGroupJob(
+      ReconcileFileGroupTask fileGroupTask, String state) {
+    return new ReconcileJobStore.ReconcileJob(
+        CHILD_JOB_ID,
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        state,
+        "Executed file group",
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        true,
+        CaptureMode.METADATA_ONLY,
+        0L,
+        0L,
+        0L,
+        false,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        "remote_file_group_worker",
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        fileGroupTask,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        PARENT_JOB_ID);
   }
 
   private static ReconcileJobStore.ReconcileJob job(
@@ -1342,25 +1430,83 @@ class LeasedFileGroupExecutionServiceTest {
         .build();
   }
 
-  private static String chunkIdempotencyKey(String resultId, int chunkIndex) {
-    return Keys.idempotencyKey(
-        ACCOUNT_ID,
-        "SubmitLeasedFileGroupExecutionResult",
-        CHILD_JOB_ID + ":" + resultId + ":chunk:" + chunkIndex);
+  private static String resultPayloadUri() {
+    return Keys.reconcileFileGroupResultPayloadUri(
+        ACCOUNT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH);
   }
 
-  private static IdempotencyRecord stagedChunkRecord(
-      String resultId, int chunkIndex, List<TargetStatsRecord> statsRecords) {
-    return IdempotencyRecord.newBuilder()
-        .setStatus(IdempotencyRecord.Status.SUCCEEDED)
-        .setPayload(
-            SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
-                .setResultId(resultId)
-                .setChunkIndex(chunkIndex)
-                .addAllStatsRecords(statsRecords)
-                .build()
-                .toByteString())
-        .build();
+  private static String statsObjectPrefix() {
+    return Keys.reconcileFileGroupStatsObjectPrefix(
+        ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH);
+  }
+
+  private ReconcileFileGroupResultDescriptor resultDescriptor(List<TargetStatsRecord> fileStats) {
+    return resultDescriptor(fileStats, statsObjectDescriptors(fileStats), List.of());
+  }
+
+  private ReconcileFileGroupResultDescriptor resultDescriptor(
+      List<TargetStatsRecord> fileStats,
+      List<StatsObjectDescriptor> fileStatsDescriptors,
+      List<StatsObjectDescriptor> indexArtifactDescriptors) {
+    return resultDescriptor(fileStats, fileStatsDescriptors, indexArtifactDescriptors, null);
+  }
+
+  private ReconcileFileGroupResultDescriptor resultDescriptor(
+      List<TargetStatsRecord> fileStats,
+      List<StatsObjectDescriptor> fileStatsDescriptors,
+      List<StatsObjectDescriptor> indexArtifactDescriptors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
+    byte[] resultBytes = "result-payload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    return new ReconcileFileGroupResultDescriptor(
+        1,
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        PARENT_JOB_ID,
+        CHILD_JOB_ID,
+        "plan-1",
+        "group-1",
+        TABLE_ID,
+        SNAPSHOT_ID,
+        LEASE_EPOCH,
+        "result-1",
+        resultPayloadUri(),
+        resultBytes.length,
+        Base64.getEncoder().encodeToString(sha256(resultBytes)),
+        1,
+        1,
+        0,
+        0,
+        0,
+        indexArtifactDescriptors.size(),
+        statsObjectPrefix(),
+        fileStats.size(),
+        ArtifactReferenceDigest.sha256(fileStatsDescriptors, indexArtifactDescriptors),
+        indexPredecessor,
+        1L);
+  }
+
+  private List<StatsObjectDescriptor> statsObjectDescriptors(List<TargetStatsRecord> fileStats) {
+    var builder = new java.util.ArrayList<StatsObjectDescriptor>();
+    for (int i = 0; i < fileStats.size(); i++) {
+      byte[] statsBytes = fileStats.get(i).toByteArray();
+      String statsUri = statsObjectPrefix() + i + ".pb";
+      builder.add(
+          StatsObjectDescriptor.newBuilder()
+              .setTargetStorageId(StatsTargetIdentity.storageId(fileStats.get(i).getTarget()))
+              .setPayloadUri(statsUri)
+              .setPayloadBytes(statsBytes.length)
+              .setPayloadSha256(ByteString.copyFrom(sha256(statsBytes)))
+              .build());
+    }
+    return List.copyOf(builder);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   private static ResourceId connectorId() {

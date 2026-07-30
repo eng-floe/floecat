@@ -17,13 +17,11 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -53,57 +51,61 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     if (prefix.isBlank()) {
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
     }
-    StringBuilder next = new StringBuilder();
-    List<Pointer> pointers =
-        pointerStore.listPointersByPrefix(
-            prefix, Math.max(1, pageSize), blankToEmpty(pageToken), next);
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(pointers.size());
-    for (Pointer pointer : pointers) {
-      var decoded =
-          ReadyQueueBackendSupport.decodeReadyQueueEntry(
-              pointer.getKey(), pointer.getBlobUri(), slice);
-      if (decoded != null) {
-        entries.add(decoded);
+    int limit = Math.max(1, pageSize);
+    String token = blankToEmpty(pageToken);
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(limit);
+    while (entries.size() < limit) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(prefix, limit - entries.size(), token, next);
+      for (Pointer pointer : pointers) {
+        if (!ReadyQueueBackendSupport.pointerBelongsToSlice(pointer.getKey(), slice)) {
+          continue;
+        }
+        var decoded =
+            ReadyQueueBackendSupport.decodeReadyQueueEntry(
+                pointer.getKey(), pointer.getBlobUri(), slice);
+        if (decoded != null) {
+          entries.add(decoded);
+        }
+      }
+      token = next.toString();
+      if (token.isBlank() || pointers.isEmpty()) {
+        break;
       }
     }
-    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, next.toString());
+    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, token);
   }
 
   @Override
-  public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>();
-    collectEntriesForPrefix(
-        Keys.reconcileReadyPointerPrefix(),
-        new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
-        entries);
-    collectEntriesForPrefix(Keys.reconcileReadyByExecutionClassPointerPrefix(), null, entries);
-    collectEntriesForPrefix(Keys.reconcileReadyByExecutionLanePointerPrefix(), null, entries);
-    collectEntriesForPrefix(Keys.reconcileReadyByPinnedExecutorPointerPrefix(), null, entries);
-    collectEntriesForPrefix(Keys.reconcileReadyByJobKindPointerPrefix(), null, entries);
-    entries.sort(
-        Comparator.comparingLong(ReconcileReadyQueueStore.ReadyQueueEntry::dueAtMs)
-            .thenComparing(ReconcileReadyQueueStore.ReadyQueueEntry::readyPointerKey));
-
-    int offset = 0;
-    if (pageToken != null && !pageToken.isBlank()) {
-      try {
-        offset = Math.max(0, Integer.parseInt(pageToken));
-      } catch (NumberFormatException ignored) {
-        offset = 0;
+  public boolean deleteReadyEntry(
+      ReconcileReadyQueueStore.ReadyQueueEntry expected,
+      CanonicalPointerSnapshot expectedCanonicalSnapshot) {
+    if (expected == null
+        || expected.readyPointerKey() == null
+        || expected.readyPointerKey().isBlank()) {
+      return false;
+    }
+    Pointer current = pointerStore.get(expected.readyPointerKey()).orElse(null);
+    if (current == null
+        || !java.util.Objects.equals(expected.canonicalPointerKey(), current.getBlobUri())) {
+      return false;
+    }
+    List<PointerStore.CasOp> operations = new ArrayList<>();
+    if (expectedCanonicalSnapshot == null) {
+      operations.add(new PointerStore.CasCheckAbsent(expected.canonicalPointerKey()));
+    } else {
+      if (!java.util.Objects.equals(
+          expected.canonicalPointerKey(), expectedCanonicalSnapshot.canonicalPointerKey())) {
+        return false;
       }
+      operations.add(
+          new PointerStore.CasCheck(
+              expectedCanonicalSnapshot.canonicalPointerKey(),
+              expectedCanonicalSnapshot.version()));
     }
-    if (offset >= entries.size()) {
-      return new ReadyQueueScanPage(List.of(), "");
-    }
-    int end = Math.min(entries.size(), offset + Math.max(1, pageSize));
-    String next = end >= entries.size() ? "" : Integer.toString(end);
-    return new ReadyQueueScanPage(entries.subList(offset, end), next);
-  }
-
-  @Override
-  public boolean deleteReadyEntry(String readyPointerKey) {
-    Pointer current = pointerStore.get(readyPointerKey).orElse(null);
-    return current != null && pointerStore.compareAndDelete(readyPointerKey, current.getVersion());
+    operations.add(new PointerStore.CasDelete(expected.readyPointerKey(), current.getVersion()));
+    return pointerStore.compareAndSetBatch(operations);
   }
 
   @Override
@@ -119,32 +121,5 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
-  }
-
-  private void collectEntriesForPrefix(
-      String prefix,
-      ReadyQueueSlice knownSlice,
-      List<ReconcileReadyQueueStore.ReadyQueueEntry> out) {
-    String token = "";
-    do {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 512, token, next);
-      for (Pointer pointer : pointers) {
-        ReadyQueueSlice slice =
-            knownSlice != null
-                ? knownSlice
-                : ReadyQueueBackendSupport.sliceForReadyPointerKey(pointer.getKey());
-        if (slice == null) {
-          continue;
-        }
-        var decoded =
-            ReadyQueueBackendSupport.decodeReadyQueueEntry(
-                pointer.getKey(), pointer.getBlobUri(), slice);
-        if (decoded != null) {
-          out.add(decoded);
-        }
-      }
-      token = next.toString();
-    } while (!token.isBlank());
   }
 }

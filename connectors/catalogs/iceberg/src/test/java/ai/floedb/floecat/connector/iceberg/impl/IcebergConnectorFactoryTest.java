@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -106,7 +105,7 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void applyAuthAwsSigV4HandlesNullAuthProps() throws Exception {
+  void applyAuthAwsSigV4RejectsMissingCatalogCredentials() throws Exception {
     Method method =
         IcebergConnectorFactory.class.getDeclaredMethod(
             "applyCatalogAuth", Map.class, String.class, Map.class);
@@ -114,10 +113,11 @@ class IcebergConnectorFactoryTest {
     Map<String, String> props = new HashMap<>();
     props.put("s3.region", "us-east-2");
 
-    assertDoesNotThrow(() -> method.invoke(null, props, "aws-sigv4", null));
-    assertEquals("sigv4", props.get("rest.auth.type"));
-    assertEquals("glue", props.get("rest.signing-name"));
-    assertEquals("us-east-2", props.get("rest.signing-region"));
+    InvocationTargetException ex =
+        assertThrows(
+            InvocationTargetException.class, () -> method.invoke(null, props, "aws-sigv4", null));
+    assertEquals(IllegalArgumentException.class, ex.getCause().getClass());
+    assertTrue(ex.getCause().getMessage().contains("CATALOG_OPTION_PROVIDER_ID"));
   }
 
   @Test
@@ -261,7 +261,7 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void restCatalogPropsUseRefreshingProviderWhenPresent() {
+  void leaseScopedStorageProviderIsNotPromotedToCatalogProvider() {
     Map<String, String> baseProps =
         IcebergConnectorFactory.buildBaseIcebergProperties(
             Map.of(
@@ -284,9 +284,13 @@ class IcebergConnectorFactoryTest {
         IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
 
     IcebergConnectorFactory.applyStorageProperties(props, storageProps);
-    IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of());
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of()));
 
-    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
+    assertTrue(error.getMessage().contains("CATALOG_OPTION_PROVIDER_ID"));
+    assertFalse(props.containsKey("rest.auth.type"));
     assertEquals(
         RegistryBackedAwsCredentialsProvider.class.getName(),
         props.get("client.credentials-provider"));
@@ -298,6 +302,55 @@ class IcebergConnectorFactoryTest {
     assertFalse(props.containsKey("s3.access-key-id"));
     assertFalse(props.containsKey("s3.secret-access-key"));
     assertFalse(props.containsKey("s3.session-token"));
+    assertFalse(
+        props.containsKey(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+    Map<String, String> catalogAuthProps = CatalogSigV4AuthManager.catalogAuthProperties(props);
+    assertFalse(catalogAuthProps.containsKey("client.credentials-provider"));
+    assertFalse(
+        catalogAuthProps.containsKey(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+  }
+
+  @Test
+  void explicitCatalogCredentialsWinOverLeaseScopedStorageProvider() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of(
+                "iceberg.source",
+                "glue",
+                "s3.region",
+                "us-east-1",
+                "rest.access-key-id",
+                "connector-access",
+                "rest.secret-access-key",
+                "connector-secret",
+                "rest.session-token",
+                "connector-session",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "lease-scoped-storage-provider"));
+
+    Map<String, String> catalogProps =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "https://glue.us-east-1.amazonaws.com/iceberg/", baseProps);
+    Map<String, String> storageProps =
+        IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
+    IcebergConnectorFactory.applyStorageProperties(catalogProps, storageProps);
+    IcebergConnectorFactory.applyCatalogAuth(catalogProps, "aws-sigv4", Map.of());
+
+    assertEquals(CatalogSigV4AuthManager.class.getName(), catalogProps.get("rest.auth.type"));
+    Map<String, String> catalogAuthProps =
+        CatalogSigV4AuthManager.catalogAuthProperties(catalogProps);
+    assertEquals("connector-access", catalogAuthProps.get("rest.access-key-id"));
+    assertEquals("connector-secret", catalogAuthProps.get("rest.secret-access-key"));
+    assertEquals("connector-session", catalogAuthProps.get("rest.session-token"));
+    assertFalse(catalogAuthProps.containsKey("client.credentials-provider"));
+    assertFalse(
+        catalogAuthProps.containsKey(
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+    assertEquals(
+        "lease-scoped-storage-provider",
+        storageProps.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
   }
 
   @Test
@@ -427,6 +480,44 @@ class IcebergConnectorFactoryTest {
     } finally {
       manager.close();
     }
+  }
+
+  @Test
+  void rawDeprecatedSigV4FlagIsRejectedBeforeCatalogAuthIsApplied() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of("iceberg.source", "rest", "rest.sigv4-enabled", "true"));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> IcebergConnectorFactory.buildCatalogProperties("http://catalog", baseProps));
+  }
+
+  @Test
+  void disabledDeprecatedSigV4FlagDoesNotActivateCatalogSigning() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of("iceberg.source", "rest", "rest.sigv4-enabled", "false"));
+
+    Map<String, String> props =
+        IcebergConnectorFactory.buildCatalogProperties("http://catalog", baseProps);
+
+    assertEquals("false", props.get("rest.sigv4-enabled"));
+  }
+
+  @Test
+  void rawSigV4AuthManagerIsRejectedBeforeCatalogAuthIsApplied() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of(
+                "iceberg.source",
+                "rest",
+                "rest.auth.type",
+                CatalogSigV4AuthManager.class.getName()));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> IcebergConnectorFactory.buildCatalogProperties("http://catalog", baseProps));
   }
 
   @Test
