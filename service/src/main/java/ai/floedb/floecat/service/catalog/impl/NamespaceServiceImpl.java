@@ -479,12 +479,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
 
-                  // Bumps the source and destination parent markers plus the catalog markers. On a
-                  // reparent the destination was already advanced inside the update batch by the
-                  // guard; advancing it a second time is harmless (markers are opaque monotonic
-                  // counters that every reader re-reads) and keeps this one call responsible for
-                  // the whole move.
-                  bumpParentMoveMarkers(current, desired);
+                  bumpDestinationMoveMarker(current, desired);
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
                       .setMeta(outMeta)
@@ -720,9 +715,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       topology.evictRelationRefs(namespaceId);
                       topology.evictNamespaceRefs(catalogId);
                       metadataGraph.invalidate(namespaceId);
-                      markerStore.bumpCatalogMarker(catalogId);
-                      bumpParentNamespaceMarker(
-                          catalogId.getAccountId(), catalogId, namespace.getParentsList());
+                      // No bump of the parent's or the catalog's marker: a child that leaves is not
+                      // a child publish, and both markers are delete fences that only a publish may
+                      // move — see MarkerStore#namespaceChildGuard.
                       return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                     })
                 // Outside the retries on purpose. The likeliest way a contended recursive delete
@@ -1081,25 +1076,28 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .ifPresent(ns -> markerStore.bumpNamespaceMarker(ns.getResourceId()));
   }
 
-  private void bumpParentMoveMarkers(Namespace before, Namespace after) {
+  /**
+   * Advances the marker of the catalog a moved namespace arrives in.
+   *
+   * <p>The destination parent's children marker was already advanced inside the update batch by
+   * {@link #reparentDestinationGuard}, and the catalog has no equivalent in-batch guard, so this
+   * post-hoc bump is the whole publish signal on that side.
+   *
+   * <p>Nothing is bumped for the source. Both markers are delete fences — {@code DeleteNamespace}
+   * and {@code DeleteCatalog} read them, scan for children, then advance from the version they read
+   * — and a namespace <em>leaving</em> is not a child publish. Bumping the source landed in that
+   * window as one, failing a concurrent delete of the source parent or its catalog with
+   * CHILDREN_CHANGED, which is not retryable: only the caller's own scan can decide whether its
+   * delete is still legal.
+   */
+  private void bumpDestinationMoveMarker(Namespace before, Namespace after) {
     if (before == null || after == null) {
       return;
     }
-
     var beforeCat = before.getCatalogId();
     var afterCat = after.getCatalogId();
-
     if (!beforeCat.getId().equals(afterCat.getId())) {
-      markerStore.bumpCatalogMarker(beforeCat);
       markerStore.bumpCatalogMarker(afterCat);
-    }
-
-    var beforeParent = before.getParentsList();
-    var afterParent = after.getParentsList();
-
-    if (!beforeParent.equals(afterParent) || !beforeCat.getId().equals(afterCat.getId())) {
-      bumpParentNamespaceMarker(beforeCat.getAccountId(), beforeCat, beforeParent);
-      bumpParentNamespaceMarker(afterCat.getAccountId(), afterCat, afterParent);
     }
   }
 }

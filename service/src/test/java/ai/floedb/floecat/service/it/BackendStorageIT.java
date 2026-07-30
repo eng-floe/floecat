@@ -651,6 +651,53 @@ class BackendStorageIT {
   }
 
   /**
+   * The namespace half of the same rule: a child namespace leaving its parent must not advance the
+   * parent's children marker, nor the catalog's.
+   *
+   * <p>DeleteCatalog runs the same read-scan-advance sequence over the catalog marker, and reports
+   * CATALOG_CHILDREN_CHANGED when the advance loses, so a catalog delete racing nothing but its
+   * last namespace going away failed the same way a namespace delete did.
+   */
+  @Test
+  void deletingANamespaceDoesNotAdvanceItsParentOrCatalogFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsfence_" + clock.millis(), "fence");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(
+            namespace, catId, "parent", List.of("db_nsfence"), "parent of child");
+    var child =
+        TestSupport.createNamespace(
+            namespace, catId, "child", List.of("db_nsfence", "parent"), "child");
+
+    var parentId = parent.getResourceId();
+    String parentMarker = Keys.namespaceChildrenMarker(parentId.getAccountId(), parentId.getId());
+    String catalogMarker = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+
+    long parentAfterPublish = ptr.get(parentMarker).orElseThrow().getVersion();
+    long catalogAfterPublish = ptr.get(catalogMarker).orElseThrow().getVersion();
+    assertTrue(
+        parentAfterPublish > 0L, "publishing a child namespace must advance the parent fence");
+    assertTrue(catalogAfterPublish > 0L, "and the catalog fence");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(child.getResourceId()).build());
+
+    assertEquals(
+        parentAfterPublish,
+        ptr.get(parentMarker).orElseThrow().getVersion(),
+        "deleting a child namespace must not advance the parent fence");
+    assertEquals(
+        catalogAfterPublish,
+        ptr.get(catalogMarker).orElseThrow().getVersion(),
+        "deleting a child namespace must not advance the catalog fence");
+
+    // And the emptied parent, then the emptied catalog, are still deletable.
+    namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(parentId).build());
+    assertTrue(
+        ptr.get(Keys.namespacePointerById(parentId.getAccountId(), parentId.getId())).isEmpty());
+  }
+
+  /**
    * A corrupt-blob delete removes the table's canonical pointer but leaves its by-name pointer, and
    * that row is what every emptiness check counts. Nothing can resolve the relation any more, so
    * without reconciling the leftover row the namespace would report NOT_EMPTY forever — neither a

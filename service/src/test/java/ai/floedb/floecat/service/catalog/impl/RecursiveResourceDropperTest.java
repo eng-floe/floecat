@@ -312,13 +312,17 @@ class RecursiveResourceDropperTest {
   }
 
   /**
-   * Ancestor markers are bumped after the namespace and everything under it are gone, so an
-   * ancestor whose blob cannot be parsed must not fail that step: CorruptionException is neither
-   * retryable nor a precondition failure, so it would surface as an internal error over a
-   * half-finished teardown. Only the ancestor's id is needed, and a pointer row carries it.
+   * A drop touches no ancestor at all: not their children markers, which are delete fences only a
+   * child publish may move, and therefore not their blobs either.
+   *
+   * <p>Both halves are pinned here. Resolving an ancestor through its content throws
+   * CorruptionException for an unparseable blob — neither retryable nor a precondition failure, so
+   * it surfaces as an internal error over a half-finished teardown — and this stubs that throw, so
+   * reaching for an ancestor by content fails the test. Bumping one by pointer row instead, which
+   * is how that hazard was first fixed, fails the marker assertion.
    */
   @Test
-  void guardedDropCompletesWhenAnAncestorBlobCannotBeParsed() {
+  void guardedDropTouchesNoAncestor() {
     var nested =
         Namespace.newBuilder()
             .setResourceId(ROOT_NS)
@@ -343,11 +347,12 @@ class RecursiveResourceDropperTest {
     // is counted.
     when(namespaceRepo.delete(eq(ROOT_NS), any())).thenReturn(true);
 
-    // dropNamespaceTree is the teardown entry point: it deletes the root itself, bumping ancestors.
+    // dropNamespaceTree is the teardown entry point: it deletes the root itself.
     var summary = dropper.dropNamespaceTree(nested);
 
     assertEquals(1, summary.namespacesDeleted);
-    verify(markerStore).bumpNamespaceMarker(eq(ancestorId));
+    verify(markerStore, never()).bumpNamespaceMarker(eq(ancestorId));
+    verify(markerStore, never()).bumpCatalogMarker(any());
   }
 
   /**
