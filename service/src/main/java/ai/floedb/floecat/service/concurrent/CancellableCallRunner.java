@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -48,32 +49,28 @@ public final class CancellableCallRunner {
    *
    * <p>Returns the operation result, propagates operation and executor failures unchanged, and
    * throws {@link CancellationException} when cancellation or interruption wins. Admission remains
-   * held until the operation exits, including when the caller has already returned.
+   * held until the operation exits, including when the caller has already returned. The executor
+   * must dispatch work asynchronously; an executor that invokes tasks on the submitting thread is
+   * rejected before the operation starts so it cannot bypass cancellation polling. {@code
+   * cancelled} is read from the caller and worker threads and must be non-blocking and thread-safe
+   * (typically {@link java.util.concurrent.atomic.AtomicBoolean#get}).
    */
   public static <T> T call(
       Executor executor,
       Semaphore permits,
       BooleanSupplier cancelled,
       Supplier<T> operation,
-      String cancellationMessage,
-      String interruptionMessage) {
-    acquire(permits, cancelled, cancellationMessage, interruptionMessage);
+      FailureMessages messages) {
+    acquire(permits, cancelled, messages);
     SubmittedCallHandle<T> submitted =
-        submit(
-            executor,
-            permits,
-            operation,
-            cancelled,
-            true,
-            cancellationMessage,
-            TimeoutListener.NOOP);
+        submit(executor, permits, operation, cancelled, true, messages);
     CompletableFuture<T> result = submitted.result;
     CallLifecycle lifecycle = submitted.lifecycle;
     try {
       while (true) {
         if (cancelled.getAsBoolean()) {
           lifecycle.cancel();
-          throw new CancellationException(cancellationMessage);
+          throw new CancellationException(messages.cancellation());
         }
         try {
           return result.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
@@ -82,9 +79,10 @@ public final class CancellableCallRunner {
         } catch (InterruptedException e) {
           lifecycle.cancel();
           Thread.currentThread().interrupt();
-          throw new CancellationException(interruptionMessage);
+          throw new CancellationException(messages.interruption());
         } catch (ExecutionException e) {
-          rethrow(e.getCause());
+          throw Futures.propagate(
+              e.getCause(), "unexpected checked exception from cancellable call");
         }
       }
     } catch (CancellationException e) {
@@ -94,122 +92,42 @@ public final class CancellableCallRunner {
   }
 
   /**
-   * Run a call with no caller cancellation signal on {@code executor}, blocking for fair admission
-   * and its result until {@code timeout}.
-   *
-   * <p>This keeps potentially carrier-pinning store calls off a virtual planning thread while
-   * preserving legacy synchronous completion semantics. On timeout the caller is released and the
-   * task is interrupted, but admission remains held until an interruption-insensitive operation
-   * truly exits. Returns the operation result and propagates operation and executor failures
-   * unchanged; throws {@link CallTimeoutException} when admission or completion outlives the
-   * supplied timeout, and {@link CancellationException} if the waiting thread is interrupted.
+   * Run {@code operation} off-thread under the supplied admission semaphore when the caller has no
+   * cancellation signal. Admission and completion have no deadline, keeping blocking store work off
+   * virtual planning threads without changing synchronous completion semantics. Interruption
+   * cancels the submitted task and returns {@link CancellationException}; a downstream call that
+   * ignores interruption retains its permit until it truly exits.
    */
-  public static <T> T callUncancellable(
-      Executor executor,
-      Semaphore permits,
-      Supplier<T> operation,
-      long timeout,
-      TimeUnit timeoutUnit,
-      String cancellationMessage,
-      String interruptionMessage,
-      String timeoutMessage) {
-    return callUncancellable(
-        executor,
-        permits,
-        operation,
-        timeout,
-        timeoutUnit,
-        cancellationMessage,
-        interruptionMessage,
-        timeoutMessage,
-        TimeoutListener.NOOP);
-  }
-
-  /**
-   * Variant of {@link #callUncancellable(Executor, Semaphore, Supplier, long, TimeUnit, String,
-   * String, String)} that reports calls which outlive their caller's timeout.
-   *
-   * <p>The listener is notified once when the caller times out and once when the underlying
-   * callable finally exits (or is discarded before it starts). It lets an owner expose retained
-   * admission as an operational gauge without ever releasing capacity while I/O is still live.
-   */
-  public static <T> T callUncancellable(
-      Executor executor,
-      Semaphore permits,
-      Supplier<T> operation,
-      long timeout,
-      TimeUnit timeoutUnit,
-      String cancellationMessage,
-      String interruptionMessage,
-      String timeoutMessage,
-      TimeoutListener timeoutListener) {
-    long timeoutNanos = timeoutUnit.toNanos(timeout);
-    long startedNanos = System.nanoTime();
+  public static <T> T callWithoutCancellation(
+      Executor executor, Semaphore permits, Supplier<T> operation, FailureMessages messages) {
     try {
-      if (!permits.tryAcquire(timeoutNanos, TimeUnit.NANOSECONDS)) {
-        throw new CallTimeoutException(timeoutMessage);
-      }
+      permits.acquire();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new CancellationException(interruptionMessage);
+      throw new CancellationException(messages.interruption());
     }
 
     SubmittedCallHandle<T> submitted =
-        submit(
-            executor, permits, operation, () -> false, false, cancellationMessage, timeoutListener);
+        submit(executor, permits, operation, () -> false, false, messages);
     CompletableFuture<T> result = submitted.result;
     CallLifecycle lifecycle = submitted.lifecycle;
     try {
-      long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
-      if (remainingNanos <= 0) {
-        lifecycle.timedOut();
-        lifecycle.cancel();
-        throw new CallTimeoutException(timeoutMessage);
-      }
-      return result.get(remainingNanos, TimeUnit.NANOSECONDS);
+      return result.get();
     } catch (InterruptedException e) {
       lifecycle.cancel();
       Thread.currentThread().interrupt();
-      throw new CancellationException(interruptionMessage);
-    } catch (TimeoutException e) {
-      // The callable may ignore interruption. Keep its permit until it really returns so timed-out
-      // callers cannot cause unbounded live store I/O; this only releases a caller thread.
-      lifecycle.timedOut();
-      lifecycle.cancel();
-      throw new CallTimeoutException(timeoutMessage, e);
+      throw new CancellationException(messages.interruption());
     } catch (ExecutionException e) {
-      rethrow(e.getCause());
-      throw new AssertionError("rethrow must not return");
+      throw Futures.propagate(e.getCause(), "unexpected checked exception from cancellable call");
     }
   }
 
-  /** A caller-visible timeout for bounded admission or completion of a metadata operation. */
-  public static final class CallTimeoutException extends RuntimeException {
-    CallTimeoutException(String message) {
-      super(message);
+  /** Caller-facing cancellation outcomes for a dispatched blocking call. */
+  public record FailureMessages(String cancellation, String interruption) {
+    public FailureMessages {
+      java.util.Objects.requireNonNull(cancellation, "cancellation");
+      java.util.Objects.requireNonNull(interruption, "interruption");
     }
-
-    CallTimeoutException(String message, Throwable cause) {
-      super(message, cause);
-    }
-  }
-
-  /** Receives lifecycle notifications for a call which outlives its caller timeout. */
-  public interface TimeoutListener {
-    TimeoutListener NOOP =
-        new TimeoutListener() {
-          @Override
-          public void timedOut() {}
-
-          @Override
-          public void finished() {}
-        };
-
-    /** The caller timed out while the callable may still own an admission permit. */
-    void timedOut();
-
-    /** A callable previously reported as timed out has finally exited or been discarded. */
-    void finished();
   }
 
   /**
@@ -228,21 +146,19 @@ public final class CancellableCallRunner {
     }
   }
 
+  /** Acquire admission in cancellable polling intervals without losing interrupt semantics. */
   private static void acquire(
-      Semaphore permits,
-      BooleanSupplier cancelled,
-      String cancellationMessage,
-      String interruptionMessage) {
+      Semaphore permits, BooleanSupplier cancelled, FailureMessages messages) {
     try {
       while (true) {
-        throwIfCancelled(cancelled, cancellationMessage);
+        throwIfCancelled(cancelled, messages.cancellation());
         if (permits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
           return;
         }
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new CancellationException(interruptionMessage);
+      throw new CancellationException(messages.interruption());
     }
   }
 
@@ -255,8 +171,7 @@ public final class CancellableCallRunner {
   /**
    * Capture context and submit an admitted call, retaining its permit until the callable exits or
    * the executor discards it. A cancellable caller asks the worker to reject a task that starts
-   * after cancellation; an uncancellable caller executes even if its waiting thread later times
-   * out.
+   * after cancellation; an uncancellable caller executes unless its waiting thread is interrupted.
    */
   private static <T> SubmittedCallHandle<T> submit(
       Executor executor,
@@ -264,11 +179,10 @@ public final class CancellableCallRunner {
       Supplier<T> operation,
       BooleanSupplier cancelled,
       boolean rejectCancelledStart,
-      String cancellationMessage,
-      TimeoutListener timeoutListener) {
+      FailureMessages messages) {
     PropagatedContext context = PropagatedContext.capture();
     CompletableFuture<T> result = new CompletableFuture<>();
-    CallLifecycle lifecycle = new CallLifecycle(timeoutListener);
+    CallLifecycle lifecycle = new CallLifecycle();
     PermitLease permitLease = new PermitLease(permits);
     SubmittedCall task =
         new SubmittedCall(
@@ -277,22 +191,23 @@ public final class CancellableCallRunner {
               try {
                 if (rejectCancelledStart) {
                   if (lifecycle.cancellationRequested.get()) {
-                    throw new CancellationException(cancellationMessage);
+                    throw new CancellationException(messages.cancellation());
                   }
-                  throwIfCancelled(cancelled, cancellationMessage);
+                  throwIfCancelled(cancelled, messages.cancellation());
                 }
                 result.complete(context.supply(operation));
               } catch (Throwable failure) {
                 result.completeExceptionally(failure);
               } finally {
-                lifecycle.operationFinished();
                 permitLease.release();
               }
             },
             result,
             lifecycle,
             permitLease,
-            cancellationMessage);
+            messages,
+            executor instanceof ThreadPoolExecutor pool ? pool : null,
+            Thread.currentThread());
     lifecycle.task = task;
     try {
       // An explicit FutureTask prevents ForkJoinPool from help-running a submitted lambda inline
@@ -321,40 +236,9 @@ public final class CancellableCallRunner {
     private final AtomicBoolean operationStarted = new AtomicBoolean();
     private final AtomicBoolean runnerInstalled = new AtomicBoolean();
     private final AtomicBoolean cancellationRequested = new AtomicBoolean();
-    private final AtomicBoolean timedOut = new AtomicBoolean();
-    private final AtomicBoolean operationFinished = new AtomicBoolean();
-    private final AtomicBoolean finishedAfterTimeout = new AtomicBoolean();
-    private final TimeoutListener timeoutListener;
     private volatile FutureTask<?> task;
 
-    CallLifecycle() {
-      this(TimeoutListener.NOOP);
-    }
-
-    CallLifecycle(TimeoutListener timeoutListener) {
-      this.timeoutListener = timeoutListener;
-    }
-
-    void timedOut() {
-      if (timedOut.compareAndSet(false, true)) {
-        timeoutListener.timedOut();
-        reportFinishedAfterTimeout();
-      }
-    }
-
-    void operationFinished() {
-      operationFinished.set(true);
-      reportFinishedAfterTimeout();
-    }
-
-    private void reportFinishedAfterTimeout() {
-      if (timedOut.get()
-          && operationFinished.get()
-          && finishedAfterTimeout.compareAndSet(false, true)) {
-        timeoutListener.finished();
-      }
-    }
-
+    /** Atomically bind interruption to this task's current runner, never a reused pool worker. */
     void cancel() {
       cancellationRequested.set(true);
       // FutureTask atomically owns its runner while it is executing. Its cancellation path cannot
@@ -384,23 +268,36 @@ public final class CancellableCallRunner {
     private final CompletableFuture<?> result;
     private final CallLifecycle lifecycle;
     private final PermitLease permitLease;
-    private final String cancellationMessage;
+    private final FailureMessages messages;
+    private final ThreadPoolExecutor owningPool;
+    private final Thread submissionThread;
 
     SubmittedCall(
         Runnable runnable,
         CompletableFuture<?> result,
         CallLifecycle lifecycle,
         PermitLease permitLease,
-        String cancellationMessage) {
+        FailureMessages messages,
+        ThreadPoolExecutor owningPool,
+        Thread submissionThread) {
       super(runnable, null);
       this.result = result;
       this.lifecycle = lifecycle;
       this.permitLease = permitLease;
-      this.cancellationMessage = cancellationMessage;
+      this.messages = messages;
+      this.owningPool = owningPool;
+      this.submissionThread = submissionThread;
     }
 
+    /** Install runner ownership before FutureTask exposes its cancellation transition. */
     @Override
     public void run() {
+      if (Thread.currentThread() == submissionThread) {
+        result.completeExceptionally(
+            new IllegalArgumentException("blocking call executor must dispatch asynchronously"));
+        permitLease.release();
+        return;
+      }
       // Mark this before FutureTask installs its runner. Cancellation can otherwise observe a
       // cancelled task between FutureTask's runner CAS and the submitted Runnable's first line,
       // incorrectly classify live work as executor-discarded, and release its admission early.
@@ -411,30 +308,25 @@ public final class CancellableCallRunner {
       // not enter the downstream operation and is safe to discard.
       if (!lifecycle.operationStarted.get()) {
         if (isCancelled()) {
-          result.completeExceptionally(new CancellationException(cancellationMessage));
+          result.completeExceptionally(new CancellationException(messages.cancellation()));
         }
-        lifecycle.operationFinished();
         permitLease.release();
       }
     }
 
+    /** Release admission when cancellation discards a task before any runner installs. */
     @Override
     protected void done() {
       if (isCancelled() && !lifecycle.runnerInstalled.get()) {
-        result.completeExceptionally(new CancellationException(cancellationMessage));
-        lifecycle.operationFinished();
+        // ThreadPoolExecutor retains cancelled FutureTasks in its work queue. Remove this
+        // tombstone before recycling admission, otherwise cancellation bursts can fill the
+        // bounded queue and make a later admitted call fail with RejectedExecutionException.
+        if (owningPool != null) {
+          owningPool.remove(this);
+        }
+        result.completeExceptionally(new CancellationException(messages.cancellation()));
         permitLease.release();
       }
     }
-  }
-
-  private static void rethrow(Throwable failure) {
-    if (failure instanceof RuntimeException runtime) {
-      throw runtime;
-    }
-    if (failure instanceof Error error) {
-      throw error;
-    }
-    throw new IllegalStateException("unexpected checked exception from cancellable call", failure);
   }
 }

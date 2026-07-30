@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
+/** Verifies bounded scheduling, ordered delivery, failure draining, and prompt cancellation. */
 class BoundedFanoutTest {
 
   @Test
@@ -203,6 +204,58 @@ class BoundedFanoutTest {
         releaseSecondTask.countDown();
       }
       result.get(1, TimeUnit.SECONDS);
+    }
+  }
+
+  @Test
+  void orderedConsumerFailureStopsFurtherWindowRefills() throws Exception {
+    CountDownLatch activeSiblingsStarted = new CountDownLatch(2);
+    CountDownLatch releaseActiveSiblings = new CountDownLatch(1);
+    AtomicInteger highestStarted = new AtomicInteger(-1);
+
+    try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+      CompletableFuture<Throwable> result =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  BoundedFanout.forEachOrdered(
+                      List.of(0, 1, 2, 3, 4),
+                      2,
+                      executor,
+                      value -> {
+                        highestStarted.accumulateAndGet(value, Math::max);
+                        if (value > 0) {
+                          activeSiblingsStarted.countDown();
+                          try {
+                            releaseActiveSiblings.await();
+                          } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                          }
+                        }
+                        return value;
+                      },
+                      value -> {
+                        if (value == 0) {
+                          throw new IllegalStateException("ordered merge failed");
+                        }
+                      },
+                      () -> false);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+
+      assertThat(activeSiblingsStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      releaseActiveSiblings.countDown();
+
+      assertThat(result.get(1, TimeUnit.SECONDS))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessage("ordered merge failed");
+      assertThat(highestStarted.get()).isEqualTo(2);
+    } finally {
+      releaseActiveSiblings.countDown();
     }
   }
 

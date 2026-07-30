@@ -134,6 +134,26 @@ class PropagatedContextTest {
   }
 
   @Test
+  void replacesForeignWorkerMdcWithTheCompleteCapturedMap() throws Exception {
+    ExecutorService foreign = Executors.newSingleThreadExecutor();
+    MDC.put("extension_tenant", "request-tenant");
+    try {
+      PropagatedContext captured = PropagatedContext.capture();
+      foreign.submit(() -> MDC.put("extension_tenant", "stale-worker-tenant")).get();
+
+      Object tenantSeenByBody =
+          foreign.submit(() -> captured.supply(() -> MDC.get("extension_tenant"))).get();
+      Object tenantRestoredAfterBody = foreign.submit(() -> MDC.get("extension_tenant")).get();
+
+      assertThat(tenantSeenByBody).isEqualTo("request-tenant");
+      assertThat(tenantRestoredAfterBody).isEqualTo("stale-worker-tenant");
+    } finally {
+      MDC.remove("extension_tenant");
+      foreign.shutdownNow();
+    }
+  }
+
+  @Test
   void restoresExistingMdcAfterAnInlineNestedScope() {
     MDC.put("floecat_component", "outer-component");
     MDC.put("floecat_operation", "outer-operation");

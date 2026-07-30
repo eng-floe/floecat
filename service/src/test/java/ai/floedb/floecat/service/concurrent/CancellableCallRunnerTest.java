@@ -19,131 +19,74 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
+/** Exercises admission, cancellation ownership, and executor-discard races for blocking calls. */
 class CancellableCallRunnerTest {
 
+  private static final CancellableCallRunner.FailureMessages CALL_FAILURES =
+      new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
+
   @Test
-  void uncancellableTimeoutReturnsCallerButRetainsActiveCallAdmission() throws Exception {
-    ExecutorService executor = Executors.newSingleThreadExecutor();
+  void rejectsAnExecutorThatRunsTheBlockingCallInline() {
+    Executor directExecutor = Runnable::run;
+    var permits = new Semaphore(1);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CancellableCallRunner.call(
+                directExecutor, permits, () -> false, () -> "must not run", CALL_FAILURES));
+    assertEquals(1, permits.availablePermits());
+  }
+
+  @Test
+  void callWithoutCancellationWaitsForTheEventualResult() throws Exception {
+    ExecutorService metadataExecutor = Executors.newSingleThreadExecutor();
+    ExecutorService callerExecutor = Executors.newSingleThreadExecutor();
     var permits = new Semaphore(1);
     var started = new CountDownLatch(1);
     var release = new CountDownLatch(1);
     try {
-      assertThrows(
-          CancellableCallRunner.CallTimeoutException.class,
-          () ->
-              CancellableCallRunner.callUncancellable(
-                  executor,
-                  permits,
-                  () -> {
-                    started.countDown();
-                    while (true) {
-                      try {
-                        release.await();
+      CompletableFuture<String> result =
+          CompletableFuture.supplyAsync(
+              () ->
+                  CancellableCallRunner.callWithoutCancellation(
+                      metadataExecutor,
+                      permits,
+                      () -> {
+                        started.countDown();
+                        try {
+                          release.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                        }
                         return "done";
-                      } catch (InterruptedException ignored) {
-                        // Simulate an interruption-insensitive downstream store call.
-                      }
-                    }
-                  },
-                  25,
-                  TimeUnit.MILLISECONDS,
-                  "cancelled",
-                  "interrupted",
-                  "timed out"));
-
+                      },
+                      CALL_FAILURES),
+              callerExecutor);
       assertTrue(started.await(1, TimeUnit.SECONDS));
+      assertThrows(
+          java.util.concurrent.TimeoutException.class, () -> result.get(25, TimeUnit.MILLISECONDS));
       assertEquals(0, permits.availablePermits(), "active I/O must retain its admission slot");
-    } finally {
       release.countDown();
-      executor.shutdownNow();
-      assertTrue(executor.awaitTermination(1, TimeUnit.SECONDS));
+      assertEquals("done", result.get(1, TimeUnit.SECONDS));
       assertEquals(1, permits.availablePermits());
-    }
-  }
-
-  @Test
-  void uncancellableTimeoutReportsRetainedAdmissionUntilTheCallActuallyExits() throws Exception {
-    ExecutorService executor = Executors.newSingleThreadExecutor();
-    var permits = new Semaphore(1);
-    var started = new CountDownLatch(1);
-    var release = new CountDownLatch(1);
-    var stuckCalls = new AtomicInteger();
-    try {
-      assertThrows(
-          CancellableCallRunner.CallTimeoutException.class,
-          () ->
-              CancellableCallRunner.callUncancellable(
-                  executor,
-                  permits,
-                  () -> {
-                    started.countDown();
-                    while (true) {
-                      try {
-                        release.await();
-                        return "done";
-                      } catch (InterruptedException ignored) {
-                        // Simulate a store call whose HTTP client ignores interruption.
-                      }
-                    }
-                  },
-                  25,
-                  TimeUnit.MILLISECONDS,
-                  "cancelled",
-                  "interrupted",
-                  "timed out",
-                  new CancellableCallRunner.TimeoutListener() {
-                    @Override
-                    public void timedOut() {
-                      stuckCalls.incrementAndGet();
-                    }
-
-                    @Override
-                    public void finished() {
-                      stuckCalls.decrementAndGet();
-                    }
-                  }));
-
-      assertTrue(started.await(1, TimeUnit.SECONDS));
-      assertEquals(1, stuckCalls.get());
-      release.countDown();
-      for (int attempt = 0; attempt < 100 && stuckCalls.get() != 0; attempt++) {
-        Thread.sleep(10);
-      }
-      assertEquals(0, stuckCalls.get());
     } finally {
       release.countDown();
-      executor.shutdownNow();
-    }
-  }
-
-  @Test
-  void uncancellableTimeoutIncludesPermitAdmission() {
-    var permits = new Semaphore(0);
-    try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
-      assertThrows(
-          CancellableCallRunner.CallTimeoutException.class,
-          () ->
-              CancellableCallRunner.callUncancellable(
-                  executor,
-                  permits,
-                  () -> "unreachable",
-                  25,
-                  TimeUnit.MILLISECONDS,
-                  "cancelled",
-                  "interrupted",
-                  "timed out"));
-      assertEquals(0, permits.availablePermits());
+      metadataExecutor.shutdownNow();
+      callerExecutor.shutdownNow();
     }
   }
 
@@ -177,8 +120,7 @@ class CancellableCallRunnerTest {
                         }
                         return "first";
                       },
-                      "cancelled",
-                      "interrupted"));
+                      CALL_FAILURES));
       assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
 
       CompletableFuture<Throwable> queued =
@@ -186,7 +128,7 @@ class CancellableCallRunnerTest {
               () -> {
                 try {
                   CancellableCallRunner.call(
-                      executor, permits, () -> false, () -> "queued", "cancelled", "interrupted");
+                      executor, permits, () -> false, () -> "queued", CALL_FAILURES);
                   return null;
                 } catch (Throwable failure) {
                   return failure;
@@ -210,5 +152,123 @@ class CancellableCallRunnerTest {
       allowFirst.countDown();
       executor.shutdownNow();
     }
+  }
+
+  @Test
+  void cancellingQueuedCallRemovesItBeforeRecyclingAdmission() throws Exception {
+    var executor =
+        new ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(1),
+            new ThreadPoolExecutor.AbortPolicy());
+    var permits = new Semaphore(2);
+    var firstStarted = new CountDownLatch(1);
+    var allowFirst = new CountDownLatch(1);
+    var cancelQueued = new AtomicBoolean();
+    try {
+      CompletableFuture<String> first =
+          CompletableFuture.supplyAsync(
+              () ->
+                  CancellableCallRunner.call(
+                      executor,
+                      permits,
+                      () -> false,
+                      () -> {
+                        firstStarted.countDown();
+                        try {
+                          allowFirst.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                        }
+                        return "first";
+                      },
+                      CALL_FAILURES));
+      assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+      CompletableFuture<Throwable> cancelledQueued =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  CancellableCallRunner.call(
+                      executor, permits, cancelQueued::get, () -> "cancelled", CALL_FAILURES);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+      awaitQueueSize(executor, 1);
+
+      cancelQueued.set(true);
+      assertTrue(cancelledQueued.get(1, TimeUnit.SECONDS) instanceof CancellationException);
+      awaitQueueSize(executor, 0);
+
+      CompletableFuture<String> replacement =
+          CompletableFuture.supplyAsync(
+              () ->
+                  CancellableCallRunner.call(
+                      executor, permits, () -> false, () -> "replacement", CALL_FAILURES));
+      awaitQueueSize(executor, 1);
+
+      allowFirst.countDown();
+      assertEquals("first", first.get(1, TimeUnit.SECONDS));
+      assertEquals("replacement", replacement.get(1, TimeUnit.SECONDS));
+      assertEquals(2, permits.availablePermits());
+    } finally {
+      allowFirst.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void cancellingRunningCallRetainsAdmissionUntilOperationExits() throws Exception {
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    var permits = new Semaphore(1);
+    var cancel = new AtomicBoolean();
+    var blocker = new UninterruptibleBlocker();
+    try {
+      CompletableFuture<Throwable> caller =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  CancellableCallRunner.call(
+                      executor,
+                      permits,
+                      cancel::get,
+                      () -> {
+                        blocker.await();
+                        return "done";
+                      },
+                      CALL_FAILURES);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+
+      cancel.set(true);
+      assertTrue(caller.get(1, TimeUnit.SECONDS) instanceof CancellationException);
+      assertEquals(0, permits.availablePermits());
+      assertTrue(blocker.interrupted.await(1, TimeUnit.SECONDS));
+
+      blocker.release.countDown();
+      for (int attempt = 0; attempt < 100 && permits.availablePermits() == 0; attempt++) {
+        Thread.sleep(10);
+      }
+      assertEquals(1, permits.availablePermits());
+    } finally {
+      blocker.release.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  private static void awaitQueueSize(ThreadPoolExecutor executor, int expected) throws Exception {
+    for (int attempt = 0; attempt < 100 && executor.getQueue().size() != expected; attempt++) {
+      Thread.sleep(10);
+    }
+    assertEquals(expected, executor.getQueue().size());
   }
 }

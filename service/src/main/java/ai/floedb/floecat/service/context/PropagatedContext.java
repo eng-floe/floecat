@@ -36,21 +36,11 @@ import org.jboss.logging.MDC;
  *
  * <p>{@link #capture()} on the originating thread, {@link #supply}/{@link #run} on the worker
  * thread. The {@link ResolvedCallContext} is the single source of truth: engine, principal,
- * correlation and the log MDC all derive from it. Add a new carrier here once, and every dispatch
- * point that already propagates through this snapshot gets it for free.
+ * correlation and the log MDC all derive from it. Centralizing carriers here keeps every dispatch
+ * point that uses this snapshot on the same context set.
  */
 public final class PropagatedContext {
 
-  private static final List<String> MDC_KEYS =
-      List.of(
-          "floecat_component",
-          "floecat_operation",
-          "query_id",
-          "correlation_id",
-          "floecat_account_id",
-          "floecat_subject",
-          "floecat_engine_kind",
-          "floecat_engine_version");
   private static final List<String> SOURCE_MDC_DIMENSIONS =
       List.of("floecat_component", "floecat_operation");
 
@@ -79,7 +69,7 @@ public final class PropagatedContext {
   public <T> T supply(Supplier<T> body) {
     try (Scope ignored = otel.makeCurrent()) {
       Map<String, Object> priorMdc = snapshotMdc();
-      installMdc(sourceMdc);
+      replaceMdc(sourceMdc);
       try {
         if (call == null) {
           return body.get();
@@ -94,7 +84,7 @@ public final class PropagatedContext {
               return body.get();
             });
       } finally {
-        restoreMdc(priorMdc);
+        replaceMdc(priorMdc);
       }
     }
   }
@@ -108,22 +98,21 @@ public final class PropagatedContext {
         });
   }
 
+  /** Copy the complete MDC so extension-defined keys participate in isolation and restoration. */
   private static Map<String, Object> snapshotMdc() {
     Map<String, Object> values = MDC.getMap();
     return values == null ? new HashMap<>() : new HashMap<>(values);
   }
 
-  private static void restoreMdc(Map<String, Object> priorMdc) {
+  /** Replace, rather than merge, MDC state so pooled workers cannot leak foreign request keys. */
+  private static void replaceMdc(Map<String, Object> values) {
     MDC.clear();
-    for (Map.Entry<String, Object> entry : priorMdc.entrySet()) {
+    for (Map.Entry<String, Object> entry : values.entrySet()) {
       MDC.put(entry.getKey(), entry.getValue());
     }
   }
 
-  private static void installMdc(Map<String, Object> sourceMdc) {
-    installMdc(sourceMdc, MDC_KEYS);
-  }
-
+  /** Overlay selected dispatch dimensions after canonical call-derived fields are populated. */
   private static void installMdc(Map<String, Object> sourceMdc, List<String> keys) {
     for (String key : keys) {
       Object value = sourceMdc.get(key);

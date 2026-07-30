@@ -34,13 +34,12 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.CancellableCallRunner;
 import ai.floedb.floecat.service.concurrent.Futures;
+import ai.floedb.floecat.service.concurrent.MetadataIoExecutors;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
-import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import jakarta.annotation.PostConstruct;
@@ -55,7 +54,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,12 +63,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
@@ -118,29 +115,26 @@ public class QueryInputResolver {
   // global admission bound without changing the invariant check in postConstruct().
   private static final int METADATA_IO_POOL_SIZE = MAX_CONCURRENT_INPUT_RESOLUTIONS;
   private static final int METADATA_IO_QUEUE_CAPACITY = METADATA_IO_POOL_SIZE;
-  // Legacy callers cannot provide a cancellation signal. Bound their complete admission-plus-I/O
-  // wait so an unresponsive metadata store yields DEADLINE_EXCEEDED instead of pinning the RPC.
-  private static final long UNINTERRUPTIBLE_METADATA_WAIT_SECONDS = 30;
   private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
   private static final BooleanSupplier NEVER_CANCELLED = () -> false;
-  private static final AtomicInteger METADATA_IO_THREAD_SEQUENCE = new AtomicInteger();
+  private static final CancellableCallRunner.FailureMessages METADATA_CALL_FAILURES =
+      new CancellableCallRunner.FailureMessages(
+          "resolver metadata I/O executor shut down", "interrupted while awaiting resolver I/O");
+  private static final CancellableCallRunner.FailureMessages METADATA_CANCELLATION_FAILURES =
+      new CancellableCallRunner.FailureMessages(
+          "input resolution cancelled", "interrupted while awaiting resolver I/O");
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
-  // per-request bound only. Read once here via ConfigProvider (not a @ConfigProperty ctor param)
-  // so the new-constructed test call sites keep compiling while production still honors config.
+  // per-request bound only. ConfigProvider keeps construction dependent on graph/store
+  // collaborators while production still reads the deployment setting once per resolver.
   private final int maxParallelInputResolutions;
 
   // Bounds metadata I/O across every request handled by this application-scoped resolver. The
   // request-local BoundedFanout limit avoids one request monopolizing this capacity; this limiter
   // prevents many requests from multiplying store pressure.
   private final Semaphore concurrentInputResolutionPermits;
-  // Calls which timed out at the caller but still own metadata I/O admission because the
-  // downstream client has not returned. This must remain visible to operators before it exhausts
-  // the global permit pool.
-  private final AtomicInteger timedOutMetadataCalls = new AtomicInteger();
-
   private final CatalogOverlay metadataGraph;
 
   // Registers each resolved pin's blobs as a transient GC root at construction time (see
@@ -163,7 +157,10 @@ public class QueryInputResolver {
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
 
-  @Inject Observability observability;
+  // All overloads retain virtual dispatch through the completed-pin Map extension seam. This
+  // per-thread scope carries the single-flight cache and cancellation signal through that seam
+  // without exposing their synchronization details in its signature.
+  private final ThreadLocal<ResolutionInvocation> resolutionInvocation = new ThreadLocal<>();
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -183,7 +180,7 @@ public class QueryInputResolver {
     this.queryStore = queryStore;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
     this.concurrentInputResolutionPermits =
-        new Semaphore(maxConcurrentInputResolutions, true /* FIFO across requests */);
+        new Semaphore(maxConcurrentInputResolutions, true /* best-effort request fairness */);
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
@@ -191,6 +188,7 @@ public class QueryInputResolver {
     this(metadataGraph, null);
   }
 
+  /** Read and clamp the per-request fan-out width so invalid deployment values remain safe. */
   private static int configuredMaxParallelInputResolutions() {
     int configured =
         ConfigProvider.getConfig()
@@ -206,6 +204,9 @@ public class QueryInputResolver {
     return clamped;
   }
 
+  /**
+   * Create the owned planning and metadata executors after validating their admission invariant.
+   */
   @PostConstruct
   void postConstruct() {
     if (MAX_CONCURRENT_INPUT_RESOLUTIONS > METADATA_IO_POOL_SIZE) {
@@ -214,58 +215,27 @@ public class QueryInputResolver {
     }
     ExecutorService planningExecutor = Executors.newVirtualThreadPerTaskExecutor();
     ExecutorService ioExecutor =
-        new ThreadPoolExecutor(
-            METADATA_IO_POOL_SIZE,
-            METADATA_IO_POOL_SIZE,
-            0L,
-            TimeUnit.MILLISECONDS,
-            new ArrayBlockingQueue<>(METADATA_IO_QUEUE_CAPACITY),
-            daemonMetadataIoThreadFactory(),
-            new ThreadPoolExecutor.AbortPolicy());
+        MetadataIoExecutors.newBoundedDaemonPool(
+            METADATA_IO_POOL_SIZE, METADATA_IO_QUEUE_CAPACITY, "floecat-query-input-metadata-");
     ownedBlockingExecutor = planningExecutor;
     ownedMetadataIoExecutor = ioExecutor;
     blockingExecutor = planningExecutor;
     metadataIoExecutor = ioExecutor;
-    if (observability != null) {
-      observability.gauge(
-          ServiceMetrics.Query.METADATA_CALLS_STUCK,
-          timedOutMetadataCalls::get,
-          "Metadata calls still holding resolver admission after their caller timed out");
-    }
   }
 
+  /**
+   * Stop owned executors without allowing interruption-insensitive metadata calls to block exit.
+   */
   @PreDestroy
-  void closeBlockingExecutor() {
+  void closeExecutors() {
     if (ownedBlockingExecutor != null) {
       ownedBlockingExecutor.shutdownNow();
     }
     if (ownedMetadataIoExecutor != null) {
-      CancellableCallRunner.cancelDiscardedTasks(ownedMetadataIoExecutor.shutdownNow());
-      awaitMetadataIoTermination(ownedMetadataIoExecutor);
-    }
-  }
-
-  private static ThreadFactory daemonMetadataIoThreadFactory() {
-    return runnable -> {
-      Thread thread =
-          new Thread(
-              runnable,
-              "floecat-query-input-metadata-" + METADATA_IO_THREAD_SEQUENCE.incrementAndGet());
-      thread.setDaemon(true);
-      return thread;
-    };
-  }
-
-  /**
-   * Bound shutdown while daemon workers let an interruption-insensitive store call be abandoned.
-   */
-  private static void awaitMetadataIoTermination(ExecutorService executor) {
-    try {
-      if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      if (!MetadataIoExecutors.shutdownNowAndAwait(
+          ownedMetadataIoExecutor, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
         LOG.warn("resolver metadata I/O executor did not terminate before shutdown timeout");
       }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
     }
   }
 
@@ -306,6 +276,8 @@ public class QueryInputResolver {
     final Map<ResourceId, TablePin> pinByTableId = new LinkedHashMap<>();
     // Request-local cache for current-snapshot table pins (no override, no as-of).
     final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache;
+    // Entries inserted into the caller cache by this attempt, for conditional eviction on failure.
+    final CurrentSnapshotCacheOwnership currentSnapshotCacheOwnership;
     // Tracks transient roots owned by this resolution attempt until they are retained or discarded.
     final ResolvingPinRoots resolvingPinRoots;
     final PhaseDiagnostics diagnostics;
@@ -317,6 +289,7 @@ public class QueryInputResolver {
         Optional<Timestamp> asOfDefault,
         Optional<String> defaultCatalog,
         ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+        CurrentSnapshotCacheOwnership currentSnapshotCacheOwnership,
         ResolvingPinRoots resolvingPinRoots,
         PhaseDiagnostics diagnostics,
         BooleanSupplier cancelled) {
@@ -325,6 +298,7 @@ public class QueryInputResolver {
       this.asOfDefault = asOfDefault;
       this.defaultCatalog = defaultCatalog;
       this.currentSnapshotPinCache = currentSnapshotPinCache;
+      this.currentSnapshotCacheOwnership = currentSnapshotCacheOwnership;
       this.resolvingPinRoots = resolvingPinRoots;
       this.diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
       this.cancelled = cancelled;
@@ -343,9 +317,79 @@ public class QueryInputResolver {
           asOfDefault,
           defaultCatalog,
           currentSnapshotPinCache,
+          currentSnapshotCacheOwnership,
           resolvingPinRoots,
           taskDiagnostics,
           cancelled);
+    }
+  }
+
+  /**
+   * Tracks single-flight holders inserted by one resolution attempt. A failed attempt evicts only
+   * its own holders, leaving entries supplied by earlier or concurrent owners untouched. Closing is
+   * terminal: a late task that records after cancellation removes and fails its holder instead of
+   * publishing an unrooted pin after cleanup has completed.
+   */
+  private static final class CurrentSnapshotCacheOwnership {
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache;
+    private final Map<ResourceId, CompletableFuture<TablePin>> owned = new LinkedHashMap<>();
+    private boolean terminal;
+
+    CurrentSnapshotCacheOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache) {
+      this.cache = cache;
+    }
+
+    /** Claim a newly inserted holder, or discard it when failure cleanup already won. */
+    synchronized boolean claim(ResourceId tableId, CompletableFuture<TablePin> holder) {
+      if (terminal) {
+        synchronized (holder) {
+          cache.remove(tableId, holder);
+          holder.completeExceptionally(
+              new CancellationException("input resolution no longer active"));
+        }
+        return false;
+      }
+      owned.put(tableId, holder);
+      return true;
+    }
+
+    /** Forget a holder that its lookup failure already evicted from the caller cache. */
+    synchronized void forget(ResourceId tableId, CompletableFuture<TablePin> holder) {
+      owned.remove(tableId, holder);
+    }
+
+    /**
+     * Retire a completed CURRENT entry before its pin relinquishes transient-root ownership. The
+     * holder lock makes cache removal atomic with a waiter's published-entry check.
+     */
+    synchronized void retire(ResourceId tableId, TablePin pin) {
+      CompletableFuture<TablePin> holder = cache.get(tableId);
+      if (holder == null
+          || !holder.isDone()
+          || holder.isCompletedExceptionally()
+          || holder.isCancelled()) {
+        return;
+      }
+      synchronized (holder) {
+        if (cache.get(tableId) == holder
+            && holder.getNow(null) == pin
+            && cache.remove(tableId, holder)) {
+          owned.remove(tableId, holder);
+        }
+      }
+    }
+
+    /** Evict and fail every holder still owned by this failed resolution attempt. */
+    synchronized void closeAndEvict() {
+      terminal = true;
+      owned.forEach(
+          (tableId, holder) -> {
+            synchronized (holder) {
+              cache.remove(tableId, holder);
+              holder.completeExceptionally(new CancellationException("input resolution failed"));
+            }
+          });
+      owned.clear();
     }
   }
 
@@ -465,23 +509,38 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    return resolveInputs(
-        queryId,
-        correlationId,
-        inputs,
-        asOfDefault,
-        defaultCatalogId,
-        currentSnapshotPinCache,
-        diagnostics,
-        NEVER_CANCELLED);
+    ResolutionInvocation current = resolutionInvocation.get();
+    if (current != null) {
+      return resolveInputsViaLegacyOverride(
+          queryId,
+          correlationId,
+          inputs,
+          asOfDefault,
+          defaultCatalogId,
+          currentSnapshotPinCache,
+          diagnostics);
+    }
+    return withResolutionInvocation(
+        new ResolutionInvocation(currentSnapshotPinCache, NEVER_CANCELLED),
+        () ->
+            resolveInputsViaLegacyOverride(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics));
   }
 
   /**
-   * Backward-compatible overload for callers compiled against the original cache contract.
+   * Compatibility overload for callers that own a completed-pin {@link Map} cache.
    *
-   * <p>The legacy cache stores completed pins and is not required to be concurrent. Copy it into a
-   * concurrent single-flight cache for this call, then copy successfully resolved pins back on the
-   * calling thread. Worker tasks therefore never mutate a caller-owned plain {@link Map}.
+   * <p>The supplied cache is not required to be concurrent. Copy it into a concurrent single-flight
+   * cache for this call, then copy successfully resolved pins back on the calling thread. Worker
+   * tasks therefore never mutate a caller-owned plain map. If copy-back fails, restore the map's
+   * original contents before releasing the attempt's transient roots. When restoration cannot be
+   * proven, retain those roots until the store grace period so any copied prefix remains protected.
    */
   public ResolutionResult resolveInputs(
       String queryId,
@@ -491,30 +550,51 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
-        new ConcurrentHashMap<>();
-    synchronized (currentSnapshotPinCache) {
-      currentSnapshotPinCache.forEach(
-          (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
+    ResolutionInvocation current = resolutionInvocation.get();
+    if (current != null) {
+      return resolveInputsCore(
+          queryId,
+          correlationId,
+          inputs,
+          asOfDefault,
+          defaultCatalogId,
+          current.currentSnapshotPinCache(),
+          diagnostics,
+          current.cancelled());
     }
+    Map<ResourceId, TablePin> initialCache = snapshotCompletedPinCache(currentSnapshotPinCache);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
+        toSingleFlightCache(initialCache);
     ResolutionResult result =
-        resolveInputs(
+        resolveInputsCore(
             queryId,
             correlationId,
             inputs,
             asOfDefault,
             defaultCatalogId,
             singleFlightCache,
-            diagnostics);
-    synchronized (currentSnapshotPinCache) {
-      singleFlightCache.forEach(
-          (tableId, pinFuture) -> {
-            if (pinFuture.isDone()
-                && !pinFuture.isCompletedExceptionally()
-                && !pinFuture.isCancelled()) {
-              currentSnapshotPinCache.put(tableId, Futures.join(pinFuture));
-            }
-          });
+            diagnostics,
+            NEVER_CANCELLED);
+    try {
+      copyCompletedPins(singleFlightCache, currentSnapshotPinCache);
+    } catch (RuntimeException | Error copyFailure) {
+      if (restoreCompletedPinCache(currentSnapshotPinCache, initialCache, copyFailure)) {
+        try {
+          if (queryStore != null && queryId != null && !queryId.isEmpty()) {
+            queryStore.releaseResolvingPinBlobs(
+                queryId, QueryPins.gcRootUris(result.relationPinSet()));
+          }
+        } catch (RuntimeException | Error cleanupFailure) {
+          copyFailure.addSuppressed(cleanupFailure);
+        }
+      } else {
+        // A map with non-transactional or rejecting mutations may retain a copied prefix. Keep the
+        // attempt's roots until the store grace period rather than exposing that prefix unrooted.
+        LOG.warnf(
+            "Retaining resolving pin roots after legacy cache rollback failed query_id=%s",
+            queryId);
+      }
+      throw copyFailure;
     }
     return result;
   }
@@ -522,9 +602,35 @@ public class QueryInputResolver {
   /**
    * As {@link #resolveInputs(String, String, List, Optional, Optional, ConcurrentMap,
    * PhaseDiagnostics)}, but stops before additional metadata work and interrupts fan-out tasks when
-   * {@code cancelled} becomes true.
+   * {@code cancelled} becomes true. The supplier may be read concurrently by the caller and worker
+   * threads, so it must be non-blocking and thread-safe (typically {@link AtomicBoolean#get}).
+   * Observed cancellation throws {@link CancellationException}.
    */
   public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    throwIfCancelled(cancelled);
+    return withResolutionInvocation(
+        new ResolutionInvocation(currentSnapshotPinCache, cancelled),
+        () ->
+            resolveInputs(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics));
+  }
+
+  /** Run the base resolution implementation after compatibility overload dispatch has completed. */
+  private ResolutionResult resolveInputsCore(
       String queryId,
       String correlationId,
       List<QueryInput> inputs,
@@ -545,7 +651,6 @@ public class QueryInputResolver {
       try {
         defaultCatalog =
             withInputResolutionPermit(
-                correlationId,
                 cancelled,
                 () -> metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName));
       } finally {
@@ -561,6 +666,7 @@ public class QueryInputResolver {
             asOfDefault,
             defaultCatalog,
             currentSnapshotPinCache,
+            new CurrentSnapshotCacheOwnership(currentSnapshotPinCache),
             new ResolvingPinRoots(queryStore, queryId),
             diag,
             cancelled);
@@ -577,9 +683,7 @@ public class QueryInputResolver {
           nameInputs.isEmpty()
               ? Map.of()
               : withInputResolutionPermit(
-                  correlationId,
-                  cancelled,
-                  () -> metadataGraph.resolveNames(correlationId, nameInputs));
+                  cancelled, () -> metadataGraph.resolveNames(correlationId, nameInputs));
       throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
@@ -603,6 +707,13 @@ public class QueryInputResolver {
           state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
     } catch (RuntimeException | Error e) {
       try {
+        // Evict attempt-owned cache entries before releasing their transient roots, so another
+        // resolve call cannot observe an unrooted completed pin in between those operations.
+        state.currentSnapshotCacheOwnership.closeAndEvict();
+      } catch (RuntimeException | Error cleanupFailure) {
+        e.addSuppressed(cleanupFailure);
+      }
+      try {
         state.resolvingPinRoots.releaseAll();
       } catch (RuntimeException | Error cleanupFailure) {
         e.addSuppressed(cleanupFailure);
@@ -611,6 +722,116 @@ public class QueryInputResolver {
     }
   }
 
+  /** Dispatch through the completed-pin extension seam and copy any subclass cache writes. */
+  private ResolutionResult resolveInputsViaLegacyOverride(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    Map<ResourceId, TablePin> completedPinCache = completedPins(currentSnapshotPinCache);
+    ResolutionResult result =
+        resolveInputs(
+            queryId,
+            correlationId,
+            inputs,
+            asOfDefault,
+            defaultCatalogId,
+            completedPinCache,
+            diagnostics);
+    completedPinCache.forEach(
+        (tableId, pin) ->
+            currentSnapshotPinCache.putIfAbsent(tableId, CompletableFuture.completedFuture(pin)));
+    return result;
+  }
+
+  /**
+   * Install one cancellable invocation while preserving nested resolver calls on the same thread.
+   */
+  private <T> T withResolutionInvocation(ResolutionInvocation invocation, Supplier<T> operation) {
+    ResolutionInvocation previous = resolutionInvocation.get();
+    resolutionInvocation.set(invocation);
+    try {
+      return operation.get();
+    } finally {
+      if (previous == null) {
+        resolutionInvocation.remove();
+      } else {
+        resolutionInvocation.set(previous);
+      }
+    }
+  }
+
+  /** Snapshot a completed-pin cache without exposing it to resolution workers. */
+  private static Map<ResourceId, TablePin> snapshotCompletedPinCache(
+      Map<ResourceId, TablePin> completedPinCache) {
+    synchronized (completedPinCache) {
+      return new LinkedHashMap<>(completedPinCache);
+    }
+  }
+
+  /** Convert a completed-pin snapshot into the resolver's single-flight representation. */
+  private static ConcurrentMap<ResourceId, CompletableFuture<TablePin>> toSingleFlightCache(
+      Map<ResourceId, TablePin> completedPinCache) {
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
+        new ConcurrentHashMap<>();
+    completedPinCache.forEach(
+        (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
+    return singleFlightCache;
+  }
+
+  /** Restore the caller cache after a failed copy, recording rollback failures on the cause. */
+  private static boolean restoreCompletedPinCache(
+      Map<ResourceId, TablePin> completedPinCache,
+      Map<ResourceId, TablePin> initialCache,
+      Throwable copyFailure) {
+    synchronized (completedPinCache) {
+      if (completedPinCache.equals(initialCache)) {
+        return true;
+      }
+      try {
+        completedPinCache.clear();
+        completedPinCache.putAll(initialCache);
+      } catch (RuntimeException | Error rollbackFailure) {
+        copyFailure.addSuppressed(rollbackFailure);
+      }
+      return completedPinCache.equals(initialCache);
+    }
+  }
+
+  /**
+   * Snapshot successful single-flight entries into a completed-pin map after resolution succeeds.
+   */
+  private static void copyCompletedPins(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache,
+      Map<ResourceId, TablePin> completedPinCache) {
+    synchronized (completedPinCache) {
+      completedPins(singleFlightCache).forEach(completedPinCache::put);
+    }
+  }
+
+  /** Snapshot only successfully completed single-flight entries. */
+  private static Map<ResourceId, TablePin> completedPins(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache) {
+    Map<ResourceId, TablePin> completed = new LinkedHashMap<>();
+    singleFlightCache.forEach(
+        (tableId, pinFuture) -> {
+          if (pinFuture.isDone()
+              && !pinFuture.isCompletedExceptionally()
+              && !pinFuture.isCancelled()) {
+            completed.put(tableId, Futures.join(pinFuture));
+          }
+        });
+    return completed;
+  }
+
+  /** Per-thread state carried through the completed-pin virtual extension seam. */
+  private record ResolutionInvocation(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      BooleanSupplier cancelled) {}
+
   // =============================================================================
   // Pin resolution
   // =============================================================================
@@ -618,15 +839,17 @@ public class QueryInputResolver {
   /**
    * One input's resolution: the id recorded in {@code resolved}, and the table pins it contributes,
    * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
-   * its own single pin.
+   * its own single pin. A view may retain a successfully resolved dependency prefix plus a terminal
+   * failure; ordered merge consumes that prefix before rethrowing the deferred failure.
    */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
 
   /** Merge one completed plan on the request thread, preserving request-order semantics. */
-  private void mergePlan(ResolutionState state, InputPlan plan) {
+  private void mergePlan(
+      ResolutionState state, InputPlan plan, Consumer<TablePin> discardCompatiblePin) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
-      mergePin(state, pin);
+      mergePin(state, pin, discardCompatiblePin);
     }
     if (plan.terminalFailure() instanceof RuntimeException runtime) {
       throw runtime;
@@ -646,7 +869,8 @@ public class QueryInputResolver {
       BooleanSupplier cancelled) {
     for (QueryInput in : inputs) {
       throwIfCancelled(cancelled);
-      mergePlan(state, planInput(state, in, resolvedNames));
+      mergePlan(
+          state, planInput(state, in, resolvedNames), pin -> discardCompatiblePin(state, pin));
     }
   }
 
@@ -656,13 +880,14 @@ public class QueryInputResolver {
    * guaranteed thread-safe); its per-key totals — snapshot-lookup calls and time, cache hits/misses
    * — are flushed to the real diagnostics once resolution has joined. The result is the per-RPC
    * aggregate of those counters, not a per-relation breakdown; the coarse phase timings are
-   * measured by the caller around this call regardless. One task state is shared by all tasks
-   * because everything they touch is immutable or thread-safe (the current-snapshot cache and the
-   * accumulator). Keep off-thread diagnostics to counters and durations only; one-shot put/emit
-   * values must stay on the request thread because the accumulator rejects them. The task timing
-   * keys are aggregate work time in this concurrent path, so they may exceed the enclosing
-   * wall-clock resolver phase; dashboards must not treat them as elapsed time. Gathering plans in
-   * input order keeps the caller's merge deterministic (first-touch-wins, conflict detection).
+   * measured by the caller around this call regardless. Each input receives its own state view so
+   * mutable per-plan fields can never become shared task state; only immutable resolution context
+   * and the explicitly thread-safe single-flight cache, root tracker, and diagnostics accumulator
+   * are shared. Keep off-thread diagnostics to counters and durations only; the accumulator safely
+   * omits one-shot put/emit values that cannot be combined across inputs. The task timing keys are
+   * aggregate work time in this concurrent path, so they may exceed the enclosing wall-clock
+   * resolver phase; dashboards must not treat them as elapsed time. Gathering plans in input order
+   * keeps the caller's merge deterministic (first-touch-wins, conflict detection).
    */
   private void planInputsConcurrently(
       ResolutionState state,
@@ -670,15 +895,19 @@ public class QueryInputResolver {
       Map<NameRef, Optional<ResourceId>> resolvedNames,
       BooleanSupplier cancelled) {
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
-    ResolutionState taskState = state.withDiagnostics(taskDiagnostics);
+    List<TablePin> deferredDiscards = new ArrayList<>();
     try {
       BoundedFanout.forEachOrdered(
           inputs,
           maxParallelInputResolutions,
           blockingExecutor,
-          in -> planInput(taskState, in, resolvedNames),
-          plan -> mergePlan(state, plan),
+          in -> planInput(state.withDiagnostics(taskDiagnostics), in, resolvedNames),
+          plan -> mergePlan(state, plan, deferredDiscards::add),
           cancelled);
+      // Ordered merging can finish a compatible CURRENT holder while a later parallel planner is
+      // still registering its own use of that holder. Retire losing holders only after every
+      // planner has joined, so a waiter cannot observe retirement as a spurious cancellation.
+      deferredDiscards.forEach(pin -> discardCompatiblePin(state, pin));
     } finally {
       // A failed or cancelled sibling can still leave completed tasks' pin work in this
       // accumulator. Preserve those counters for the request's failure telemetry too.
@@ -692,8 +921,16 @@ public class QueryInputResolver {
     }
   }
 
-  private <T> T withInputResolutionPermit(
-      String correlationId, BooleanSupplier cancelled, Supplier<T> operation) {
+  /**
+   * Run one overlay call under process-wide metadata admission.
+   *
+   * <p>Thread-confined overlays execute on the caller. Concurrent overlays dispatch store I/O to
+   * the platform-worker pool so virtual planning threads cannot pin carriers. Cancellable callers
+   * return promptly when their signal or interrupt wins; calls without a cancellation signal
+   * deliberately wait without an invented deadline. Admission remains owned by live downstream work
+   * even after a cancellable caller returns.
+   */
+  private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
     if (!metadataGraph.supportsConcurrentResolution()) {
       // An overlay can opt out because it owns request-thread-confined state. Preserve that
       // contract even for a cancellable caller; it can cancel while awaiting admission, but an
@@ -701,42 +938,15 @@ public class QueryInputResolver {
       return withInputResolutionPermitSynchronously(cancelled, operation);
     }
     if (cancelled == NEVER_CANCELLED) {
-      try {
-        return CancellableCallRunner.callUncancellable(
-            metadataIoExecutor,
-            concurrentInputResolutionPermits,
-            operation,
-            UNINTERRUPTIBLE_METADATA_WAIT_SECONDS,
-            TimeUnit.SECONDS,
-            "resolver metadata I/O executor shut down",
-            "interrupted while awaiting resolver I/O",
-            "resolver metadata I/O timed out",
-            new CancellableCallRunner.TimeoutListener() {
-              @Override
-              public void timedOut() {
-                int stuck = timedOutMetadataCalls.incrementAndGet();
-                LOG.warnf(
-                    "resolver metadata call timed out while still active; %d call(s) retain"
-                        + " metadata admission",
-                    stuck);
-              }
-
-              @Override
-              public void finished() {
-                timedOutMetadataCalls.decrementAndGet();
-              }
-            });
-      } catch (CancellableCallRunner.CallTimeoutException e) {
-        throw GrpcErrors.timeout(correlationId, null, Map.of(), e);
-      }
+      return CancellableCallRunner.callWithoutCancellation(
+          metadataIoExecutor, concurrentInputResolutionPermits, operation, METADATA_CALL_FAILURES);
     }
     return CancellableCallRunner.call(
         metadataIoExecutor,
         concurrentInputResolutionPermits,
         cancelled,
         operation,
-        "input resolution cancelled",
-        "interrupted while awaiting resolver I/O");
+        METADATA_CANCELLATION_FAILURES);
   }
 
   /** Runs one metadata operation while retaining its global permit until the call truly returns. */
@@ -859,6 +1069,11 @@ public class QueryInputResolver {
     };
   }
 
+  /**
+   * Resolve one table pin. CURRENT lookups use a single-flight holder whose owner constructs and
+   * roots the pin before publication; failures evict the holder and wake waiters. Explicit and
+   * AS-OF requests reuse an exactly matching committed pin or construct and root a fresh one.
+   */
   private TablePin pinForTable(
       ResolutionState state,
       ResourceId rid,
@@ -868,65 +1083,69 @@ public class QueryInputResolver {
         isExplicitCurrentSnapshot(override) ? Optional.empty() : asOfDefault;
     if (usesCurrentSnapshotFallback(override, effectiveAsOfDefault)) {
       // Single-flight per table: two references to the same table's CURRENT snapshot must freeze
-      // the
-      // SAME snapshot even when they resolve on different threads, or an ingest landing between two
-      // independent lookups would give them different snapshots and turn a compatible pair into a
-      // pin conflict. A CompletableFuture placeholder gives that single-flight WITHOUT
-      // computeIfAbsent
-      // holding the map's bin lock across the store round-trip — which would serialize unrelated
-      // table ids that hash to the same bin. The winner (whoever inserts the incomplete future)
-      // runs
-      // the one lookup; concurrent same-id callers await its result.
-      CompletableFuture<TablePin> holder = new CompletableFuture<>();
-      CompletableFuture<TablePin> inflight = state.currentSnapshotPinCache.putIfAbsent(rid, holder);
-      TablePin pin;
-      if (inflight == null) {
-        try {
-          long snapshotPinStartNs = System.nanoTime();
-          pin =
-              withInputResolutionPermit(
-                  state.correlationId,
-                  state.cancelled,
-                  () -> {
-                    TablePin constructed =
-                        metadataGraph.tablePinFor(
-                            state.correlationId, rid, override, effectiveAsOfDefault);
-                    state.resolvingPinRoots.register(constructed);
-                    return constructed;
-                  });
-          state.diagnostics.count("pin.snapshot_calls");
-          state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
-        } catch (RuntimeException | Error e) {
-          // Never cache a failure: drop the placeholder so a retry re-resolves, and release any
-          // callers already awaiting this id with the same error.
-          state.currentSnapshotPinCache.remove(rid, holder);
-          holder.completeExceptionally(e);
-          throw e;
+      // the same snapshot even when they resolve on different threads. Otherwise, an ingest between
+      // independent lookups can turn a compatible pair into a conflict. A CompletableFuture
+      // placeholder provides single-flight without holding a map-bin lock across the store call:
+      // the task that inserts the placeholder performs the lookup, and same-table tasks await it.
+      while (true) {
+        CompletableFuture<TablePin> holder = new CompletableFuture<>();
+        CompletableFuture<TablePin> inflight =
+            state.currentSnapshotPinCache.putIfAbsent(rid, holder);
+        TablePin pin;
+        if (inflight == null) {
+          if (!state.currentSnapshotCacheOwnership.claim(rid, holder)) {
+            throw new CancellationException("input resolution no longer active");
+          }
+          try {
+            long snapshotPinStartNs = System.nanoTime();
+            pin =
+                withInputResolutionPermit(
+                    state.cancelled,
+                    () -> {
+                      TablePin constructed =
+                          metadataGraph.tablePinFor(
+                              state.correlationId, rid, override, effectiveAsOfDefault);
+                      state.resolvingPinRoots.register(constructed);
+                      return constructed;
+                    });
+            state.diagnostics.count("pin.snapshot_calls");
+            state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+          } catch (RuntimeException | Error e) {
+            // Never cache a failure: drop the placeholder so a retry re-resolves, and release any
+            // callers already awaiting this id with the same error.
+            state.currentSnapshotPinCache.remove(rid, holder);
+            state.currentSnapshotCacheOwnership.forget(rid, holder);
+            holder.completeExceptionally(e);
+            throw e;
+          }
+          holder.complete(pin);
+          state.diagnostics.count("pin.current_snapshot_cache_misses");
+          return pin;
         }
-        holder.complete(pin);
-        state.diagnostics.count("pin.current_snapshot_cache_misses");
-      } else {
+
         pin = awaitCurrentSnapshot(state, inflight);
-        state.resolvingPinRoots.register(pin);
-        state.diagnostics.count("pin.current_snapshot_cache_hits");
+        // Failed owners remove the holder under this same lock before releasing their root. A
+        // waiter therefore either installs its own root while the holder remains published or
+        // retries against the replacement entry without using a retired pin.
+        synchronized (inflight) {
+          if (state.currentSnapshotPinCache.get(rid) == inflight) {
+            state.resolvingPinRoots.register(pin);
+            state.diagnostics.count("pin.current_snapshot_cache_hits");
+            return pin;
+          }
+        }
+        throwIfCancelled(state.cancelled);
       }
-      return pin;
     }
     state.diagnostics.count(
         "pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
     state.diagnostics.count(
         "pin.asof_snapshot_pins",
         (override != null && override.hasAsOf()) || asOfDefault.isPresent());
-    // Before re-resolving against the LIVE root (which throws once the pinned snapshot has left the
-    // manifest — deleted or expired), reuse the query's existing committed pin if it already froze
-    // THIS same request, mirroring the CURRENT path's per-request cache and the first-touch-wins
-    // rule. A snapshot pinned at BeginQuery keeps its blobs GC-rooted for the query's lifetime, so
-    // a
-    // later DescribeInputs restating the same request must get the pin back — not a spurious
-    // NOT_FOUND or a QUERY_TABLE_PIN_CONFLICT from resolving a different snapshot at the same time.
-    // Covers explicit snapshot_id AND AS_OF (incl. an asOfDefault): both resolve deterministically
-    // to one frozen snapshot. Only a genuinely different request (other id / other as-of)
-    // re-resolves.
+    // Reuse a committed pin that froze this exact explicit or AS-OF request. The committed query
+    // keeps its blobs rooted even after the live manifest no longer contains that snapshot, and
+    // first-touch semantics require subsequent resolution to return the same frozen pin. A
+    // different snapshot id or timestamp still resolves against the live root.
     if (queryStore != null) {
       Optional<TablePin> reused =
           queryStore
@@ -944,7 +1163,6 @@ public class QueryInputResolver {
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
         withInputResolutionPermit(
-            state.correlationId,
             state.cancelled,
             () -> {
               TablePin constructed =
@@ -973,19 +1191,9 @@ public class QueryInputResolver {
         Thread.currentThread().interrupt();
         throw new CancellationException("interrupted while awaiting current snapshot pin");
       } catch (ExecutionException e) {
-        rethrowAsyncFailure(e.getCause());
+        throw Futures.propagate(e.getCause(), "unexpected checked exception from async task");
       }
     }
-  }
-
-  private static void rethrowAsyncFailure(Throwable failure) {
-    if (failure instanceof RuntimeException runtime) {
-      throw runtime;
-    }
-    if (failure instanceof Error error) {
-      throw error;
-    }
-    throw new IllegalStateException("unexpected checked exception from async task", failure);
   }
 
   private boolean usesCurrentSnapshotFallback(
@@ -1013,7 +1221,10 @@ public class QueryInputResolver {
     }
   }
 
-  // Helper method to compute effective as-of timestamp for dependency pinning
+  /**
+   * Selects dependency pinning time: explicit CURRENT clears the request default, explicit AS-OF
+   * replaces it, and an input without either selector inherits the request default.
+   */
   private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
     if (isExplicitCurrentSnapshot(override)) {
       return Optional.empty();
@@ -1070,7 +1281,6 @@ public class QueryInputResolver {
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
         withInputResolutionPermit(
-            state.correlationId,
             state.cancelled,
             () ->
                 metadataGraph
@@ -1095,9 +1305,7 @@ public class QueryInputResolver {
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
               withInputResolutionPermit(
-                  state.correlationId,
-                  state.cancelled,
-                  () -> metadataGraph.resolveNames(state.correlationId, baseRefs));
+                  state.cancelled, () -> metadataGraph.resolveNames(state.correlationId, baseRefs));
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {
@@ -1109,7 +1317,8 @@ public class QueryInputResolver {
         });
   }
 
-  private void mergePin(ResolutionState state, TablePin pin) {
+  private void mergePin(
+      ResolutionState state, TablePin pin, Consumer<TablePin> discardCompatiblePin) {
     if (pin == null) {
       return;
     }
@@ -1121,7 +1330,13 @@ public class QueryInputResolver {
     // First-touch wins: compatible later pins relinquish only their own provisional roots.
     QueryPins.reconcile(existing, pin, state.correlationId);
     if (existing != pin) {
-      state.resolvingPinRoots.discard(pin);
+      discardCompatiblePin.accept(pin);
     }
+  }
+
+  /** Retire a compatible losing pin's cache entry before releasing its provisional roots. */
+  private void discardCompatiblePin(ResolutionState state, TablePin pin) {
+    state.currentSnapshotCacheOwnership.retire(pin.getTableId(), pin);
+    state.resolvingPinRoots.discard(pin);
   }
 }

@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.resolver;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,6 +34,7 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
@@ -53,6 +55,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,6 +99,48 @@ public class QueryInputResolverTest {
             return failure;
           }
         });
+  }
+
+  @Test
+  void cancellableOverloadPreservesLegacyMapOverrideDispatch() {
+    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
+    QueryInputResolver legacySubclass =
+        new QueryInputResolver(metadataGraph) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              Map<ResourceId, TablePin> currentSnapshotPinCache,
+              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
+            legacyOverrideCalled.set(true);
+            return super.resolveInputs(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics);
+          }
+        };
+    ResourceId tableId = rid("legacy-dispatch");
+
+    var result =
+        legacySubclass.resolveInputs(
+            "q-legacy-dispatch",
+            "cid",
+            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+            Optional.empty(),
+            Optional.empty(),
+            new ConcurrentHashMap<>(),
+            null,
+            () -> false);
+
+    assertTrue(legacyOverrideCalled.get());
+    assertEquals(tableId, result.resolved().getFirst());
   }
 
   /** Verifies cancellation returns promptly even when the active metadata operation ignores it. */
@@ -173,7 +218,7 @@ public class QueryInputResolverTest {
       assertEquals(1, registrationThreads.size());
       assertTrue(registrationThreads.get(0).getName().startsWith("floecat-query-input-metadata-"));
     } finally {
-      resolverWithDedicatedExecutor.closeBlockingExecutor();
+      resolverWithDedicatedExecutor.closeExecutors();
     }
   }
 
@@ -412,7 +457,7 @@ public class QueryInputResolverTest {
         CompletableFuture.allOf(requests).join();
       }
     } finally {
-      resolverWithDedicatedExecutor.closeBlockingExecutor();
+      resolverWithDedicatedExecutor.closeExecutors();
     }
   }
 
@@ -438,7 +483,7 @@ public class QueryInputResolverTest {
                       thread.isDaemon()
                           && thread.getName().startsWith("floecat-query-input-metadata-")));
     } finally {
-      resolverWithDedicatedExecutor.closeBlockingExecutor();
+      resolverWithDedicatedExecutor.closeExecutors();
     }
   }
 
@@ -508,7 +553,7 @@ public class QueryInputResolverTest {
     } finally {
       graph.releasePins.countDown();
       CompletableFuture.allOf(activeRequests.toArray(CompletableFuture[]::new)).join();
-      saturatedResolver.closeBlockingExecutor();
+      saturatedResolver.closeExecutors();
     }
   }
 
@@ -561,7 +606,7 @@ public class QueryInputResolverTest {
       if (admitted != null) {
         assertEquals(null, admitted.join());
       }
-      resolverWithTurnover.closeBlockingExecutor();
+      resolverWithTurnover.closeExecutors();
     }
   }
 
@@ -1635,6 +1680,367 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void discardedCurrentPinIsEvictedBeforeItsRootsAreReleased() {
+    ResourceId tableId = rid("DISCARDED_CURRENT_CACHE");
+    var graph =
+        new FakeGraph() {
+          @Override
+          public TablePin tablePinFor(
+              String correlationId,
+              ResourceId id,
+              SnapshotRef override,
+              Optional<Timestamp> asOfDefault) {
+            TablePin pin = super.tablePinFor(correlationId, id, override, asOfDefault);
+            return pin.toBuilder()
+                .setTableBlobUri("s3://" + id.getId() + "/table-" + pin.getSnapshotId() + ".pb")
+                .setSnapshotBlobUri("s3://" + id.getId() + "/snap-" + pin.getSnapshotId() + ".pb")
+                .build();
+          }
+        };
+    graph.setCurrentSnapshot(tableId, 20L);
+    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(graph, store);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              assertFalse(cache.containsKey(tableId), "cache must retire before root release");
+              return null;
+            })
+        .when(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-discarded-current"),
+            org.mockito.ArgumentMatchers.argThat(
+                roots -> roots.contains("s3://DISCARDED_CURRENT_CACHE/snap-20.pb")));
+
+    QueryInput explicit =
+        QueryInput.newBuilder()
+            .setTableId(tableId)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(10L))
+            .build();
+    QueryInput current = QueryInput.newBuilder().setTableId(tableId).build();
+    withStore.resolveInputs(
+        "q-discarded-current",
+        "cid-first",
+        List.of(explicit, current),
+        Optional.empty(),
+        Optional.empty(),
+        cache,
+        null);
+
+    assertFalse(cache.containsKey(tableId));
+    org.mockito.Mockito.verify(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-discarded-current"),
+            org.mockito.ArgumentMatchers.argThat(
+                roots -> roots.contains("s3://DISCARDED_CURRENT_CACHE/snap-20.pb")));
+    graph.setCurrentSnapshot(tableId, 30L);
+    TablePin refreshed =
+        withStore
+            .resolveInputs(
+                "q-discarded-current",
+                "cid-second",
+                List.of(current),
+                Optional.empty(),
+                Optional.empty(),
+                cache,
+                null)
+            .relationPinSet()
+            .getPins(0)
+            .getTablePin();
+
+    assertEquals(30L, refreshed.getSnapshotId());
+    assertEquals(
+        2L,
+        graph.pinCalls().stream()
+            .filter(
+                call ->
+                    call.tableId().equals(tableId)
+                        && (call.override() == null
+                            || call.override().getWhichCase()
+                                == SnapshotRef.WhichCase.WHICH_NOT_SET))
+            .count());
+  }
+
+  @Test
+  void concurrentPlanningDefersCurrentRetirementUntilEveryWaiterHasJoined() throws Exception {
+    ResourceId shared = rid("DEFERRED_CURRENT_RETIREMENT");
+    ResourceId blocked = rid("DEFERRED_CURRENT_BLOCKER");
+    metadataGraph.setCurrentSnapshot(shared, 20L);
+    metadataGraph.setCurrentSnapshot(blocked, 30L);
+    CountDownLatch blockerEntered = new CountDownLatch(1);
+    CountDownLatch releaseBlocker = new CountDownLatch(1);
+    metadataGraph.beforeTablePin(
+        tableId -> {
+          if (!tableId.equals(blocked)) {
+            return;
+          }
+          blockerEntered.countDown();
+          try {
+            releaseBlocker.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.util.concurrent.CancellationException();
+          }
+        });
+
+    CountDownLatch retired = new CountDownLatch(1);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache =
+        new ConcurrentHashMap<>() {
+          @Override
+          public boolean remove(Object key, Object value) {
+            boolean removed = super.remove(key, value);
+            if (removed && shared.equals(key)) {
+              retired.countDown();
+            }
+            return removed;
+          }
+        };
+    QueryInput explicit =
+        QueryInput.newBuilder()
+            .setTableId(shared)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(10L))
+            .build();
+    QueryInput current = QueryInput.newBuilder().setTableId(shared).build();
+    QueryInput blocker = QueryInput.newBuilder().setTableId(blocked).build();
+
+    CompletableFuture<QueryInputResolver.ResolutionResult> resolution =
+        CompletableFuture.supplyAsync(
+            () ->
+                resolver.resolveInputs(
+                    "q-deferred-retirement",
+                    "cid",
+                    List.of(explicit, current, current, blocker),
+                    Optional.empty(),
+                    Optional.empty(),
+                    cache,
+                    null));
+
+    try {
+      assertTrue(blockerEntered.await(2, TimeUnit.SECONDS));
+      assertFalse(
+          retired.await(200, TimeUnit.MILLISECONDS),
+          "a compatible CURRENT holder must remain published until every planner has joined");
+    } finally {
+      releaseBlocker.countDown();
+    }
+    QueryInputResolver.ResolutionResult result = resolution.get(2, TimeUnit.SECONDS);
+
+    assertTrue(retired.await(2, TimeUnit.SECONDS));
+    assertEquals(List.of(shared, shared, shared, blocked), result.resolved());
+    assertEquals(2, result.relationPinSet().getPinsCount());
+  }
+
+  @Test
+  void currentSnapshotWaiterRetriesWhenSharedHolderRetiresBeforeValidation() {
+    ResourceId shared = rid("RETIRED_CURRENT_WAITER");
+    metadataGraph.setCurrentSnapshot(shared, 30L);
+    TablePin retiredPin =
+        TablePin.newBuilder()
+            .setTableId(shared)
+            .setPinKind(PinKind.PIN_KIND_CURRENT)
+            .setSnapshotId(20L)
+            .setTableBlobUri("s3://RETIRED_CURRENT_WAITER/table-20.pb")
+            .setSnapshotBlobUri("s3://RETIRED_CURRENT_WAITER/snapshot-20.pb")
+            .build();
+    AtomicBoolean retireBeforeValidation = new AtomicBoolean(true);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache =
+        new ConcurrentHashMap<>() {
+          @Override
+          public CompletableFuture<TablePin> get(Object key) {
+            if (shared.equals(key) && retireBeforeValidation.compareAndSet(true, false)) {
+              super.remove(key);
+              return null;
+            }
+            return super.get(key);
+          }
+        };
+    cache.put(shared, CompletableFuture.completedFuture(retiredPin));
+
+    QueryInputResolver.ResolutionResult result =
+        resolver.resolveInputs(
+            "q-retired-current-waiter",
+            "cid",
+            List.of(QueryInput.newBuilder().setTableId(shared).build()),
+            Optional.empty(),
+            Optional.empty(),
+            cache,
+            null);
+
+    assertEquals(30L, result.relationPinSet().getPins(0).getTablePin().getSnapshotId());
+    assertEquals(
+        1L,
+        metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(shared)).count());
+    assertTrue(cache.containsKey(shared));
+  }
+
+  @Test
+  void concurrentCacheEvictsPinsOwnedByAFailedResolution() {
+    ResourceId successful = rid("CONCURRENT_CACHE_SUCCESS");
+    ResourceId failing = rid("CONCURRENT_CACHE_FAILURE");
+    var graph = new FakeGraph();
+    graph.failPinFor(failing);
+    var withStore =
+        new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-concurrent-cache",
+                "cid",
+                List.of(
+                    QueryInput.newBuilder().setTableId(successful).build(),
+                    QueryInput.newBuilder().setTableId(failing).build()),
+                Optional.empty(),
+                Optional.empty(),
+                cache,
+                null));
+
+    assertTrue(cache.isEmpty());
+  }
+
+  @Test
+  void failedResolutionPreservesConcurrentCacheEntriesOwnedByAnEarlierCall() {
+    ResourceId cached = rid("CONCURRENT_CACHE_EXISTING");
+    ResourceId failing = rid("CONCURRENT_CACHE_NEW_FAILURE");
+    var graph = new FakeGraph();
+    graph.failPinFor(failing);
+    var withStore =
+        new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+
+    withStore.resolveInputs(
+        "q-concurrent-cache-existing",
+        "cid-first",
+        List.of(QueryInput.newBuilder().setTableId(cached).build()),
+        Optional.empty(),
+        Optional.empty(),
+        cache,
+        null);
+    CompletableFuture<TablePin> existing = cache.get(cached);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-concurrent-cache-existing",
+                "cid-second",
+                List.of(
+                    QueryInput.newBuilder().setTableId(cached).build(),
+                    QueryInput.newBuilder().setTableId(failing).build()),
+                Optional.empty(),
+                Optional.empty(),
+                cache,
+                null));
+
+    assertSame(existing, cache.get(cached));
+    assertEquals(Set.of(cached), cache.keySet());
+  }
+
+  @Test
+  void cacheWaiterRootsPinBeforeFailedOwnerCanReleaseIt() throws Exception {
+    ResourceId shared = rid("CONCURRENT_CACHE_HANDOFF");
+    ResourceId failing = rid("CONCURRENT_CACHE_HANDOFF_FAILURE");
+    CountDownLatch failingLookupStarted = new CountDownLatch(1);
+    CountDownLatch allowFailure = new CountDownLatch(1);
+    CountDownLatch waiterRegistrationStarted = new CountDownLatch(1);
+    CountDownLatch allowWaiterRegistration = new CountDownLatch(1);
+    CountDownLatch ownerReleasedRoot = new CountDownLatch(1);
+    AtomicInteger sharedRegistrations = new AtomicInteger();
+    var graph = new FakeGraph();
+    graph.failPinFor(failing);
+    graph.beforeTablePin(
+        tableId -> {
+          if (tableId.equals(failing)) {
+            failingLookupStarted.countDown();
+            try {
+              allowFailure.await();
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new java.util.concurrent.CancellationException();
+            }
+          }
+        });
+    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.Collection<String> roots = invocation.getArgument(1);
+              if (roots.contains("s3://CONCURRENT_CACHE_HANDOFF/table.pb")
+                  && sharedRegistrations.incrementAndGet() == 2) {
+                waiterRegistrationStarted.countDown();
+                allowWaiterRegistration.await();
+              }
+              return null;
+            })
+        .when(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.Collection<String> roots = invocation.getArgument(1);
+              if (roots.contains("s3://CONCURRENT_CACHE_HANDOFF/table.pb")) {
+                ownerReleasedRoot.countDown();
+              }
+              return null;
+            })
+        .when(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    var withStore = new QueryInputResolver(graph, store);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+
+    CompletableFuture<Throwable> owner =
+        resolveCancellable(
+            () ->
+                withStore.resolveInputs(
+                    "q-cache-owner",
+                    "cid-owner",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(shared).build(),
+                        QueryInput.newBuilder().setTableId(failing).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    cache,
+                    null));
+    try {
+      assertTrue(failingLookupStarted.await(1, TimeUnit.SECONDS));
+      for (int attempt = 0;
+          attempt < 100 && (cache.get(shared) == null || !cache.get(shared).isDone());
+          attempt++) {
+        Thread.sleep(10);
+      }
+      assertTrue(cache.get(shared).isDone());
+
+      CompletableFuture<QueryInputResolver.ResolutionResult> waiter =
+          CompletableFuture.supplyAsync(
+              () ->
+                  withStore.resolveInputs(
+                      "q-cache-waiter",
+                      "cid-waiter",
+                      List.of(QueryInput.newBuilder().setTableId(shared).build()),
+                      Optional.empty(),
+                      Optional.empty(),
+                      cache,
+                      null));
+      assertTrue(waiterRegistrationStarted.await(1, TimeUnit.SECONDS));
+
+      allowFailure.countDown();
+      assertFalse(ownerReleasedRoot.await(100, TimeUnit.MILLISECONDS));
+      allowWaiterRegistration.countDown();
+
+      assertEquals(shared, waiter.get(1, TimeUnit.SECONDS).resolved().getFirst());
+      assertTrue(owner.get(1, TimeUnit.SECONDS) instanceof StatusRuntimeException);
+      assertTrue(ownerReleasedRoot.await(1, TimeUnit.SECONDS));
+    } finally {
+      allowFailure.countDown();
+      allowWaiterRegistration.countDown();
+    }
+  }
+
+  @Test
   void legacyMapCacheDoesNotRetainPinsFromAFailedResolution() {
     ResourceId successful = rid("LEGACY_CACHE_SUCCESS");
     ResourceId failing = rid("LEGACY_CACHE_FAILURE");
@@ -1659,6 +2065,100 @@ public class QueryInputResolverTest {
                 null));
 
     assertTrue(legacyCache.isEmpty());
+  }
+
+  @Test
+  void legacyMapCopyFailureReleasesSuccessfulResolutionRoots() {
+    ResourceId tableId = rid("LEGACY_CACHE_COPY_FAILURE");
+    var graph = new FakeGraph();
+    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(graph, store);
+    Map<ResourceId, TablePin> readOnlyCache =
+        java.util.Collections.unmodifiableMap(new HashMap<>());
+
+    assertThrows(
+        UnsupportedOperationException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-legacy-copy-failure",
+                "cid",
+                List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+                Optional.empty(),
+                Optional.empty(),
+                readOnlyCache,
+                null));
+
+    org.mockito.Mockito.verify(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-legacy-copy-failure"),
+            org.mockito.ArgumentMatchers.argThat(
+                roots ->
+                    roots.contains("s3://LEGACY_CACHE_COPY_FAILURE/table.pb")
+                        && roots.contains("s3://LEGACY_CACHE_COPY_FAILURE/snap.pb")));
+  }
+
+  @Test
+  void legacyMapSecondCopyFailureRollsBackCopiedPrefixBeforeReleasingRoots() {
+    ResourceId first = rid("LEGACY_CACHE_COPY_FIRST");
+    ResourceId second = rid("LEGACY_CACHE_COPY_SECOND");
+    var graph = new FakeGraph();
+    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(graph, store);
+    Map<ResourceId, TablePin> cache = new ThrowOnSecondPutMap<>();
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              assertTrue(cache.isEmpty(), "cache must be restored before roots are released");
+              return null;
+            })
+        .when(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-legacy-copy-prefix"),
+            org.mockito.ArgumentMatchers.any());
+
+    assertThrows(
+        UnsupportedOperationException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-legacy-copy-prefix",
+                "cid",
+                List.of(
+                    QueryInput.newBuilder().setTableId(first).build(),
+                    QueryInput.newBuilder().setTableId(second).build()),
+                Optional.empty(),
+                Optional.empty(),
+                cache,
+                null));
+
+    assertTrue(cache.isEmpty());
+    org.mockito.Mockito.verify(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-legacy-copy-prefix"),
+            org.mockito.ArgumentMatchers.argThat(roots -> roots.size() == 4));
+  }
+
+  @Test
+  void parallelResolutionKeepsTheLegacyMemoOnItsOwnerThread() {
+    ResourceId first = rid("LEGACY_MEMO_FIRST");
+    ResourceId second = rid("LEGACY_MEMO_SECOND");
+    ResourceId third = rid("LEGACY_MEMO_THIRD");
+    metadataGraph.setCurrentSnapshot(first, 1);
+    metadataGraph.setCurrentSnapshot(second, 2);
+    metadataGraph.setCurrentSnapshot(third, 3);
+    Map<ResourceId, TablePin> threadConfinedMemo = new ThreadConfinedMap<>();
+
+    resolver.resolveInputs(
+        "q-thread-confined-memo",
+        "cid",
+        List.of(
+            QueryInput.newBuilder().setTableId(first).build(),
+            QueryInput.newBuilder().setTableId(second).build(),
+            QueryInput.newBuilder().setTableId(third).build()),
+        Optional.empty(),
+        Optional.empty(),
+        threadConfinedMemo,
+        null);
+
+    assertEquals(Set.of(first, second, third), threadConfinedMemo.keySet());
   }
 
   // ----------------------------------------------------------------------
@@ -1757,6 +2257,60 @@ public class QueryInputResolverTest {
   // ----------------------------------------------------------------------
   // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
+
+  /** A deliberately racy memo fake that rejects access from parallel resolver workers. */
+  private static final class ThreadConfinedMap<K, V> extends HashMap<K, V> {
+    private final Thread owner = Thread.currentThread();
+
+    private void requireOwnerThread() {
+      if (Thread.currentThread() != owner) {
+        throw new AssertionError("thread-confined memo accessed by a resolver worker");
+      }
+    }
+
+    @Override
+    public V get(Object key) {
+      requireOwnerThread();
+      return super.get(key);
+    }
+
+    @Override
+    public V put(K key, V value) {
+      requireOwnerThread();
+      return super.put(key, value);
+    }
+
+    @Override
+    public V putIfAbsent(K key, V value) {
+      requireOwnerThread();
+      return super.putIfAbsent(key, value);
+    }
+
+    @Override
+    public boolean remove(Object key, Object value) {
+      requireOwnerThread();
+      return super.remove(key, value);
+    }
+
+    @Override
+    public void forEach(BiConsumer<? super K, ? super V> action) {
+      requireOwnerThread();
+      super.forEach(action);
+    }
+  }
+
+  /** Accepts one cache copy, rejects the next, and permits rollback through clear(). */
+  private static final class ThrowOnSecondPutMap<K, V> extends HashMap<K, V> {
+    private int puts;
+
+    @Override
+    public V put(K key, V value) {
+      if (++puts == 2) {
+        throw new UnsupportedOperationException("second cache write rejected");
+      }
+      return super.put(key, value);
+    }
+  }
 
   static class FakeGraph extends TestCatalogOverlay {
 
@@ -1949,24 +2503,6 @@ public class QueryInputResolverTest {
         resolved.put(ref, resolveName(correlationId, ref));
       }
       return resolved;
-    }
-  }
-
-  /** A deliberately interruption-insensitive metadata call used to prove prompt caller teardown. */
-  static final class UninterruptibleBlocker {
-    final CountDownLatch started = new CountDownLatch(1);
-    final CountDownLatch release = new CountDownLatch(1);
-
-    void await() {
-      started.countDown();
-      while (true) {
-        try {
-          release.await();
-          return;
-        } catch (InterruptedException ignored) {
-          // Simulate a downstream client that cannot abort an in-flight store call.
-        }
-      }
     }
   }
 

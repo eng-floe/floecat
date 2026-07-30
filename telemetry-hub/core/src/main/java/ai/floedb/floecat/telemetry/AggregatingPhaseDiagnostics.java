@@ -58,8 +58,8 @@ public final class AggregatingPhaseDiagnostics implements PhaseDiagnostics {
     counts.computeIfAbsent(key, k -> new LongAdder()).add(amount);
   }
 
-  // One-shot values do not aggregate across items. Omitting telemetry must never turn into a
-  // request failure when a concurrent path reaches a newly added diagnostic.
+  // One-shot values do not aggregate across items. Unsupported telemetry must not turn concurrent
+  // request work into a failure.
   @Override
   public void put(String key, String value) {}
 

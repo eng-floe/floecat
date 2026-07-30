@@ -33,14 +33,18 @@ public final class Futures {
     try {
       return future.join();
     } catch (CompletionException ce) {
-      Throwable cause = ce.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
-      }
-      if (cause instanceof Error e) {
-        throw e;
-      }
-      throw new IllegalStateException("unexpected checked exception from async task", cause);
+      throw propagate(ce.getCause(), "unexpected checked exception from async task");
     }
+  }
+
+  /** Preserve unchecked failures and wrap an impossible checked asynchronous failure. */
+  public static RuntimeException propagate(Throwable failure, String checkedFailureMessage) {
+    if (failure instanceof RuntimeException runtime) {
+      return runtime;
+    }
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    return new IllegalStateException(checkedFailureMessage, failure);
   }
 }

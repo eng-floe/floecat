@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -39,8 +38,9 @@ import java.util.function.Function;
  * Runs independent, mostly-blocking tasks with a concurrency bound.
  *
  * <p>At most the configured number of tasks are submitted at a time. A completed task immediately
- * opens one submission slot, independent of input order; completed results are retained by index
- * and observed in input order after the bounded window has drained.
+ * opens one submission slot, independent of input order. Completed results are retained by index;
+ * mapping returns them after the bounded window drains, while ordered consumption delivers each
+ * contiguous input-order prefix as soon as it is available.
  */
 public final class BoundedFanout {
 
@@ -54,8 +54,8 @@ public final class BoundedFanout {
    * (OpenTelemetry, engine/principal/correlation, MDC) re-established via {@link
    * PropagatedContext}, so ambient reads behave off-thread as they do on the caller's thread. A
    * task failure surfaces unwrapped — its original {@link RuntimeException} or {@link Error}, never
-   * a {@link CompletionException} wrapper. With no cancellation, every task future completes before
-   * the first joined failure propagates, so callers can safely clean up task-owned resources.
+   * an execution-wrapper exception. With no cancellation, every task future completes before the
+   * first joined failure propagates, so callers can safely clean up task-owned resources.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items, int permits, Executor executor, Function<I, O> task) {
@@ -79,7 +79,6 @@ public final class BoundedFanout {
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer);
     completeAll(items, permits, executor, task, outcomes, ordered::accept);
-    ordered.throwIfFailed();
   }
 
   /**
@@ -88,7 +87,9 @@ public final class BoundedFanout {
    * completion. Tasks must cooperate with interruption while blocked in downstream calls. The
    * submission window observes cancellation before it submits more work. A non-cancellation task
    * failure waits for every input task before surfacing, so callers can safely release task-owned
-   * resources.
+   * resources. {@code cancelled} may be read concurrently by the scheduler and workers; it must be
+   * non-blocking and thread-safe (typically {@link java.util.concurrent.atomic.AtomicBoolean#get}).
+   * Observed cancellation throws {@link CancellationException}.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items,
@@ -106,7 +107,9 @@ public final class BoundedFanout {
    * Cancellation-aware ordered result consumption. A consumer failure has the same ordered
    * precedence as a task failure, while submitted work is cancelled promptly when requested. A
    * non-cancellation failure waits for already-submitted siblings before it surfaces, preserving
-   * the task-resource completion guarantee at the cost of slowest-sibling failure latency.
+   * the task-resource completion guarantee at the cost of slowest-sibling failure latency. {@code
+   * cancelled} has the same concurrent-read contract and {@link CancellationException} behavior as
+   * the cancellable {@code mapOrdered} overload.
    */
   public static <I, O> void forEachOrdered(
       List<I> items,
@@ -118,7 +121,6 @@ public final class BoundedFanout {
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer);
     completeAllCancellable(items, permits, executor, task, cancelled, outcomes, ordered::accept);
-    ordered.throwIfFailed();
   }
 
   /** Re-throw the first input-ordered task failure after every bounded task has finished. */
@@ -126,7 +128,7 @@ public final class BoundedFanout {
     List<O> results = new ArrayList<>(outcomes.size());
     for (TaskOutcome<O> outcome : outcomes) {
       if (outcome.failure() != null) {
-        rethrowTaskFailure(outcome.failure());
+        throw Futures.propagate(outcome.failure(), "unexpected checked exception from fan-out");
       }
       results.add(outcome.result());
     }
@@ -165,9 +167,9 @@ public final class BoundedFanout {
         }
         onCompletion.accept(slot.index, outcome);
       }
-    } catch (RuntimeException | Error submissionFailure) {
+    } catch (RuntimeException | Error processingFailure) {
       awaitCompletedTasks(active);
-      throw submissionFailure;
+      throw processingFailure;
     }
   }
 
@@ -208,12 +210,13 @@ public final class BoundedFanout {
     } catch (CancellationException cancellationFailure) {
       cancelSubmittedTasks(active);
       throw cancellationFailure;
-    } catch (RuntimeException | Error submissionFailure) {
+    } catch (RuntimeException | Error processingFailure) {
       awaitSubmittedTasks(active, cancelled);
-      throw submissionFailure;
+      throw processingFailure;
     }
   }
 
+  /** Submit one non-cancellable task whose terminal stage publishes its indexed completion. */
   private static <I, O> CompletionSlot<O> submitCompletionTask(
       int index,
       I item,
@@ -230,6 +233,7 @@ public final class BoundedFanout {
     return slot;
   }
 
+  /** Submit one interruptible task whose FutureTask hook always publishes terminal completion. */
   private static <I, O> CompletionSlot<O> submitCancellableTask(
       int index,
       I item,
@@ -259,6 +263,7 @@ public final class BoundedFanout {
     return slot;
   }
 
+  /** Wait uninterruptibly for a completion while restoring the caller's interrupt status. */
   private static <O> CompletionSlot<O> takeCompletion(
       BlockingQueue<CompletionSlot<O>> completions) {
     boolean interrupted = false;
@@ -297,6 +302,7 @@ public final class BoundedFanout {
     }
   }
 
+  /** Capture a completed stage's result or unwrapped failure without throwing to the scheduler. */
   private static <O> TaskOutcome<O> completedOutcome(CompletableFuture<O> future) {
     try {
       return TaskOutcome.success(Futures.join(future));
@@ -305,6 +311,7 @@ public final class BoundedFanout {
     }
   }
 
+  /** Capture an interruptible task's terminal outcome while preserving cancellation polling. */
   private static <O> TaskOutcome<O> completedOutcome(
       Future<O> future, List<CompletionSlot<O>> active, BooleanSupplier cancelled) {
     try {
@@ -330,7 +337,7 @@ public final class BoundedFanout {
         cancelSubmittedTasks(active);
         throw cancelled();
       } catch (ExecutionException e) {
-        rethrowTaskFailure(e.getCause());
+        throw Futures.propagate(e.getCause(), "unexpected checked exception from fan-out");
       }
     }
   }
@@ -339,21 +346,22 @@ public final class BoundedFanout {
     return new ArrayList<>(java.util.Collections.nCopies(size, null));
   }
 
-  /** Wait for every completion future after rejecting one bounded-window submission. */
+  /** Wait for every active completion after scheduling or ordered consumption fails. */
   private static void awaitCompletedTasks(List<? extends CompletionSlot<?>> active) {
     for (CompletionSlot<?> slot : active) {
       try {
         Futures.join(slot.completion);
       } catch (RuntimeException | Error ignored) {
-        // The submission failure is the caller-visible outcome; task failures only complete
+        // The scheduler or consumer failure is caller-visible; task failures only complete
         // task-owned cleanup.
       }
     }
   }
 
   /**
-   * Wait for submitted tasks after a rejected submission, while still returning promptly when the
-   * stream is cancelled. Without cancellation the original rejection remains caller-visible.
+   * Wait for submitted tasks after scheduling or ordered consumption fails, while still returning
+   * promptly when the stream is cancelled. Without cancellation the original failure remains
+   * caller-visible.
    */
   private static void awaitSubmittedTasks(
       List<? extends CompletionSlot<?>> active, BooleanSupplier cancelled) {
@@ -370,7 +378,7 @@ public final class BoundedFanout {
           cancelSubmittedTasks(active);
           throw cancelled();
         } catch (ExecutionException | CancellationException ignored) {
-          // The submission failure is the caller-visible outcome; task failures only complete
+          // The scheduler or consumer failure is caller-visible; task failures only complete
           // task-owned cleanup.
           break;
         }
@@ -378,6 +386,7 @@ public final class BoundedFanout {
     }
   }
 
+  /** Cancel every active task and fail the caller when its cooperative signal is set. */
   private static void checkCancelled(
       BooleanSupplier cancelled, List<? extends CompletionSlot<?>> active) {
     if (cancelled.getAsBoolean()) {
@@ -393,17 +402,6 @@ public final class BoundedFanout {
         slot.task.cancel(true);
       }
     }
-  }
-
-  /** Rethrow a task failure without an execution-wrapper layer. */
-  private static void rethrowTaskFailure(Throwable failure) {
-    if (failure instanceof RuntimeException runtime) {
-      throw runtime;
-    }
-    if (failure instanceof Error error) {
-      throw error;
-    }
-    throw new CompletionException(failure);
   }
 
   /** Validate the concurrency bound before any tasks are submitted. */
@@ -447,42 +445,20 @@ public final class BoundedFanout {
     private final List<TaskOutcome<O>> outcomes;
     private final Consumer<? super O> consumer;
     private int nextIndex;
-    private RuntimeException firstRuntimeFailure;
-    private Error firstErrorFailure;
 
     private OrderedOutcomeConsumer(List<TaskOutcome<O>> outcomes, Consumer<? super O> consumer) {
       this.outcomes = outcomes;
       this.consumer = consumer;
     }
 
+    /** Deliver every newly contiguous outcome, stopping at the first unfinished input index. */
     private void accept(int index, TaskOutcome<O> ignored) {
       while (nextIndex < outcomes.size() && outcomes.get(nextIndex) != null) {
         TaskOutcome<O> outcome = outcomes.get(nextIndex++);
-        try {
-          if (outcome.failure() != null) {
-            rethrowTaskFailure(outcome.failure());
-          }
-          if (firstRuntimeFailure == null && firstErrorFailure == null) {
-            consumer.accept(outcome.result());
-          }
-        } catch (RuntimeException e) {
-          if (firstRuntimeFailure == null && firstErrorFailure == null) {
-            firstRuntimeFailure = e;
-          }
-        } catch (Error e) {
-          if (firstRuntimeFailure == null && firstErrorFailure == null) {
-            firstErrorFailure = e;
-          }
+        if (outcome.failure() != null) {
+          throw Futures.propagate(outcome.failure(), "unexpected checked exception from fan-out");
         }
-      }
-    }
-
-    private void throwIfFailed() {
-      if (firstRuntimeFailure != null) {
-        throw firstRuntimeFailure;
-      }
-      if (firstErrorFailure != null) {
-        throw firstErrorFailure;
+        consumer.accept(outcome.result());
       }
     }
   }

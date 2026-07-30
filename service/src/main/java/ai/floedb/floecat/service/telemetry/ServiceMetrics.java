@@ -309,23 +309,6 @@ public final class ServiceMetrics {
             "service");
   }
 
-  /** Query-resolution saturation signals. */
-  public static final class Query {
-    private Query() {}
-
-    /**
-     * Metadata calls whose callers reached their deadline but whose downstream I/O still holds
-     * resolver admission. A non-zero value indicates a store timeout or abort path is needed.
-     */
-    public static final MetricId METADATA_CALLS_STUCK =
-        new MetricId(
-            "floecat.service.query.metadata.calls.stuck",
-            MetricType.GAUGE,
-            "count",
-            CONTRACT,
-            "service");
-  }
-
   /** CAS blob-GC backlog health: the signals that answer "is GC falling behind?". */
   public static final class Gc {
     private Gc() {}

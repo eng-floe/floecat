@@ -198,7 +198,8 @@ public interface CatalogOverlay {
    *
    * <p>The default preserves compatibility for existing overlays, whose lifecycle state may be tied
    * to one request thread. Implementations backed by thread-safe services may opt in to concurrent
-   * resolution.
+   * resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code resolveName(s)}, and
+   * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread.
    */
   default boolean supportsConcurrentResolution() {
     return false;

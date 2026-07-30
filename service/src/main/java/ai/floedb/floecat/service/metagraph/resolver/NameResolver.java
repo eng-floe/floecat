@@ -401,8 +401,8 @@ public final class NameResolver {
   /**
    * Fans out per-namespace work across up to {@value #MAX_PARALLEL_NS_SCANS} concurrent tasks on
    * the injected blocking executor and flattens the per-namespace results. Each namespace is an
-   * independent DynamoDB scan; parallel execution reduces wall-clock time from O(N) to O(1) for
-   * warm DynamoDB connections.
+   * independent DynamoDB scan; warm connections complete in bounded waves of up to {@value
+   * #MAX_PARALLEL_NS_SCANS} scans instead of one serial scan per namespace.
    */
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {

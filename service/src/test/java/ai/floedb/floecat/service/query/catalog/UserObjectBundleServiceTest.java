@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
@@ -45,7 +46,9 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -84,6 +87,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -1257,6 +1261,139 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void terminalFailureClaimWinsBeforeProducerBecomesIdle() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE);
+  }
+
+  @Test
+  void cancellationClaimWinsWhenItRacesFinalCompletion() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(cancelled).isTrue();
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.CANCELLATION);
+  }
+
+  @Test
+  void completionClaimWinsWhenTheProducerFinishesBeforeCancellation() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION);
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+  }
+
+  @Test
+  void cancellationInterruptsBlockedRelationStatsLookup() throws Exception {
+    UninterruptibleBlocker blocker = new UninterruptibleBlocker();
+    CountDownLatch decoratorCalled = new CountDownLatch(1);
+    StatsProvider blockingStats =
+        new StatsProvider() {
+          @Override
+          public Optional<TableStatsView> tableStats(ResourceId tableId) {
+            blocker.await();
+            return Optional.empty();
+          }
+        };
+    StatsProviderFactory blockingStatsFactory = Mockito.mock(StatsProviderFactory.class);
+    Mockito.when(blockingStatsFactory.forQuery(Mockito.any(), Mockito.anyString()))
+        .thenReturn(blockingStats);
+    FakeCatalogOverlay concurrentOverlay =
+        new FakeCatalogOverlay() {
+          @Override
+          public boolean supportsConcurrentResolution() {
+            return true;
+          }
+        };
+    concurrentOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    EngineMetadataDecoratorProvider cancellationSensitiveDecorator =
+        ignored ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateRelation(
+                      EngineContext engine,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
+                    decoratorCalled.countDown();
+                  }
+
+                  @Override
+                  public void completeRelation(
+                      EngineContext engine,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation,
+                      boolean commitRelation,
+                      boolean commitColumns,
+                      Set<Long> columnIds) {
+                    decoratorCalled.countDown();
+                  }
+                });
+    service =
+        new UserObjectBundleService(
+            concurrentOverlay,
+            resolver,
+            queryStore,
+            blockingStatsFactory,
+            cancellationSensitiveDecorator,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    DemandSubscriber subscriber = new DemandSubscriber();
+    EngineContext engine = EngineContext.of("pg", "16.0");
+    Context requestContext =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engine);
+    Context previous = requestContext.attach();
+    try {
+      service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
+    } finally {
+      requestContext.detach(previous);
+    }
+    assertThat(subscriber.awaitSubscription()).isTrue();
+    subscriber.request(1);
+    CompletableFuture<Void> resolutionRequest =
+        CompletableFuture.runAsync(() -> subscriber.request(1));
+    try {
+      assertThat(blocker.started.await(1, TimeUnit.SECONDS)).isTrue();
+      Thread statsWorker = blocker.executionThread.get();
+      assertThat(statsWorker).isNotNull();
+      assertThat(statsWorker.isVirtual()).isFalse();
+      assertThat(statsWorker.getName()).startsWith("floecat-bundle-metadata-");
+
+      subscriber.cancel();
+
+      assertThat(resolutionRequest.get(250, TimeUnit.MILLISECONDS)).isNull();
+      assertThat(blocker.interrupted.await(1, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      blocker.release.countDown();
+    }
+    assertThat(decoratorCalled.await(250, TimeUnit.MILLISECONDS)).isFalse();
+  }
+
+  @Test
   void cancellationInterruptsBlockedCandidateNameLookup() throws Exception {
     BlockingLookupOverlay blockingOverlay = new BlockingLookupOverlay(BlockingLookup.NAME);
     service = serviceWith(blockingOverlay);
@@ -1295,7 +1432,25 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void threadConfinedOverlayLookupsStayOnTheStreamProducer() {
+    Thread producer = Thread.currentThread();
+    CallerThreadOnlyOverlay threadConfinedOverlay = new CallerThreadOnlyOverlay(producer);
+    service = serviceWith(threadConfinedOverlay);
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setName(NameRef.newBuilder().setName("a")))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    assertThat(chunks).anyMatch(UserObjectsBundleChunk::hasResolutions);
+    assertThat(threadConfinedOverlay.callbackCount.get()).isGreaterThanOrEqualTo(3);
+  }
+
+  @Test
   void cancellationAfterPinResolutionReleasesTransientRoots() {
+    /** Subscriber that exposes cancellation at the resolver-return ownership boundary. */
     class CancelAfterResolutionSubscriber extends CollectingSubscriber {
       void cancelNow() {
         subscription.cancel();
@@ -2583,6 +2738,11 @@ class UserObjectBundleServiceTest {
     }
 
     @Override
+    public boolean supportsConcurrentResolution() {
+      return true;
+    }
+
+    @Override
     public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
       if (blockedLookup == BlockingLookup.CATALOG) {
         blocker.await();
@@ -2608,26 +2768,44 @@ class UserObjectBundleServiceTest {
     }
   }
 
-  /**
-   * Simulates a downstream metadata client that records but does not immediately obey interrupts.
-   */
-  private static final class UninterruptibleBlocker {
-    final CountDownLatch started = new CountDownLatch(1);
-    final CountDownLatch interrupted = new CountDownLatch(1);
-    final CountDownLatch release = new CountDownLatch(1);
-    final AtomicReference<Thread> executionThread = new AtomicReference<>();
+  /** Fails when an overlay that opts out of concurrency is called away from its producer thread. */
+  private static final class CallerThreadOnlyOverlay extends FakeCatalogOverlay {
+    private final Thread producer;
+    private final AtomicInteger callbackCount = new AtomicInteger();
 
-    void await() {
-      executionThread.set(Thread.currentThread());
-      started.countDown();
-      while (true) {
-        try {
-          release.await();
-          return;
-        } catch (InterruptedException ignored) {
-          interrupted.countDown();
-        }
+    private CallerThreadOnlyOverlay(Thread producer) {
+      this.producer = producer;
+    }
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return false;
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+      assertProducerThread();
+      return super.catalog(id);
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      assertProducerThread();
+      return super.resolveName(correlationId, ref, engineContext);
+    }
+
+    @Override
+    public Optional<GraphNode> resolve(ResourceId id) {
+      assertProducerThread();
+      return super.resolve(id);
+    }
+
+    private void assertProducerThread() {
+      if (Thread.currentThread() != producer) {
+        throw new AssertionError("thread-confined overlay callback left the stream producer");
       }
+      callbackCount.incrementAndGet();
     }
   }
 
