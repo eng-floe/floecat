@@ -784,8 +784,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * <p>The relation count is over by-name index rows, but only a live relation can be deleted. A
    * row whose relation is already gone — what a corrupt-blob delete leaves behind — would otherwise
    * make a namespace holding nothing report NOT_EMPTY forever, with no delete path able to clear
-   * it, so those rows are reconciled once before the answer is trusted — but only when {@code
-   * mayReclaimRelationRows} says the caller holds the relation write grants that reconcile spends.
+   * it, so those rows are reconciled once before the answer is trusted — but only when nothing in
+   * the namespace resolves, and only when {@code mayReclaimRelationRows} says the caller holds the
+   * relation write grants that reconcile spends.
    */
   private void requireNamespaceEmpty(
       DeleteNamespaceRequest request,
@@ -798,7 +799,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     String namespaceId = namespace.getResourceId().getId();
 
     if (hasRelations(accountId, catalogId.getId(), namespaceId)) {
-      if (!mayReclaimRelationRows) {
+      // Reconcile only when nothing here resolves. The sweep releases rows whose relation is gone,
+      // so a namespace holding anything live gains nothing from it, and running it anyway made
+      // every
+      // ordinary NOT_EMPTY rejection pay a full row scan plus a point read per relation.
+      if (!mayReclaimRelationRows || recursiveDropper.hasResolvableRelation(namespace)) {
         throw notEmpty(request, namespace, correlationId, "relations");
       }
       recursiveDropper.reclaimStrandedRelationNames(namespace);

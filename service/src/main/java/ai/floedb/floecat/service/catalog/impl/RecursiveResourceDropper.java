@@ -524,6 +524,49 @@ public class RecursiveResourceDropper {
   }
 
   /**
+   * Whether any by-name row in this namespace still names a relation that exists, answering at the
+   * first one it finds.
+   *
+   * <p>Lets a caller deciding emptiness skip {@link #reclaimStrandedRelationNames} in the ordinary
+   * case. That sweep exists only to release rows nothing can resolve, so a namespace holding
+   * anything live has nothing to gain from it — and paying for it turned the common "not empty"
+   * rejection into a full row scan plus a point read per relation. Here the first live relation
+   * ends the walk, which for a namespace that holds tables is one page and one read.
+   */
+  public boolean hasResolvableRelation(Namespace namespace) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    String accountId = namespaceId.getAccountId();
+    return anyResolvable(
+            tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId()),
+            accountId,
+            ResourceKind.RK_TABLE)
+        || anyResolvable(
+            viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId()),
+            accountId,
+            ResourceKind.RK_VIEW);
+  }
+
+  private boolean anyResolvable(List<Pointer> namePointers, String accountId, ResourceKind kind) {
+    for (var namePointer : namePointers) {
+      String ownerId = ownerIdOf(namePointer);
+      if (ownerId.isEmpty()) {
+        // Names nothing, so it resolves to nothing: reclaimUnresolvableName's case, not a live
+        // relation.
+        continue;
+      }
+      String canonicalKey =
+          kind == ResourceKind.RK_TABLE
+              ? Keys.tablePointerById(accountId, ownerId)
+              : Keys.viewPointerById(accountId, ownerId);
+      if (pointerStore.get(canonicalKey).isPresent()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Releases by-name pointers whose relation no longer exists, so the emptiness gate and the
    * removal step agree on what counts as a relation.
    *

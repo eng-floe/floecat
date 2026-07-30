@@ -16,7 +16,9 @@
 package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -168,6 +170,38 @@ class RecursiveResourceDropperTest {
     // The scanned table, still where the scan found it.
     when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta(TABLE_BLOB, TABLE_POINTER_VERSION));
     when(tableRepo.getByBlobUri(eq(TABLE_BLOB))).thenReturn(Optional.of(table));
+  }
+
+  /**
+   * The emptiness gate asks this before reconciling anything, so the ordinary "namespace holds
+   * tables" rejection costs one row scan and one pointer read instead of a read per relation.
+   */
+  @Test
+  void hasResolvableRelationAnswersAtTheFirstLiveRelation() {
+    String canonical = Keys.tablePointerById("acct", "tbl");
+    when(pointerStore.get(eq(canonical)))
+        .thenReturn(Optional.of(Pointer.newBuilder().setKey(canonical).setVersion(1L).build()));
+
+    assertTrue(dropper.hasResolvableRelation(root));
+    // Stopped at the first row: the views were never listed, and no second canonical read happened.
+    verify(pointerStore).get(eq(canonical));
+    verify(viewRepo, never()).listNamePointers(anyString(), anyString(), anyString());
+  }
+
+  /** Rows whose relation is gone, or that name nothing at all, are what the sweep is for. */
+  @Test
+  void hasResolvableRelationIsFalseWhenNothingResolves() {
+    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
+    when(viewRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
+        .thenReturn(
+            List.of(
+                Pointer.newBuilder()
+                    .setKey(Keys.viewPointerByName("acct", "cat", "ns", "ghost"))
+                    .setVersion(2L)
+                    .setDisplayName("ghost")
+                    .build()));
+
+    assertFalse(dropper.hasResolvableRelation(root));
   }
 
   @Test
