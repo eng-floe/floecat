@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -48,9 +49,12 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.stubbing.Answer;
 
 /**
  * Recursive-delete safety around resources that change under a stale subtree scan.
@@ -158,9 +162,7 @@ class RecursiveResourceDropperTest {
     when(namespaceRepo.listRefsUnder(anyString(), anyString(), any())).thenReturn(List.of());
     // One table under the root. Relations are enumerated through their by-name pointer rows, not
     // their blobs, so a corrupt relation cannot break the listing itself.
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
-        .thenReturn(List.of(TABLE_NAME_POINTER));
-    when(viewRepo.listNamePointers(anyString(), anyString(), anyString())).thenReturn(List.of());
+    stubTableNamePointers("ns", List.of(TABLE_NAME_POINTER));
 
     // The root pointer the guarded path pins its relation removals to.
     when(namespaceRepo.metaForSafe(any()))
@@ -170,6 +172,30 @@ class RecursiveResourceDropperTest {
     // The scanned table, still where the scan found it.
     when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta(TABLE_BLOB, TABLE_POINTER_VERSION));
     when(tableRepo.getByBlobUri(eq(TABLE_BLOB))).thenReturn(Optional.of(table));
+  }
+
+  /**
+   * Feeds {@code rows} to whatever consumer the dropper passes to the streaming enumeration, which
+   * is how it reads a namespace's relations: a page at a time, never as a list.
+   */
+  private void stubTableNamePointers(String namespaceId, List<Pointer> rows) {
+    doAnswer(feed(rows))
+        .when(tableRepo)
+        .forEachNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+  }
+
+  private void stubViewNamePointers(String namespaceId, List<Pointer> rows) {
+    doAnswer(feed(rows))
+        .when(viewRepo)
+        .forEachNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+  }
+
+  private static Answer<Void> feed(List<Pointer> rows) {
+    return invocation -> {
+      Consumer<Pointer> consumer = invocation.getArgument(3);
+      rows.forEach(consumer);
+      return null;
+    };
   }
 
   /**
@@ -185,21 +211,35 @@ class RecursiveResourceDropperTest {
     assertTrue(dropper.hasResolvableRelation(root));
     // Stopped at the first row: the views were never listed, and no second canonical read happened.
     verify(pointerStore).get(eq(canonical));
-    verify(viewRepo, never()).listNamePointers(anyString(), anyString(), anyString());
+    verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
+  }
+
+  /**
+   * Releasing a row is a relation-scoped write, so a caller that holds only one kind's grant sweeps
+   * only that kind — a CreateTable authorized by table.write alone must not clear view rows.
+   */
+  @Test
+  void reclaimHonoursTheKindsTheCallerMayWrite() {
+    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    assertEquals(1, dropper.reclaimStrandedRelationNames(root, Set.of(ResourceKind.RK_TABLE)));
+
+    verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
   }
 
   /** Rows whose relation is gone, or that name nothing at all, are what the sweep is for. */
   @Test
   void hasResolvableRelationIsFalseWhenNothingResolves() {
     when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
-    when(viewRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
-        .thenReturn(
-            List.of(
-                Pointer.newBuilder()
-                    .setKey(Keys.viewPointerByName("acct", "cat", "ns", "ghost"))
-                    .setVersion(2L)
-                    .setDisplayName("ghost")
-                    .build()));
+    stubViewNamePointers(
+        "ns",
+        List.of(
+            Pointer.newBuilder()
+                .setKey(Keys.viewPointerByName("acct", "cat", "ns", "ghost"))
+                .setVersion(2L)
+                .setDisplayName("ghost")
+                .build()));
 
     assertFalse(dropper.hasResolvableRelation(root));
   }
@@ -248,14 +288,14 @@ class RecursiveResourceDropperTest {
   @Test
   void guardedDropReleasesAByNameRowThatNamesNoRelation() {
     String unresolvableKey = Keys.tablePointerByName("acct", "cat", "ns", "ghost");
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
-        .thenReturn(
-            List.of(
-                Pointer.newBuilder()
-                    .setKey(unresolvableKey)
-                    .setVersion(9L)
-                    .setDisplayName("ghost")
-                    .build()));
+    stubTableNamePointers(
+        "ns",
+        List.of(
+            Pointer.newBuilder()
+                .setKey(unresolvableKey)
+                .setVersion(9L)
+                .setDisplayName("ghost")
+                .build()));
     when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
 
     var summary = dropper.dropNamespaceContents(root, true);
@@ -410,7 +450,7 @@ class RecursiveResourceDropperTest {
     when(namespaceRepo.refByPath(eq("acct"), eq("cat"), eq(List.of("db"))))
         .thenReturn(
             Optional.of(new TopologyGraph.NamespaceRef(ancestorId, "db", CATALOG, List.of("db"))));
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns"))).thenReturn(List.of());
+    stubTableNamePointers("ns", List.of());
     // The teardown delete reports whether it actually removed the pointer, and only a real removal
     // is counted.
     when(namespaceRepo.delete(eq(ROOT_NS), any())).thenReturn(true);
@@ -456,16 +496,16 @@ class RecursiveResourceDropperTest {
     // The namespace is gone...
     when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
     // ...but it still owns a table, reachable only through its namespace id.
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns-child")))
-        .thenReturn(
-            List.of(
-                Pointer.newBuilder()
-                    .setKey(Keys.tablePointerByName("acct", "cat", "ns-child", "orders"))
-                    .setVersion(1L)
-                    .setBlobUri(childTableBlob)
-                    .setResourceId(childTableId)
-                    .setDisplayName("orders")
-                    .build()));
+    stubTableNamePointers(
+        "ns-child",
+        List.of(
+            Pointer.newBuilder()
+                .setKey(Keys.tablePointerByName("acct", "cat", "ns-child", "orders"))
+                .setVersion(1L)
+                .setBlobUri(childTableBlob)
+                .setResourceId(childTableId)
+                .setDisplayName("orders")
+                .build()));
     when(tableRepo.metaForSafe(eq(childTableId))).thenReturn(meta(childTableBlob, 4L));
     when(tableRepo.getByBlobUri(eq(childTableBlob)))
         .thenReturn(

@@ -703,19 +703,27 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
    * here, as it does in {@code TableServiceImpl}.
    *
    * <p>Only rows whose relation has no canonical pointer left are released, so a live relation
-   * sharing the namespace is untouched. The sweep covers tables as well as views because the
-   * relation-name claim is shared across kinds — a stranded table row is one of the things that can
-   * be holding this view's name.
+   * sharing the namespace is untouched. The relation-name claim is shared across kinds, so a
+   * stranded table row can be what holds this view's name — but releasing it is a table write, so
+   * the sweep reaches tables only when this caller holds {@code table.write}. Without it the name
+   * is reported as taken, the same answer {@code DeleteNamespace} gives a caller who cannot clear
+   * what is in its way.
    *
    * @return how many rows were released
    */
   private int reclaimStrandedNames(ViewSpec spec, String normName) {
+    var pc = principal.get();
+    var kinds =
+        authz.allows(pc, "table.write")
+            ? RecursiveResourceDropper.ALL_RELATION_KINDS
+            : Set.of(ResourceKind.RK_VIEW);
     int reclaimed =
         recursiveDropper.reclaimStrandedRelationNames(
             ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
                 .setResourceId(spec.getNamespaceId())
                 .setCatalogId(spec.getCatalogId())
-                .build());
+                .build(),
+            kinds);
     if (reclaimed > 0) {
       LOG.infof(
           "view_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",

@@ -582,15 +582,27 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
    * <p>Only rows whose relation has no canonical pointer left are released, so a live table sharing
    * the namespace is untouched. Retried once and only when something was actually released.
    *
+   * <p>Restricted to the kinds this caller may write. The relation-name claim is shared across
+   * kinds, so a stranded view row can be what holds this name — but releasing it is a view write,
+   * which {@code table.write} alone does not buy. Without {@code view.write} the name is reported
+   * as taken, the same answer {@code DeleteNamespace} gives a caller who cannot clear what is in
+   * its way.
+   *
    * @return how many rows were released
    */
   private int reclaimStrandedNames(TableSpec spec, String normName) {
+    var pc = principal.get();
+    var kinds =
+        authz.allows(pc, "view.write")
+            ? RecursiveResourceDropper.ALL_RELATION_KINDS
+            : Set.of(ResourceKind.RK_TABLE);
     int reclaimed =
         recursiveDropper.reclaimStrandedRelationNames(
             ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
                 .setResourceId(spec.getNamespaceId())
                 .setCatalogId(spec.getCatalogId())
-                .build());
+                .build(),
+            kinds);
     if (reclaimed > 0) {
       LOG.infof(
           "table_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",

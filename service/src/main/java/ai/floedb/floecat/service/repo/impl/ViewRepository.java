@@ -123,9 +123,17 @@ public class ViewRepository {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
-  /** The raw by-name pointer rows {@link #count} counts; see {@code TableRepository}. */
-  public List<Pointer> listNamePointers(String accountId, String catalogId, String namespaceId) {
-    return repo.listRefsByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+  /**
+   * The raw by-name pointer rows {@link #count} counts, streamed a page at a time; see {@code
+   * TableRepository#forEachNamePointer}.
+   */
+  public void forEachNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Consumer<Pointer> action) {
+    repo.forEachRefByPrefix(
+        Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), action);
   }
 
   /**

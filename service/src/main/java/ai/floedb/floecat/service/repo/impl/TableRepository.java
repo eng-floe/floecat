@@ -125,14 +125,24 @@ public class TableRepository {
   }
 
   /**
-   * The raw by-name pointer rows {@link #count} counts, with no blob fetch.
+   * The raw by-name pointer rows {@link #count} counts, with no blob fetch, handed over a page at a
+   * time.
    *
    * <p>{@link #list} resolves each row's blob and so cannot enumerate a by-name pointer whose table
    * is gone or whose blob dangles — exactly the rows a caller reconciling leftover index state
    * needs to see.
+   *
+   * <p>Streamed rather than returned because a namespace can hold any number of tables, and the
+   * callers — a drop, a sweep, a probe that stops at the first hit — act on each row and are done
+   * with it. Materializing the set made peak memory proportional to the namespace.
    */
-  public List<Pointer> listNamePointers(String accountId, String catalogId, String namespaceId) {
-    return repo.listRefsByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
+  public void forEachNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Consumer<Pointer> action) {
+    repo.forEachRefByPrefix(
+        Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), action);
   }
 
   /**

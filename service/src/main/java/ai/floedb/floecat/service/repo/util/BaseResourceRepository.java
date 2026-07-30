@@ -394,6 +394,39 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   private static final int REFS_PAGE_SIZE = 1_000;
 
+  /**
+   * {@link #listRefsByPrefix} without holding the result: hands each pointer to {@code action} a
+   * page at a time, so peak memory is one page rather than the whole prefix.
+   *
+   * <p>For callers that consume rows independently — a drop that deletes each as it goes, a probe
+   * that stops at the first hit. Deleting the row just handed over is safe: page tokens resume from
+   * the last key seen, and a caller deleting keys under other prefixes cannot disturb this scan
+   * either.
+   *
+   * <p>{@code action} may throw; the exception propagates and abandons the scan.
+   */
+  public void forEachRefByPrefix(String prefix, java.util.function.Consumer<Pointer> action) {
+    observeRepository(
+        "for_each_ref_by_prefix",
+        () -> {
+          var seenTokens = new HashSet<String>();
+          String token = "";
+          do {
+            var next = new StringBuilder();
+            for (var pointer :
+                pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
+              action.accept(pointer);
+            }
+            token = next.toString();
+            if (!token.isBlank() && !seenTokens.add(token)) {
+              throw new IllegalStateException(
+                  "pointer scan did not advance; repeated page token: " + token);
+            }
+          } while (!token.isBlank());
+          return null;
+        });
+  }
+
   public List<Pointer> listRefsByPrefix(String prefix) {
     return observeRepository(
         "list_refs_by_prefix",

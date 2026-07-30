@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import org.jboss.logging.Logger;
 
@@ -106,23 +107,30 @@ public class RecursiveResourceDropper {
     var rootPath = new ArrayList<>(root.getParentsList());
     rootPath.add(root.getDisplayName());
     // Scan only the root's subtree by its path prefix rather than the whole catalog; the by-path
-    // prefix over-returns the root itself, which isDescendant filters out.
+    // prefix over-returns the root itself, which isDescendantPath filters out.
     //
     // Enumerated from the by-path pointer rows, not their content: a by-path row carries the
     // namespace's id and its full path, which is everything the drop needs, and the content-bearing
     // scan would fail outright on one present-but-unparseable namespace blob — mid-subtree, after
     // deeper namespaces had already been destroyed, since descendants are dropped deepest-first.
-    var descendants = new ArrayList<Namespace>();
+    //
+    // Held as refs, not as the namespaces built from them: the set has to be known before anything
+    // is deleted, because a namespace can only go once its children are gone and the by-path prefix
+    // yields parents first. A ref is an id and a path; the Namespace is built one at a time inside
+    // the loop and discarded. Bounding this further would mean walking the subtree bottom-up, which
+    // the pointer store cannot do — it scans a prefix forward only.
+    var descendants = new ArrayList<TopologyGraph.NamespaceRef>();
     for (var ref :
         namespaceRepo.listRefsUnder(rootId.getAccountId(), root.getCatalogId().getId(), rootPath)) {
-      var scanned = namespaceFromRef(ref, root.getCatalogId());
-      if (isDescendant(scanned, rootPath)) {
-        descendants.add(scanned);
+      if (isDescendantPath(ref.pathSegments(), rootPath)) {
+        descendants.add(ref);
       }
     }
-    descendants.sort(Comparator.comparingInt(Namespace::getParentsCount).reversed());
+    descendants.sort(
+        Comparator.comparingInt((TopologyGraph.NamespaceRef r) -> r.pathSegments().size())
+            .reversed());
     for (var descendant : descendants) {
-      dropNamespace(descendant, summary, rootPath, guarded);
+      dropNamespace(namespaceFromRef(descendant, root.getCatalogId()), summary, rootPath, guarded);
     }
     // The root's own relations are pinned to the root the caller resolved, so a concurrent reparent
     // of the root cannot have its contents emptied out from under it either.
@@ -493,14 +501,19 @@ public class RecursiveResourceDropper {
     var catalogId = namespace.getCatalogId();
     String accountId = namespaceId.getAccountId();
 
-    for (var namePointer :
-        tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      dropTable(namespace, namePointer, summary, guarded, subtreePin);
-    }
-    for (var namePointer :
-        viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      dropView(namespace, namePointer, summary, guarded, subtreePin);
-    }
+    // Streamed, not materialized: a namespace can hold any number of relations, and each row is
+    // handled and then gone. Deleting the row just handed over does not disturb the scan — page
+    // tokens resume from the last key seen.
+    tableRepo.forEachNamePointer(
+        accountId,
+        catalogId.getId(),
+        namespaceId.getId(),
+        namePointer -> dropTable(namespace, namePointer, summary, guarded, subtreePin));
+    viewRepo.forEachNamePointer(
+        accountId,
+        catalogId.getId(),
+        namespaceId.getId(),
+        namePointer -> dropView(namespace, namePointer, summary, guarded, subtreePin));
   }
 
   /** The relation a by-name row names, or empty when the row identifies no owner. */
@@ -514,13 +527,29 @@ public class RecursiveResourceDropper {
         ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(ownerId).build());
   }
 
+  /** Both relation kinds — for callers authorized to write tables and views alike. */
+  public static final Set<ResourceKind> ALL_RELATION_KINDS =
+      Set.of(ResourceKind.RK_TABLE, ResourceKind.RK_VIEW);
+
   /**
    * Reconciles leftover by-name index rows for a namespace whose emptiness a caller is about to
    * decide, outside any drop. Best-effort: a row that changes under the batch is left for the
    * caller's own re-check rather than aborting the request.
    */
   public int reclaimStrandedRelationNames(Namespace namespace) {
-    return reclaimStrandedRelationNames(namespace, BatchGuard.NONE);
+    return reclaimStrandedRelationNames(namespace, ALL_RELATION_KINDS);
+  }
+
+  /**
+   * Same, restricted to {@code kinds}.
+   *
+   * <p>Releasing a row is a relation-scoped write, so a caller may only spend the grants it holds:
+   * a CreateTable authorized by {@code table.write} alone can clear the stranded table rows
+   * blocking its own name, but not view rows. A name still held after a restricted sweep is
+   * reported as taken, which is the honest answer for a caller who cannot clear what is holding it.
+   */
+  public int reclaimStrandedRelationNames(Namespace namespace, Set<ResourceKind> kinds) {
+    return reclaimStrandedRelationNames(namespace, kinds, BatchGuard.NONE);
   }
 
   /**
@@ -537,33 +566,57 @@ public class RecursiveResourceDropper {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     String accountId = namespaceId.getAccountId();
-    return anyResolvable(
-            tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId()),
-            accountId,
-            ResourceKind.RK_TABLE)
-        || anyResolvable(
-            viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId()),
-            accountId,
-            ResourceKind.RK_VIEW);
+    var found = new boolean[1];
+    // Streamed, and abandoned at the first hit: a namespace with a live table costs one page and
+    // one
+    // pointer read rather than a scan of every relation it holds.
+    try {
+      tableRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          namePointer -> {
+            if (resolves(namePointer, accountId, ResourceKind.RK_TABLE)) {
+              found[0] = true;
+              throw new StopScan();
+            }
+          });
+      viewRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          namePointer -> {
+            if (resolves(namePointer, accountId, ResourceKind.RK_VIEW)) {
+              found[0] = true;
+              throw new StopScan();
+            }
+          });
+    } catch (StopScan stopped) {
+      // Answered; the rest of the prefix does not matter.
+    }
+    return found[0];
   }
 
-  private boolean anyResolvable(List<Pointer> namePointers, String accountId, ResourceKind kind) {
-    for (var namePointer : namePointers) {
-      String ownerId = ownerIdOf(namePointer);
-      if (ownerId.isEmpty()) {
-        // Names nothing, so it resolves to nothing: reclaimUnresolvableName's case, not a live
-        // relation.
-        continue;
-      }
-      String canonicalKey =
-          kind == ResourceKind.RK_TABLE
-              ? Keys.tablePointerById(accountId, ownerId)
-              : Keys.viewPointerById(accountId, ownerId);
-      if (pointerStore.get(canonicalKey).isPresent()) {
-        return true;
-      }
+  /** Ends a streamed scan early. Never escapes {@link #hasResolvableRelation}. */
+  private static final class StopScan extends RuntimeException {
+    private StopScan() {
+      super(null, null, false, false);
     }
-    return false;
+  }
+
+  /** Whether a by-name row names a relation whose canonical pointer still exists. */
+  private boolean resolves(Pointer namePointer, String accountId, ResourceKind kind) {
+    String ownerId = ownerIdOf(namePointer);
+    if (ownerId.isEmpty()) {
+      // Names nothing, so it resolves to nothing: reclaimUnresolvableName's case, not a live
+      // relation.
+      return false;
+    }
+    String canonicalKey =
+        kind == ResourceKind.RK_TABLE
+            ? Keys.tablePointerById(accountId, ownerId)
+            : Keys.viewPointerById(accountId, ownerId);
+    return pointerStore.get(canonicalKey).isPresent();
   }
 
   /**
@@ -582,21 +635,36 @@ public class RecursiveResourceDropper {
    * <p>The drop path reclaims these rows inline as it walks them; this sweep exists for callers who
    * only need to decide emptiness, such as a non-recursive delete.
    */
-  private int reclaimStrandedRelationNames(Namespace namespace, BatchGuard subtreePin) {
+  private int reclaimStrandedRelationNames(
+      Namespace namespace, Set<ResourceKind> kinds, BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     String accountId = namespaceId.getAccountId();
 
-    int reclaimed = 0;
-    for (var pointer :
-        tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      reclaimed += reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, subtreePin) ? 1 : 0;
+    var reclaimed = new int[1];
+    if (kinds.contains(ResourceKind.RK_TABLE)) {
+      tableRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          pointer -> {
+            if (reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, subtreePin)) {
+              reclaimed[0]++;
+            }
+          });
     }
-    for (var pointer :
-        viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
-      reclaimed += reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, subtreePin) ? 1 : 0;
+    if (kinds.contains(ResourceKind.RK_VIEW)) {
+      viewRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          pointer -> {
+            if (reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, subtreePin)) {
+              reclaimed[0]++;
+            }
+          });
     }
-    return reclaimed;
+    return reclaimed[0];
   }
 
   /**
@@ -1022,6 +1090,16 @@ public class RecursiveResourceDropper {
     var parents = namespace.getParentsList();
     return parents.size() >= rootPath.size()
         && parents.subList(0, rootPath.size()).equals(rootPath);
+  }
+
+  /**
+   * The same test against a by-path row's full path: strictly below {@code rootPath}, so the root's
+   * own row — which the prefix scan also returns — is not treated as a descendant of itself.
+   */
+  private static boolean isDescendantPath(
+      java.util.List<String> fullPath, java.util.List<String> rootPath) {
+    return fullPath.size() > rootPath.size()
+        && fullPath.subList(0, rootPath.size()).equals(rootPath);
   }
 
   public static final class DropSummary {
