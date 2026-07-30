@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
-/** Verifies bounded scheduling, ordered delivery, failure draining, and prompt cancellation. */
+/** Verifies bounded scheduling, ordered delivery, fail-fast errors, and prompt cancellation. */
 class BoundedFanoutTest {
 
   @Test
@@ -209,9 +209,9 @@ class BoundedFanoutTest {
   }
 
   @Test
-  void orderedConsumerFailureStopsFurtherWindowRefills() throws Exception {
+  void orderedConsumerFailureCancelsActiveSiblingsAndReturnsPromptly() throws Exception {
     CountDownLatch activeSiblingsStarted = new CountDownLatch(2);
-    CountDownLatch releaseActiveSiblings = new CountDownLatch(1);
+    CountDownLatch activeSiblingInterrupted = new CountDownLatch(1);
     AtomicInteger highestStarted = new AtomicInteger(-1);
 
     try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
@@ -227,10 +227,11 @@ class BoundedFanoutTest {
                       if (value > 0) {
                         activeSiblingsStarted.countDown();
                         try {
-                          releaseActiveSiblings.await();
+                          new CountDownLatch(1).await();
                         } catch (InterruptedException e) {
+                          activeSiblingInterrupted.countDown();
                           Thread.currentThread().interrupt();
-                          throw new AssertionError(e);
+                          throw new CancellationException("active sibling interrupted");
                         }
                       }
                       return value;
@@ -244,23 +245,18 @@ class BoundedFanoutTest {
               });
 
       assertThat(activeSiblingsStarted.await(1, TimeUnit.SECONDS)).isTrue();
-      releaseActiveSiblings.countDown();
-
-      assertThat(result.get(1, TimeUnit.SECONDS))
+      assertThat(result.get(250, TimeUnit.MILLISECONDS))
           .isInstanceOf(IllegalStateException.class)
           .hasMessage("ordered merge failed");
+      assertThat(activeSiblingInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
       assertThat(highestStarted.get()).isEqualTo(2);
-    } finally {
-      releaseActiveSiblings.countDown();
     }
   }
 
   @Test
-  void processingFailureWinsWhenCancellationRacesFailureDrain() throws Exception {
+  void orderedTaskFailureDoesNotWaitForStalledSibling() throws Exception {
     CountDownLatch siblingStarted = new CountDownLatch(1);
-    CountDownLatch consumerFailed = new CountDownLatch(1);
-    CountDownLatch siblingInterrupted = new CountDownLatch(1);
-    AtomicBoolean cancelled = new AtomicBoolean();
+    CountDownLatch releaseSibling = new CountDownLatch(1);
 
     try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
       CompletableFuture<Throwable> result =
@@ -278,34 +274,74 @@ class BoundedFanoutTest {
                           Thread.currentThread().interrupt();
                           throw new AssertionError(e);
                         }
-                        return value;
+                        throw new IllegalStateException("ordered task failed");
                       }
                       siblingStarted.countDown();
-                      try {
-                        new CountDownLatch(1).await();
-                        return value;
-                      } catch (InterruptedException e) {
-                        siblingInterrupted.countDown();
-                        Thread.currentThread().interrupt();
-                        throw new CancellationException("sibling interrupted");
+                      while (releaseSibling.getCount() != 0) {
+                        try {
+                          releaseSibling.await();
+                        } catch (InterruptedException ignored) {
+                          // Deliberately ignore interruption: the known ordered failure must still
+                          // return without waiting for this unrelated downstream call.
+                        }
                       }
+                      return value;
                     },
-                    ignored -> {
-                      consumerFailed.countDown();
-                      throw new IllegalStateException("ordered merge failed");
-                    },
-                    cancelled::get);
+                    ignored -> {},
+                    () -> false);
               });
 
-      assertThat(consumerFailed.await(1, TimeUnit.SECONDS)).isTrue();
-      cancelled.set(true);
-      Throwable failure = result.get(250, TimeUnit.MILLISECONDS);
-      assertThat(failure)
+      assertThat(siblingStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      try {
+        assertThat(result.get(250, TimeUnit.MILLISECONDS))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("ordered task failed");
+      } finally {
+        releaseSibling.countDown();
+      }
+    }
+  }
+
+  @Test
+  void orderedMapFailureDoesNotWaitForStalledSibling() throws Exception {
+    CountDownLatch siblingStarted = new CountDownLatch(1);
+    CountDownLatch releaseSibling = new CountDownLatch(1);
+
+    CompletableFuture<Throwable> result =
+        captureAsyncFailure(
+            () ->
+                BoundedFanout.mapOrdered(
+                    List.of(0, 1),
+                    2,
+                    ForkJoinPool.commonPool(),
+                    value -> {
+                      if (value == 0) {
+                        try {
+                          siblingStarted.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError(e);
+                        }
+                        throw new IllegalStateException("ordered task failed");
+                      }
+                      siblingStarted.countDown();
+                      while (releaseSibling.getCount() != 0) {
+                        try {
+                          releaseSibling.await();
+                        } catch (InterruptedException ignored) {
+                          // CompletableFuture cancellation need not interrupt its running action.
+                        }
+                      }
+                      return value;
+                    }));
+
+    assertThat(siblingStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    try {
+      assertThat(result.get(250, TimeUnit.MILLISECONDS))
           .isInstanceOf(IllegalStateException.class)
-          .hasMessage("ordered merge failed");
-      assertThat(failure.getSuppressed())
-          .anyMatch(suppressed -> suppressed instanceof CancellationException);
-      assertThat(siblingInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
+          .hasMessage("ordered task failed");
+    } finally {
+      releaseSibling.countDown();
     }
   }
 
@@ -328,7 +364,7 @@ class BoundedFanoutTest {
   }
 
   @Test
-  void submissionFailureWaitsForAlreadySubmittedTasks() throws Exception {
+  void submissionFailureDoesNotWaitForAlreadySubmittedTasks() throws Exception {
     CountDownLatch taskStarted = new CountDownLatch(1);
     CountDownLatch allowTaskCompletion = new CountDownLatch(1);
     CountDownLatch mapReturned = new CountDownLatch(1);
@@ -366,15 +402,18 @@ class BoundedFanoutTest {
             });
 
     assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
-    assertThat(mapReturned.await(100, TimeUnit.MILLISECONDS)).isFalse();
-    allowTaskCompletion.countDown();
-    assertThat(result.join())
-        .isInstanceOf(RejectedExecutionException.class)
-        .hasMessage("executor saturated");
+    try {
+      assertThat(mapReturned.await(250, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(result.get(250, TimeUnit.MILLISECONDS))
+          .isInstanceOf(RejectedExecutionException.class)
+          .hasMessage("executor saturated");
+    } finally {
+      allowTaskCompletion.countDown();
+    }
   }
 
   @Test
-  void refillSubmissionFailureWaitsForAlreadySubmittedTasks() throws Exception {
+  void refillSubmissionFailureDoesNotWaitForAlreadySubmittedTasks() throws Exception {
     CountDownLatch blockingTaskStarted = new CountDownLatch(1);
     CountDownLatch allowBlockingTaskCompletion = new CountDownLatch(1);
     CountDownLatch mapReturned = new CountDownLatch(1);
@@ -397,6 +436,14 @@ class BoundedFanoutTest {
                     2,
                     rejectRefillSubmission,
                     value -> {
+                      if (value == 1) {
+                        try {
+                          blockingTaskStarted.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError("first task interrupted", e);
+                        }
+                      }
                       if (value == 2) {
                         blockingTaskStarted.countDown();
                         try {
@@ -414,11 +461,14 @@ class BoundedFanoutTest {
             });
 
     assertThat(blockingTaskStarted.await(1, TimeUnit.SECONDS)).isTrue();
-    assertThat(mapReturned.await(100, TimeUnit.MILLISECONDS)).isFalse();
-    allowBlockingTaskCompletion.countDown();
-    assertThat(result.join())
-        .isInstanceOf(RejectedExecutionException.class)
-        .hasMessage("executor saturated during refill");
+    try {
+      assertThat(mapReturned.await(250, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(result.get(250, TimeUnit.MILLISECONDS))
+          .isInstanceOf(RejectedExecutionException.class)
+          .hasMessage("executor saturated during refill");
+    } finally {
+      allowBlockingTaskCompletion.countDown();
+    }
   }
 
   @Test
@@ -503,8 +553,6 @@ class BoundedFanoutTest {
       cancelled.set(true);
       Throwable failure = result.get(250, TimeUnit.MILLISECONDS);
       assertThat(failure).isInstanceOf(RejectedExecutionException.class);
-      assertThat(failure.getSuppressed())
-          .anyMatch(suppressed -> suppressed instanceof CancellationException);
       assertThat(taskInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
     }
   }

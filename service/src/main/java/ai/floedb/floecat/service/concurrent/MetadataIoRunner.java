@@ -20,7 +20,6 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -30,9 +29,10 @@ import org.jboss.logging.Logger;
 /**
  * Application-wide admission and platform-worker ownership for blocking metadata I/O.
  *
- * <p>Every concurrent overlay caller shares this runner, so the configured capacity is a process
- * ceiling rather than a per-service multiplier. Admission remains held until the downstream call
- * exits, even when its waiting request has already cancelled.
+ * <p>Every production/default overlay caller shares one runtime, so the configured capacity is a
+ * process ceiling rather than a per-service multiplier. Admission remains held until the downstream
+ * call exits, even when its waiting request has already cancelled. Explicit-capacity instances are
+ * isolated for focused tests.
  */
 @ApplicationScoped
 public class MetadataIoRunner {
@@ -41,34 +41,40 @@ public class MetadataIoRunner {
   private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long CANCELLATION_POLL_MILLIS = 10;
 
-  private final int capacity;
-  private final Semaphore permits;
-  private volatile ExecutorService executor = ForkJoinPool.commonPool();
-  private ExecutorService ownedExecutor;
+  private final RuntimeState runtime;
 
-  /** Create the production runner with the application-wide default capacity. */
+  /**
+   * Create a facade over the process-wide production runtime. Direct and CDI construction share the
+   * same admission semaphore and bounded daemon worker pool.
+   */
   public MetadataIoRunner() {
-    this(DEFAULT_CAPACITY);
+    this(SharedRuntime.RUNTIME);
+  }
+
+  /** Return the process-wide runner for compatibility constructors outside CDI. */
+  public static MetadataIoRunner shared() {
+    return SharedRunner.INSTANCE;
   }
 
   /** Create an isolated runner with a caller-selected capacity, primarily for focused tests. */
   public MetadataIoRunner(int capacity) {
-    if (capacity < 1) {
-      throw new IllegalArgumentException("metadata I/O capacity must be positive");
-    }
-    this.capacity = capacity;
-    this.permits = new Semaphore(capacity, true /* best-effort request fairness */);
+    this(new RuntimeState(capacity));
   }
 
-  /** Start the owned bounded platform-worker pool; repeated lifecycle calls are harmless. */
+  private MetadataIoRunner(RuntimeState runtime) {
+    this.runtime = java.util.Objects.requireNonNull(runtime, "runtime");
+    runtime.start();
+  }
+
+  /** Start the bounded platform-worker pool; repeated lifecycle calls are harmless. */
   @PostConstruct
-  public synchronized void start() {
-    if (ownedExecutor != null) {
-      return;
-    }
-    ownedExecutor =
-        MetadataIoExecutors.newBoundedDaemonPool(capacity, capacity, "floecat-metadata-io-");
-    executor = ownedExecutor;
+  public void start() {
+    runtime.start();
+  }
+
+  /** True when two facades share the same process or test runtime. */
+  boolean sharesRuntimeWith(MetadataIoRunner other) {
+    return other != null && runtime == other.runtime;
   }
 
   /** Run one blocking call with cancellation polling and application-wide admission. */
@@ -76,14 +82,15 @@ public class MetadataIoRunner {
       BooleanSupplier cancelled,
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
-    return CancellableCallRunner.call(executor, permits, cancelled, operation, failureMessages);
+    return CancellableCallRunner.call(
+        runtime.executor(), runtime.permits, cancelled, operation, failureMessages);
   }
 
   /** Run one blocking call off-thread without imposing cancellation or a new deadline. */
   public <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     return CancellableCallRunner.callWithoutCancellation(
-        executor, permits, operation, failureMessages);
+        runtime.executor(), runtime.permits, operation, failureMessages);
   }
 
   /** Run one thread-confined callback on its caller while polling cancellation during admission. */
@@ -98,7 +105,7 @@ public class MetadataIoRunner {
           throw new CancellationException(failureMessages.cancellation());
         }
         try {
-          acquired = permits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+          acquired = runtime.permits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           throw new CancellationException(failureMessages.interruption());
@@ -111,7 +118,7 @@ public class MetadataIoRunner {
       return result;
     } finally {
       if (acquired) {
-        permits.release();
+        runtime.permits.release();
       }
     }
   }
@@ -121,7 +128,7 @@ public class MetadataIoRunner {
     boolean acquired = false;
     try {
       try {
-        permits.acquire();
+        runtime.permits.acquire();
         acquired = true;
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -130,23 +137,69 @@ public class MetadataIoRunner {
       return operation.get();
     } finally {
       if (acquired) {
-        permits.release();
+        runtime.permits.release();
       }
     }
   }
 
-  /** Stop owned workers without allowing an interruption-insensitive call to block JVM exit. */
+  /**
+   * Stop this runtime's workers without allowing an interruption-insensitive call to block exit.
+   */
   @PreDestroy
-  public synchronized void close() {
-    if (ownedExecutor == null) {
-      return;
-    }
-    ExecutorService closing = ownedExecutor;
-    ownedExecutor = null;
-    executor = ForkJoinPool.commonPool();
-    if (!MetadataIoExecutors.shutdownNowAndAwait(
-        closing, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+  public void close() {
+    if (!runtime.close()) {
       LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
+    }
+  }
+
+  /** Holder indirection avoids eagerly starting the process runtime when this class is unused. */
+  private static final class SharedRuntime {
+    private static final RuntimeState RUNTIME = new RuntimeState(DEFAULT_CAPACITY);
+  }
+
+  /** Stable facade used by direct-construction compatibility paths. */
+  private static final class SharedRunner {
+    private static final MetadataIoRunner INSTANCE = new MetadataIoRunner(SharedRuntime.RUNTIME);
+  }
+
+  /** Shared lifecycle and admission state behind one or more runner facades. */
+  private static final class RuntimeState {
+    private final int capacity;
+    private final Semaphore permits;
+    private volatile ExecutorService executor;
+
+    private RuntimeState(int capacity) {
+      if (capacity < 1) {
+        throw new IllegalArgumentException("metadata I/O capacity must be positive");
+      }
+      this.capacity = capacity;
+      this.permits = new Semaphore(capacity, true /* best-effort request fairness */);
+    }
+
+    private synchronized void start() {
+      if (executor == null || executor.isShutdown()) {
+        executor =
+            MetadataIoExecutors.newBoundedDaemonPool(capacity, capacity, "floecat-metadata-io-");
+      }
+    }
+
+    private ExecutorService executor() {
+      ExecutorService current = executor;
+      if (current == null || current.isShutdown()) {
+        start();
+        current = executor;
+      }
+      return current;
+    }
+
+    private synchronized boolean close() {
+      if (executor == null) {
+        return true;
+      }
+      ExecutorService closing = executor;
+      executor = null;
+      return MetadataIoExecutors.shutdownNowAndAwait(
+          closing, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
   }
 }

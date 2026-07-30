@@ -160,8 +160,8 @@ public class QueryInputResolver {
         metadataGraph,
         queryStore,
         configuredMaxParallelInputResolutions(),
-        new MetadataIoRunner(),
-        true);
+        MetadataIoRunner.shared(),
+        false);
   }
 
   QueryInputResolver(

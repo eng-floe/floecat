@@ -33,6 +33,17 @@ class MetadataIoRunnerTest {
       new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
 
   @Test
+  void defaultConstructionSharesBoundedProcessRuntimeOutsideCdi() {
+    MetadataIoRunner direct = new MetadataIoRunner();
+    MetadataIoRunner shared = MetadataIoRunner.shared();
+
+    assertTrue(direct.sharesRuntimeWith(shared));
+    String workerName =
+        direct.callWithoutCancellation(() -> Thread.currentThread().getName(), FAILURES);
+    assertTrue(workerName.startsWith("floecat-metadata-io-"), workerName);
+  }
+
+  @Test
   void oneRunnerAppliesOneAdmissionCeilingAcrossCallers() throws Exception {
     var runner = new MetadataIoRunner(1);
     var firstStarted = new CountDownLatch(1);

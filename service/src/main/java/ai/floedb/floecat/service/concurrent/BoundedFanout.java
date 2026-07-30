@@ -39,8 +39,9 @@ import java.util.function.Function;
  *
  * <p>At most the configured number of tasks are submitted at a time. A completed task immediately
  * opens one submission slot, independent of input order. Completed results are retained by index;
- * mapping returns them after the bounded window drains, while ordered consumption delivers each
- * contiguous input-order prefix as soon as it is available.
+ * mapping and ordered consumption deliver each contiguous input-order prefix as soon as it is
+ * available. Once that prefix exposes a failure, active siblings are cancelled or abandoned and the
+ * original failure returns without waiting for unrelated work.
  */
 public final class BoundedFanout {
 
@@ -54,29 +55,30 @@ public final class BoundedFanout {
    * (OpenTelemetry, engine/principal/correlation, MDC) re-established via {@link
    * PropagatedContext}, so ambient reads behave off-thread as they do on the caller's thread. A
    * task failure surfaces unwrapped — its original {@link RuntimeException} or {@link Error}, never
-   * an execution-wrapper exception. With no cancellation, every task future completes before the
-   * first joined failure propagates, so callers can safely clean up task-owned resources.
+   * an execution-wrapper exception. The first failure reachable in input order propagates
+   * immediately; active siblings are cancelled or abandoned rather than drained.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items, int permits, Executor executor, Function<I, O> task) {
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
+    List<O> results = new ArrayList<>(items.size());
+    OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, results::add);
     completeAll(
         items,
         permits,
         outcomes,
-        (index, outcome) -> {},
+        ordered::accept,
         new CompletionTaskRuntime<>(executor, PropagatedContext.capture(), task));
-    return orderedResults(outcomes);
+    return results;
   }
 
   /**
    * Cancellation-aware ordered result consumption. A consumer failure has the same ordered
-   * precedence as a task failure, while submitted work is cancelled promptly when requested. A
-   * non-cancellation failure waits for already-submitted siblings before it surfaces, preserving
-   * the task-resource completion guarantee at the cost of slowest-sibling failure latency. {@code
-   * cancelled} may be read concurrently by the scheduler and workers, so it must be non-blocking
-   * and thread-safe (typically {@link java.util.concurrent.atomic.AtomicBoolean#get}). Observed
-   * cancellation throws {@link CancellationException}.
+   * precedence as a task failure, while submitted work is cancelled promptly on failure or when
+   * cancellation is requested. {@code cancelled} may be read concurrently by the scheduler and
+   * workers, so it must be non-blocking and thread-safe (typically {@link
+   * java.util.concurrent.atomic.AtomicBoolean#get}). Observed cancellation throws {@link
+   * CancellationException}.
    */
   public static <I, O> void forEachOrdered(
       List<I> items,
@@ -93,18 +95,6 @@ public final class BoundedFanout {
         outcomes,
         ordered::accept,
         new CancellableTaskRuntime<>(executor, PropagatedContext.capture(), task, cancelled));
-  }
-
-  /** Re-throw the first input-ordered task failure after every bounded task has finished. */
-  private static <O> List<O> orderedResults(List<TaskOutcome<O>> outcomes) {
-    List<O> results = new ArrayList<>(outcomes.size());
-    for (TaskOutcome<O> outcome : outcomes) {
-      if (outcome.failure() != null) {
-        throw Futures.propagate(outcome.failure(), "unexpected checked exception from fan-out");
-      }
-      results.add(outcome.result());
-    }
-    return results;
   }
 
   /**
@@ -157,8 +147,8 @@ public final class BoundedFanout {
     TaskOutcome<O> outcome(CompletionSlot<O> slot, List<CompletionSlot<O>> active);
 
     /**
-     * Finish or cancel active work after scheduler/consumer failure. Cleanup must preserve the
-     * supplied failure as the caller-visible outcome and attach any raced cancellation to it.
+     * Cancel or abandon active work after scheduler/consumer failure without waiting for it. The
+     * supplied failure remains the caller-visible outcome.
      */
     void afterFailure(List<CompletionSlot<O>> active, Throwable processingFailure);
   }
@@ -216,7 +206,7 @@ public final class BoundedFanout {
 
     @Override
     public void afterFailure(List<CompletionSlot<O>> active, Throwable processingFailure) {
-      awaitCompletedTasks(active);
+      cancelCompletionTasks(active);
     }
   }
 
@@ -296,15 +286,7 @@ public final class BoundedFanout {
 
     @Override
     public void afterFailure(List<CompletionSlot<O>> active, Throwable processingFailure) {
-      if (processingFailure instanceof CancellationException) {
-        cancelSubmittedTasks(active);
-        return;
-      }
-      try {
-        awaitSubmittedTasks(active, cancelled);
-      } catch (CancellationException cancellationFailure) {
-        processingFailure.addSuppressed(cancellationFailure);
-      }
+      cancelSubmittedTasks(active);
     }
   }
 
@@ -333,42 +315,11 @@ public final class BoundedFanout {
     return new ArrayList<>(java.util.Collections.nCopies(size, null));
   }
 
-  /** Wait for every active completion after scheduling or ordered consumption fails. */
-  private static void awaitCompletedTasks(List<? extends CompletionSlot<?>> active) {
+  /** Best-effort cancellation for non-cancellable executor submissions; never wait for siblings. */
+  private static void cancelCompletionTasks(List<? extends CompletionSlot<?>> active) {
     for (CompletionSlot<?> slot : active) {
-      try {
-        Futures.join(slot.completion);
-      } catch (RuntimeException | Error ignored) {
-        // The scheduler or consumer failure is caller-visible; task failures only complete
-        // task-owned cleanup.
-      }
-    }
-  }
-
-  /**
-   * Wait for submitted tasks after scheduling or ordered consumption fails, while still returning
-   * promptly when the stream is cancelled. Without cancellation the original failure remains
-   * caller-visible.
-   */
-  private static void awaitSubmittedTasks(
-      List<? extends CompletionSlot<?>> active, BooleanSupplier cancelled) {
-    for (CompletionSlot<?> slot : active) {
-      while (true) {
-        checkCancelled(cancelled, active);
-        try {
-          slot.task.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
-          break;
-        } catch (TimeoutException ignored) {
-          // A bounded wait lets the next loop observe cancellation.
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          cancelSubmittedTasks(active);
-          throw cancelled();
-        } catch (ExecutionException | CancellationException ignored) {
-          // The scheduler or consumer failure is caller-visible; task failures only complete
-          // task-owned cleanup.
-          break;
-        }
+      if (slot.completion != null) {
+        slot.completion.cancel(true);
       }
     }
   }

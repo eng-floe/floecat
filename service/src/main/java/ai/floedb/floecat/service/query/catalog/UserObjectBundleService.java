@@ -341,7 +341,7 @@ public class UserObjectBundleService {
     this(
         overlay,
         inputResolver,
-        new MetadataIoRunner(),
+        MetadataIoRunner.shared(),
         queryStore,
         statsFactory,
         decoratorProvider,
@@ -373,7 +373,7 @@ public class UserObjectBundleService {
     this(
         overlay,
         inputResolver,
-        new MetadataIoRunner(),
+        MetadataIoRunner.shared(),
         queryStore,
         statsFactory,
         decoratorProvider,
