@@ -1761,9 +1761,11 @@
 <li><code>AccountId</code> = the account id passed by Floecat</li>
 </ul>
 <p>These tags support ABAC-style policies.</p>
-<p>Connector AuthCredentials and storage-authority source credentials are written to Secrets Manager
-and removed from the corresponding persisted resource records. Connector responses mask sensitive
-auth fields, and storage-authority resolution only returns client-safe config plus any temporary
+<p>Connector and catalog-integration <code>AuthCredentials</code>, along with storage-authority source
+credentials, are written to Secrets Manager and removed from the corresponding persisted resource
+records. Catalog integrations persist only a unique opaque credential reference and never expose
+that reference or credential payload in service responses. Connector responses mask sensitive auth
+fields, and storage-authority resolution only returns client-safe config plus any temporary
 credentials minted for a specific table/location match.</p>
 <p>Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
 secrets are the only credential source used for client credential vending.</p>

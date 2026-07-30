@@ -2052,8 +2052,9 @@ CLI, and reconciler.</p>
 </tr>
 </tbody>
 </table>
-<p>Each RPC requires a populated <code>account_id</code> within the <code>ResourceId</code>s; the Quarkus service checks this
-before hitting repository storage.</p>
+<p>Resource IDs supplied to integration and overlay RPCs must include an <code>account_id</code> matching the
+authenticated principal's account. The service rejects blank or cross-account IDs before hitting
+repository storage.</p>
 <h3 id="planner-lifecycle-execution-scan-schemas">Planner Lifecycle &amp; Execution Scan Schemas<a class="headerlink" href="#planner-lifecycle-execution-scan-schemas" title="Permanent link">&para;</a></h3>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
 - <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
