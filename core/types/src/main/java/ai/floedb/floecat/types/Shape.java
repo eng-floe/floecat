@@ -26,9 +26,9 @@ import java.util.Objects;
  * dispatch exhaustively instead of probing field presence.
  *
  * <p>Polarity is deliberately <em>not</em> mirrored: this model says {@code nullable}, while the
- * wire says {@code required}, so an unset proto3 bool defaults to nullable — the direction that
- * can only cost performance, never correctness. The negation lives in {@link
- * LogicalTypeProtoAdapter} and nowhere else.
+ * wire says {@code required}, so an unset proto3 bool defaults to nullable — the direction that can
+ * only cost performance, never correctness. The negation lives in {@link LogicalTypeProtoAdapter}
+ * and nowhere else.
  *
  * <p>{@code Array} for {@link LogicalKind#ARRAY}, {@code Map} for {@link LogicalKind#MAP}, {@code
  * Struct} for {@link LogicalKind#STRUCT}. A complex {@link LogicalType} without a shape is the
