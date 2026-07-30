@@ -1642,13 +1642,15 @@ on a cold cache.</p>
        │      │      │
        │      │      ├─ job succeeded → re-read store
        │      │      │       ├─ record present ───────── CAPTURED (stats returned, no follow-up)
-       │      │      │       └─ record absent ─────────  PARTIAL  (async follow-up enqueued)
+       │      │      │       └─ record absent ─────────  PARTIAL  (deduped async follow-up)
        │      │      │
        │      │      ├─ budget exceeded ──────────────── TIMEOUT  (async follow-up enqueued)
        │      │      └─ job failed / no connector ────── FAILED   (async follow-up enqueued)
        │
-       └─ otherwise (ASYNC mode / no budget / sync disabled)
-               └────────────────────────────────────── SKIPPED  (async job enqueued)
+       ├─ sync enabled, but ASYNC mode / no budget
+       │       └────────────────────────────────────── SKIPPED  (async job enqueued)
+       │
+       └─ sync disabled ─────────────────────────────── SKIPPED  (no capture enqueued)
 </code></pre></div>
 <h2 id="outcome-reference">Outcome reference<a class="headerlink" href="#outcome-reference" title="Permanent link">&para;</a></h2>
 <table>
@@ -1694,11 +1696,16 @@ on a cold cache.</p>
 <tr>
 <td><code>SKIPPED</code></td>
 <td style="text-align: center;">no</td>
-<td style="text-align: center;">yes</td>
-<td>ASYNC mode, no budget, or sync disabled</td>
+<td style="text-align: center;">conditional</td>
+<td>Async fallback, or query capture disabled</td>
 </tr>
 </tbody>
 </table>
+<p>Query-driven column requests are stats-only and do not implicitly request Parquet page indexes.
+Request origin is not part of capture coverage identity. Existing equivalent snapshot coverage
+therefore satisfies query requests without new execution. When coverage is genuinely missing, the
+reconciler attempts connector-native direct stats and falls back to file-group capture only when the
+connector cannot satisfy the request directly.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1711,8 +1718,8 @@ on a cold cache.</p>
 <tbody>
 <tr>
 <td><code>floecat.stats.sync.enabled</code></td>
-<td><code>true</code></td>
-<td>Master switch for sync-first resolution</td>
+<td><code>false</code></td>
+<td>Master switch for all query-driven capture</td>
 </tr>
 <tr>
 <td><code>floecat.stats.sync.latency-budget</code></td>
@@ -1730,9 +1737,8 @@ on a cold cache.</p>
 <code>FLOECAT_STATS_SYNC_LATENCY_BUDGET</code>, <code>FLOECAT_STATS_SYNC_MAX_LATENCY_BUDGET</code>.</p>
 <h2 id="planner-integration">Planner integration<a class="headerlink" href="#planner-integration" title="Permanent link">&para;</a></h2>
 <p><code>StatsProviderFactory</code> reads <code>floecat.stats.sync.enabled</code> and <code>floecat.stats.sync.latency-budget</code>
-at startup and sets <code>executionMode(SYNC)</code> + <code>latencyBudget(...)</code> on every
-<code>StatsCaptureRequest</code> it creates for query-time resolution. Set <code>enabled=false</code> to revert to
-async-only for all queries without changing other behavior.</p>
+at startup and sets <code>executionMode(SYNC)</code> + <code>latencyBudget(...)</code> on query-time requests only when
+enabled. With <code>enabled=false</code>, query-time resolution is store-only and enqueues no capture work.</p>
 <p><code>PlannerStatsBundleService</code> maps <code>StatsResolutionResult</code> outcomes to planner quality:</p>
 <ul>
 <li><code>HIT</code> / <code>CAPTURED</code> → <code>FOUND</code></li>
@@ -1777,7 +1783,7 @@ stop blocking queries on sync attempts.</p>
 non-connected tables.</p>
 <p><strong>Disabling sync globally</strong></p>
 <p>Set <code>floecat.stats.sync.enabled=false</code> (or <code>FLOECAT_STATS_SYNC_ENABLED=false</code>). All queries
-fall back to <code>SKIPPED</code> + async enqueue, which matches the pre-sync-policy behavior.</p>
+fall back to store-only resolution; misses return <code>SKIPPED</code> and enqueue no capture work.</p>
 <p><strong>Verifying counters</strong></p>
 <p>Query <code>/q/metrics</code> after triggering a stats miss. Look for lines containing
 <code>floecat_service_stats_sync_outcomes_total</code>.</p>

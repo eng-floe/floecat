@@ -2161,6 +2161,8 @@ struct children as <code>parent.child</code>, list elements as <code>parent[]</c
 values as <code>parent{}</code> (e.g. <code>address.city</code>, <code>items[].sku</code>, <code>tags{}.v</code>). Schema construction and
 the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
 set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.</p>
+<p><code>ScalarStats.logical_type</code> remains a flat canonical string: stats rows exist only for leaves, and
+leaf types are never parameterised containers.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>LogicalType</code> / <code>LogicalKind</code></strong> – Immutable representations of logical types. <code>LogicalType</code>
@@ -2174,7 +2176,8 @@ set are identical by construction; the child rows drive per-leaf stats and field
   sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
   precision (0..6). All other kinds reject parameters.</li>
 <li><strong><code>LogicalTypeProtoAdapter</code></strong> – Converts between the protobuf <code>ai.floedb.floecat.types.LogicalType</code>
-  wire message and the JVM <code>LogicalType</code>, preserving kind/precision/scale/interval range metadata.</li>
+  wire message and the JVM <code>LogicalType</code>, preserving scalar parameters, recursive shape, and nested
+  requiredness.</li>
 <li><strong><code>LogicalCoercions</code></strong> – Coerces raw stat values to the canonical Java type for a given kind (e.g.
   any <code>Number</code> → <code>Long</code> for <code>INT</code>, string → <code>LocalDateTime</code> for <code>TIMESTAMP</code> (timezone‑naive policy),
   string → <code>Instant</code> for <code>TIMESTAMPTZ</code>).</li>
@@ -2211,15 +2214,16 @@ set are identical by construction; the child rows drive per-leaf stats and field
 <span class="n">String</span><span class="w"> </span><span class="n">logicalType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LogicalTypeFormat</span><span class="p">.</span><span class="na">format</span><span class="p">(</span><span class="n">t</span><span class="p">);</span>
 <span class="n">String</span><span class="w"> </span><span class="n">encoded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MinMaxCodec</span><span class="p">.</span><span class="na">encode</span><span class="p">(</span><span class="n">t</span><span class="p">,</span><span class="w"> </span><span class="n">BigDecimal</span><span class="p">.</span><span class="na">valueOf</span><span class="p">(</span><span class="mi">42</span><span class="p">));</span>
 </code></pre></div>
-<code>LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)</code> and
-<code>.encodeLogicalType(LogicalType logicalType)</code> convert between canonical logical type strings and
-runtime objects.</p>
+<code>LogicalTypeFormat.parse(String)</code> and <code>.format(LogicalType)</code> convert between canonical logical type
+strings and runtime objects. <code>LogicalTypeProtoAdapter</code> converts the runtime type to and from the
+typed protobuf payload.</p>
 <h2 id="arrow-mapping-contract">Arrow Mapping Contract<a class="headerlink" href="#arrow-mapping-contract" title="Permanent link">&para;</a></h2>
 <p><code>core/arrow</code> helpers (especially <code>ArrowSchemaUtil</code>) are defined over Floecat logical types, not over
 arbitrary engine-native type systems.</p>
 <ul>
-<li>Input is <code>SchemaColumn.logical_type</code> and should be a Floecat canonical logical type string (or an
-  accepted alias handled by <code>LogicalKind.fromName</code> semantics).</li>
+<li>Input is <code>SchemaColumn.type</code>, a recursive <code>floecat.types.LogicalType</code> message; decode it with
+  <code>LogicalTypeProtoAdapter.columnType</code>. Textual entry points (generic schema declarations) still
+  accept canonical names and aliases via <code>LogicalKind.fromName</code> semantics.</li>
 <li>Integer aliases (<code>TINYINT</code>, <code>SMALLINT</code>, <code>INT</code>, <code>BIGINT</code>, <code>INT2/4/8</code>, <code>UINT2/4/8</code>) all map to
   Arrow signed 64-bit (<code>Int64</code>) to preserve collapsed canonical <code>INT</code> behavior.</li>
 <li>Unknown, null, or blank logical types fail fast with <code>IllegalArgumentException</code>; they are not
@@ -2274,8 +2278,8 @@ intend lossy rounding opt in explicitly, e.g.
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector reads Parquet/Delta/Iceberg schema
-  → schema mapper emits canonical LogicalKind strings (e.g. &quot;INT&quot;, &quot;TIMESTAMPTZ&quot;, &quot;ARRAY&quot;)
-  → SchemaColumn.logical_type stores the canonical string
+  → schema mapper emits recursive LogicalType trees (e.g. INT, TIMESTAMPTZ, ARRAY&lt;STRUCT&lt;...&gt;&gt;)
+  → SchemaColumn.type stores the typed tree; nested nodes also surface as child rows by path
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
   → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
@@ -2291,15 +2295,16 @@ intend lossy rounding opt in explicitly, e.g.
    canonical name.</p>
 <h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Iceberg schema parsing</strong> – <code>IcebergSchemaMapper.toCanonical(Type)</code> converts Iceberg types to
-  canonical strings (e.g. <code>TimestampType.withZone()</code> → <code>"TIMESTAMPTZ"</code>), storing them in
-  <code>SchemaColumn.logical_type</code>. This avoids the historic ambiguity where <code>"timestamp"</code> meant
-  UTC-stored in Delta but non-UTC in Iceberg. Iceberg <code>TimestampNanoType</code> is mapped with the same
-  timezone semantics (<code>withZone()</code> → <code>"TIMESTAMPTZ"</code>, <code>withoutZone()</code> → <code>"TIMESTAMP"</code>), and
-  Iceberg <code>VariantType</code> maps to canonical <code>"VARIANT"</code>.</li>
-<li><strong>Delta schema parsing</strong> – <code>DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)</code> applies Delta-
-  specific semantics: <code>"timestamp"</code> → <code>"TIMESTAMPTZ"</code> (UTC-stored), <code>"timestamp_ntz"</code> → <code>"TIMESTAMP"</code>
-  (timezone-naive).</li>
+<li><strong>Iceberg schema parsing</strong> – <code>IcebergTypeMappings.toLogical(Type)</code> converts Iceberg types to
+  <code>LogicalType</code>, recursing into LIST/MAP/STRUCT and preserving element/key/value types and
+  nullability; <code>IcebergSchemaMapper</code> stores the result in <code>SchemaColumn.type</code>. This avoids the
+  historic ambiguity where <code>"timestamp"</code> meant UTC-stored in Delta but non-UTC in Iceberg.
+  Iceberg <code>TimestampNanoType</code> uses the same timezone semantics (<code>withZone()</code> → <code>TIMESTAMPTZ</code>,
+  <code>withoutZone()</code> → <code>TIMESTAMP</code>), and Iceberg <code>VariantType</code> maps to <code>VARIANT</code>.</li>
+<li><strong>Delta schema parsing</strong> – <code>DeltaSchemaMapper.toLogicalType(DataType)</code> (kernel path) and
+  <code>fallbackLogicalType(JsonNode)</code> (JSON fallback) apply Delta-specific semantics: <code>"timestamp"</code> →
+  <code>TIMESTAMPTZ</code> (UTC-stored), <code>"timestamp_ntz"</code> → <code>TIMESTAMP</code> (timezone-naive). Both recurse into
+  arrays/maps/structs, preserving <code>containsNull</code> / <code>valueContainsNull</code>.</li>
 <li><strong>Statistics ingestion</strong> – NDV providers convert Parquet min/max values using <code>MinMaxCodec</code> before
   storing them in <code>ScalarStats</code>, ensuring planners can compare them without deserialising actual
   binary payloads. Connector planners canonicalize connector-native numeric temporal bounds to

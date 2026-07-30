@@ -1827,6 +1827,10 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
     optional <code>targetSnapshotIds</code> for scoped enumeration.</li>
 <li><code>captureSnapshotTargetStats(...)</code> → targeted stats capture for one snapshot and optional selector
     hints (<code>#&lt;column_id&gt;</code> and/or connector-native names/paths).</li>
+<li><code>captureSnapshotTargetStatsDirect(...)</code> → optional connector-native snapshot capture that
+    returns records, source-file count, and the concrete selectors represented by column stats.</li>
+<li><code>capturePlannedFileGroup(...)</code> → captures one immutable planned file group and returns stats,
+    page-index entries, and its concrete realized stats selectors.</li>
 <li><strong><code>ConnectorFactory</code></strong> – Instantiates connectors given a <code>ConnectorConfig</code> (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.</li>
 <li><strong><code>ConnectorConfigMapper</code></strong> – Bidirectional conversion between RPC <code>Connector</code> protobufs and the
@@ -1898,9 +1902,17 @@ session-zone semantics, convert explicitly before encoding stats.</p>
 <span class="w">  </span><span class="n">TableDescriptor</span><span class="w"> </span><span class="nf">describe</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">namespaceFq</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tableName</span><span class="p">);</span>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SnapshotBundle</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">enumerateSnapshots</span><span class="p">(...);</span>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">TargetStatsRecord</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">captureSnapshotTargetStats</span><span class="p">(...);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">DirectSnapshotStatsCapture</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">captureSnapshotTargetStatsDirect</span><span class="p">(...);</span>
+<span class="w">  </span><span class="n">FileGroupCaptureResult</span><span class="w"> </span><span class="nf">capturePlannedFileGroup</span><span class="p">(...);</span>
 <span class="p">}</span>
 </code></pre></div>
-For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
+<code>DirectSnapshotStatsCapture.realizedStatsSelectors</code> and
+<code>FileGroupCaptureResult.realizedStatsSelectors</code> must contain the sorted, distinct concrete selector
+aliases represented by emitted column-stat aggregates. Return an empty list when column stats were
+not requested. Include both <code>#&lt;field-id&gt;</code> and the corresponding name/path when the capture path can
+resolve both; this lets durable content state recognize later requests using either alias and
+avoids unnecessary recapture.</p>
+<p>For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
 <code>TableDescriptor</code>, <code>SnapshotBundle</code>, and <code>ScanBundle</code> are immutable records; connectors populate them
