@@ -958,6 +958,62 @@ class BackendStorageIT {
     assertEquals(before + 1, after);
   }
 
+  /**
+   * A create that collides with an identical existing table returns that table without publishing
+   * anything, so it must not move the children marker either.
+   *
+   * <p>The read that finds the existing table is already stale when the bump would happen: a
+   * concurrent DeleteTable can have removed it in between, leaving a legal DeleteNamespace
+   * mid-flight over a namespace its scan found empty. A bump landing between that delete's marker
+   * advance and its CAS batch fails it with NAMESPACE_CHILDREN_CHANGED, which is not retryable — on
+   * behalf of a create that created nothing. Asserting the marker directly keeps that race out of
+   * the test.
+   */
+  @Test
+  void collidingIdenticalCreateDoesNotAdvanceTheNamespaceChildFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_replayfence_" + clock.millis(), "fence");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_replayfence"), "fence");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+
+    var spec =
+        TableSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(nsId)
+            .setDisplayName("t")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+            .setDescription("d")
+            .build();
+
+    var first =
+        table.createTable(
+            CreateTableRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("replay-a").build())
+                .build());
+    long afterPublish = ptr.get(markerKey).orElseThrow().getVersion();
+    assertTrue(afterPublish > 0L, "the real publish advances the fence");
+
+    // A different key, so the idempotency record cannot answer this and the create is actually
+    // attempted: it collides on the name, matches the existing table's fingerprint, and replays it.
+    var replayed =
+        table.createTable(
+            CreateTableRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("replay-b").build())
+                .build());
+    assertEquals(
+        first.getTable().getResourceId().getId(),
+        replayed.getTable().getResourceId().getId(),
+        "the collision replays the existing table");
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "a create that published nothing must not advance the fence");
+  }
+
   @Test
   void createTableIdempotent() {
     var catName = "cat_idem_" + System.currentTimeMillis();

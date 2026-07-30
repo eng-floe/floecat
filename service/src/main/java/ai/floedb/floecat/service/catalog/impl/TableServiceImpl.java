@@ -294,8 +294,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                         var existingSpec = specFromTable(existingOpt.get());
                                         if (Arrays.equals(
                                             fingerprint, canonicalFingerprint(existingSpec))) {
-                                          markerStore.bumpNamespaceMarker(
-                                              existingOpt.get().getNamespaceId());
+                                          // No children-marker bump: this replay publishes nothing,
+                                          // and the marker is a delete fence. The read above is
+                                          // already stale by now — the table it found can have been
+                                          // deleted since — so bumping could fail a legal
+                                          // DeleteNamespace that scanned the emptied namespace,
+                                          // unretryably, on behalf of a create that created
+                                          // nothing.
                                           metadataGraph.invalidate(
                                               existingOpt.get().getResourceId());
                                           topology.evictRelationRefs(

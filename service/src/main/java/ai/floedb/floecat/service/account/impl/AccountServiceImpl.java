@@ -385,7 +385,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
     // Both paths below run the account's whole teardown — every catalog, namespace, table, view,
     // snapshot prefix and connector — as blocking storage I/O, and a lost delete CAS now raises a
-    // retryable abort rather than reporting a silent success. runWithRetryOnWorker keeps the retry's
+    // retryable abort rather than reporting a silent success. runWithRetryOnWorker keeps the
+    // retry's
     // re-subscription off the Vert.x event loop, where that blocking work fails outright with
     // "current thread cannot be blocked" — and failing there is not a benign lost retry: cleanup
     // runs after the account pointer is already gone, so whatever it did not reach is orphaned with
