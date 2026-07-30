@@ -2532,6 +2532,10 @@ class UserObjectBundleServiceTest {
         CompletableFuture.runAsync(() -> subscriber.request(1));
     try {
       assertThat(blocker.started.await(1, TimeUnit.SECONDS)).isTrue();
+      Thread lookupWorker = blocker.executionThread.get();
+      assertThat(lookupWorker).isNotNull();
+      assertThat(lookupWorker.isVirtual()).isFalse();
+      assertThat(lookupWorker.getName()).startsWith("floecat-bundle-metadata-");
       subscriber.cancel();
       assertThat(resolutionRequest.get(250, TimeUnit.MILLISECONDS)).isNull();
       assertThat(blocker.interrupted.await(1, TimeUnit.SECONDS)).isTrue();
@@ -2588,8 +2592,10 @@ class UserObjectBundleServiceTest {
     final CountDownLatch started = new CountDownLatch(1);
     final CountDownLatch interrupted = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
+    final AtomicReference<Thread> executionThread = new AtomicReference<>();
 
     void await() {
+      executionThread.set(Thread.currentThread());
       started.countDown();
       while (true) {
         try {

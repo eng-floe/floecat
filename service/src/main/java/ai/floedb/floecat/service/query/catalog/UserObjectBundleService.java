@@ -96,6 +96,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -104,8 +105,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -119,8 +123,13 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final int MAX_CONCURRENT_METADATA_LOOKUPS = 64;
+  // Every admitted lookup is submitted to this pool. The queue only bridges worker turnover, so
+  // keep its capacity at least as large as the global admission bound below.
+  private static final int METADATA_LOOKUP_POOL_SIZE = MAX_CONCURRENT_METADATA_LOOKUPS;
+  private static final int METADATA_LOOKUP_QUEUE_CAPACITY = METADATA_LOOKUP_POOL_SIZE;
   private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
+  private static final AtomicInteger METADATA_LOOKUP_THREAD_SEQUENCE = new AtomicInteger();
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
@@ -153,14 +162,40 @@ public class UserObjectBundleService {
   // virtual-thread executor instead of blocking that termination callback.
   private final ExecutorService cancellationTeardownExecutor =
       Executors.newVirtualThreadPerTaskExecutor();
-  // Candidate resolution can call repository-backed overlay operations. Keep those calls off the
-  // stream producer so cancellation can interrupt them without waiting for a stalled store client.
-  private final ExecutorService metadataLookupExecutor =
-      Executors.newVirtualThreadPerTaskExecutor();
+  // Candidate resolution can call DynamoDB-backed overlay operations, which can pin a virtual
+  // thread's carrier while blocking. Isolate those calls on bounded platform workers so
+  // cancellation releases the stream producer without starving unrelated virtual-thread work.
+  private final ExecutorService metadataLookupExecutor = newMetadataLookupExecutor();
   // Holds capacity until the actual overlay call exits, including after its stream subscriber has
   // cancelled. This bounds interruption-insensitive repository calls across all active streams.
   private final Semaphore metadataLookupPermits =
       new Semaphore(MAX_CONCURRENT_METADATA_LOOKUPS, true /* FIFO across streams */);
+
+  private static ExecutorService newMetadataLookupExecutor() {
+    if (MAX_CONCURRENT_METADATA_LOOKUPS > METADATA_LOOKUP_POOL_SIZE) {
+      throw new IllegalStateException(
+          "bundle metadata admission must not exceed metadata lookup worker capacity");
+    }
+    return new ThreadPoolExecutor(
+        METADATA_LOOKUP_POOL_SIZE,
+        METADATA_LOOKUP_POOL_SIZE,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(METADATA_LOOKUP_QUEUE_CAPACITY),
+        daemonMetadataLookupThreadFactory(),
+        new ThreadPoolExecutor.AbortPolicy());
+  }
+
+  private static ThreadFactory daemonMetadataLookupThreadFactory() {
+    return runnable -> {
+      Thread thread =
+          new Thread(
+              runnable,
+              "floecat-bundle-metadata-" + METADATA_LOOKUP_THREAD_SEQUENCE.incrementAndGet());
+      thread.setDaemon(true);
+      return thread;
+    };
+  }
 
   @Inject Observability observability;
 
