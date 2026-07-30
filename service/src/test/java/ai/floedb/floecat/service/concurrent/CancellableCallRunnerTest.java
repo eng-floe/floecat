@@ -39,7 +39,7 @@ class CancellableCallRunnerTest {
     var release = new CountDownLatch(1);
     try {
       assertThrows(
-          IllegalStateException.class,
+          CancellableCallRunner.CallTimeoutException.class,
           () ->
               CancellableCallRunner.callUncancellable(
                   executor,
@@ -68,6 +68,26 @@ class CancellableCallRunnerTest {
       executor.shutdownNow();
       assertTrue(executor.awaitTermination(1, TimeUnit.SECONDS));
       assertEquals(1, permits.availablePermits());
+    }
+  }
+
+  @Test
+  void uncancellableTimeoutIncludesPermitAdmission() {
+    var permits = new Semaphore(0);
+    try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+      assertThrows(
+          CancellableCallRunner.CallTimeoutException.class,
+          () ->
+              CancellableCallRunner.callUncancellable(
+                  executor,
+                  permits,
+                  () -> "unreachable",
+                  25,
+                  TimeUnit.MILLISECONDS,
+                  "cancelled",
+                  "interrupted",
+                  "timed out"));
+      assertEquals(0, permits.availablePermits());
     }
   }
 

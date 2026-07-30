@@ -116,6 +116,8 @@ public class QueryInputResolver {
   // global admission bound without changing the invariant check in postConstruct().
   private static final int METADATA_IO_POOL_SIZE = MAX_CONCURRENT_INPUT_RESOLUTIONS;
   private static final int METADATA_IO_QUEUE_CAPACITY = METADATA_IO_POOL_SIZE;
+  // Legacy callers cannot provide a cancellation signal. Bound their complete admission-plus-I/O
+  // wait so an unresponsive metadata store yields DEADLINE_EXCEEDED instead of pinning the RPC.
   private static final long UNINTERRUPTIBLE_METADATA_WAIT_SECONDS = 30;
   private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
@@ -529,6 +531,7 @@ public class QueryInputResolver {
       try {
         defaultCatalog =
             withInputResolutionPermit(
+                correlationId,
                 cancelled,
                 () -> metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName));
       } finally {
@@ -560,7 +563,9 @@ public class QueryInputResolver {
           nameInputs.isEmpty()
               ? Map.of()
               : withInputResolutionPermit(
-                  cancelled, () -> metadataGraph.resolveNames(correlationId, nameInputs));
+                  correlationId,
+                  cancelled,
+                  () -> metadataGraph.resolveNames(correlationId, nameInputs));
       throwIfCancelled(cancelled);
 
       // Resolve each input to its id and the table pins it contributes (a table yields its own pin;
@@ -673,7 +678,8 @@ public class QueryInputResolver {
     }
   }
 
-  private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
+  private <T> T withInputResolutionPermit(
+      String correlationId, BooleanSupplier cancelled, Supplier<T> operation) {
     if (!metadataGraph.supportsConcurrentResolution()) {
       // An overlay can opt out because it owns request-thread-confined state. Preserve that
       // contract even for a cancellable caller; it can cancel while awaiting admission, but an
@@ -681,15 +687,19 @@ public class QueryInputResolver {
       return withInputResolutionPermitSynchronously(cancelled, operation);
     }
     if (cancelled == NEVER_CANCELLED) {
-      return CancellableCallRunner.callUncancellable(
-          metadataIoExecutor,
-          concurrentInputResolutionPermits,
-          operation,
-          UNINTERRUPTIBLE_METADATA_WAIT_SECONDS,
-          TimeUnit.SECONDS,
-          "resolver metadata I/O executor shut down",
-          "interrupted while awaiting resolver I/O",
-          "resolver metadata I/O timed out");
+      try {
+        return CancellableCallRunner.callUncancellable(
+            metadataIoExecutor,
+            concurrentInputResolutionPermits,
+            operation,
+            UNINTERRUPTIBLE_METADATA_WAIT_SECONDS,
+            TimeUnit.SECONDS,
+            "resolver metadata I/O executor shut down",
+            "interrupted while awaiting resolver I/O",
+            "resolver metadata I/O timed out");
+      } catch (CancellableCallRunner.CallTimeoutException e) {
+        throw GrpcErrors.timeout(correlationId, null, Map.of(), e);
+      }
     }
     return CancellableCallRunner.call(
         metadataIoExecutor,
@@ -846,6 +856,7 @@ public class QueryInputResolver {
           long snapshotPinStartNs = System.nanoTime();
           pin =
               withInputResolutionPermit(
+                  state.correlationId,
                   state.cancelled,
                   () -> {
                     TablePin constructed =
@@ -904,6 +915,7 @@ public class QueryInputResolver {
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
         withInputResolutionPermit(
+            state.correlationId,
             state.cancelled,
             () -> {
               TablePin constructed =
@@ -1029,6 +1041,7 @@ public class QueryInputResolver {
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
         withInputResolutionPermit(
+            state.correlationId,
             state.cancelled,
             () ->
                 metadataGraph
@@ -1053,7 +1066,9 @@ public class QueryInputResolver {
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
               withInputResolutionPermit(
-                  state.cancelled, () -> metadataGraph.resolveNames(state.correlationId, baseRefs));
+                  state.correlationId,
+                  state.cancelled,
+                  () -> metadataGraph.resolveNames(state.correlationId, baseRefs));
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {

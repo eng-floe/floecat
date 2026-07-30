@@ -129,8 +129,12 @@ public final class CancellableCallRunner {
       String cancellationMessage,
       String interruptionMessage,
       String timeoutMessage) {
+    long timeoutNanos = timeoutUnit.toNanos(timeout);
+    long startedNanos = System.nanoTime();
     try {
-      permits.acquire();
+      if (!permits.tryAcquire(timeoutNanos, TimeUnit.NANOSECONDS)) {
+        throw new CallTimeoutException(timeoutMessage);
+      }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new CancellationException(interruptionMessage);
@@ -164,7 +168,12 @@ public final class CancellableCallRunner {
       throw submissionFailure;
     }
     try {
-      return result.get(timeout, timeoutUnit);
+      long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
+      if (remainingNanos <= 0) {
+        lifecycle.cancel();
+        throw new CallTimeoutException(timeoutMessage);
+      }
+      return result.get(remainingNanos, TimeUnit.NANOSECONDS);
     } catch (InterruptedException e) {
       lifecycle.cancel();
       Thread.currentThread().interrupt();
@@ -173,10 +182,21 @@ public final class CancellableCallRunner {
       // The callable may ignore interruption. Keep its permit until it really returns so timed-out
       // callers cannot cause unbounded live store I/O; this only releases a caller thread.
       lifecycle.cancel();
-      throw new IllegalStateException(timeoutMessage, e);
+      throw new CallTimeoutException(timeoutMessage, e);
     } catch (ExecutionException e) {
       rethrow(e.getCause());
       throw new AssertionError("rethrow must not return");
+    }
+  }
+
+  /** A caller-visible timeout for bounded admission or completion of a metadata operation. */
+  public static final class CallTimeoutException extends RuntimeException {
+    CallTimeoutException(String message) {
+      super(message);
+    }
+
+    CallTimeoutException(String message, Throwable cause) {
+      super(message, cause);
     }
   }
 
