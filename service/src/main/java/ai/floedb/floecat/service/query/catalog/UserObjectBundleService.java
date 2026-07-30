@@ -319,8 +319,9 @@ public class UserObjectBundleService {
                         if (!(failure instanceof CancellationException)) {
                           iterator.publishStreamTelemetry("failed");
                         }
+                        iterator.cancel();
                       })
-                  .onTermination()
+                  .onCancellation()
                   .invoke(iterator::cancel);
             });
   }
