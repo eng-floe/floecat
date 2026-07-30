@@ -1014,6 +1014,61 @@ class BackendStorageIT {
         "a create that published nothing must not advance the fence");
   }
 
+  /**
+   * The namespace half of the same rule: a CreateNamespace that collides with an identical existing
+   * namespace publishes nothing, so neither the parent's fence nor the catalog's may move. The read
+   * that found the existing namespace is stale by then, exactly as in the table case, so a bump can
+   * fail a legal delete of the parent or the catalog on behalf of a create that created nothing.
+   */
+  @Test
+  void collidingIdenticalNamespaceCreateDoesNotAdvanceAnyFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsreplay_" + clock.millis(), "fence");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(namespace, catId, "parent", List.of("db_nsreplay"), "p");
+    var parentId = parent.getResourceId();
+
+    var spec =
+        NamespaceSpec.newBuilder()
+            .setCatalogId(catId)
+            .addAllPath(List.of("db_nsreplay", "parent"))
+            .setDisplayName("child")
+            .setDescription("c")
+            .build();
+    var first =
+        namespace.createNamespace(
+            CreateNamespaceRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("ns-replay-a").build())
+                .build());
+
+    String parentMarker = Keys.namespaceChildrenMarker(parentId.getAccountId(), parentId.getId());
+    String catalogMarker = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+    long parentAfterPublish = ptr.get(parentMarker).orElseThrow().getVersion();
+    long catalogAfterPublish = ptr.get(catalogMarker).orElseThrow().getVersion();
+
+    // A different key, so the idempotency record cannot answer this: the create is attempted, hits
+    // the name conflict, matches the existing namespace's fingerprint, and replays it.
+    var replayed =
+        namespace.createNamespace(
+            CreateNamespaceRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("ns-replay-b").build())
+                .build());
+    assertEquals(
+        first.getNamespace().getResourceId().getId(),
+        replayed.getNamespace().getResourceId().getId(),
+        "the collision replays the existing namespace");
+    assertEquals(
+        parentAfterPublish,
+        ptr.get(parentMarker).orElseThrow().getVersion(),
+        "a create that published nothing must not advance the parent fence");
+    assertEquals(
+        catalogAfterPublish,
+        ptr.get(catalogMarker).orElseThrow().getVersion(),
+        "nor the catalog fence");
+  }
+
   @Test
   void createTableIdempotent() {
     var catName = "cat_idem_" + System.currentTimeMillis();

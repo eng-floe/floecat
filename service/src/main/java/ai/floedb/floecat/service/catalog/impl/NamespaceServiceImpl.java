@@ -263,11 +263,13 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                                 existing.getDisplayName(),
                                                 existingSpec);
                                         if (Arrays.equals(fingerprint, existingFingerprint)) {
-                                          markerStore.bumpCatalogMarker(existing.getCatalogId());
-                                          bumpParentNamespaceMarker(
-                                              accountId,
-                                              existing.getCatalogId(),
-                                              existing.getParentsList());
+                                          // Neither the parent's nor the catalog's marker is
+                                          // bumped:
+                                          // this replay publishes nothing, and both are delete
+                                          // fences. The read above is already stale — the namespace
+                                          // it found can have been deleted since — so a bump could
+                                          // fail a legal delete of the parent or the catalog,
+                                          // unretryably, for a create that created nothing.
                                           metadataGraph.invalidate(existing.getResourceId());
                                           topology.evictNamespaceRefs(existing.getCatalogId());
                                           return new IdempotencyGuard.CreateResult<>(
@@ -1078,16 +1080,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         GeneratedErrorMessages.MessageKey.NAMESPACE,
                         Map.of("id", String.join(".", parentPath))));
     return markerStore.namespaceChildGuard(parent.getResourceId());
-  }
-
-  private void bumpParentNamespaceMarker(
-      String accountId, ResourceId catalogId, List<String> parentPath) {
-    if (parentPath == null || parentPath.isEmpty()) {
-      return;
-    }
-    namespaceRepo
-        .getByPath(accountId, catalogId.getId(), parentPath)
-        .ifPresent(ns -> markerStore.bumpNamespaceMarker(ns.getResourceId()));
   }
 
   /**
