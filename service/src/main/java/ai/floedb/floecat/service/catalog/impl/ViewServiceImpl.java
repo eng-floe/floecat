@@ -58,6 +58,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -627,8 +628,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                         c.getName()
                             + ":"
                             + (c.hasType()
-                                ? ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(
-                                    c)
+                                ? Base64.getEncoder().encodeToString(c.getType().toByteArray())
                                 : "")
                             + ":"
                             + c.getNullable())

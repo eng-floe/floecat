@@ -32,6 +32,8 @@ import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.rpc.ArrayShape;
+import ai.floedb.floecat.types.rpc.LogicalType;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -433,6 +435,49 @@ class ViewMutationIT {
             io.grpc.StatusRuntimeException.class,
             () -> view.createView(request.apply("STRING", "fp-k3")));
     assertEquals(io.grpc.Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
+  }
+
+  @Test
+  void createViewConflictDetectsNestedOutputNullabilityDifference() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_nested_fp", "vcat-nested-fp");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "nested_fp_ns", List.of("db_nested_fp"), "ns");
+    var element =
+        LogicalType.newBuilder()
+            .setKind(LogicalType.Kind.TK_INT)
+            .build();
+
+    java.util.function.BiFunction<Boolean, String, CreateViewRequest> request =
+        (elementRequired, key) ->
+            CreateViewRequest.newBuilder()
+                .setSpec(
+                    ViewSpec.newBuilder()
+                        .setCatalogId(cat.getResourceId())
+                        .setNamespaceId(ns.getResourceId())
+                        .setDisplayName("nested_fp_view")
+                        .addSqlDefinitions(
+                            ViewSqlDefinition.newBuilder().setSql("SELECT c FROM t").setDialect("ansi"))
+                        .addOutputColumns(
+                            SchemaColumn.newBuilder()
+                                .setName("c")
+                                .setType(
+                                    LogicalType.newBuilder()
+                                        .setKind(LogicalType.Kind.TK_ARRAY)
+                                        .setArray(
+                                            ArrayShape.newBuilder()
+                                                .setElement(element)
+                                                .setElementRequired(elementRequired)))
+                                .setNullable(true)))
+                .setIdempotency(IdempotencyKey.newBuilder().setKey(key))
+                .build();
+
+    view.createView(request.apply(true, "nested-fp-k1"));
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> view.createView(request.apply(false, "nested-fp-k2")));
+    assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
   }
 
   @Test
