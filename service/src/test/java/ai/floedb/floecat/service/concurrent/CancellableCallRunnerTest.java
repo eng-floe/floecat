@@ -16,17 +16,60 @@
 package ai.floedb.floecat.service.concurrent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class CancellableCallRunnerTest {
+
+  @Test
+  void uncancellableTimeoutReturnsCallerButRetainsActiveCallAdmission() throws Exception {
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    var permits = new Semaphore(1);
+    var started = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    try {
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              CancellableCallRunner.callUncancellable(
+                  executor,
+                  permits,
+                  () -> {
+                    started.countDown();
+                    while (true) {
+                      try {
+                        release.await();
+                        return "done";
+                      } catch (InterruptedException ignored) {
+                        // Simulate an interruption-insensitive downstream store call.
+                      }
+                    }
+                  },
+                  25,
+                  TimeUnit.MILLISECONDS,
+                  "cancelled",
+                  "interrupted",
+                  "timed out"));
+
+      assertTrue(started.await(1, TimeUnit.SECONDS));
+      assertEquals(0, permits.availablePermits(), "active I/O must retain its admission slot");
+    } finally {
+      release.countDown();
+      executor.shutdownNow();
+      assertTrue(executor.awaitTermination(1, TimeUnit.SECONDS));
+      assertEquals(1, permits.availablePermits());
+    }
+  }
 
   @Test
   void shutdownNowReleasesAndCompletesQueuedCall() throws Exception {

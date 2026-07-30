@@ -111,6 +111,12 @@ public class QueryInputResolver {
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
+  // Every admitted call is submitted to this pool. The queue only bridges the brief interval
+  // between a task releasing admission and its worker becoming idle; do not lower this below the
+  // global admission bound without changing the invariant check in postConstruct().
+  private static final int METADATA_IO_POOL_SIZE = MAX_CONCURRENT_INPUT_RESOLUTIONS;
+  private static final int METADATA_IO_QUEUE_CAPACITY = METADATA_IO_POOL_SIZE;
+  private static final long UNINTERRUPTIBLE_METADATA_WAIT_SECONDS = 30;
   private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
   private static final BooleanSupplier NEVER_CANCELLED = () -> false;
@@ -192,14 +198,18 @@ public class QueryInputResolver {
 
   @PostConstruct
   void postConstruct() {
+    if (MAX_CONCURRENT_INPUT_RESOLUTIONS > METADATA_IO_POOL_SIZE) {
+      throw new IllegalStateException(
+          "resolver metadata admission must not exceed metadata I/O worker capacity");
+    }
     ExecutorService planningExecutor = Executors.newVirtualThreadPerTaskExecutor();
     ExecutorService ioExecutor =
         new ThreadPoolExecutor(
-            MAX_CONCURRENT_INPUT_RESOLUTIONS,
-            MAX_CONCURRENT_INPUT_RESOLUTIONS,
+            METADATA_IO_POOL_SIZE,
+            METADATA_IO_POOL_SIZE,
             0L,
             TimeUnit.MILLISECONDS,
-            new ArrayBlockingQueue<>(MAX_CONCURRENT_INPUT_RESOLUTIONS),
+            new ArrayBlockingQueue<>(METADATA_IO_QUEUE_CAPACITY),
             daemonMetadataIoThreadFactory(),
             new ThreadPoolExecutor.AbortPolicy());
     ownedBlockingExecutor = planningExecutor;
@@ -675,8 +685,11 @@ public class QueryInputResolver {
           metadataIoExecutor,
           concurrentInputResolutionPermits,
           operation,
+          UNINTERRUPTIBLE_METADATA_WAIT_SECONDS,
+          TimeUnit.SECONDS,
           "resolver metadata I/O executor shut down",
-          "interrupted while awaiting resolver I/O");
+          "interrupted while awaiting resolver I/O",
+          "resolver metadata I/O timed out");
     }
     return CancellableCallRunner.call(
         metadataIoExecutor,
@@ -834,10 +847,13 @@ public class QueryInputResolver {
           pin =
               withInputResolutionPermit(
                   state.cancelled,
-                  () ->
-                      metadataGraph.tablePinFor(
-                          state.correlationId, rid, override, effectiveAsOfDefault));
-          state.resolvingPinRoots.register(pin);
+                  () -> {
+                    TablePin constructed =
+                        metadataGraph.tablePinFor(
+                            state.correlationId, rid, override, effectiveAsOfDefault);
+                    state.resolvingPinRoots.register(constructed);
+                    return constructed;
+                  });
           state.diagnostics.count("pin.snapshot_calls");
           state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
         } catch (RuntimeException | Error e) {
@@ -889,8 +905,12 @@ public class QueryInputResolver {
     TablePin resolved =
         withInputResolutionPermit(
             state.cancelled,
-            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
-    state.resolvingPinRoots.register(resolved);
+            () -> {
+              TablePin constructed =
+                  metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
+              state.resolvingPinRoots.register(constructed);
+              return constructed;
+            });
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;

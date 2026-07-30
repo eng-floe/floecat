@@ -145,6 +145,38 @@ public class QueryInputResolverTest {
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
   }
 
+  @Test
+  void registersPinRootsOnTheMetadataWorkerBeforeResultHandoff() {
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var resolverWithDedicatedExecutor = new QueryInputResolver(metadataGraph, store);
+    resolverWithDedicatedExecutor.postConstruct();
+    List<Thread> registrationThreads = java.util.Collections.synchronizedList(new ArrayList<>());
+    org.mockito.Mockito.doAnswer(
+            ignored -> {
+              registrationThreads.add(Thread.currentThread());
+              return null;
+            })
+        .when(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyCollection());
+
+    try {
+      resolverWithDedicatedExecutor.resolveInputs(
+          "q-worker-registration",
+          "cid",
+          List.of(QueryInput.newBuilder().setTableId(rid("T1")).build()),
+          Optional.empty(),
+          Optional.empty(),
+          new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+          null);
+
+      assertEquals(1, registrationThreads.size());
+      assertTrue(registrationThreads.get(0).getName().startsWith("floecat-query-input-metadata-"));
+    } finally {
+      resolverWithDedicatedExecutor.closeBlockingExecutor();
+    }
+  }
+
   /** A completed parallel input roots its pin while another input is still resolving. */
   @Test
   void rootsCompletedParallelPinBeforeSlowerInputReturns() throws Exception {

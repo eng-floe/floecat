@@ -112,17 +112,23 @@ public final class CancellableCallRunner {
   }
 
   /**
-   * Run an uncancellable call on {@code executor}, blocking for fair admission and its result.
+   * Run a call with no caller cancellation signal on {@code executor}, blocking for fair admission
+   * and its result until {@code timeout}.
    *
    * <p>This keeps potentially carrier-pinning store calls off a virtual planning thread while
-   * preserving the legacy caller's synchronous completion semantics.
+   * preserving legacy synchronous completion semantics. On timeout the caller is released and the
+   * task is interrupted, but admission remains held until an interruption-insensitive operation
+   * truly exits.
    */
   public static <T> T callUncancellable(
       Executor executor,
       Semaphore permits,
       Supplier<T> operation,
+      long timeout,
+      TimeUnit timeoutUnit,
       String cancellationMessage,
-      String interruptionMessage) {
+      String interruptionMessage,
+      String timeoutMessage) {
     try {
       permits.acquire();
     } catch (InterruptedException e) {
@@ -158,11 +164,16 @@ public final class CancellableCallRunner {
       throw submissionFailure;
     }
     try {
-      return result.get();
+      return result.get(timeout, timeoutUnit);
     } catch (InterruptedException e) {
       lifecycle.cancel();
       Thread.currentThread().interrupt();
       throw new CancellationException(interruptionMessage);
+    } catch (TimeoutException e) {
+      // The callable may ignore interruption. Keep its permit until it really returns so timed-out
+      // callers cannot cause unbounded live store I/O; this only releases a caller thread.
+      lifecycle.cancel();
+      throw new IllegalStateException(timeoutMessage, e);
     } catch (ExecutionException e) {
       rethrow(e.getCause());
       throw new AssertionError("rethrow must not return");
