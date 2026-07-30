@@ -508,7 +508,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     // Resolved here, on the request thread, not inside the failure transform below. That transform
     // runs after the retries, off the worker hop and outside the context run() re-establishes per
-    // subscription, so reading the principal there can itself throw — destroying the partial-teardown
+    // subscription, so reading the principal there can itself throw — destroying the
+    // partial-teardown
     // report this is all for.
     final String failureCorrelationId = correlationId();
 
@@ -534,10 +535,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       }
 
                       var namespaceId = request.getNamespaceId();
-                      catalogSurfaceWritePolicy()
-                          .requireDeletableNamespace(namespaceId, correlationId);
 
-                      var namespace = namespaceRepo.getById(namespaceId).orElse(null);
+                      // Both of these resolve the namespace through its blob — the write policy via
+                      // the overlay, then the read here — so an unreadable blob fails before any
+                      // gate
+                      // below can run.
+                      final Namespace namespace;
+                      try {
+                        catalogSurfaceWritePolicy()
+                            .requireDeletableNamespace(namespaceId, correlationId);
+                        namespace = namespaceRepo.getById(namespaceId).orElse(null);
+                      } catch (BaseResourceRepository.CorruptionException unreadable) {
+                        throw namespaceBlobUnreadable(namespaceId, correlationId, unreadable);
+                      }
                       var catalogId =
                           (namespace != null && namespace.hasCatalogId())
                               ? namespace.getCatalogId()
@@ -697,13 +707,39 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                 // conflict, nothing committed".
                 .onFailure()
                 .transform(
-                    failed ->
-                        partialTeardownIfDestroyed(failed, destroyed, failureCorrelationId)),
+                    failed -> partialTeardownIfDestroyed(failed, destroyed, failureCorrelationId)),
             failureCorrelationId)
         .onFailure()
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * Reports a namespace whose blob cannot be read, for a delete that therefore cannot proceed.
+   *
+   * <p>Deliberately not the corrupt-blob tolerance {@code DeleteTable} has. A table's owned state —
+   * snapshots, stats, root — is keyed by table id, so it can be purged without reading the table. A
+   * namespace's children are keyed by (catalog, namespace), and the catalog is only in the blob
+   * that cannot be read, so removing the pointer here would orphan tables and views this call has
+   * no way to enumerate. Better to refuse than to silently strand them.
+   *
+   * <p>What it does fix is the shape of the refusal: {@code CorruptionException} escapes as
+   * INTERNAL, which tells the caller nothing and looks like a service defect. Recovery exists — a
+   * recursive delete of an ancestor, or account teardown, reaches this namespace through its
+   * by-path row and drops it and its contents — so the error names it.
+   */
+  private RuntimeException namespaceBlobUnreadable(
+      ResourceId namespaceId, String correlationId, RuntimeException cause) {
+    LOG.warnf(
+        cause,
+        "namespace_delete_blob_unreadable namespace_id=%s: recoverable by recursive delete of an"
+            + " ancestor or by account teardown",
+        namespaceId.getId());
+    return GrpcErrors.conflict(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+        Map.of("display_name", namespaceId.getId()));
   }
 
   /**

@@ -310,9 +310,11 @@ public class RecursiveResourceDropper {
       return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
     }
     if (live.isEmpty()) {
-      // The blob is gone rather than unreadable, which is just as stable: aborting here would report
+      // The blob is gone rather than unreadable, which is just as stable: aborting here would
+      // report
       // NAMESPACE_RECURSIVE_PARTIAL on every attempt, after this namespace's own descendants are
-      // already destroyed, with nothing a retry could change. Same treatment as the unparseable case,
+      // already destroyed, with nothing a retry could change. Same treatment as the unparseable
+      // case,
       // and the same protection — the removal is pinned to the version read above.
       CLEANUP_LOG.warnf(
           "recursive_drop_namespace_blob_absent account_id=%s namespace_id=%s blob_uri=%s",
@@ -447,7 +449,8 @@ public class RecursiveResourceDropper {
     if (owner.isEmpty()) {
       // Either the pointer moved between the version read and the content read, or it dangles. The
       // first is a race and the second never resolves on its own, so aborting would burn the whole
-      // retry budget and leave the namespace undeletable — the same dead end an unparseable blob used
+      // retry budget and leave the namespace undeletable — the same dead end an unparseable blob
+      // used
       // to produce. Treat it like that case and delete on pointer evidence: pinning to the version
       // read above means a pointer that really did move loses its CAS instead.
       CLEANUP_LOG.warnf(

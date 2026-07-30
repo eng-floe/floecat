@@ -30,6 +30,8 @@ import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -471,6 +473,50 @@ class BackendStorageIT {
                     ns.getResourceId().getAccountId(), ns.getResourceId().getId()))
             .isEmpty(),
         "and the namespace itself must be deletable");
+  }
+
+  /**
+   * Deleting the corrupt namespace directly cannot work — its children are keyed by a catalog id
+   * that only the unreadable blob carries — but it must not look like a service defect either. It
+   * reports a conflict naming the namespace, and the recursive delete of its parent is what
+   * actually clears it.
+   */
+  @Test
+  void deletingANamespaceWithAnUnreadableBlobIsRefusedButRecoverable() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsunread_" + clock.millis(), "corrupt");
+    var parent =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "parent", List.of("db_unread"), "parent");
+    var child =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "child", List.of("db_unread", "parent"), "child");
+    String childById =
+        Keys.namespacePointerById(
+            child.getResourceId().getAccountId(), child.getResourceId().getId());
+    blobs.put(
+        ptr.get(childById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    // Refused, and not as an internal error: the caller learns which namespace is the problem.
+    var refused =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                namespace.deleteNamespace(
+                    DeleteNamespaceRequest.newBuilder()
+                        .setNamespaceId(child.getResourceId())
+                        .build()));
+    assertNotEquals(Status.Code.INTERNAL, refused.getStatus().getCode());
+    assertTrue(ptr.get(childById).isPresent(), "and nothing was removed");
+
+    // The documented recovery works: the parent's recursive delete reaches it by its by-path row.
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(parent.getResourceId())
+            .setRecursive(true)
+            .build());
+    assertTrue(ptr.get(childById).isEmpty());
   }
 
   /**
