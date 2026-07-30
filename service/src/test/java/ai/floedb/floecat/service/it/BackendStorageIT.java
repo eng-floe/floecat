@@ -803,6 +803,50 @@ class BackendStorageIT {
             .isEmpty());
   }
 
+  /**
+   * The view half of the same recovery. A corrupt-blob DeleteView strands the by-name row and the
+   * relation-name claim exactly as a table delete does, and CreateView is likewise the first
+   * operation that both notices and knows the namespace those keys are built from. Without the
+   * reconcile the name is unusable for good: the pre-check read fails with INTERNAL on the
+   * unreadable row, and the create behind it reports the name as taken.
+   */
+  @Test
+  void viewNameIsReusableAfterCorruptBlobViewDelete() {
+    var cat = TestSupport.createCatalog(catalog, "cat_vstranded_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_vstranded"), "stranded");
+    var vw =
+        TestSupport.createView(view, cat.getResourceId(), ns.getResourceId(), "v", "select 1", "d");
+    var vid = vw.getResourceId();
+
+    String byName =
+        Keys.viewPointerByName(
+            vid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "v");
+    String byId = Keys.viewPointerById(vid.getAccountId(), vid.getId());
+
+    assertTrue(blobs.delete(ptr.get(byId).orElseThrow().getBlobUri()));
+    view.deleteView(DeleteViewRequest.newBuilder().setViewId(vid).build());
+    assertTrue(ptr.get(byId).isEmpty());
+    assertTrue(ptr.get(byName).isPresent(), "the by-name row outlives the unreadable view");
+
+    var recreated =
+        TestSupport.createView(
+            view, cat.getResourceId(), ns.getResourceId(), "v", "select 2", "again");
+    assertNotEquals(
+        vid.getId(), recreated.getResourceId().getId(), "a new view, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new view");
+
+    // And the namespace is still deletable afterwards.
+    TestSupport.deleteView(view, recreated.getResourceId());
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+    assertTrue(ptr.get(byName).isEmpty());
+  }
+
   @Test
   void casContentionTwoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();

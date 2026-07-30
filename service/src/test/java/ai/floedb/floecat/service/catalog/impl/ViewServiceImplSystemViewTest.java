@@ -90,6 +90,10 @@ class ViewServiceImplSystemViewTest {
     // NamespaceChildFenceTest; here it is stubbed out so the subject stays error mapping.
     svc.markerStore = mock(MarkerStore.class);
     when(svc.markerStore.namespaceChildGuard(any())).thenReturn(BatchGuard.NONE);
+    // A name collision now reconciles rows whose relation is gone before reporting the name as
+    // taken. Reclaiming nothing (the mock's default) is the case these tests are about: the name is
+    // held by something live, so the conflict stands and its mapping is what gets asserted.
+    svc.recursiveDropper = mock(RecursiveResourceDropper.class);
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);
   }
