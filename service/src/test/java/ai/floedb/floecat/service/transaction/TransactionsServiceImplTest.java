@@ -718,6 +718,117 @@ class TransactionsServiceImplTest {
         "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
   }
 
+  /**
+   * Apply emits one namespace fence per namespace, however many intents publish into it, so the
+   * estimate charges it the same way. Charging it per intent rejected transactions that fit
+   * comfortably — twelve creates in one namespace estimated 108 against a real 63.
+   *
+   * <p>Thirteen intents are accepted in one namespace and rejected across seven, on the same intent
+   * count: proof the fence is counted per distinct namespace rather than once for the transaction
+   * (which would accept both) or once per intent (which would reject both).
+   */
+  @Test
+  void prepareChargesTheNamespaceFenceOncePerNamespace() throws Exception {
+    assertEquals(
+        TransactionState.TS_PREPARED,
+        prepareTablePayloadIntents(13, 1).getState(),
+        "13 creates sharing one namespace cost 7*13 + 2 + 1 = 94 ops");
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () -> prepareTablePayloadIntents(13, 7));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
+  }
+
+  /** Prepares {@code intents} table-payload creates spread round-robin over {@code namespaces}. */
+  private Transaction prepareTablePayloadIntents(int intents, int namespaces) throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    var resolver = Mockito.mock(NameResolver.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "nameResolver", resolver);
+    inject(service, "overlay", overlay);
+
+    String accountId = "acct";
+    String txId = "tx-fence-budget";
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(
+            Optional.of(
+                Transaction.newBuilder()
+                    .setAccountId(accountId)
+                    .setTxId(txId)
+                    .setState(TransactionState.TS_OPEN)
+                    .setUpdatedAt(Timestamps.fromMillis(1))
+                    .build()));
+    // No pointer yet: every intent is a fresh publish, which is what carries a fence.
+    when(pointerStore.get(org.mockito.ArgumentMatchers.anyString())).thenReturn(Optional.empty());
+
+    var catalogId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("cat")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var catalogNode = Mockito.mock(ai.floedb.floecat.metagraph.model.CatalogNode.class);
+    var namespaceNode = Mockito.mock(ai.floedb.floecat.metagraph.model.NamespaceNode.class);
+    when(namespaceNode.origin()).thenReturn(ai.floedb.floecat.metagraph.model.GraphNodeOrigin.USER);
+    when(namespaceNode.catalogId()).thenReturn(catalogId);
+    when(overlay.resolve(any()))
+        .thenAnswer(
+            call -> {
+              ResourceId id = call.getArgument(0);
+              return switch (id.getKind()) {
+                case RK_CATALOG -> Optional.of(catalogNode);
+                case RK_NAMESPACE -> Optional.of(namespaceNode);
+                default -> Optional.of(Mockito.mock(UserTableNode.class));
+              };
+            });
+    when(intentRepo.getByTarget(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(Optional.empty());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(any(), anyLong())).thenReturn(true);
+
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
+    for (int i = 0; i < intents; i++) {
+      var tableId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId("table-" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      var namespaceId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId("ns-" + (i % namespaces))
+              .setKind(ResourceKind.RK_NAMESPACE)
+              .build();
+      request.addChanges(
+          TxChange.newBuilder()
+              .setTableId(tableId)
+              .setTable(
+                  ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+                      .setResourceId(tableId)
+                      .setCatalogId(catalogId)
+                      .setNamespaceId(namespaceId)
+                      .setDisplayName("t" + i)));
+    }
+    return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
+  }
+
   private Transaction prepareTableIntents(int intents) throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);

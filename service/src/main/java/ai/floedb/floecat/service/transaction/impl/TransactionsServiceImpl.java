@@ -116,12 +116,23 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // The intent's own pointer write: one CasUpsert, CasDelete, or check on the target.
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 1;
 
-  // Canonical pointer, new by-name pointer, new relation claim, old by-name delete, old claim
-  // delete, plus the two namespace-fence ops (pointer pin + children-marker advance) a table intent
-  // carries when it publishes into a namespace. Charged to every table intent even though intents
-  // sharing a namespace share one fence: apply checks the real op count, so this must not
-  // under-count.
-  private static final int APPLY_OPS_PER_TABLE_INTENT = 7;
+  // A table intent's own pointer writes: canonical pointer, new by-name pointer, new relation
+  // claim,
+  // plus the old by-name and old claim deletes a rename or reparent adds. The namespace fence is
+  // counted separately below, because intents sharing a namespace share one.
+  private static final int APPLY_OPS_PER_TABLE_INTENT = 5;
+
+  // A table delete carries no fence — it publishes nothing — and writes only the canonical delete
+  // plus its two owned index deletes.
+  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 3;
+
+  // The namespace fence a publishing table intent carries: the namespace pointer pin and the
+  // children-marker advance (MarkerStore#namespaceChildGuard). Apply emits one per namespace per
+  // batch, however many intents publish into it (appendNamespaceChildFence), so this is charged the
+  // same way — per distinct namespace, not per intent. Charging it per intent rejected transactions
+  // that fit comfortably: twelve table creates in one namespace estimated 108 ops against a real
+  // 63.
+  private static final int APPLY_OPS_PER_NAMESPACE_FENCE = 2;
 
   // Canonical pointer, new by-name pointer, old by-name delete. Connectors are account-scoped,
   // never
@@ -639,6 +650,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
     List<PendingBlob> pendingBlobs = new ArrayList<>();
     int estimatedOps = 0;
+    // Mirrors the applier's own per-batch set: one fence per namespace, however many intents
+    // publish
+    // into it.
+    java.util.Set<String> fencedNamespaces = new java.util.HashSet<>();
 
     for (var change : effectiveChanges) {
       PlannedIntent planned = planIntent(accountId, txn.getTxId(), change);
@@ -646,7 +661,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps += estimatedApplyOps(pointerKey);
+      estimatedOps +=
+          estimatedApplyOps(accountId, txn.getTxId(), change, planned, fencedNamespaces);
       if (estimatedOps > MAX_POINTER_TXN_OPS) {
         throw new IllegalArgumentException(
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -1727,18 +1743,54 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
    * the caller has already prepared. Over-counting rejects transactions that would have fit, so
    * each shape is charged its own cost rather than the largest.
    */
-  private int estimatedApplyOps(String pointerKey) {
-    return ownApplyOps(pointerKey) + APPLY_OPS_PER_INTENT_CLEANUP;
+  private int estimatedApplyOps(
+      String accountId,
+      String txId,
+      TxChange change,
+      PlannedIntent planned,
+      Set<String> fencedNamespaces) {
+    return ownApplyOps(accountId, txId, change, planned, fencedNamespaces)
+        + APPLY_OPS_PER_INTENT_CLEANUP;
   }
 
-  private int ownApplyOps(String pointerKey) {
+  private int ownApplyOps(
+      String accountId,
+      String txId,
+      TxChange change,
+      PlannedIntent planned,
+      Set<String> fencedNamespaces) {
+    String pointerKey = planned.targetPointerKey();
     if (isTableByIdPointer(pointerKey)) {
-      return APPLY_OPS_PER_TABLE_INTENT;
+      if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, planned.blobUri())) {
+        return APPLY_OPS_PER_TABLE_DELETE_INTENT;
+      }
+      return APPLY_OPS_PER_TABLE_INTENT + namespaceFenceOps(change, fencedNamespaces);
     }
     if (isConnectorByIdPointer(pointerKey)) {
       return APPLY_OPS_PER_CONNECTOR_INTENT;
     }
     return APPLY_OPS_PER_PLAIN_INTENT;
+  }
+
+  /**
+   * The fence ops a publishing table intent adds, charged once per namespace exactly as apply emits
+   * them.
+   *
+   * <p>The namespace is known only from a table payload. A caller-supplied {@code
+   * intended_blob_uri} names a blob this method must not read — prepare would be reading storage to
+   * decide a budget — so those intents keep the conservative per-intent charge. Over-counting there
+   * only rejects a transaction that would have fit; under-counting anywhere would let one past this
+   * gate to fail terminally at apply.
+   */
+  private int namespaceFenceOps(TxChange change, Set<String> fencedNamespaces) {
+    if (change.getChangePayloadCase() != TxChange.ChangePayloadCase.TABLE) {
+      return APPLY_OPS_PER_NAMESPACE_FENCE;
+    }
+    String namespaceId = change.getTable().getNamespaceId().getId();
+    if (namespaceId.isBlank()) {
+      return APPLY_OPS_PER_NAMESPACE_FENCE;
+    }
+    return fencedNamespaces.add(namespaceId) ? APPLY_OPS_PER_NAMESPACE_FENCE : 0;
   }
 
   private boolean isTableByIdPointer(String pointerKey) {
