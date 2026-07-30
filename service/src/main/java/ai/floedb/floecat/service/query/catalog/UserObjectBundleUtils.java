@@ -96,7 +96,10 @@ public final class UserObjectBundleUtils {
     if (path == null || path.isBlank()) {
       path = column.getName();
     }
-    if (!path.contains(".")) {
+    // Top-level rows have path == name. Anything else is nested and must be qualified —
+    // including top-level container placeholders ("arr[]", "m{}"), whose paths contain no dot
+    // but whose bare names ("element", "value") collide across columns.
+    if (path.equals(column.getName())) {
       return column;
     }
     return column.toBuilder().setName(toCatalystPath(path)).build();

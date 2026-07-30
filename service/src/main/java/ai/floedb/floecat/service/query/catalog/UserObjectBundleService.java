@@ -73,6 +73,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
+import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.types.Hashing;
@@ -170,7 +171,10 @@ public class UserObjectBundleService {
       PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
-      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "1")
+      // Epoch 2: the typed SchemaColumn migration changed every complex column's engine payload
+      // (container OIDs + planner type trees); planners holding pre-migration possession tokens
+      // must re-fetch instead of being told "nothing changed".
+      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "2")
           String decorationEpoch,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightHost,
@@ -813,14 +817,19 @@ public class UserObjectBundleService {
     // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
     Origin origin = mapOrigin(relation.node().origin());
 
+    // Synthetic element/key/value placeholder rows exist for schema/stats path parity only;
+    // the engine receives nested typing via the planner-type tree, and forwarding placeholders
+    // would ship duplicate attnums (per-parent ordinals) and phantom pg_attribute columns.
+    // Struct-field rows are real named fields and stay, as they always have.
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : relation.node() instanceof UserTableNode userTable
                 ? UserObjectBundleUtils.qualifyNestedColumnNames(
-                    logicalSchemaForRelation(
-                            correlationId, relation.relationId(), userTable, queryContext)
-                        .getColumnsList())
+                    SchemaColumns.withoutSyntheticNodes(
+                        logicalSchemaForRelation(
+                                correlationId, relation.relationId(), userTable, queryContext)
+                            .getColumnsList()))
                 : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =

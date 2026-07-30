@@ -443,11 +443,28 @@ public final class StatsProtoEmitter {
     return Collections.unmodifiableList(out);
   }
 
+  /**
+   * Display name for per-file column stats. Predicate pruning binds stats to columns by this name,
+   * so it must be unique within a relation and match the qualified name the engine uses: top-level
+   * columns keep their bare name; nested nodes (struct children, list elements, map keys/values)
+   * use their canonical path in catalyst spelling ({@code arr.element}, {@code m.value}, {@code
+   * s.a}) — a bare leaf name like {@code element} would collide across containers and could bind a
+   * predicate to the wrong column's bounds.
+   */
+  private static String statsDisplayName(FloecatConnector.ColumnRef ref) {
+    String name = ref.name() == null ? "" : ref.name();
+    String path = ref.physicalPath();
+    if (path == null || path.isBlank() || path.equals(name)) {
+      return name;
+    }
+    return path.replace("[]", ".element").replace("{}", ".value");
+  }
+
   private static ScalarStats buildColumnScalar(
       FloecatConnector.ColumnStatsView view, UpstreamStamp upstreamOrNull) {
     ScalarStats.Builder scalar =
         ScalarStats.newBuilder()
-            .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
+            .setDisplayName(statsDisplayName(view.ref()))
             .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
             .setRowCount(view.rowCount())
             .putAllProperties(view.properties() == null ? Map.of() : view.properties());
