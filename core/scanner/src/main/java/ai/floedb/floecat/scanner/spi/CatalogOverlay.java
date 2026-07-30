@@ -199,11 +199,13 @@ public interface CatalogOverlay {
    * <p>The default preserves compatibility for existing overlays, whose lifecycle state may be tied
    * to one request thread. Implementations backed by thread-safe services may opt in to concurrent
    * resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code resolveName(s)}, and
-   * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread. It also
-   * permits GetUserObjects relation construction to run off-thread, including schema/name reads,
-   * pin validation, stats access, and the engine metadata decorator lifecycle. Implementations
-   * opting in must therefore make all of those callbacks thread-safe and must not depend on custom
-   * caller-thread state that the service context propagation does not capture.
+   * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread, together with
+   * overlay-owned schema/name callbacks used while assembling GetUserObjects relations ({@link
+   * #schemaFor}, {@link #tableSchema}, {@link #tableName}, and {@link #viewName}). It does not
+   * change the caller-thread contract of separately injected stats, pin-validation, or
+   * engine-decoration collaborators. Implementations opting in must make the listed overlay
+   * callbacks thread-safe and must not depend on custom caller-thread state that service context
+   * propagation does not capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;

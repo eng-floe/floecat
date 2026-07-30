@@ -943,7 +943,8 @@ public class UserObjectBundleService {
       StatsProvider statsProvider,
       Set<String> knownBlobVersions,
       TimingAccumulator timings,
-      BooleanSupplier cancelled) {
+      BooleanSupplier cancelled,
+      MetadataLookup metadataLookup) {
     // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
     // so a client that proved possession under a different engine cannot be served identity-only.
     // A blank version can never prove possession: a user table whose definition blob had no etag
@@ -956,7 +957,8 @@ public class UserObjectBundleService {
         || !knownBlobVersions.contains(scopedIdentity.get().getTableBlobVersion())) {
       return null;
     }
-    RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(scopedIdentity.get());
+    RelationInfo.Builder slim =
+        baseRelationInfo(relation, metadataLookup).setPinIdentity(scopedIdentity.get());
     // Time the stats lookup exactly as the full path does (buildRelation): the slim path still hits
     // the stats provider, which can block on its latency budget. Without this, once the
     // conditional-request feature is doing its job a large fraction of resolutions would contribute
@@ -973,10 +975,11 @@ public class UserObjectBundleService {
    * name, kind, and origin. Both the slim identity-only reply and the full payload start here, so
    * the two can never disagree on a relation's identity.
    */
-  private RelationInfo.Builder baseRelationInfo(ResolvedRelation relation) {
+  private RelationInfo.Builder baseRelationInfo(
+      ResolvedRelation relation, MetadataLookup metadataLookup) {
     return RelationInfo.newBuilder()
         .setRelationId(relation.relationId())
-        .setName(canonicalName(relation.relationId(), relation.node()))
+        .setName(canonicalName(relation.relationId(), relation.node(), metadataLookup))
         .setKind(mapKind(relation.node().kind(), relation.node().origin()))
         .setOrigin(mapOrigin(relation.node().origin()));
   }
@@ -1002,7 +1005,8 @@ public class UserObjectBundleService {
       StatsProvider statsProvider,
       TimingAccumulator timings,
       Optional<RelationPinIdentity> scopedIdentity,
-      BooleanSupplier cancelled) {
+      BooleanSupplier cancelled,
+      MetadataLookup metadataLookup) {
     throwIfCancelled(cancelled);
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
@@ -1022,9 +1026,14 @@ public class UserObjectBundleService {
             : relation.node() instanceof UserTableNode userTable
                 ? UserObjectBundleUtils.qualifyNestedColumnNames(
                     logicalSchemaForRelation(
-                            correlationId, relation.relationId(), userTable, queryContext)
+                            correlationId,
+                            relation.relationId(),
+                            userTable,
+                            queryContext,
+                            metadataLookup)
                         .getColumnsList())
-                : Optional.ofNullable(overlay.tableSchema(relation.node().id()))
+                : Optional.ofNullable(
+                        metadataLookup.get(() -> overlay.tableSchema(relation.node().id())))
                     .orElseGet(List::of);
 
     List<SchemaColumn> pruned =
@@ -1034,7 +1043,7 @@ public class UserObjectBundleService {
         UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
     throwIfCancelled(cancelled);
 
-    RelationInfo.Builder builder = baseRelationInfo(relation);
+    RelationInfo.Builder builder = baseRelationInfo(relation, metadataLookup);
 
     /*
      * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
@@ -1688,7 +1697,8 @@ public class UserObjectBundleService {
       String correlationId,
       ResourceId relationId,
       UserTableNode userTable,
-      QueryContext queryContext) {
+      QueryContext queryContext,
+      MetadataLookup metadataLookup) {
     Optional<TablePin> pin = queryContext.findTablePin(relationId, correlationId);
     if (pin.isEmpty()) {
       // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
@@ -1701,21 +1711,27 @@ public class UserObjectBundleService {
     SnapshotRef snapshotRef =
         SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
     CatalogOverlay.SchemaResolution resolved =
-        overlay.schemaFor(
-            correlationId,
-            relationId,
-            snapshotRef,
-            pin.get().getTableBlobUri(),
-            pin.get().getSnapshotBlobUri());
+        metadataLookup.get(
+            () ->
+                overlay.schemaFor(
+                    correlationId,
+                    relationId,
+                    snapshotRef,
+                    pin.get().getTableBlobUri(),
+                    pin.get().getSnapshotBlobUri()));
     return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
   }
 
-  private NameRef canonicalName(ResourceId id, GraphNode node) {
+  private NameRef canonicalName(ResourceId id, GraphNode node, MetadataLookup metadataLookup) {
     return switch (node.kind()) {
       case TABLE ->
-          overlay.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build());
+          metadataLookup
+              .get(() -> overlay.tableName(id))
+              .orElse(NameRef.newBuilder().setName(node.displayName()).build());
       case VIEW ->
-          overlay.viewName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build());
+          metadataLookup
+              .get(() -> overlay.viewName(id))
+              .orElse(NameRef.newBuilder().setName(node.displayName()).build());
       default -> NameRef.newBuilder().setName(node.displayName()).build();
     };
   }
@@ -1781,6 +1797,12 @@ public class UserObjectBundleService {
 
   private record NormalizedNameRef(String catalog, List<String> path, String name) {}
 
+  /** Runs one overlay-owned repository lookup under its concurrency and cancellation contract. */
+  private interface MetadataLookup {
+    /** Return one lookup result without moving surrounding relation assembly off its caller. */
+    <T> T get(Supplier<T> lookup);
+  }
+
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
 
@@ -1823,6 +1845,13 @@ public class UserObjectBundleService {
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
+    private final MetadataLookup metadataLookup =
+        new MetadataLookup() {
+          @Override
+          public <T> T get(Supplier<T> lookup) {
+            return awaitCancellableMetadataLookup(lookup);
+          }
+        };
     // Coordinates the resolving-root handoff. Cancellation can arrive on a different thread than
     // chunk production, so it must neither release pins being committed nor miss pins accumulated
     // after its cleanup pass. Store I/O always happens outside this lock.
@@ -2066,41 +2095,40 @@ public class UserObjectBundleService {
     }
 
     /**
-     * Build one relation on bounded platform I/O capacity. The task owns its timing accumulator so
-     * an interruption-insensitive call cannot mutate iterator telemetry after cancellation returns.
+     * Assemble one relation on the producer thread. Only overlay-owned repository reads cross the
+     * metadata runner; stats, validation, and decorator callbacks retain their caller-thread
+     * contract. The local timing accumulator is merged only after a successful build.
      */
     private BuiltRelation buildRelationCancellably(
         PendingFound found,
         QueryContext liveContext,
         Optional<RelationPinIdentity> scopedIdentity) {
-      return awaitCancellableMetadataLookup(
-          () -> {
-            TimingAccumulator taskTimings = new TimingAccumulator();
-            long buildStartNs = System.nanoTime();
-            RelationInfo identityOnly =
-                identityOnlyOrNull(
-                    found.relation(),
-                    scopedIdentity,
-                    statsProvider,
-                    knownBlobVersions,
-                    taskTimings,
-                    this::isCancelled);
-            if (identityOnly != null) {
-              return new BuiltRelation(
-                  identityOnly, true, System.nanoTime() - buildStartNs, taskTimings);
-            }
-            RelationInfo full =
-                buildRelation(
-                    correlationId,
-                    found.relation(),
-                    liveContext,
-                    resolutionContext,
-                    statsProvider,
-                    taskTimings,
-                    scopedIdentity,
-                    this::isCancelled);
-            return new BuiltRelation(full, false, System.nanoTime() - buildStartNs, taskTimings);
-          });
+      TimingAccumulator taskTimings = new TimingAccumulator();
+      long buildStartNs = System.nanoTime();
+      RelationInfo identityOnly =
+          identityOnlyOrNull(
+              found.relation(),
+              scopedIdentity,
+              statsProvider,
+              knownBlobVersions,
+              taskTimings,
+              this::isCancelled,
+              metadataLookup);
+      if (identityOnly != null) {
+        return new BuiltRelation(identityOnly, true, System.nanoTime() - buildStartNs, taskTimings);
+      }
+      RelationInfo full =
+          buildRelation(
+              correlationId,
+              found.relation(),
+              liveContext,
+              resolutionContext,
+              statsProvider,
+              taskTimings,
+              scopedIdentity,
+              this::isCancelled,
+              metadataLookup);
+      return new BuiltRelation(full, false, System.nanoTime() - buildStartNs, taskTimings);
     }
 
     /** Publish a claimed outcome without allowing telemetry failure to mask stream termination. */

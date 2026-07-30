@@ -1285,25 +1285,33 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void cancellationInterruptsBlockedRelationStatsLookup() throws Exception {
-    UninterruptibleBlocker blocker = new UninterruptibleBlocker();
-    CountDownLatch decoratorCalled = new CountDownLatch(1);
-    StatsProvider blockingStats =
+  void relationStatsAndDecoratorsStayOnProducerForConcurrentOverlay() {
+    Thread producer = Thread.currentThread();
+    AtomicReference<Thread> statsThread = new AtomicReference<>();
+    List<Thread> decoratorThreads = java.util.Collections.synchronizedList(new ArrayList<>());
+    AtomicReference<Thread> overlayLookupThread = new AtomicReference<>();
+    StatsProvider recordingStats =
         new StatsProvider() {
           @Override
           public Optional<TableStatsView> tableStats(ResourceId tableId) {
-            blocker.await();
+            statsThread.set(Thread.currentThread());
             return Optional.empty();
           }
         };
-    StatsProviderFactory blockingStatsFactory = Mockito.mock(StatsProviderFactory.class);
-    Mockito.when(blockingStatsFactory.forQuery(Mockito.any(), Mockito.anyString()))
-        .thenReturn(blockingStats);
+    StatsProviderFactory recordingStatsFactory = Mockito.mock(StatsProviderFactory.class);
+    Mockito.when(recordingStatsFactory.forQuery(Mockito.any(), Mockito.anyString()))
+        .thenReturn(recordingStats);
     FakeCatalogOverlay concurrentOverlay =
         new FakeCatalogOverlay() {
           @Override
           public boolean supportsConcurrentResolution() {
             return true;
+          }
+
+          @Override
+          public Optional<NameRef> tableName(ResourceId id) {
+            overlayLookupThread.set(Thread.currentThread());
+            return super.tableName(id);
           }
         };
     concurrentOverlay.registerTable(
@@ -1311,7 +1319,7 @@ class UserObjectBundleServiceTest {
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
     concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
-    EngineMetadataDecoratorProvider cancellationSensitiveDecorator =
+    EngineMetadataDecoratorProvider recordingDecorator =
         ignored ->
             Optional.of(
                 new EngineMetadataDecorator() {
@@ -1319,7 +1327,13 @@ class UserObjectBundleServiceTest {
                   public void decorateRelation(
                       EngineContext engine,
                       ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
-                    decoratorCalled.countDown();
+                    decoratorThreads.add(Thread.currentThread());
+                  }
+
+                  @Override
+                  public void decorateColumn(
+                      EngineContext engine, ColumnDecoration columnDecoration) {
+                    decoratorThreads.add(Thread.currentThread());
                   }
 
                   @Override
@@ -1329,7 +1343,7 @@ class UserObjectBundleServiceTest {
                       boolean commitRelation,
                       boolean commitColumns,
                       Set<Long> columnIds) {
-                    decoratorCalled.countDown();
+                    decoratorThreads.add(Thread.currentThread());
                   }
                 });
     service =
@@ -1337,8 +1351,8 @@ class UserObjectBundleServiceTest {
             concurrentOverlay,
             resolver,
             queryStore,
-            blockingStatsFactory,
-            cancellationSensitiveDecorator,
+            recordingStatsFactory,
+            recordingDecorator,
             engineContextProvider,
             true,
             "localhost",
@@ -1349,34 +1363,20 @@ class UserObjectBundleServiceTest {
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
-    DemandSubscriber subscriber = new DemandSubscriber();
     EngineContext engine = EngineContext.of("pg", "16.0");
     Context requestContext =
         Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engine);
     Context previous = requestContext.attach();
     try {
-      service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
+      List<UserObjectsBundleChunk> chunks =
+          service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+      assertThat(chunks).anyMatch(UserObjectsBundleChunk::hasResolutions);
     } finally {
       requestContext.detach(previous);
     }
-    assertThat(subscriber.awaitSubscription()).isTrue();
-    subscriber.request(1);
-    CompletableFuture<Void> resolutionRequest =
-        CompletableFuture.runAsync(() -> subscriber.request(1));
-    try {
-      assertThat(blocker.started.await(1, TimeUnit.SECONDS)).isTrue();
-      Thread statsWorker = blocker.executionThread.get();
-      assertThat(statsWorker).isNotNull();
-      assertThat(statsWorker.isVirtual()).isFalse();
-
-      subscriber.cancel();
-
-      assertThat(resolutionRequest.get(250, TimeUnit.MILLISECONDS)).isNull();
-      assertThat(blocker.interrupted.await(1, TimeUnit.SECONDS)).isTrue();
-    } finally {
-      blocker.release.countDown();
-    }
-    assertThat(decoratorCalled.await(250, TimeUnit.MILLISECONDS)).isFalse();
+    assertThat(statsThread.get()).isSameAs(producer);
+    assertThat(decoratorThreads).isNotEmpty().allMatch(thread -> thread == producer);
+    assertThat(overlayLookupThread.get()).isNotNull().isNotSameAs(producer);
   }
 
   @Test
