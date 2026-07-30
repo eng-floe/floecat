@@ -60,6 +60,7 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.concurrent.CancellableCallRunner;
 import ai.floedb.floecat.service.concurrent.MetadataIoExecutors;
+import ai.floedb.floecat.service.concurrent.MetadataIoRunner;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.PinValidator;
@@ -219,6 +220,7 @@ public class UserObjectBundleService {
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
+  private final MetadataIoRunner metadataIoRunner;
   private final QueryContextStore queryStore;
   private final EngineMetadataDecoratorProvider decoratorProvider;
   private final EngineContextProvider engineContext;
@@ -283,6 +285,7 @@ public class UserObjectBundleService {
   public UserObjectBundleService(
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
+      MetadataIoRunner metadataIoRunner,
       QueryContextStore queryStore,
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
@@ -301,6 +304,7 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250") long slowRpcMs) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
+    this.metadataIoRunner = metadataIoRunner;
     this.queryStore = queryStore;
     this.statsFactory = statsFactory;
     this.decoratorProvider = decoratorProvider;
@@ -316,6 +320,40 @@ public class UserObjectBundleService {
             .setTls(!grpcPlainText)
             .build();
     warnFlightHost(flightHost, quarkusProfile);
+  }
+
+  /** Constructor preserving the public direct-construction API. */
+  public UserObjectBundleService(
+      CatalogOverlay overlay,
+      QueryInputResolver inputResolver,
+      QueryContextStore queryStore,
+      StatsProviderFactory statsFactory,
+      EngineMetadataDecoratorProvider decoratorProvider,
+      EngineContextProvider engineContext,
+      PinValidator pinValidator,
+      boolean engineSpecificEnabled,
+      String decorationEpoch,
+      String flightHost,
+      int flightPort,
+      boolean grpcPlainText,
+      String quarkusProfile,
+      long slowRpcMs) {
+    this(
+        overlay,
+        inputResolver,
+        new MetadataIoRunner(),
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContext,
+        pinValidator,
+        engineSpecificEnabled,
+        decorationEpoch,
+        flightHost,
+        flightPort,
+        grpcPlainText,
+        quarkusProfile,
+        slowRpcMs);
   }
 
   UserObjectBundleService(
@@ -335,6 +373,7 @@ public class UserObjectBundleService {
     this(
         overlay,
         inputResolver,
+        new MetadataIoRunner(),
         queryStore,
         statsFactory,
         decoratorProvider,
@@ -1959,12 +1998,10 @@ public class UserObjectBundleService {
      */
     private <T> T awaitCancellableMetadataLookup(Supplier<T> lookup) {
       if (!overlay.supportsConcurrentResolution()) {
-        throwIfCancelled(this::isCancelled);
-        T result = lookup.get();
-        throwIfCancelled(this::isCancelled);
-        return result;
+        return metadataIoRunner.callOnCallerThread(
+            this::isCancelled, lookup, METADATA_LOOKUP_FAILURES);
       }
-      return inputResolver.runMetadataIo(this::isCancelled, lookup, METADATA_LOOKUP_FAILURES);
+      return metadataIoRunner.call(this::isCancelled, lookup, METADATA_LOOKUP_FAILURES);
     }
 
     /**

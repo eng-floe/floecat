@@ -835,21 +835,8 @@ class UserObjectBundleServiceTest {
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              Map<ResourceId, TablePin> currentSnapshotPinCache,
               PhaseDiagnostics diagnostics) {
-            return emptyPinResolution(inputs);
-          }
-
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics,
-              java.util.function.BooleanSupplier cancelled) {
             return emptyPinResolution(inputs);
           }
 

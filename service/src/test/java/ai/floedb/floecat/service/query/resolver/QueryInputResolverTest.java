@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -46,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -71,12 +73,101 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void metadataIoSizingMustCoverAdmissionWithWorkersAndQueue() {
-    assertThrows(
-        IllegalStateException.class, () -> QueryInputResolver.validateMetadataIoSizing(3, 2, 3));
-    assertThrows(
-        IllegalStateException.class, () -> QueryInputResolver.validateMetadataIoSizing(3, 3, 2));
-    QueryInputResolver.validateMetadataIoSizing(3, 3, 3);
+  void cancellableOverloadPreservesLegacyMapOverrideDispatch() {
+    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
+    QueryInputResolver legacySubclass =
+        new QueryInputResolver(metadataGraph) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              Map<ResourceId, TablePin> currentSnapshotPinCache,
+              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
+            legacyOverrideCalled.set(true);
+            ResourceId tableId = inputs.getFirst().getTableId();
+            TablePin pin =
+                metadataGraph.tablePinFor(
+                    correlationId, tableId, SnapshotRef.getDefaultInstance(), Optional.empty());
+            currentSnapshotPinCache.put(tableId, pin);
+            return new ResolutionResult(
+                List.of(tableId),
+                ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
+                    .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(pin))
+                    .build(),
+                null);
+          }
+        };
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    ResourceId tableId = rid("LEGACY");
+
+    legacySubclass.resolveInputs(
+        "query",
+        "cid",
+        List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+        Optional.empty(),
+        Optional.empty(),
+        cache,
+        null,
+        () -> false);
+
+    assertTrue(legacyOverrideCalled.get());
+    assertEquals(tableId, cache.get(tableId).join().getTableId());
+  }
+
+  @Test
+  void cancellableOverloadPreservesConcurrentMapOverrideDispatch() {
+    AtomicBoolean concurrentOverrideCalled = new AtomicBoolean();
+    QueryInputResolver concurrentSubclass =
+        new QueryInputResolver(metadataGraph) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
+            concurrentOverrideCalled.set(true);
+            return new ResolutionResult(List.of(), RelationPinSet.getDefaultInstance(), null);
+          }
+        };
+
+    concurrentSubclass.resolveInputs(
+        "query",
+        "cid",
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        new ConcurrentHashMap<>(),
+        null,
+        () -> false);
+
+    assertTrue(concurrentOverrideCalled.get());
+  }
+
+  @Test
+  void legacyMapOverloadDoesNotRewriteAnExistingCacheHit() {
+    ResourceId tableId = rid("CACHED");
+    TablePin cachedPin =
+        metadataGraph.tablePinFor(
+            "cid", tableId, SnapshotRef.getDefaultInstance(), Optional.empty());
+
+    var result =
+        resolver.resolveInputs(
+            "",
+            "cid",
+            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of(tableId, cachedPin),
+            null);
+
+    assertEquals(tableId, result.resolved().getFirst());
+    assertEquals(cachedPin, result.relationPinSet().getPins(0).getTablePin());
   }
 
   NameRef name(String cat, String... parts) {
@@ -182,7 +273,7 @@ public class QueryInputResolverTest {
           null);
 
       assertEquals(1, registrationThreads.size());
-      assertTrue(registrationThreads.get(0).getName().startsWith("floecat-query-input-metadata-"));
+      assertTrue(registrationThreads.get(0).getName().startsWith("floecat-metadata-io-"));
     } finally {
       resolverWithDedicatedExecutor.closeExecutors();
     }
@@ -276,6 +367,31 @@ public class QueryInputResolverTest {
                     cancelled::get));
 
     assertCancellationReturnsWhileBlocked(resolution, cancelled, blockingGraph.slowPinBlocker);
+  }
+
+  @Test
+  void cancellationAfterFinalThreadConfinedPinLookupDoesNotReturnSuccess() throws Exception {
+    var blockingGraph = new BlockingThreadConfinedPinGraph();
+    var withStore = new QueryInputResolver(blockingGraph);
+    var cancelled = new AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        resolveCancellable(
+            () ->
+                withStore.resolveInputs(
+                    "q-cancel-thread-confined-pin",
+                    "cid",
+                    List.of(QueryInput.newBuilder().setTableId(rid("SLOW")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    null,
+                    cancelled::get));
+
+    assertTrue(blockingGraph.pinBlocker.started.await(1, TimeUnit.SECONDS));
+    cancelled.set(true);
+    blockingGraph.pinBlocker.release.countDown();
+    assertTrue(resolution.get(250, TimeUnit.MILLISECONDS) instanceof CancellationException);
   }
 
   @Test
@@ -446,8 +562,7 @@ public class QueryInputResolverTest {
           graph.metadataThreads().stream()
               .allMatch(
                   thread ->
-                      thread.isDaemon()
-                          && thread.getName().startsWith("floecat-query-input-metadata-")));
+                      thread.isDaemon() && thread.getName().startsWith("floecat-metadata-io-")));
     } finally {
       resolverWithDedicatedExecutor.closeExecutors();
     }
@@ -508,14 +623,12 @@ public class QueryInputResolverTest {
                                   cancelled.get(index)::get)))
               .toList();
       Thread.sleep(50);
-      assertEquals(0, metadataIoQueueSize(saturatedResolver));
       cancelled.forEach(flag -> flag.set(true));
       for (CompletableFuture<Throwable> request : cancelledRequests) {
         assertTrue(
             request.get(250, TimeUnit.MILLISECONDS)
                 instanceof java.util.concurrent.CancellationException);
       }
-      assertEquals(0, metadataIoQueueSize(saturatedResolver));
     } finally {
       graph.releasePins.countDown();
       CompletableFuture.allOf(activeRequests.toArray(CompletableFuture[]::new)).join();
@@ -2270,6 +2383,26 @@ public class QueryInputResolverTest {
     }
   }
 
+  /** Blocks the final caller-thread pin callback so cancellation can race its return. */
+  static final class BlockingThreadConfinedPinGraph extends FakeGraph {
+    final UninterruptibleBlocker pinBlocker = new UninterruptibleBlocker();
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return false;
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      pinBlocker.await();
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+  }
+
   /** Blocks the default-catalog lookup to exercise cancellation before fan-out starts. */
   static final class BlockingCatalogGraph extends FakeGraph {
     final UninterruptibleBlocker catalogBlocker = new UninterruptibleBlocker();
@@ -2435,17 +2568,6 @@ public class QueryInputResolverTest {
           // Simulate a store client that does not abort an active request on interruption.
         }
       }
-    }
-  }
-
-  private static int metadataIoQueueSize(QueryInputResolver resolver) {
-    try {
-      java.lang.reflect.Field field =
-          QueryInputResolver.class.getDeclaredField("metadataIoExecutor");
-      field.setAccessible(true);
-      return ((java.util.concurrent.ThreadPoolExecutor) field.get(resolver)).getQueue().size();
-    } catch (ReflectiveOperationException e) {
-      throw new AssertionError("unable to inspect resolver metadata executor", e);
     }
   }
 

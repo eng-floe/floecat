@@ -216,36 +216,31 @@ class BoundedFanoutTest {
 
     try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
       CompletableFuture<Throwable> result =
-          CompletableFuture.supplyAsync(
+          captureAsyncFailure(
               () -> {
-                try {
-                  BoundedFanout.forEachOrdered(
-                      List.of(0, 1, 2, 3, 4),
-                      2,
-                      executor,
-                      value -> {
-                        highestStarted.accumulateAndGet(value, Math::max);
-                        if (value > 0) {
-                          activeSiblingsStarted.countDown();
-                          try {
-                            releaseActiveSiblings.await();
-                          } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new AssertionError(e);
-                          }
+                BoundedFanout.forEachOrdered(
+                    List.of(0, 1, 2, 3, 4),
+                    2,
+                    executor,
+                    value -> {
+                      highestStarted.accumulateAndGet(value, Math::max);
+                      if (value > 0) {
+                        activeSiblingsStarted.countDown();
+                        try {
+                          releaseActiveSiblings.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new AssertionError(e);
                         }
-                        return value;
-                      },
-                      value -> {
-                        if (value == 0) {
-                          throw new IllegalStateException("ordered merge failed");
-                        }
-                      },
-                      () -> false);
-                  return null;
-                } catch (Throwable failure) {
-                  return failure;
-                }
+                      }
+                      return value;
+                    },
+                    value -> {
+                      if (value == 0) {
+                        throw new IllegalStateException("ordered merge failed");
+                      }
+                    },
+                    () -> false);
               });
 
       assertThat(activeSiblingsStarted.await(1, TimeUnit.SECONDS)).isTrue();
@@ -269,42 +264,37 @@ class BoundedFanoutTest {
 
     try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
       CompletableFuture<Throwable> result =
-          CompletableFuture.supplyAsync(
+          captureAsyncFailure(
               () -> {
-                try {
-                  BoundedFanout.forEachOrdered(
-                      List.of(0, 1),
-                      2,
-                      executor,
-                      value -> {
-                        if (value == 0) {
-                          try {
-                            siblingStarted.await();
-                          } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new AssertionError(e);
-                          }
-                          return value;
-                        }
-                        siblingStarted.countDown();
+                BoundedFanout.forEachOrdered(
+                    List.of(0, 1),
+                    2,
+                    executor,
+                    value -> {
+                      if (value == 0) {
                         try {
-                          new CountDownLatch(1).await();
-                          return value;
+                          siblingStarted.await();
                         } catch (InterruptedException e) {
-                          siblingInterrupted.countDown();
                           Thread.currentThread().interrupt();
-                          throw new CancellationException("sibling interrupted");
+                          throw new AssertionError(e);
                         }
-                      },
-                      ignored -> {
-                        consumerFailed.countDown();
-                        throw new IllegalStateException("ordered merge failed");
-                      },
-                      cancelled::get);
-                  return null;
-                } catch (Throwable failure) {
-                  return failure;
-                }
+                        return value;
+                      }
+                      siblingStarted.countDown();
+                      try {
+                        new CountDownLatch(1).await();
+                        return value;
+                      } catch (InterruptedException e) {
+                        siblingInterrupted.countDown();
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("sibling interrupted");
+                      }
+                    },
+                    ignored -> {
+                      consumerFailed.countDown();
+                      throw new IllegalStateException("ordered merge failed");
+                    },
+                    cancelled::get);
               });
 
       assertThat(consumerFailed.await(1, TimeUnit.SECONDS)).isTrue();
@@ -353,7 +343,7 @@ class BoundedFanoutTest {
         };
 
     CompletableFuture<Throwable> result =
-        CompletableFuture.supplyAsync(
+        captureAsyncFailure(
             () -> {
               try {
                 BoundedFanout.mapOrdered(
@@ -370,9 +360,6 @@ class BoundedFanoutTest {
                       }
                       return ignored;
                     });
-                return null;
-              } catch (Throwable failure) {
-                return failure;
               } finally {
                 mapReturned.countDown();
               }
@@ -402,7 +389,7 @@ class BoundedFanoutTest {
         };
 
     CompletableFuture<Throwable> result =
-        CompletableFuture.supplyAsync(
+        captureAsyncFailure(
             () -> {
               try {
                 BoundedFanout.mapOrdered(
@@ -421,9 +408,6 @@ class BoundedFanoutTest {
                       }
                       return value;
                     });
-                return null;
-              } catch (Throwable failure) {
-                return failure;
               } finally {
                 mapReturned.countDown();
               }
@@ -446,30 +430,25 @@ class BoundedFanoutTest {
 
     try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
       CompletableFuture<Throwable> result =
-          CompletableFuture.supplyAsync(
+          captureAsyncFailure(
               () -> {
-                try {
-                  BoundedFanout.forEachOrdered(
-                      List.of(1, 2),
-                      2,
-                      executor,
-                      ignored -> {
-                        taskStarted.countDown();
-                        try {
-                          allowTaskCompletion.await();
-                        } catch (InterruptedException e) {
-                          taskInterrupted.countDown();
-                          Thread.currentThread().interrupt();
-                          throw new CancellationException("task interrupted");
-                        }
-                        return ignored;
-                      },
-                      ignored -> {},
-                      cancelled::get);
-                  return null;
-                } catch (Throwable failure) {
-                  return failure;
-                }
+                BoundedFanout.forEachOrdered(
+                    List.of(1, 2),
+                    2,
+                    executor,
+                    ignored -> {
+                      taskStarted.countDown();
+                      try {
+                        allowTaskCompletion.await();
+                      } catch (InterruptedException e) {
+                        taskInterrupted.countDown();
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("task interrupted");
+                      }
+                      return ignored;
+                    },
+                    ignored -> {},
+                    cancelled::get);
               });
 
       assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
@@ -499,30 +478,25 @@ class BoundedFanoutTest {
             new SynchronousQueue<>(),
             new ThreadPoolExecutor.AbortPolicy())) {
       CompletableFuture<Throwable> result =
-          CompletableFuture.supplyAsync(
+          captureAsyncFailure(
               () -> {
-                try {
-                  BoundedFanout.forEachOrdered(
-                      List.of(1, 2),
-                      2,
-                      executor,
-                      ignored -> {
-                        taskStarted.countDown();
-                        try {
-                          new CountDownLatch(1).await();
-                          return ignored;
-                        } catch (InterruptedException e) {
-                          taskInterrupted.countDown();
-                          Thread.currentThread().interrupt();
-                          throw new CancellationException("task interrupted");
-                        }
-                      },
-                      ignored -> {},
-                      cancelled::get);
-                  return null;
-                } catch (Throwable failure) {
-                  return failure;
-                }
+                BoundedFanout.forEachOrdered(
+                    List.of(1, 2),
+                    2,
+                    executor,
+                    ignored -> {
+                      taskStarted.countDown();
+                      try {
+                        new CountDownLatch(1).await();
+                        return ignored;
+                      } catch (InterruptedException e) {
+                        taskInterrupted.countDown();
+                        Thread.currentThread().interrupt();
+                        throw new CancellationException("task interrupted");
+                      }
+                    },
+                    ignored -> {},
+                    cancelled::get);
               });
 
       assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
@@ -548,5 +522,18 @@ class BoundedFanoutTest {
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("permits must be >= 1");
     }
+  }
+
+  /** Run one assertion scenario asynchronously and expose its terminal failure as a value. */
+  private static CompletableFuture<Throwable> captureAsyncFailure(Runnable scenario) {
+    return CompletableFuture.supplyAsync(
+        () -> {
+          try {
+            scenario.run();
+            return null;
+          } catch (Throwable failure) {
+            return failure;
+          }
+        });
   }
 }

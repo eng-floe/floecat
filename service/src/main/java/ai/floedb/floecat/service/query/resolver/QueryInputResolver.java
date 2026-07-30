@@ -34,7 +34,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.CancellableCallRunner;
 import ai.floedb.floecat.service.concurrent.Futures;
-import ai.floedb.floecat.service.concurrent.MetadataIoExecutors;
+import ai.floedb.floecat.service.concurrent.MetadataIoRunner;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -62,7 +62,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -109,14 +108,7 @@ public class QueryInputResolver {
   private static final Logger LOG = Logger.getLogger(QueryInputResolver.class);
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
-  private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
-  // Every admitted call is submitted to this pool. The queue only bridges the brief interval
-  // between a task releasing admission and its worker becoming idle; do not lower this below the
-  // global admission bound without changing the invariant check in postConstruct().
-  private static final int METADATA_IO_POOL_SIZE = MAX_CONCURRENT_INPUT_RESOLUTIONS;
-  private static final int METADATA_IO_QUEUE_CAPACITY = METADATA_IO_POOL_SIZE;
-  private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
-  private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
+  private static final long SNAPSHOT_WAIT_POLL_MILLIS = 10;
   private static final BooleanSupplier NEVER_CANCELLED = () -> false;
   private static final CancellableCallRunner.FailureMessages METADATA_CALL_FAILURES =
       new CancellableCallRunner.FailureMessages(
@@ -130,13 +122,9 @@ public class QueryInputResolver {
   // per-request bound only. ConfigProvider keeps construction dependent on graph/store
   // collaborators while production still reads the deployment setting once per resolver.
   private final int maxParallelInputResolutions;
-  private final int maxConcurrentInputResolutions;
-
-  // Bounds metadata I/O across every request handled by this application-scoped resolver. The
-  // request-local BoundedFanout limit avoids one request monopolizing this capacity; this limiter
-  // prevents many requests from multiplying store pressure.
-  private final Semaphore concurrentInputResolutionPermits;
   private final CatalogOverlay metadataGraph;
+  private final MetadataIoRunner metadataIoRunner;
+  private final boolean ownsMetadataIoRunner;
 
   // Registers each resolved pin's blobs as a transient GC root at construction time (see
   // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
@@ -150,21 +138,30 @@ public class QueryInputResolver {
   private volatile ExecutorService blockingExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedBlockingExecutor;
 
-  // Metadata calls run separately from planning because DynamoDB-backed calls can pin a carrier
-  // while blocking. Cancellation can therefore release the waiting virtual planning thread without
-  // waiting for a non-cooperating client. Admission happens before submission and remains held
-  // until the underlying call exits. Its bounded queue bridges worker turnover without retaining
-  // unbounded cancelled request closures.
-  private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
-  private ExecutorService ownedMetadataIoExecutor;
+  // Carries cancellable single-flight state through the overridable completed-pin Map seam.
+  private final ThreadLocal<ResolutionInvocation> resolutionInvocation = new ThreadLocal<>();
 
   @Inject
+  public QueryInputResolver(
+      CatalogOverlay metadataGraph,
+      QueryContextStore queryStore,
+      MetadataIoRunner metadataIoRunner) {
+    this(
+        metadataGraph,
+        queryStore,
+        configuredMaxParallelInputResolutions(),
+        metadataIoRunner,
+        false);
+  }
+
+  /** Compatibility constructor for direct callers outside CDI. */
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
     this(
         metadataGraph,
         queryStore,
         configuredMaxParallelInputResolutions(),
-        MAX_CONCURRENT_INPUT_RESOLUTIONS);
+        new MetadataIoRunner(),
+        true);
   }
 
   QueryInputResolver(
@@ -172,12 +169,25 @@ public class QueryInputResolver {
       QueryContextStore queryStore,
       int maxParallelInputResolutions,
       int maxConcurrentInputResolutions) {
+    this(
+        metadataGraph,
+        queryStore,
+        maxParallelInputResolutions,
+        new MetadataIoRunner(maxConcurrentInputResolutions),
+        true);
+  }
+
+  private QueryInputResolver(
+      CatalogOverlay metadataGraph,
+      QueryContextStore queryStore,
+      int maxParallelInputResolutions,
+      MetadataIoRunner metadataIoRunner,
+      boolean ownsMetadataIoRunner) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
-    this.maxConcurrentInputResolutions = maxConcurrentInputResolutions;
-    this.concurrentInputResolutionPermits =
-        new Semaphore(maxConcurrentInputResolutions, true /* best-effort request fairness */);
+    this.metadataIoRunner = java.util.Objects.requireNonNull(metadataIoRunner, "metadataIoRunner");
+    this.ownsMetadataIoRunner = ownsMetadataIoRunner;
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
@@ -201,54 +211,15 @@ public class QueryInputResolver {
     return clamped;
   }
 
-  /**
-   * Create the owned planning and metadata executors after validating their admission invariant.
-   */
+  /** Create the owned virtual-thread planning executor. */
   @PostConstruct
   void postConstruct() {
-    validateMetadataIoSizing(
-        maxConcurrentInputResolutions, METADATA_IO_POOL_SIZE, METADATA_IO_QUEUE_CAPACITY);
     ExecutorService planningExecutor = Executors.newVirtualThreadPerTaskExecutor();
-    ExecutorService ioExecutor =
-        MetadataIoExecutors.newBoundedDaemonPool(
-            METADATA_IO_POOL_SIZE, METADATA_IO_QUEUE_CAPACITY, "floecat-query-input-metadata-");
     ownedBlockingExecutor = planningExecutor;
-    ownedMetadataIoExecutor = ioExecutor;
     blockingExecutor = planningExecutor;
-    metadataIoExecutor = ioExecutor;
-  }
-
-  /** Validate that every admitted call can be accepted during worker turnover. */
-  static void validateMetadataIoSizing(int admission, int workers, int queueCapacity) {
-    if (admission < 1 || workers < admission || queueCapacity < admission) {
-      throw new IllegalStateException(
-          "metadata I/O workers and queue must each cover the admission bound"
-              + " (admission="
-              + admission
-              + ", workers="
-              + workers
-              + ", queue="
-              + queueCapacity
-              + ")");
+    if (ownsMetadataIoRunner) {
+      metadataIoRunner.start();
     }
-  }
-
-  /**
-   * Run metadata I/O on this resolver's application-wide executor and admission bound.
-   *
-   * <p>GetUserObjects uses this same runner for candidate and relation work, so all metadata-store
-   * calls share one ceiling instead of multiplying independent per-service limits.
-   */
-  public <T> T runMetadataIo(
-      BooleanSupplier cancelled,
-      Supplier<T> operation,
-      CancellableCallRunner.FailureMessages failureMessages) {
-    return CancellableCallRunner.call(
-        metadataIoExecutor,
-        concurrentInputResolutionPermits,
-        cancelled,
-        operation,
-        failureMessages);
   }
 
   /**
@@ -259,11 +230,8 @@ public class QueryInputResolver {
     if (ownedBlockingExecutor != null) {
       ownedBlockingExecutor.shutdownNow();
     }
-    if (ownedMetadataIoExecutor != null) {
-      if (!MetadataIoExecutors.shutdownNowAndAwait(
-          ownedMetadataIoExecutor, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-        LOG.warn("resolver metadata I/O executor did not terminate before shutdown timeout");
-      }
+    if (ownsMetadataIoRunner) {
+      metadataIoRunner.close();
     }
   }
 
@@ -537,15 +505,101 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    return resolveInputsCore(
-        queryId,
-        correlationId,
-        inputs,
-        asOfDefault,
-        defaultCatalogId,
+    ResolutionInvocation invocation = resolutionInvocation.get();
+    if (invocation != null) {
+      return resolveViaLegacyOverride(
+          queryId,
+          correlationId,
+          inputs,
+          asOfDefault,
+          defaultCatalogId,
+          invocation.currentSnapshotPinCache(),
+          diagnostics);
+    }
+    return withResolutionInvocation(
         currentSnapshotPinCache,
-        diagnostics,
-        NEVER_CANCELLED);
+        NEVER_CANCELLED,
+        () ->
+            resolveViaLegacyOverride(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics));
+  }
+
+  /**
+   * Compatibility overload for callers and subclasses using the completed-pin cache contract. Plain
+   * maps are copied into the concurrent single-flight representation before fan-out and are updated
+   * only after successful resolution on the calling thread.
+   */
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      Map<ResourceId, TablePin> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    ResolutionInvocation invocation = resolutionInvocation.get();
+    if (invocation != null) {
+      return resolveInputsCore(
+          queryId,
+          correlationId,
+          inputs,
+          asOfDefault,
+          defaultCatalogId,
+          invocation.currentSnapshotPinCache(),
+          diagnostics,
+          invocation.cancelled());
+    }
+
+    Map<ResourceId, TablePin> initialCache = new LinkedHashMap<>(currentSnapshotPinCache);
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
+        toSingleFlightCache(initialCache);
+    ResolutionResult result =
+        resolveInputsCore(
+            queryId,
+            correlationId,
+            inputs,
+            asOfDefault,
+            defaultCatalogId,
+            singleFlightCache,
+            diagnostics,
+            NEVER_CANCELLED);
+    try {
+      completedPins(singleFlightCache)
+          .forEach(
+              (tableId, pin) -> {
+                if (!initialCache.containsKey(tableId)
+                    || !java.util.Objects.equals(initialCache.get(tableId), pin)) {
+                  currentSnapshotPinCache.put(tableId, pin);
+                }
+              });
+    } catch (RuntimeException | Error copyFailure) {
+      boolean restored = false;
+      try {
+        if (!currentSnapshotPinCache.equals(initialCache)) {
+          currentSnapshotPinCache.clear();
+          currentSnapshotPinCache.putAll(initialCache);
+        }
+        restored = currentSnapshotPinCache.equals(initialCache);
+      } catch (RuntimeException | Error rollbackFailure) {
+        copyFailure.addSuppressed(rollbackFailure);
+      }
+      if (restored && queryStore != null && queryId != null && !queryId.isEmpty()) {
+        try {
+          queryStore.releaseResolvingPinBlobs(
+              queryId, QueryPins.gcRootUris(result.relationPinSet()));
+        } catch (RuntimeException | Error cleanupFailure) {
+          copyFailure.addSuppressed(cleanupFailure);
+        }
+      }
+      throw copyFailure;
+    }
+    return result;
   }
 
   /**
@@ -565,16 +619,92 @@ public class QueryInputResolver {
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
     throwIfCancelled(cancelled);
-    return resolveInputsCore(
-        queryId,
-        correlationId,
-        inputs,
-        asOfDefault,
-        defaultCatalogId,
+    return withResolutionInvocation(
         currentSnapshotPinCache,
-        diagnostics,
-        cancelled);
+        cancelled,
+        () ->
+            resolveInputs(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics));
   }
+
+  /** Invoke the completed-pin compatibility seam and publish its successful cache entries. */
+  private ResolutionResult resolveViaLegacyOverride(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    Map<ResourceId, TablePin> completedPinCache = completedPins(currentSnapshotPinCache);
+    ResolutionResult result =
+        resolveInputs(
+            queryId,
+            correlationId,
+            inputs,
+            asOfDefault,
+            defaultCatalogId,
+            completedPinCache,
+            diagnostics);
+    completedPinCache.forEach(
+        (tableId, pin) ->
+            currentSnapshotPinCache.putIfAbsent(tableId, CompletableFuture.completedFuture(pin)));
+    return result;
+  }
+
+  /** Install one invocation while retaining any outer invocation on the same request thread. */
+  private <T> T withResolutionInvocation(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      BooleanSupplier cancelled,
+      Supplier<T> operation) {
+    ResolutionInvocation previous = resolutionInvocation.get();
+    resolutionInvocation.set(new ResolutionInvocation(currentSnapshotPinCache, cancelled));
+    try {
+      return operation.get();
+    } finally {
+      if (previous == null) {
+        resolutionInvocation.remove();
+      } else {
+        resolutionInvocation.set(previous);
+      }
+    }
+  }
+
+  /** Convert completed pins to the concurrent placeholder representation used during fan-out. */
+  private static ConcurrentMap<ResourceId, CompletableFuture<TablePin>> toSingleFlightCache(
+      Map<ResourceId, TablePin> completedPinCache) {
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
+        new ConcurrentHashMap<>();
+    completedPinCache.forEach(
+        (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
+    return singleFlightCache;
+  }
+
+  /** Snapshot successfully completed placeholders without waiting for active lookups. */
+  private static Map<ResourceId, TablePin> completedPins(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache) {
+    Map<ResourceId, TablePin> completed = new LinkedHashMap<>();
+    singleFlightCache.forEach(
+        (tableId, pinFuture) -> {
+          if (pinFuture.isDone()
+              && !pinFuture.isCompletedExceptionally()
+              && !pinFuture.isCancelled()) {
+            completed.put(tableId, Futures.join(pinFuture));
+          }
+        });
+    return completed;
+  }
+
+  /** Per-thread state carried through the completed-pin override seam. */
+  private record ResolutionInvocation(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      BooleanSupplier cancelled) {}
 
   /** Run the shared resolution implementation for cancellable and non-cancellable callers. */
   private ResolutionResult resolveInputsCore(
@@ -644,6 +774,7 @@ public class QueryInputResolver {
       } else {
         planInputsSerially(state, inputs, resolvedNames, cancelled);
       }
+      throwIfCancelled(cancelled);
 
       RelationPinSet relationPinSet =
           RelationPinSet.newBuilder()
@@ -772,53 +903,16 @@ public class QueryInputResolver {
       // An overlay can opt out because it owns request-thread-confined state. Preserve that
       // contract even for a cancellable caller; it can cancel while awaiting admission, but an
       // active callback remains on the request thread until the overlay returns.
-      return withInputResolutionPermitSynchronously(cancelled, operation);
+      return cancelled == NEVER_CANCELLED
+          ? metadataIoRunner.callOnCallerThreadWithoutCancellation(
+              operation, METADATA_CALL_FAILURES.interruption())
+          : metadataIoRunner.callOnCallerThread(
+              cancelled, operation, METADATA_CANCELLATION_FAILURES);
     }
     if (cancelled == NEVER_CANCELLED) {
-      return CancellableCallRunner.callWithoutCancellation(
-          metadataIoExecutor, concurrentInputResolutionPermits, operation, METADATA_CALL_FAILURES);
+      return metadataIoRunner.callWithoutCancellation(operation, METADATA_CALL_FAILURES);
     }
-    return runMetadataIo(cancelled, operation, METADATA_CANCELLATION_FAILURES);
-  }
-
-  /** Runs one metadata operation while retaining its global permit until the call truly returns. */
-  private <T> T withInputResolutionPermitSynchronously(
-      BooleanSupplier cancelled, Supplier<T> operation) {
-    boolean acquired = false;
-    try {
-      acquireInputResolutionPermit(cancelled);
-      acquired = true;
-      return operation.get();
-    } finally {
-      if (acquired) {
-        concurrentInputResolutionPermits.release();
-      }
-    }
-  }
-
-  /** Acquire process-wide metadata capacity while leaving a cancelled caller responsive. */
-  private void acquireInputResolutionPermit(BooleanSupplier cancelled) {
-    try {
-      if (cancelled == NEVER_CANCELLED) {
-        // Legacy callers cannot become cancelled, so a blocking fair acquire preserves FIFO
-        // ordering without repeatedly removing and re-enqueuing this waiter.
-        concurrentInputResolutionPermits.acquire();
-        return;
-      }
-      // Timed waits let serial callers observe cancellation too. This is best-effort fairness:
-      // a timed-out waiter must rejoin the fair semaphore's queue, trading strict FIFO for prompt
-      // request cancellation when all store-I/O slots are occupied.
-      while (true) {
-        throwIfCancelled(cancelled);
-        if (concurrentInputResolutionPermits.tryAcquire(
-            GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
-          return;
-        }
-      }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new CancellationException("interrupted while awaiting resolver I/O capacity");
-    }
+    return metadataIoRunner.call(cancelled, operation, METADATA_CANCELLATION_FAILURES);
   }
 
   /**
@@ -1016,7 +1110,7 @@ public class QueryInputResolver {
         throw new CancellationException("interrupted while awaiting current snapshot pin");
       }
       try {
-        return inflight.get(GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
+        return inflight.get(SNAPSHOT_WAIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
       } catch (TimeoutException ignored) {
         // A bounded wait lets the next loop observe cancellation or an executor interrupt.
       } catch (InterruptedException e) {
