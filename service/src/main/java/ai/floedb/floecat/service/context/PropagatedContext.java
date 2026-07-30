@@ -109,24 +109,14 @@ public final class PropagatedContext {
   }
 
   private static Map<String, Object> snapshotMdc() {
-    Map<String, Object> values = new HashMap<>();
-    for (String key : MDC_KEYS) {
-      Object value = MDC.get(key);
-      if (value != null) {
-        values.put(key, value);
-      }
-    }
-    return values;
+    Map<String, Object> values = MDC.getMap();
+    return values == null ? new HashMap<>() : new HashMap<>(values);
   }
 
   private static void restoreMdc(Map<String, Object> priorMdc) {
-    for (String key : MDC_KEYS) {
-      Object value = priorMdc.get(key);
-      if (value == null) {
-        MDC.remove(key);
-      } else {
-        MDC.put(key, value);
-      }
+    MDC.clear();
+    for (Map.Entry<String, Object> entry : priorMdc.entrySet()) {
+      MDC.put(entry.getKey(), entry.getValue());
     }
   }
 

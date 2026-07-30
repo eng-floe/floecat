@@ -116,6 +116,25 @@ class PropagatedContextTest {
   }
 
   @Test
+  void clearsExtensionMdcKeysAddedByTheBody() throws Exception {
+    ExecutorService foreign = Executors.newSingleThreadExecutor();
+    try {
+      Object mdcAfterBody =
+          foreign
+              .submit(
+                  () -> {
+                    PropagatedContext.capture().run(() -> MDC.put("extension_tenant", "tenant-a"));
+                    return MDC.get("extension_tenant");
+                  })
+              .get();
+
+      assertThat(mdcAfterBody).isNull();
+    } finally {
+      foreign.shutdownNow();
+    }
+  }
+
+  @Test
   void restoresExistingMdcAfterAnInlineNestedScope() {
     MDC.put("floecat_component", "outer-component");
     MDC.put("floecat_operation", "outer-operation");
