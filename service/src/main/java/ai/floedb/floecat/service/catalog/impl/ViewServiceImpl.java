@@ -617,12 +617,14 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .list(
             "sql_definitions",
             definitions.stream().map(def -> def.getDialect() + ":" + def.getSql()).toList())
-        // Output columns are part of the view's identity: without them an idempotent create
-        // against an existing view with different (e.g. legacy untyped) columns is reported as
-        // an exact match and silently keeps the old columns.
+        // Both callers must compare normalized columns: old clients may still send the reserved
+        // legacy type field while stored views are upgraded on write. Normalizing here keeps
+        // idempotent replays stable and prevents distinct legacy types from sharing a fingerprint.
+        // The serialized typed tree also includes nested requiredness.
         .list(
             "output_columns",
             s.getOutputColumnsList().stream()
+                .map(ai.floedb.floecat.types.LogicalTypeProtoAdapter::upgradeLegacyColumn)
                 .map(
                     c ->
                         c.getName()

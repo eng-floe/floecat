@@ -547,6 +547,50 @@ class ViewMutationIT {
   }
 
   @Test
+  void createViewIdempotencyDistinguishesLegacyColumnTypes() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_legacy_fp", "vcat-legacy-fp");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "legacy_fp_ns", List.of("db_legacy_fp"), "ns");
+    var key = IdempotencyKey.newBuilder().setKey("legacy-fp-k1").build();
+
+    java.util.function.Function<String, CreateViewRequest> request =
+        type ->
+            CreateViewRequest.newBuilder()
+                .setSpec(
+                    ViewSpec.newBuilder()
+                        .setCatalogId(cat.getResourceId())
+                        .setNamespaceId(ns.getResourceId())
+                        .setDisplayName("legacy_fp_view")
+                        .addSqlDefinitions(
+                            ViewSqlDefinition.newBuilder().setSql("SELECT c FROM t").setDialect("ansi"))
+                        .addOutputColumns(legacyColumn("c", type)))
+                .setIdempotency(key)
+                .build();
+
+    view.createView(request.apply("INT"));
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> view.createView(request.apply("STRING")));
+    assertEquals(Status.Code.ABORTED, ex.getStatus().getCode());
+  }
+
+  private static SchemaColumn legacyColumn(String name, String logicalType) {
+    try {
+      var bytes = new java.io.ByteArrayOutputStream();
+      var out = com.google.protobuf.CodedOutputStream.newInstance(bytes);
+      out.writeString(1, name);
+      out.writeString(2, logicalType);
+      out.writeBool(4, true);
+      out.flush();
+      return SchemaColumn.parseFrom(bytes.toByteArray());
+    } catch (java.io.IOException e) {
+      throw new AssertionError("failed to construct legacy SchemaColumn", e);
+    }
+  }
+
+  @Test
   void viewSemanticFieldsRoundTrip() throws Exception {
     var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_sem", "vcat-sem");
     var ns =
