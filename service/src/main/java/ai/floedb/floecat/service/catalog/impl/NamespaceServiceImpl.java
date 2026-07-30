@@ -506,6 +506,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     // report near-zero counts for a subtree that is actually gone. Confined to this one call.
     var destroyed = new RecursiveResourceDropper.DropSummary();
 
+    // Resolved here, on the request thread, not inside the failure transform below. That transform
+    // runs after the retries, off the worker hop and outside the context run() re-establishes per
+    // subscription, so reading the principal there can itself throw — destroying the partial-teardown
+    // report this is all for.
+    final String failureCorrelationId = correlationId();
+
     // Recursive delete performs a large amount of blocking storage I/O and can raise
     // AbortRetryableException; runWithRetryOnWorker keeps the retry re-subscription off the Vert.x
     // event loop, where that blocking work would fail with "current thread cannot be blocked".
@@ -690,8 +696,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                 // caller whose subtree has just been destroyed is never handed a bare "retryable
                 // conflict, nothing committed".
                 .onFailure()
-                .transform(failed -> partialTeardownIfDestroyed(failed, destroyed)),
-            correlationId())
+                .transform(
+                    failed ->
+                        partialTeardownIfDestroyed(failed, destroyed, failureCorrelationId)),
+            failureCorrelationId)
         .onFailure()
         .invoke(L::fail)
         .onItem()
@@ -766,14 +774,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * immutability refusal and the pagination guard escape the same way. Whatever the cause, telling
    * a caller "nothing committed" about a subtree that is gone is the one outcome this error code
    * exists to prevent.
+   *
+   * <p>{@code correlationId} is passed in rather than read here: this runs off the request thread,
+   * after the worker hop, where the request scope may no longer be active.
    */
   private Throwable partialTeardownIfDestroyed(
-      Throwable failed, RecursiveResourceDropper.DropSummary destroyed) {
+      Throwable failed, RecursiveResourceDropper.DropSummary destroyed, String correlationId) {
     if (destroyed.total() == 0) {
       return failed;
     }
     return GrpcErrors.preconditionFailed(
-        correlationId(),
+        correlationId,
         GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
         Map.of(
             "deleted_namespaces",
