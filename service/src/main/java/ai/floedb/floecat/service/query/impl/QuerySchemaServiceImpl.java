@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
+import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
@@ -291,8 +292,14 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     CatalogOverlay.SchemaResolution resolved =
         catalogOverlay.schemaFor(
             correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
+    // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
+    // plumbing; the planner reads nested typing from the columns' type trees.
+    SchemaDescriptor mapped = schemaMapper.map(resolved.table(), resolved.schemaJson());
     return UserObjectBundleUtils.qualifyNestedColumnNames(
-        schemaMapper.map(resolved.table(), resolved.schemaJson()));
+        mapped.toBuilder()
+            .clearColumns()
+            .addAllColumns(SchemaColumns.withoutSyntheticNodes(mapped.getColumnsList()))
+            .build());
   }
 
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {

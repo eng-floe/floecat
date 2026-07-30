@@ -70,6 +70,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;
@@ -1690,14 +1691,14 @@ class UserObjectBundleServiceTest {
             SchemaColumn.newBuilder()
                 .setId(101)
                 .setName("c_ready")
-                .setLogicalType("INT32")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(true)
                 .setOrdinal(1)
                 .build(),
             SchemaColumn.newBuilder()
                 .setId(102)
                 .setName("c_failed")
-                .setLogicalType("INT32")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(true)
                 .setOrdinal(2)
                 .build());

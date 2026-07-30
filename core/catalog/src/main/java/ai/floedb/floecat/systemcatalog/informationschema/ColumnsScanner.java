@@ -34,6 +34,8 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
+import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -62,37 +64,37 @@ public final class ColumnsScanner implements SystemObjectScanner {
       List.of(
           SchemaColumn.newBuilder()
               .setName("table_catalog")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(0)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_schema")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(1)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_name")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(2)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("column_name")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(3)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("data_type")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(4)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("ordinal_position")
-              .setLogicalType("INT")
+              .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
               .setFieldId(5)
               .setNullable(false)
               .build());
@@ -234,7 +236,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     String schemaName = namespace.schemaName();
 
-    List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
+    // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
+    List<SchemaColumn> columns =
+        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
 
     if (table instanceof UserTableNode) {
       return columns.stream()
@@ -247,7 +251,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         schemaName,
                         table.displayName(),
                         col.getName(),
-                        blankToNull(col.getLogicalType()),
+                        typeStringOrNull(col),
                         col.getFieldId()
                       }));
     }
@@ -263,7 +267,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 table.displayName(),
                 col.getName(),
-                blankToNull(col.getLogicalType()),
+                typeStringOrNull(col),
                 ordinal++
               }));
     }
@@ -294,7 +298,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 view.displayName(),
                 col.getName(),
-                col.getLogicalType(),
+                typeStringOrNull(col),
                 i + 1
               }));
     }
@@ -303,6 +307,22 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
+  }
+
+  /**
+   * data_type display string, or null for legacy columns persisted without a typed field. A single
+   * undecodable column (e.g. a poisoned persisted type) must not kill the whole
+   * information_schema.columns scan, so decode failures also render as null.
+   */
+  private static String typeStringOrNull(SchemaColumn col) {
+    if (!col.hasType()) {
+      return null;
+    }
+    try {
+      return LogicalTypeProtoAdapter.columnTypeString(col);
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 
   private List<ColumnEntry> columnsForRelation(
@@ -316,7 +336,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     if (node instanceof TableNode table) {
-      List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
+      // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
+      List<SchemaColumn> columns =
+          SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
       if (table instanceof UserTableNode) {
         return columns.stream()
             .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
@@ -327,7 +349,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         schemaName,
                         table.displayName(),
                         col.getName(),
-                        blankToNull(col.getLogicalType()),
+                        typeStringOrNull(col),
                         col.getFieldId()))
             .toList();
       }
@@ -340,7 +362,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 table.displayName(),
                 col.getName(),
-                blankToNull(col.getLogicalType()),
+                typeStringOrNull(col),
                 ordinal++));
       }
       return entries;
@@ -357,7 +379,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 view.displayName(),
                 col.getName(),
-                col.getLogicalType(),
+                typeStringOrNull(col),
                 i + 1));
       }
       return entries;

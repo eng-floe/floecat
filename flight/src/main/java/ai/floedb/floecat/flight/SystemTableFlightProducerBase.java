@@ -32,6 +32,7 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
@@ -748,7 +749,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       columns.add(
           SchemaColumn.newBuilder()
               .setName(field.getName())
-              .setLogicalType(ArrowSchemaUtil.logicalType(field))
+              .setType(LogicalTypeProtoAdapter.parseToProto(ArrowSchemaUtil.logicalType(field)))
               .setFieldId(ordinal)
               .setNullable(field.isNullable())
               .setOrdinal(ordinal)

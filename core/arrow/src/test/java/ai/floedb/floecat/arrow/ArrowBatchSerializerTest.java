@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -274,7 +275,11 @@ class ArrowBatchSerializerTest {
   // -------------------------------------------------------------------------
 
   private static SchemaColumn col(String name, String type) {
-    return SchemaColumn.newBuilder().setName(name).setLogicalType(type).setNullable(true).build();
+    return SchemaColumn.newBuilder()
+        .setName(name)
+        .setType(LogicalTypeProtoAdapter.parseToProto(type))
+        .setNullable(true)
+        .build();
   }
 
   private static Schema singleIntSchema() {

@@ -1134,12 +1134,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .addPaths("creation_search_path")
             .addPaths("output_columns")
             .build();
+    ViewSpec mergedSpec =
+        spec.toBuilder()
+            .clearProperties()
+            .putAllProperties(mergedReconcileViewProperties(current, spec))
+            .build();
     ResourceId updatedId =
         view(ctx)
             .updateView(
                 UpdateViewRequest.newBuilder()
                     .setViewId(existingId)
-                    .setSpec(spec)
+                    .setSpec(mergedSpec)
                     .setUpdateMask(mask)
                     .build())
             .getView()
@@ -1212,11 +1217,39 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return current.getCatalogId().equals(spec.getCatalogId())
         && current.getNamespaceId().equals(spec.getNamespaceId())
         && current.getDisplayName().equals(spec.getDisplayName())
-        && current.getPropertiesMap().equals(spec.getPropertiesMap())
+        && reconcileManagedViewProperties(current.getPropertiesMap())
+            .equals(spec.getPropertiesMap())
         && current.getSqlDefinitionsList().equals(spec.getSqlDefinitionsList())
         && current.getBaseRelationsList().equals(spec.getBaseRelationsList())
         && current.getCreationSearchPathList().equals(spec.getCreationSearchPathList())
         && current.getOutputColumnsList().equals(spec.getOutputColumnsList());
+  }
+
+  /**
+   * The reconciler owns only the source-identity properties it writes; server-managed entries
+   * (engine hints etc.) live in the same map. Comparing or overwriting the full stored map made any
+   * staged hint a permanent diff — a rewrite every pass that also wiped the hints (tables solved
+   * this with mergedReconcileProperties; this is the view equivalent).
+   */
+  private static Map<String, String> reconcileManagedViewProperties(Map<String, String> stored) {
+    LinkedHashMap<String, String> managed = new LinkedHashMap<>();
+    stored.forEach(
+        (key, value) -> {
+          if (!key.startsWith("engine.hint.") && !key.startsWith("view.metadata.")) {
+            managed.put(key, value);
+          }
+        });
+    return managed;
+  }
+
+  private static Map<String, String> mergedReconcileViewProperties(View current, ViewSpec spec) {
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>(current.getPropertiesMap());
+    // Reconcile owns the non-managed keys wholesale: drop stale ones, then apply the spec's.
+    merged
+        .keySet()
+        .removeIf(key -> !key.startsWith("engine.hint.") && !key.startsWith("view.metadata."));
+    merged.putAll(spec.getPropertiesMap());
+    return Map.copyOf(merged);
   }
 
   @Override

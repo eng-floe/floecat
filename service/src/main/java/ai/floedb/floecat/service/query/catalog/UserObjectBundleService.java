@@ -73,11 +73,12 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
+import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.types.Hashing;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -170,7 +171,10 @@ public class UserObjectBundleService {
       PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
-      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "1")
+      // Epoch 2: the typed SchemaColumn migration changed every complex column's engine payload
+      // (container OIDs + planner type trees); planners holding pre-migration possession tokens
+      // must re-fetch instead of being told "nothing changed".
+      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "2")
           String decorationEpoch,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightHost,
@@ -813,11 +817,16 @@ public class UserObjectBundleService {
     // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
     Origin origin = mapOrigin(relation.node().origin());
 
+    // Relation payloads carry TOP-LEVEL columns only: ordinals are 1-based within the parent,
+    // so any nested row — synthetic placeholder or struct child — shares its ordinal (and
+    // therefore its engine attnum) with some top-level column. Nested typing reaches the engine
+    // via the per-column type tree; the flattened node set remains available for stats and
+    // catalog traversal.
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : relation.node() instanceof UserTableNode userTable
-                ? UserObjectBundleUtils.qualifyNestedColumnNames(
+                ? SchemaColumns.topLevelOnly(
                     logicalSchemaForRelation(
                             correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
@@ -1405,17 +1414,13 @@ public class UserObjectBundleService {
   }
 
   private LogicalType parseLogicalType(SchemaColumn column) {
-    if (column == null) {
-      return null;
-    }
-    String logical = column.getLogicalType();
-    if (logical == null || logical.isBlank()) {
+    if (column == null || !column.hasType()) {
       return null;
     }
     try {
-      return LogicalTypeFormat.parse(logical);
+      return LogicalTypeProtoAdapter.columnType(column);
     } catch (IllegalArgumentException e) {
-      LOG.debugf(e, "Failed to parse logical type '%s'", logical);
+      LOG.debugf(e, "Failed to decode logical type for column '%s'", column.getName());
       return null;
     }
   }

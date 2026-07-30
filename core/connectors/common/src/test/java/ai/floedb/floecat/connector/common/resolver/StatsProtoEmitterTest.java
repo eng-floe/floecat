@@ -102,11 +102,13 @@ public class StatsProtoEmitterTest {
     TargetStatsRecord s1 = out.get(1);
 
     assertTrue(s0.getTarget().getColumn().getColumnId() > 0L);
-    assertEquals("b", s0.getScalar().getDisplayName());
+    // Nested columns carry their qualified path as the stats display name: predicate pruning
+    // binds by this name, and a bare leaf name would collide across containers.
+    assertEquals("a.element.b", s0.getScalar().getDisplayName());
     assertEquals(123L, s0.getScalar().getRowCount());
 
     assertTrue(s1.getTarget().getColumn().getColumnId() > 0L);
-    assertEquals("b", s1.getScalar().getDisplayName());
+    assertEquals("a.element.b", s1.getScalar().getDisplayName());
     assertEquals(456L, s1.getScalar().getRowCount());
 
     // Both refer to the *same schema column*, so the computed id must be the same.
@@ -282,13 +284,13 @@ public class StatsProtoEmitterTest {
     assertEquals("{\"partitionValues\":[]}", f0.getPartitionDataJson());
     assertEquals(2, f0.getColumnsCount());
 
-    // ensure b resolved
+    // ensure b resolved (nested columns use their qualified path as display name)
     FileColumnStats colB =
         f0.getColumnsList().stream()
-            .filter(c -> c.hasScalar() && "b".equals(c.getScalar().getDisplayName()))
+            .filter(c -> c.hasScalar() && "a.element.b".equals(c.getScalar().getDisplayName()))
             .findFirst()
             .orElseThrow();
-    assertEquals("b", colB.getScalar().getDisplayName());
+    assertEquals("a.element.b", colB.getScalar().getDisplayName());
 
     assertTrue(out.get(1).hasFile());
     var f1 = out.get(1).getFile();

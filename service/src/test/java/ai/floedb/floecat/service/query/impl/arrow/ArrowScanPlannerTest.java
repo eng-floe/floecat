@@ -28,6 +28,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import java.util.stream.Stream;
 import org.apache.arrow.memory.RootAllocator;
@@ -147,7 +148,10 @@ class ArrowScanPlannerTest {
   }
 
   private static SchemaColumn col(String name) {
-    return SchemaColumn.newBuilder().setName(name).setLogicalType("VARCHAR").build();
+    return SchemaColumn.newBuilder()
+        .setName(name)
+        .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
+        .build();
   }
 
   private static String stringValue(ColumnarBatch batch, int column, int row) {

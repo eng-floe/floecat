@@ -241,6 +241,9 @@ public final class TestSupport {
                                 .addOutputColumns(
                                     SchemaColumn.newBuilder()
                                         .setName("_col0")
+                                        .setType(
+                                            ai.floedb.floecat.types.LogicalTypeProtoAdapter
+                                                .parseToProto("STRING"))
                                         .setNullable(true)
                                         .build()))
                         .build()));

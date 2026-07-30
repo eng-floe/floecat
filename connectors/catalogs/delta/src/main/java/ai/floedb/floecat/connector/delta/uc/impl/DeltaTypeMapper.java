@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.connector.common.resolver.DecimalPrecisionConstraints;
+import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import io.delta.kernel.types.ArrayType;
@@ -39,6 +40,7 @@ import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -98,9 +100,21 @@ final class DeltaTypeMapper {
     // Delta TimestampNTZType is timezone-naive (local) → TIMESTAMP (no UTC normalisation).
     if (dt instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
     if (dt instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
-    if (dt instanceof ArrayType) return LogicalType.of(LogicalKind.ARRAY);
-    if (dt instanceof MapType) return LogicalType.of(LogicalKind.MAP);
-    if (dt instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
+    if (dt instanceof ArrayType arr) {
+      return LogicalType.array(toLogical(arr.getElementType()), arr.containsNull());
+    }
+    if (dt instanceof MapType map) {
+      return LogicalType.map(
+          toLogical(map.getKeyType()), toLogical(map.getValueType()), map.isValueContainsNull());
+    }
+    if (dt instanceof StructType struct) {
+      List<LogicalField> fields =
+          struct.fields().stream()
+              .map(f -> new LogicalField(f.getName(), f.isNullable(), toLogical(f.getDataType())))
+              .toList();
+      // An explicitly empty source struct is a known-empty shape, not the legacy tag.
+      return LogicalType.struct(fields);
+    }
     if (dt instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
     if (dt instanceof DecimalType dec) {
       LogicalType logicalType = LogicalType.decimal(dec.getPrecision(), dec.getScale());

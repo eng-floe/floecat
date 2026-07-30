@@ -33,6 +33,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -58,25 +59,25 @@ public final class TablesScanner implements SystemObjectScanner {
       List.of(
           SchemaColumn.newBuilder()
               .setName("table_catalog")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(0)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_schema")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(0)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_name")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(1)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_type")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(2)
               .setNullable(false)
               .build());

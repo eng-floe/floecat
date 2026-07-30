@@ -40,6 +40,7 @@ import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
+import ai.floedb.floecat.connector.common.resolver.IcebergNestedPaths;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
@@ -1376,72 +1377,23 @@ public abstract class IcebergConnector implements FloecatConnector {
    *
    * @return AbstractMap.SimpleImmutableEntry with (pathMap, ordinalMap)
    */
-  private static java.util.AbstractMap.SimpleImmutableEntry<
-          Map<Integer, String>, Map<Integer, Integer>>
+  static java.util.AbstractMap.SimpleImmutableEntry<Map<Integer, String>, Map<Integer, Integer>>
       fieldIdMaps(Schema schema) {
     Map<Integer, String> pathMap = new LinkedHashMap<>();
     Map<Integer, Integer> ordinalMap = new LinkedHashMap<>();
 
     if (schema != null) {
-      int i = 0;
-      for (Types.NestedField top : schema.columns()) {
-        i++;
-        collectNestedWithOrdinal(top, "", i, pathMap, ordinalMap);
-      }
+      // The traversal and path notation are shared with IcebergSchemaMapper via
+      // IcebergNestedPaths, so the stats-side path set always matches the schema's.
+      IcebergNestedPaths.walk(
+          schema,
+          (field, path, ordinal) -> {
+            pathMap.put(field.fieldId(), path);
+            ordinalMap.put(field.fieldId(), ordinal);
+          });
     }
 
     return new java.util.AbstractMap.SimpleImmutableEntry<>(pathMap, ordinalMap);
-  }
-
-  /**
-   * Traverses the Iceberg schema and records (fieldId -> physical path) and/or (fieldId ->
-   * ordinal).
-   *
-   * <p>Paths follow Iceberg's nested naming (including "element"/"key"/"value" nodes). This is
-   * intentionally compatible with ColumnIdComputer.canonicalizePath(), which normalizes ".element."
-   * patterns to "[].".
-   */
-  private static void collectNestedWithOrdinal(
-      Types.NestedField f,
-      String prefix,
-      int ordinal,
-      Map<Integer, String> idToPath,
-      Map<Integer, Integer> idToOrdinal) {
-
-    if (f == null) {
-      return;
-    }
-
-    final String name = prefix.isEmpty() ? f.name() : prefix + "." + f.name();
-    final Type t = f.type();
-
-    if (idToPath != null) {
-      idToPath.put(f.fieldId(), name);
-    }
-    if (idToOrdinal != null) {
-      idToOrdinal.put(f.fieldId(), ordinal);
-    }
-
-    if (t.isStructType()) {
-      int i = 0;
-      for (Types.NestedField child : t.asStructType().fields()) {
-        i++;
-        collectNestedWithOrdinal(child, name, i, idToPath, idToOrdinal);
-      }
-    } else if (t.isListType()) {
-      Types.ListType lt = t.asListType();
-      Types.NestedField elem = lt.fields().get(0);
-      // Use canonical [] notation for list elements (matching IcebergSchemaMapper output)
-      // e.g., "addresses[]" instead of "addresses.element"
-      collectNestedWithOrdinal(elem, name + "[]", 1, idToPath, idToOrdinal);
-    } else if (t.isMapType()) {
-      Types.MapType mt = t.asMapType();
-      Types.NestedField key = mt.fields().get(0);
-      Types.NestedField val = mt.fields().get(1);
-      // Use canonical {} notation for map values (matching IcebergSchemaMapper output)
-      collectNestedWithOrdinal(key, name + ".key", 1, idToPath, idToOrdinal);
-      collectNestedWithOrdinal(val, name + ".value", 2, idToPath, idToOrdinal);
-    }
   }
 
   private static void collectNotNullConstraints(

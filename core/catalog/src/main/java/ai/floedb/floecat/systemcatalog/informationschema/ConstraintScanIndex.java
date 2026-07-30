@@ -32,6 +32,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -285,7 +286,8 @@ public final class ConstraintScanIndex {
   }
 
   private static Map<Long, String> columnsById(SystemObjectScanContext ctx, ResourceId tableId) {
-    List<SchemaColumn> columns = ctx.graph().tableSchema(tableId);
+    List<SchemaColumn> columns =
+        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId));
     if (columns.isEmpty()) {
       return Map.of();
     }

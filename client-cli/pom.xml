@@ -77,6 +77,12 @@
     </dependency>
 
     <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-types</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
       <version>${version.picocli}</version>

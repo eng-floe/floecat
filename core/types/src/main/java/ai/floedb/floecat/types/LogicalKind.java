@@ -28,9 +28,11 @@ import java.util.Map;
  * precision, interval range/precision, length, etc.) are handled outside of this enum.
  *
  * <p>Every integer size from source formats (TINYINT, SMALLINT, INT, BIGINT) collapses to {@link
- * #INT} (64-bit). Complex types ({@link #ARRAY}, {@link #MAP}, {@link #STRUCT}, {@link #VARIANT})
- * are non-parameterised here; nested structure is captured by child {@code SchemaColumn} rows with
- * their own paths.
+ * #INT} (64-bit). Complex kinds ({@link #ARRAY}, {@link #MAP}, {@link #STRUCT}) are just the
+ * container category; the nested structure (element/key/value/field types and nullability) lives on
+ * {@link LogicalType} as a recursive tree. {@link #VARIANT} is self-describing and never carries a
+ * tree. Nested fields additionally surface as child {@code SchemaColumn} rows with their own
+ * canonical paths, which drive per-leaf stats and field-ID mapping.
  */
 public enum LogicalKind {
   // Scalar numeric

@@ -84,7 +84,27 @@ public final class CatalogSurfaceViews {
 
     return viewRepo
         .getById(viewId)
+        .map(CatalogSurfaceViews::withUpgradedOutputColumns)
         .orElseThrow(() -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
+  }
+
+  /**
+   * External callers must see the same typed output columns the planner path sees: pre-migration
+   * views persisted the legacy logical_type string, which NodeLoader upgrades for graph reads but
+   * raw repository reads would leak untyped.
+   */
+  static View withUpgradedOutputColumns(View view) {
+    boolean anyUntyped = view.getOutputColumnsList().stream().anyMatch(c -> !c.hasType());
+    if (!anyUntyped) {
+      return view;
+    }
+    return view.toBuilder()
+        .clearOutputColumns()
+        .addAllOutputColumns(
+            view.getOutputColumnsList().stream()
+                .map(ai.floedb.floecat.types.LogicalTypeProtoAdapter::upgradeLegacyColumn)
+                .toList())
+        .build();
   }
 
   /**

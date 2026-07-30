@@ -40,6 +40,23 @@ import java.util.regex.Pattern;
  *       other parameterised forms fail fast.
  * </ul>
  *
+ * <p><b>Nested type grammar:</b> parameterised complex types use angle brackets:
+ *
+ * <pre>{@code
+ * type   ::= scalar
+ *          | ARRAY "<" type ">"
+ *          | STRUCT "<" field ("," field)* ">"
+ *          | MAP "<" type "," type ">"
+ * field  ::= name ":" type
+ * }</pre>
+ *
+ * e.g. {@code ARRAY<INT>}, {@code MAP<STRING, DOUBLE>}, {@code ARRAY<STRUCT<sku: STRING,
+ * quantities: ARRAY<INT>>>}. Struct field names are case-preserved; names that are not simple
+ * identifiers are double-quoted with {@code ""} escaping. Bare {@code ARRAY}/{@code MAP}/{@code
+ * STRUCT} (no arguments) remain valid and parse to the legacy non-parameterised container tag.
+ * Nullability of elements/values/fields is not part of the grammar; parsing defaults it to
+ * nullable.
+ *
  * <p><b>DECIMAL special case:</b> A bare {@code DECIMAL} or {@code NUMERIC} without explicit
  * precision and scale parameters is rejected by {@link #parse} — both precision and scale are
  * required by {@link LogicalType#decimal(int, int)}.
@@ -68,6 +85,10 @@ public final class LogicalTypeFormat {
       Pattern.compile(
           "^INTERVAL\\s+DAY(?:\\s*\\(\\s*(\\d+)\\s*\\))?\\s+TO\\s+SECOND(?:\\s*\\(\\s*(\\d+)\\s*\\))?$");
 
+  private static final Pattern BARE_FIELD_NAME_RE = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+  private static final Pattern NESTED_START_RE =
+      Pattern.compile("^(ARRAY|MAP|STRUCT)\\s*<", Pattern.CASE_INSENSITIVE);
+
   public static String format(LogicalType t) {
     Objects.requireNonNull(t, "LogicalType");
     if (t.isDecimal()) {
@@ -83,11 +104,71 @@ public final class LogicalTypeFormat {
             || t.kind() == LogicalKind.TIMESTAMPTZ)) {
       return t.kind().name() + "(" + temporalPrecision + ")";
     }
+    if (t.hasTypeTree()) {
+      return switch (t.kind()) {
+        case ARRAY -> "ARRAY<" + format(t.element()) + ">";
+        case MAP -> "MAP<" + format(t.key()) + ", " + format(t.value()) + ">";
+        case STRUCT -> {
+          StringBuilder sb = new StringBuilder("STRUCT<");
+          for (int i = 0; i < t.fields().size(); i++) {
+            LogicalField f = t.fields().get(i);
+            if (i > 0) {
+              sb.append(", ");
+            }
+            sb.append(formatFieldName(f.name())).append(": ").append(format(f.type()));
+          }
+          yield sb.append('>').toString();
+        }
+        default -> throw new IllegalStateException("type tree on non-container kind: " + t.kind());
+      };
+    }
     return t.kind().name();
+  }
+
+  /**
+   * Formats only the container tag for complex types ({@code "ARRAY"}, {@code "MAP"}, {@code
+   * "STRUCT"}, {@code "VARIANT"}), regardless of any nested type tree; scalar types format exactly
+   * as {@link #format(LogicalType)}. This is the legacy flat spelling used where non-parameterised
+   * consumers still read the type string.
+   */
+  public static String formatTag(LogicalType t) {
+    Objects.requireNonNull(t, "LogicalType");
+    return t.isComplex() ? t.kind().name() : format(t);
+  }
+
+  private static String formatFieldName(String name) {
+    if (BARE_FIELD_NAME_RE.matcher(name).matches()) {
+      return name;
+    }
+    return '"' + name.replace("\"", "\"\"") + '"';
   }
 
   public static LogicalType parse(String s) {
     Objects.requireNonNull(s, "logical type string");
+    String trimmed = s.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException("Unrecognized logical type: \"\" ");
+    }
+    if (NESTED_START_RE.matcher(trimmed).find()) {
+      Cursor c = new Cursor(trimmed, s);
+      LogicalType t = parseTree(c, 0);
+      c.skipWhitespace();
+      if (!c.atEnd()) {
+        throw c.unrecognized("trailing characters after type");
+      }
+      return t;
+    }
+    return parseScalar(s);
+  }
+
+  /**
+   * Maximum container nesting depth accepted by {@link #parse}. Parsing recurses once per level;
+   * without a cap a malformed deeply nested input would overflow the stack instead of failing with
+   * the {@link IllegalArgumentException} callers handle.
+   */
+  public static final int MAX_NESTING_DEPTH = 64;
+
+  private static LogicalType parseScalar(String s) {
     String trimmed = s.trim();
     if (trimmed.isEmpty()) {
       throw new IllegalArgumentException("Unrecognized logical type: \"\" ");
@@ -249,6 +330,180 @@ public final class LogicalTypeFormat {
               + ")");
     }
     return precision;
+  }
+
+  // ---------------------------------------------------------------------
+  // Recursive descent parsing for the nested type grammar
+  // ---------------------------------------------------------------------
+
+  /** Mutable position over the original (case-preserved) input. */
+  private static final class Cursor {
+    final String src;
+    final String raw;
+    int pos;
+
+    Cursor(String src, String raw) {
+      this.src = src;
+      this.raw = raw;
+    }
+
+    void skipWhitespace() {
+      while (pos < src.length() && Character.isWhitespace(src.charAt(pos))) {
+        pos++;
+      }
+    }
+
+    boolean atEnd() {
+      return pos >= src.length();
+    }
+
+    char peek() {
+      if (atEnd()) {
+        throw unrecognized("unexpected end of type");
+      }
+      return src.charAt(pos);
+    }
+
+    void expect(char c) {
+      skipWhitespace();
+      if (atEnd() || src.charAt(pos) != c) {
+        throw unrecognized("expected '" + c + "' at position " + pos);
+      }
+      pos++;
+    }
+
+    IllegalArgumentException unrecognized(String detail) {
+      return new IllegalArgumentException(
+          "Unrecognized logical type: \"" + raw + "\" (" + detail + ")");
+    }
+  }
+
+  private static LogicalType parseTree(Cursor c, int depth) {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw c.unrecognized("nesting depth exceeds " + MAX_NESTING_DEPTH);
+    }
+    c.skipWhitespace();
+    int start = c.pos;
+
+    // Try to read an identifier and see if it opens a container argument list.
+    int identEnd = start;
+    while (identEnd < c.src.length() && Character.isLetter(c.src.charAt(identEnd))) {
+      identEnd++;
+    }
+    String ident = c.src.substring(start, identEnd).toUpperCase(Locale.ROOT);
+    int afterIdent = identEnd;
+    while (afterIdent < c.src.length() && Character.isWhitespace(c.src.charAt(afterIdent))) {
+      afterIdent++;
+    }
+    boolean opensArgs = afterIdent < c.src.length() && c.src.charAt(afterIdent) == '<';
+
+    if (opensArgs) {
+      switch (ident) {
+        case "ARRAY" -> {
+          c.pos = afterIdent + 1;
+          LogicalType element = parseTree(c, depth + 1);
+          c.expect('>');
+          return LogicalType.array(element, true);
+        }
+        case "MAP" -> {
+          c.pos = afterIdent + 1;
+          LogicalType key = parseTree(c, depth + 1);
+          c.expect(',');
+          LogicalType value = parseTree(c, depth + 1);
+          c.expect('>');
+          return LogicalType.map(key, value, true);
+        }
+        case "STRUCT" -> {
+          c.pos = afterIdent + 1;
+          java.util.List<LogicalField> fields = new java.util.ArrayList<>();
+          c.skipWhitespace();
+          // STRUCT<> is an explicitly known empty struct.
+          if (!c.atEnd() && c.peek() != '>') {
+            while (true) {
+              String name = parseFieldName(c);
+              c.expect(':');
+              LogicalType type = parseTree(c, depth + 1);
+              fields.add(new LogicalField(name, true, type));
+              c.skipWhitespace();
+              if (!c.atEnd() && c.peek() == ',') {
+                c.pos++;
+                continue;
+              }
+              break;
+            }
+          }
+          c.expect('>');
+          return LogicalType.struct(fields);
+        }
+        default -> throw c.unrecognized("unknown container type: " + ident);
+      }
+    }
+
+    // Scalar (or bare container tag): consume until a top-level ',' or '>', respecting parens.
+    int parenDepth = 0;
+    int end = c.pos;
+    while (end < c.src.length()) {
+      char ch = c.src.charAt(end);
+      if (ch == '(') {
+        parenDepth++;
+      } else if (ch == ')') {
+        parenDepth--;
+      } else if (parenDepth == 0 && (ch == ',' || ch == '>' || ch == '<')) {
+        break;
+      }
+      end++;
+    }
+    String segment = c.src.substring(c.pos, end).trim();
+    if (segment.isEmpty()) {
+      throw c.unrecognized("missing type at position " + c.pos);
+    }
+    c.pos = end;
+    return parseScalar(segment);
+  }
+
+  private static String parseFieldName(Cursor c) {
+    c.skipWhitespace();
+    if (c.atEnd()) {
+      throw c.unrecognized("missing struct field name");
+    }
+    if (c.peek() == '"') {
+      c.pos++;
+      StringBuilder sb = new StringBuilder();
+      while (true) {
+        if (c.atEnd()) {
+          throw c.unrecognized("unterminated quoted field name");
+        }
+        char ch = c.src.charAt(c.pos);
+        if (ch == '"') {
+          if (c.pos + 1 < c.src.length() && c.src.charAt(c.pos + 1) == '"') {
+            sb.append('"');
+            c.pos += 2;
+            continue;
+          }
+          c.pos++;
+          break;
+        }
+        sb.append(ch);
+        c.pos++;
+      }
+      if (sb.isEmpty()) {
+        throw c.unrecognized("empty struct field name");
+      }
+      return sb.toString();
+    }
+    int start = c.pos;
+    while (c.pos < c.src.length()) {
+      char ch = c.src.charAt(c.pos);
+      if (ch == ':' || ch == ',' || ch == '<' || ch == '>' || ch == '"') {
+        break;
+      }
+      c.pos++;
+    }
+    String name = c.src.substring(start, c.pos).trim();
+    if (name.isEmpty()) {
+      throw c.unrecognized("missing struct field name at position " + start);
+    }
+    return name;
   }
 
   private static String formatInterval(LogicalType t) {
