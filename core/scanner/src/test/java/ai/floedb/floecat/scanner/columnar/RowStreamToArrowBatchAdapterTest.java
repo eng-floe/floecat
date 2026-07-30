@@ -19,6 +19,7 @@ package ai.floedb.floecat.scanner.columnar;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
@@ -36,17 +37,17 @@ class RowStreamToArrowBatchAdapterTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("id")
-                .setLogicalType("INT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(false)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setNullable(true)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("tags")
-                .setLogicalType("VARCHAR[]")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY<STRING>"))
                 .setNullable(true)
                 .build());
 
@@ -77,6 +78,44 @@ class RowStreamToArrowBatchAdapterTest {
         VarCharVector tagsVector = (VarCharVector) root.getVector(2);
         assert new String(tagsVector.get(0), StandardCharsets.UTF_8).equals("[a, b]");
         assert tagsVector.isNull(1);
+      }
+    }
+  }
+
+  @Test
+  void stringifiesCanonicalArrayColumns() {
+    // Array-kinded columns (bare legacy tags or parameterised trees) must be stringified
+    // rather than falling through to ArrowSchemaUtil, which rejects complex kinds.
+    List<SchemaColumn> schema =
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("tags")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY"))
+                .setNullable(true)
+                .build(),
+            SchemaColumn.newBuilder()
+                .setName("counts")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY<INT>"))
+                .setNullable(true)
+                .build());
+
+    List<SystemObjectRow> rows =
+        List.of(new SystemObjectRow(new Object[] {new String[] {"a", "b"}, new int[] {1, 2, 3}}));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      RowStreamToArrowBatchAdapter adapter = new RowStreamToArrowBatchAdapter(allocator, schema, 2);
+      List<ColumnarBatch> batches = adapter.adapt(rows.stream()).toList();
+
+      assert batches.size() == 1;
+      try (ColumnarBatch batch = batches.get(0)) {
+        VectorSchemaRoot root = batch.root();
+        assert root.getRowCount() == 1;
+
+        VarCharVector tagsVector = (VarCharVector) root.getVector(0);
+        assert new String(tagsVector.get(0), StandardCharsets.UTF_8).equals("[a, b]");
+
+        VarCharVector countsVector = (VarCharVector) root.getVector(1);
+        assert new String(countsVector.get(0), StandardCharsets.UTF_8).equals("[1, 2, 3]");
       }
     }
   }

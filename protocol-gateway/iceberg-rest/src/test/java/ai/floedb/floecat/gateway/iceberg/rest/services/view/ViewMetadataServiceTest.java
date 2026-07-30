@@ -224,7 +224,8 @@ class ViewMetadataServiceTest {
     assertEquals(1, cols.size());
     assertEquals("col_a", cols.get(0).getName());
     assertFalse(cols.get(0).getNullable()); // required=true → nullable=false
-    assertEquals("INT", cols.get(0).getLogicalType());
+    assertEquals(
+        "INT", ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(cols.get(0)));
   }
 
   // ── icebergTypeValueToCanonical timestamp semantics ──────────────────────
@@ -252,6 +253,66 @@ class ViewMetadataServiceTest {
   void timestamptzNsMapsToTimestamptz() {
     // Iceberg "timestamptz_ns" = nanosecond, UTC-normalised → TIMESTAMPTZ
     assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz_ns"));
+  }
+
+  // ── icebergTypeValueToLogical nested types ────────────────────────────────
+
+  @Test
+  void listTypeValuePreservesElementType() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of("type", "list", "element", "string", "element-required", true));
+    assertEquals("ARRAY<STRING>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+    assertEquals(Boolean.FALSE, logical.elementNullable());
+  }
+
+  @Test
+  void structTypeValuePreservesFields() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of(
+                "type",
+                "struct",
+                "fields",
+                java.util.List.of(
+                    java.util.Map.of("name", "sku", "required", true, "type", "string"),
+                    java.util.Map.of(
+                        "name",
+                        "quantities",
+                        "type",
+                        java.util.Map.of("type", "list", "element", "int")))));
+    assertEquals(
+        "STRUCT<sku: STRING, quantities: ARRAY<INT>>",
+        ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+  }
+
+  @Test
+  void mapTypeValuePreservesKeyAndValueTypes() {
+    var logical =
+        ViewMetadataService.icebergTypeValueToLogical(
+            java.util.Map.of("type", "map", "key", "string", "value", "double"));
+    assertEquals("MAP<STRING, DOUBLE>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+  }
+
+  @Test
+  void deeplyNestedTypeValueIsRejectedAtWriteTime() {
+    // A ~70-deep nested list must fail validation here, not persist and then throw on decode.
+    Object type = "string";
+    for (int i = 0; i < 70; i++) {
+      type = java.util.Map.of("type", "list", "element", type);
+    }
+    Object deepest = type;
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () -> ViewMetadataService.icebergTypeValueToLogical(deepest));
+  }
+
+  @Test
+  void complexTypeValueStillFormatsFlatTag() {
+    assertEquals(
+        "ARRAY",
+        ViewMetadataService.icebergTypeValueToCanonical(
+            java.util.Map.of("type", "list", "element", "string")));
   }
 
   private ViewMetadataService.MetadataContext contextWithSingleVersion() {

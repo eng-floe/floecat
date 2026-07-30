@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +32,7 @@ class UserObjectBundleUtilsTest {
         SchemaColumn.newBuilder()
             .setId(42)
             .setName("ts")
-            .setLogicalType("TIMESTAMPTZ")
+            .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMPTZ"))
             .setNullable(true)
             .setOrdinal(1)
             .build();
@@ -70,5 +71,51 @@ class UserObjectBundleUtilsTest {
         .isEqualTo("links.element.flags");
     assertThat(UserObjectBundleUtils.toCatalystPath("props{}.value"))
         .isEqualTo("props.value.value");
+  }
+
+  private static SchemaColumn nested(String name, String path, String type) {
+    return SchemaColumn.newBuilder()
+        .setName(name)
+        .setPhysicalPath(path)
+        .setType(LogicalTypeProtoAdapter.parseToProto(type))
+        .setNullable(true)
+        .build();
+  }
+
+  @Test
+  void qualifiesTopLevelContainerPlaceholders() {
+    // Placeholder paths contain no dot, but their bare names ("element"/"value") collide across
+    // columns; they must be qualified like every other nested row.
+    assertThat(
+            UserObjectBundleUtils.withQualifiedNestedName(nested("element", "arr[]", "INT"))
+                .getName())
+        .isEqualTo("arr.element");
+    assertThat(
+            UserObjectBundleUtils.withQualifiedNestedName(nested("value", "m{}", "INT")).getName())
+        .isEqualTo("m.value");
+    // Top-level rows (path == name) stay untouched.
+    assertThat(
+            UserObjectBundleUtils.withQualifiedNestedName(nested("arr", "arr", "ARRAY<INT>"))
+                .getName())
+        .isEqualTo("arr");
+  }
+
+  @Test
+  void pruneSchemaAcceptsTwoArrayColumnsAfterQualification() {
+    // Two arrays used to produce two rows named "element", making pruneSchema throw
+    // CATALOG_BUNDLE_SCHEMA_DUPLICATE_COLUMN for any projection request.
+    var schema =
+        UserObjectBundleUtils.qualifyNestedColumnNames(
+            java.util.List.of(
+                nested("a", "a", "ARRAY<INT>"),
+                nested("element", "a[]", "INT"),
+                nested("b", "b", "ARRAY<INT>"),
+                nested("element", "b[]", "INT")));
+    var candidate =
+        ai.floedb.floecat.query.rpc.TableReferenceCandidate.newBuilder()
+            .addInitialColumns("a")
+            .build();
+    var pruned = UserObjectBundleUtils.pruneSchema(schema, candidate, "corr");
+    assertThat(pruned).extracting(SchemaColumn::getName).contains("a");
   }
 }

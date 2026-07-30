@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.*;
 
 /** Test builder for table- and namespace-based scanners (information_schema.*). */
@@ -116,6 +117,14 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
     return table;
   }
 
+  /** Adds a table whose schema is supplied verbatim (e.g. rows with nested physical paths). */
+  public UserTableNode addTableWithSchema(
+      NamespaceNode ns, String name, List<SchemaColumn> schema) {
+    UserTableNode table = addTable(ns, name, Map.of(), Map.of());
+    overlay.setTableSchema(table.id(), schema);
+    return table;
+  }
+
   private static List<SchemaColumn> buildSchema(
       Map<String, Integer> fieldIds, Map<String, String> types) {
 
@@ -134,7 +143,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
                   SchemaColumn.newBuilder().setName(simpleName(name)).setFieldId(fieldId);
 
               if (type != null) {
-                b.setLogicalType(type);
+                b.setType(LogicalTypeProtoAdapter.parseToProto(type));
               }
 
               // default nullability for tests

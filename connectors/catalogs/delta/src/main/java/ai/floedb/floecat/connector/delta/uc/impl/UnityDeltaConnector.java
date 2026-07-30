@@ -235,13 +235,23 @@ public final class UnityDeltaConnector extends DeltaConnector {
    * from each column's {@code metadata} block. UC exposes column comments on table entries but not
    * on VIEW entries (the {@code columns} array in a view response has no {@code comment} field).
    * Adding an empty or missing {@code comment} to view schema JSON would be noise.
+   *
+   * <p>Column types prefer UC's {@code type_json} (the JSON-serialized Delta StructField, which
+   * keeps nested array/map/struct structure intact). {@code type_text} is only a display string —
+   * for complex columns it reads {@code array<string>}, which no Delta schema parser accepts — so
+   * it is used only as a fallback for entries without a usable {@code type_json}.
    */
   private String buildSchemaJson(JsonNode meta) {
     var fields = M.createArrayNode();
     for (var c : meta.path("columns")) {
       var n = M.createObjectNode();
       n.put("name", c.path("name").asText());
-      n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
+      JsonNode type = typeFromTypeJson(c);
+      if (type != null) {
+        n.set("type", type);
+      } else {
+        n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
+      }
       n.put("nullable", c.path("nullable").asBoolean(true));
       fields.add(n);
     }
@@ -249,6 +259,25 @@ public final class UnityDeltaConnector extends DeltaConnector {
     schemaNode.put("type", "struct");
     schemaNode.set("fields", fields);
     return schemaNode.toString();
+  }
+
+  /**
+   * Extracts the Delta type node from a UC column's {@code type_json} (a JSON string holding the
+   * serialized StructField, e.g. {@code {"name":"c","type":{"type":"array",...},"nullable":true}}).
+   * Returns null when absent or unparseable so the caller can fall back to {@code type_text}.
+   */
+  private JsonNode typeFromTypeJson(JsonNode column) {
+    String typeJson = column.path("type_json").asText("");
+    if (typeJson.isEmpty()) {
+      return null;
+    }
+    try {
+      JsonNode structField = M.readTree(typeJson);
+      JsonNode type = structField.get("type");
+      return type == null || type.isNull() ? null : type;
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   /**

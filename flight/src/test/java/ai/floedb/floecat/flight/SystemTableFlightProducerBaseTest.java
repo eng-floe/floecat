@@ -36,6 +36,7 @@ import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.grpc.Context;
 import java.util.Collection;
 import java.util.HashMap;
@@ -76,7 +77,7 @@ class SystemTableFlightProducerBaseTest {
   private static final SchemaColumn COLUMN =
       SchemaColumn.newBuilder()
           .setName("dummy")
-          .setLogicalType("int")
+          .setType(LogicalTypeProtoAdapter.parseToProto("int"))
           .setFieldId(1)
           .setOrdinal(1)
           .setLeaf(true)

@@ -64,8 +64,10 @@ Databricks SQL execution, and custom file readers for S3.
   data files. `S3RangeReader` provides efficient range reads for Parquet file access.
 - **NDV sampling** – Controlled by `stats.ndv.enabled`, `stats.ndv.sample_fraction`, and
   `stats.ndv.max_files`. Samples combine streaming NDV with Parquet footers for accuracy.
-- **Type mapping** – `DeltaTypeMapper` ensures nested Delta/Parquet types are faithfully represented
-  when computing stats, aligning with `types/` definitions.
+- **Type mapping** – `DeltaTypeMapper` converts Delta Kernel types to canonical logical types,
+  recursing into array/map/struct so element/key/value/field types and `containsNull` /
+  `valueContainsNull` are preserved in the `LogicalType` tree (see `docs/types.md`,
+  "Complex types").
 - **Constraint mapping** – Snapshot constraints currently emit metadata that is reliably exposed by
   Delta snapshots/table metadata:
   - `CT_NOT_NULL` from non-nullable schema fields (including nested struct leaves).

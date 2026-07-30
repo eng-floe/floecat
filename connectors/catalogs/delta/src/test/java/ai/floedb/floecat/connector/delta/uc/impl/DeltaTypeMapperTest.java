@@ -190,6 +190,41 @@ class DeltaTypeMapperTest {
     assertThat(kind(VariantType.VARIANT)).isEqualTo(LogicalKind.VARIANT);
   }
 
+  @Test
+  void arrayPreservesElementTypeAndContainsNull() {
+    LogicalType t = DeltaTypeMapper.toLogical(new ArrayType(StringType.STRING, false));
+    assertThat(t.element().kind()).isEqualTo(LogicalKind.STRING);
+    assertThat(t.elementNullable()).isFalse();
+  }
+
+  @Test
+  void mapPreservesKeyValueTypesAndValueContainsNull() {
+    LogicalType t =
+        DeltaTypeMapper.toLogical(new MapType(StringType.STRING, DoubleType.DOUBLE, true));
+    assertThat(t.key().kind()).isEqualTo(LogicalKind.STRING);
+    assertThat(t.value().kind()).isEqualTo(LogicalKind.DOUBLE);
+    assertThat(t.valueNullable()).isTrue();
+  }
+
+  @Test
+  void structPreservesFieldNamesAndNullability() {
+    StructType struct =
+        new StructType().add("sku", StringType.STRING, false).add("qty", IntegerType.INTEGER, true);
+    LogicalType t = DeltaTypeMapper.toLogical(struct);
+    assertThat(t.fields()).hasSize(2);
+    assertThat(t.fields().get(0).name()).isEqualTo("sku");
+    assertThat(t.fields().get(0).nullable()).isFalse();
+    assertThat(t.fields().get(1).type().kind()).isEqualTo(LogicalKind.INT);
+  }
+
+  @Test
+  void nestedContainersCompose() {
+    LogicalType t =
+        DeltaTypeMapper.toLogical(new ArrayType(new ArrayType(IntegerType.INTEGER, false), true));
+    assertThat(t.element().element().kind()).isEqualTo(LogicalKind.INT);
+    assertThat(t.element().elementNullable()).isFalse();
+  }
+
   // ---------------------------------------------------------------------------
   // Null-bug regression: unknown types must fail fast
   // ---------------------------------------------------------------------------

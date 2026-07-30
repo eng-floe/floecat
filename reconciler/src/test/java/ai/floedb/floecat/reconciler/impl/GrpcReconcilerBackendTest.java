@@ -83,6 +83,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
@@ -984,7 +985,7 @@ class GrpcReconcilerBackendTest {
             .addOutputColumns(
                 ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
                     .setName("order_id")
-                    .setLogicalType("INT")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                     .setNullable(false)
                     .build())
             .build();

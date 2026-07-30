@@ -47,6 +47,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.FieldMask;
 import io.grpc.Channel;
 import io.grpc.stub.StreamObserver;
@@ -471,7 +472,7 @@ class UserObjectsServiceIT {
         SchemaColumn.newBuilder()
             .setName("order_id")
             .setNullable(false)
-            .setLogicalType("INT")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
             .build();
     var createdView =
         view.createView(
@@ -561,7 +562,7 @@ class UserObjectsServiceIT {
         SchemaColumn.newBuilder()
             .setName("order_id")
             .setNullable(false)
-            .setLogicalType("INT")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
             .build();
 
     // base_relations stores the bare table name only (no catalog, no schema).

@@ -51,6 +51,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
 import java.util.ArrayList;
@@ -683,7 +684,7 @@ final class QueryCliSupport {
         out.printf(
             "  - %-20s %-12s field_id=%d nullable=%s physical=%s partition=%s%n",
             col.getName(),
-            col.getLogicalType(),
+            col.hasType() ? LogicalTypeProtoAdapter.columnTypeString(col) : "?",
             col.getFieldId(),
             col.getNullable(),
             col.getPhysicalPath(),

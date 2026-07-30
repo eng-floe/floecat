@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -79,8 +80,8 @@ class ColumnsScannerTest {
 
     assertThat(rows)
         .containsExactly(
-            List.of("marketing", "finance.sales", "orders", "id", "long", 1),
-            List.of("marketing", "finance.sales", "orders", "sales", "double", 2));
+            List.of("marketing", "finance.sales", "orders", "id", "INT", 1),
+            List.of("marketing", "finance.sales", "orders", "sales", "DOUBLE", 2));
   }
 
   @Test
@@ -92,7 +93,7 @@ class ColumnsScannerTest {
     SystemObjectScanContext ctx = builder.build();
     var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
-    assertThat(rows).containsExactly(List.of("marketing", "org.sales", "orders", "id", "long", 1));
+    assertThat(rows).containsExactly(List.of("marketing", "org.sales", "orders", "id", "INT", 1));
   }
 
   @Test
@@ -135,7 +136,7 @@ class ColumnsScannerTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("id")
-                .setLogicalType("long")
+                .setType(LogicalTypeProtoAdapter.parseToProto("long"))
                 .setFieldId(1)
                 .setNullable(false)
                 .build()));
@@ -147,7 +148,7 @@ class ColumnsScannerTest {
     var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
     assertThat(rows)
-        .containsExactly(List.of("marketing", "finance.sales", "orders", "id", "long", 1));
+        .containsExactly(List.of("marketing", "finance.sales", "orders", "id", "INT", 1));
   }
 
   @Test
@@ -174,12 +175,12 @@ class ColumnsScannerTest {
     // Expect two rows, one for each column
     assertThat(rows).hasSize(2);
 
-    // Find row for "id" column and check data_type is "long"
+    // Find row for "id" column and check data_type is canonical "INT"
     assertThat(rows)
         .anySatisfy(
             row -> {
               assertThat(row.get(3)).isEqualTo("id");
-              assertThat(row.get(4)).isEqualTo("long");
+              assertThat(row.get(4)).isEqualTo("INT");
             });
 
     // Find row for "missing_col" column and check data_type is null or whatever current behavior is
@@ -293,5 +294,65 @@ class ColumnsScannerTest {
     public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
       throw new AssertionError("ref scan should not materialize namespaces");
     }
+  }
+
+  private static ai.floedb.floecat.query.rpc.SchemaColumn col(
+      String name, String path, String type, int fieldId, boolean leaf) {
+    return ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+        .setName(name)
+        .setPhysicalPath(path)
+        .setType(LogicalTypeProtoAdapter.parseToProto(type))
+        .setFieldId(fieldId)
+        .setNullable(true)
+        .setLeaf(leaf)
+        .build();
+  }
+
+  @Test
+  void scan_hidesSyntheticContainerNodesButKeepsStructChildren() {
+    // Schema as the nested traversal emits it for:
+    //   tags array<int>, m map<string,long>, s struct<a int>
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    builder.addTableWithSchema(
+        ns,
+        "orders",
+        java.util.List.of(
+            col("tags", "tags", "ARRAY<INT>", 1, false),
+            col("element", "tags[]", "INT", 2, true),
+            col("m", "m", "MAP<STRING, INT>", 3, false),
+            col("key", "m.key", "STRING", 4, true),
+            col("value", "m{}", "INT", 5, true),
+            col("s", "s", "STRUCT<a: INT>", 6, false),
+            col("a", "s.a", "INT", 7, true)));
+
+    var rows =
+        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
+
+    var names = rows.stream().map(r -> r.get(3)).toList();
+    // Synthetic element/key/value placeholders are stats plumbing, not user columns.
+    assertThat(names).containsExactly("tags", "m", "s", "a");
+  }
+
+  @Test
+  void scan_keepsRealColumnsNamedLikeSyntheticNodes() {
+    // A real struct field named "key" must not be confused with a map-key placeholder.
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace("finance.sales");
+    builder.addTableWithSchema(
+        ns,
+        "orders",
+        java.util.List.of(
+            col("s", "s", "STRUCT<key: INT>", 1, false),
+            col("key", "s.key", "INT", 2, true),
+            col("m", "m", "MAP<STRING, INT>", 3, false),
+            col("key", "m.key", "STRING", 4, true),
+            col("value", "m{}", "INT", 5, true)));
+
+    var rows =
+        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
+
+    var names = rows.stream().map(r -> r.get(3)).toList();
+    assertThat(names).containsExactly("s", "key", "m");
   }
 }

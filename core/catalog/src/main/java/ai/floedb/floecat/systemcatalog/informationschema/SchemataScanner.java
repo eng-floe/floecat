@@ -30,6 +30,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -54,13 +55,13 @@ public final class SchemataScanner implements SystemObjectScanner {
       List.of(
           SchemaColumn.newBuilder()
               .setName("catalog_name")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(0)
               .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("schema_name")
-              .setLogicalType("VARCHAR")
+              .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
               .setFieldId(1)
               .setNullable(false)
               .build());

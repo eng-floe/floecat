@@ -1523,15 +1523,22 @@ class QueuedReconcileWorkerSupport {
             toTableFormat(connector.format()),
             view.schemaJson(),
             Set.of());
+    return topLevelOutputColumns(schema);
+  }
+
+  /**
+   * Selects a view's output columns from its mapped schema: exactly the top-level columns, complex
+   * or not. {@code leaf} is a stats-eligibility flag and must not decide output membership —
+   * filtering on it dropped ARRAY/MAP/STRUCT outputs entirely and replaced STRUCT outputs with
+   * their flattened children. Nested child rows are recognizable by their physical path ({@code
+   * parent.child}, {@code parent[].x}, {@code parent{}.x}); top-level rows have {@code
+   * physical_path == name}. The typed column (name, type tree, nullability, field ID, ordinal,
+   * path, leaf) is preserved; only the internal path-derived id is cleared.
+   */
+  static List<SchemaColumn> topLevelOutputColumns(SchemaDescriptor schema) {
     return schema.getColumnsList().stream()
-        .filter(SchemaColumn::getLeaf)
-        .map(
-            c ->
-                SchemaColumn.newBuilder()
-                    .setName(c.getName())
-                    .setNullable(c.getNullable())
-                    .setLogicalType(c.getLogicalType())
-                    .build())
+        .filter(c -> c.getPhysicalPath().isEmpty() || c.getPhysicalPath().equals(c.getName()))
+        .map(c -> c.toBuilder().clearId().build())
         .toList();
   }
 
