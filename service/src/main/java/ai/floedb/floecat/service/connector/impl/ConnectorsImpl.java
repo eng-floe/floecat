@@ -628,8 +628,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   public Uni<DeleteConnectorResponse> deleteConnector(DeleteConnectorRequest request) {
     var L = LogHelper.start(LOG, "DeleteConnector");
 
+    // Retryable on a lost pointer CAS, and the body blocks on storage and on the secret store: see
+    // TableServiceImpl#deleteTable.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var pc = principalProvider.get();
                   var corr = pc.getCorrelationId();

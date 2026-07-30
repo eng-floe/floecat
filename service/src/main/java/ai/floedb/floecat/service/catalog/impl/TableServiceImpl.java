@@ -487,8 +487,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest request) {
     var L = LogHelper.start(LOG, "DeleteTable");
 
+    // A lost pointer CAS on a table that still exists is retryable now, and this body does blocking
+    // storage I/O — the pinned delete and the purge of the table's snapshots, stats and root.
+    // runWithRetryOnWorker keeps the delayed re-subscription off the event loop, where blocking
+    // work
+    // fails outright.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
@@ -577,7 +582,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
    * <p>Only rows whose relation has no canonical pointer left are released, so a live table sharing
    * the namespace is untouched. Retried once and only when something was actually released.
    *
-   * @return true when the retry committed the create
+   * @return how many rows were released
    */
   private int reclaimStrandedNames(TableSpec spec, String normName) {
     int reclaimed =

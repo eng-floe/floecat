@@ -466,8 +466,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<DeleteViewResponse> deleteView(DeleteViewRequest request) {
     var L = LogHelper.start(LOG, "DeleteView");
 
+    // Retryable on a lost pointer CAS, and the body blocks on storage: see deleteTable.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
