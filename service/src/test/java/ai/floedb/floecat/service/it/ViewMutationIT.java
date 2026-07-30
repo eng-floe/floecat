@@ -443,10 +443,7 @@ class ViewMutationIT {
     var ns =
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "nested_fp_ns", List.of("db_nested_fp"), "ns");
-    var element =
-        LogicalType.newBuilder()
-            .setKind(LogicalType.Kind.TK_INT)
-            .build();
+    var element = LogicalType.newBuilder().setKind(LogicalType.Kind.TK_INT).build();
 
     java.util.function.BiFunction<Boolean, String, CreateViewRequest> request =
         (elementRequired, key) ->
@@ -457,7 +454,9 @@ class ViewMutationIT {
                         .setNamespaceId(ns.getResourceId())
                         .setDisplayName("nested_fp_view")
                         .addSqlDefinitions(
-                            ViewSqlDefinition.newBuilder().setSql("SELECT c FROM t").setDialect("ansi"))
+                            ViewSqlDefinition.newBuilder()
+                                .setSql("SELECT c FROM t")
+                                .setDialect("ansi"))
                         .addOutputColumns(
                             SchemaColumn.newBuilder()
                                 .setName("c")
@@ -476,7 +475,8 @@ class ViewMutationIT {
 
     var ex =
         assertThrows(
-            StatusRuntimeException.class, () -> view.createView(request.apply(false, "nested-fp-k2")));
+            StatusRuntimeException.class,
+            () -> view.createView(request.apply(false, "nested-fp-k2")));
     assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
   }
 
@@ -563,7 +563,9 @@ class ViewMutationIT {
                         .setNamespaceId(ns.getResourceId())
                         .setDisplayName("legacy_fp_view")
                         .addSqlDefinitions(
-                            ViewSqlDefinition.newBuilder().setSql("SELECT c FROM t").setDialect("ansi"))
+                            ViewSqlDefinition.newBuilder()
+                                .setSql("SELECT c FROM t")
+                                .setDialect("ansi"))
                         .addOutputColumns(legacyColumn("c", type)))
                 .setIdempotency(key)
                 .build();
@@ -571,8 +573,7 @@ class ViewMutationIT {
     view.createView(request.apply("INT"));
 
     var ex =
-        assertThrows(
-            StatusRuntimeException.class, () -> view.createView(request.apply("STRING")));
+        assertThrows(StatusRuntimeException.class, () -> view.createView(request.apply("STRING")));
     assertEquals(Status.Code.ABORTED, ex.getStatus().getCode());
   }
 

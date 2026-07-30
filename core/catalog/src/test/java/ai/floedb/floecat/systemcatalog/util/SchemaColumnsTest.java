@@ -73,4 +73,38 @@ class SchemaColumnsTest {
         .extracting(SchemaColumn::getPhysicalPath)
         .containsExactly("s", "s.key");
   }
+
+  @Test
+  void keepsNestedFieldsWhoseNamesLookLikeContainerSyntax() {
+    // A struct field literally named "items[]" (path s.items[]) is not a list-element
+    // placeholder: there is no ARRAY-typed row at the would-be parent path "s.items".
+    var columns =
+        List.of(
+            col("s", "s", LogicalType.Kind.TK_STRUCT),
+            col("items[]", "s.items[]", LogicalType.Kind.TK_INT),
+            col("arr", "arr", LogicalType.Kind.TK_ARRAY),
+            col("element", "arr[]", LogicalType.Kind.TK_INT));
+
+    assertThat(SchemaColumns.withoutSyntheticNodes(columns))
+        .extracting(SchemaColumn::getName)
+        .containsExactly("s", "items[]", "arr");
+  }
+
+  @Test
+  void topLevelOnlyDropsAllNestedRowsIncludingStructChildren() {
+    // Relation payloads consume ordinal as attnum, and ordinals are per-parent: a struct child
+    // shares ordinal 1 with the first top-level column, so nested rows of any kind must not
+    // reach the engine payload.
+    var columns =
+        List.of(
+            col("s", "s", LogicalType.Kind.TK_STRUCT),
+            col("a", "s.a", LogicalType.Kind.TK_INT),
+            col("arr", "arr", LogicalType.Kind.TK_ARRAY),
+            col("element", "arr[]", LogicalType.Kind.TK_INT),
+            col("id", "id", LogicalType.Kind.TK_INT));
+
+    assertThat(SchemaColumns.topLevelOnly(columns))
+        .extracting(SchemaColumn::getName)
+        .containsExactly("s", "arr", "id");
+  }
 }

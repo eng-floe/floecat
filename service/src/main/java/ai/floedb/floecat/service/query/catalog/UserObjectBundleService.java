@@ -817,19 +817,19 @@ public class UserObjectBundleService {
     // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
     Origin origin = mapOrigin(relation.node().origin());
 
-    // Synthetic element/key/value placeholder rows exist for schema/stats path parity only;
-    // the engine receives nested typing via the planner-type tree, and forwarding placeholders
-    // would ship duplicate attnums (per-parent ordinals) and phantom pg_attribute columns.
-    // Struct-field rows are real named fields and stay, as they always have.
+    // Relation payloads carry TOP-LEVEL columns only: ordinals are 1-based within the parent,
+    // so any nested row — synthetic placeholder or struct child — shares its ordinal (and
+    // therefore its engine attnum) with some top-level column. Nested typing reaches the engine
+    // via the per-column type tree; the flattened node set remains available for stats and
+    // catalog traversal.
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
             ? view.outputColumns()
             : relation.node() instanceof UserTableNode userTable
-                ? UserObjectBundleUtils.qualifyNestedColumnNames(
-                    SchemaColumns.withoutSyntheticNodes(
-                        logicalSchemaForRelation(
-                                correlationId, relation.relationId(), userTable, queryContext)
-                            .getColumnsList()))
+                ? SchemaColumns.topLevelOnly(
+                    logicalSchemaForRelation(
+                            correlationId, relation.relationId(), userTable, queryContext)
+                        .getColumnsList())
                 : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =

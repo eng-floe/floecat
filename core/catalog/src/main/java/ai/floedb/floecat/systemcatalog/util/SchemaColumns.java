@@ -40,26 +40,51 @@ public final class SchemaColumns {
    * own name.
    */
   public static List<SchemaColumn> withoutSyntheticNodes(List<SchemaColumn> columns) {
+    Set<String> arrayPaths = new HashSet<>();
     Set<String> mapPaths = new HashSet<>();
     for (SchemaColumn column : columns) {
-      if (column.getType().getKind() == LogicalType.Kind.TK_MAP) {
+      if (column.getType().getKind() == LogicalType.Kind.TK_ARRAY) {
+        arrayPaths.add(column.getPhysicalPath());
+      } else if (column.getType().getKind() == LogicalType.Kind.TK_MAP) {
         mapPaths.add(column.getPhysicalPath());
       }
     }
-    return columns.stream().filter(column -> !isSyntheticContainerNode(column, mapPaths)).toList();
+    return columns.stream()
+        .filter(column -> !isSyntheticContainerNode(column, arrayPaths, mapPaths))
+        .toList();
   }
 
-  private static boolean isSyntheticContainerNode(SchemaColumn column, Set<String> mapPaths) {
+  private static boolean isSyntheticContainerNode(
+      SchemaColumn column, Set<String> arrayPaths, Set<String> mapPaths) {
     String path = column.getPhysicalPath();
     // Synthetic rows are always nested: a top-level row's path is its own name, so a user column
     // named "items[]" or "m{}" is a real column rather than a container placeholder.
     if (path.equals(column.getName())) {
       return false;
     }
-    if (path.endsWith("[]") || path.endsWith("{}")) {
-      return true;
+    // Nested rows classify by TYPED PARENT, not by suffix alone: a struct field whose source
+    // name literally ends in "[]"/"{}" (e.g. STRUCT<"items[]": INT>, path s.items[]) has no
+    // ARRAY/MAP-typed row at the would-be parent path and keeps its row.
+    if (path.endsWith("[]")) {
+      return arrayPaths.contains(path.substring(0, path.length() - 2));
+    }
+    if (path.endsWith("{}")) {
+      return mapPaths.contains(path.substring(0, path.length() - 2));
     }
     return path.endsWith(KEY_SUFFIX)
         && mapPaths.contains(path.substring(0, path.length() - KEY_SUFFIX.length()));
+  }
+
+  /**
+   * Keeps only top-level columns (rows whose physical path equals their name). Planner-facing
+   * relation payloads must use this, not {@link #withoutSyntheticNodes}: ordinals are 1-based
+   * within the parent, so any nested row — struct children included — shares its ordinal (and
+   * therefore its downstream attnum) with some top-level column. Nested typing reaches planners
+   * through the per-column type tree.
+   */
+  public static List<SchemaColumn> topLevelOnly(List<SchemaColumn> columns) {
+    return columns.stream()
+        .filter(c -> c.getPhysicalPath().isEmpty() || c.getPhysicalPath().equals(c.getName()))
+        .toList();
   }
 }
