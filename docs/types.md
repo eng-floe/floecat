@@ -120,6 +120,9 @@ values as `parent{}` (e.g. `address.city`, `items[].sku`, `tags{}.v`). Schema co
 the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
 set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.
 
+`ScalarStats.logical_type` remains a flat canonical string: stats rows exist only for leaves, and
+leaf types are never parameterised containers.
+
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
   stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`
@@ -132,7 +135,8 @@ set are identical by construction; the child rows drive per-leaf stats and field
   sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
   precision (0..6). All other kinds reject parameters.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
-  wire message and the JVM `LogicalType`, preserving kind/precision/scale/interval range metadata.
+  wire message and the JVM `LogicalType`, preserving scalar parameters, recursive shape, and nested
+  requiredness.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
   any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP` (timezone‑naive policy),
   string → `Instant` for `TIMESTAMPTZ`).
@@ -176,17 +180,18 @@ LogicalType t = LogicalType.decimal(38, 4);
 String logicalType = LogicalTypeFormat.format(t);
 String encoded = MinMaxCodec.encode(t, BigDecimal.valueOf(42));
 ```
-`LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)` and
-`.encodeLogicalType(LogicalType logicalType)` convert between canonical logical type strings and
-runtime objects.
+`LogicalTypeFormat.parse(String)` and `.format(LogicalType)` convert between canonical logical type
+strings and runtime objects. `LogicalTypeProtoAdapter` converts the runtime type to and from the
+typed protobuf payload.
 
 ## Arrow Mapping Contract
 
 `core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over Floecat logical types, not over
 arbitrary engine-native type systems.
 
-- Input is `SchemaColumn.logical_type` and should be a Floecat canonical logical type string (or an
-  accepted alias handled by `LogicalKind.fromName` semantics).
+- Input is `SchemaColumn.type`, a recursive `floecat.types.LogicalType` message; decode it with
+  `LogicalTypeProtoAdapter.columnType`. Textual entry points (generic schema declarations) still
+  accept canonical names and aliases via `LogicalKind.fromName` semantics.
 - Integer aliases (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `INT2/4/8`, `UINT2/4/8`) all map to
   Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
 - Unknown, null, or blank logical types fail fast with `IllegalArgumentException`; they are not
@@ -250,8 +255,8 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
 ## Data Flow & Lifecycle
 ```
 Connector reads Parquet/Delta/Iceberg schema
-  → schema mapper emits canonical LogicalKind strings (e.g. "INT", "TIMESTAMPTZ", "ARRAY")
-  → SchemaColumn.logical_type stores the canonical string
+  → schema mapper emits recursive LogicalType trees (e.g. INT, TIMESTAMPTZ, ARRAY<STRUCT<...>>)
+  → SchemaColumn.type stores the typed tree; nested nodes also surface as child rows by path
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
   → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
@@ -268,15 +273,16 @@ The module is pure Java; no configuration is required. Extending the type system
    canonical name.
 
 ## Examples & Scenarios
-- **Iceberg schema parsing** – `IcebergSchemaMapper.toCanonical(Type)` converts Iceberg types to
-  canonical strings (e.g. `TimestampType.withZone()` → `"TIMESTAMPTZ"`), storing them in
-  `SchemaColumn.logical_type`. This avoids the historic ambiguity where `"timestamp"` meant
-  UTC-stored in Delta but non-UTC in Iceberg. Iceberg `TimestampNanoType` is mapped with the same
-  timezone semantics (`withZone()` → `"TIMESTAMPTZ"`, `withoutZone()` → `"TIMESTAMP"`), and
-  Iceberg `VariantType` maps to canonical `"VARIANT"`.
-- **Delta schema parsing** – `DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)` applies Delta-
-  specific semantics: `"timestamp"` → `"TIMESTAMPTZ"` (UTC-stored), `"timestamp_ntz"` → `"TIMESTAMP"`
-  (timezone-naive).
+- **Iceberg schema parsing** – `IcebergTypeMappings.toLogical(Type)` converts Iceberg types to
+  `LogicalType`, recursing into LIST/MAP/STRUCT and preserving element/key/value types and
+  nullability; `IcebergSchemaMapper` stores the result in `SchemaColumn.type`. This avoids the
+  historic ambiguity where `"timestamp"` meant UTC-stored in Delta but non-UTC in Iceberg.
+  Iceberg `TimestampNanoType` uses the same timezone semantics (`withZone()` → `TIMESTAMPTZ`,
+  `withoutZone()` → `TIMESTAMP`), and Iceberg `VariantType` maps to `VARIANT`.
+- **Delta schema parsing** – `DeltaSchemaMapper.toLogicalType(DataType)` (kernel path) and
+  `fallbackLogicalType(JsonNode)` (JSON fallback) apply Delta-specific semantics: `"timestamp"` →
+  `TIMESTAMPTZ` (UTC-stored), `"timestamp_ntz"` → `TIMESTAMP` (timezone-naive). Both recurse into
+  arrays/maps/structs, preserving `containsNull` / `valueContainsNull`.
 - **Statistics ingestion** – NDV providers convert Parquet min/max values using `MinMaxCodec` before
   storing them in `ScalarStats`, ensuring planners can compare them without deserialising actual
   binary payloads. Connector planners canonicalize connector-native numeric temporal bounds to

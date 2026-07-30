@@ -21,9 +21,14 @@ import java.util.Objects;
 
 /**
  * Nested structure of a complex {@link LogicalType}, mirroring the wire model's {@code oneof shape}
- * so the Java and proto representations cannot drift: which children a container carries is fixed
- * by its shape variant, nullability lives on the shape that owns it (primitive, no tri-state), and
- * adapters dispatch exhaustively instead of probing field presence.
+ * so the two cannot drift structurally: which children a container carries is fixed by its shape
+ * variant, nullability lives on the shape that owns it (primitive, no tri-state), and adapters
+ * dispatch exhaustively instead of probing field presence.
+ *
+ * <p>Polarity is deliberately <em>not</em> mirrored: this model says {@code nullable}, while the
+ * wire says {@code required}, so an unset proto3 bool defaults to nullable — the direction that
+ * can only cost performance, never correctness. The negation lives in {@link
+ * LogicalTypeProtoAdapter} and nowhere else.
  *
  * <p>{@code Array} for {@link LogicalKind#ARRAY}, {@code Map} for {@link LogicalKind#MAP}, {@code
  * Struct} for {@link LogicalKind#STRUCT}. A complex {@link LogicalType} without a shape is the
