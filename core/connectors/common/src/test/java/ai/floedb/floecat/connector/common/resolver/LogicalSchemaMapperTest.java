@@ -245,14 +245,15 @@ class LogicalSchemaMapperTest {
     assertEquals("lat", lat.getName());
     assertEquals("location.lat", lat.getPhysicalPath());
     assertEquals(0, lat.getFieldId());
-    assertEquals(3, lat.getOrdinal());
+    // Ordinals are 1-based within the parent (matching Iceberg semantics).
+    assertEquals(1, lat.getOrdinal());
     assertTrue(lat.getLeaf());
 
     SchemaColumn lon = desc.getColumns(3);
     assertEquals("lon", lon.getName());
     assertEquals("location.lon", lon.getPhysicalPath());
     assertEquals(0, lon.getFieldId());
-    assertEquals(4, lon.getOrdinal());
+    assertEquals(2, lon.getOrdinal());
     assertTrue(lon.getLeaf());
 
     assertNotEquals(lat.getId(), lon.getId());
@@ -420,8 +421,9 @@ class LogicalSchemaMapperTest {
 
     assertEquals(1, ordinals.get("id"));
     assertEquals(2, ordinals.get("location"));
-    assertEquals(3, ordinals.get("location.lat"));
-    assertEquals(4, ordinals.get("location.lon"));
+    // Nested ordinals are 1-based within the parent (matching Iceberg semantics).
+    assertEquals(1, ordinals.get("location.lat"));
+    assertEquals(2, ordinals.get("location.lon"));
   }
 
   @Test

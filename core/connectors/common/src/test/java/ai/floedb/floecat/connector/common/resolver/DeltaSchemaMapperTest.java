@@ -413,7 +413,7 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
-  void nestedOrdinalsAdvanceAcrossFlattenedSchema() {
+  void nestedOrdinalsArePerParent() {
     String json =
         """
         {"fields":[
@@ -431,8 +431,10 @@ class DeltaSchemaMapperTest {
 
     SchemaDescriptor desc = DeltaSchemaMapper.map(CID, json, Set.of());
 
+    // Ordinals are 1-based within the parent, matching the Iceberg traversal: top-level
+    // columns count 1..n independently of how many nested rows precede them.
     assertThat(desc.getColumnsList().stream().map(SchemaColumn::getOrdinal))
-        .containsExactly(1, 2, 3, 4, 5);
+        .containsExactly(1, 2, 1, 2, 3);
     assertThat(desc.getColumnsList().stream().map(SchemaColumn::getPhysicalPath))
         .containsExactly("id", "location", "location.lat", "location.lon", "name");
   }
@@ -500,7 +502,11 @@ class DeltaSchemaMapperTest {
             .findFirst()
             .orElseThrow();
 
-    assertThat(spanSchemaUrl.getOrdinal()).isEqualTo(desc.getColumnsCount());
+    // Ordinals are per-parent: the last top-level column's ordinal equals the number of
+    // top-level columns (rows whose path equals their name), not the total row count.
+    long topLevel =
+        desc.getColumnsList().stream().filter(c -> c.getPhysicalPath().equals(c.getName())).count();
+    assertThat(spanSchemaUrl.getOrdinal()).isEqualTo((int) topLevel);
   }
 
   @Test

@@ -51,7 +51,6 @@ import io.delta.kernel.types.VariantType;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * DeltaSchemaMapper: Converts Delta Lake schema JSON to logical SchemaDescriptor.
@@ -74,7 +73,7 @@ final class DeltaSchemaMapper {
       try {
         StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
         SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
-        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys, new AtomicInteger(0));
+        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys);
         return sb.build();
       } catch (Exception kernelFailure) {
         // The kernel walk can throw mid-traversal (e.g. malformed field metadata), after having
@@ -86,7 +85,7 @@ final class DeltaSchemaMapper {
           throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
         }
         SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
-        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys, new AtomicInteger(0));
+        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys);
         return sb.build();
       }
     } catch (Exception e) {
@@ -99,16 +98,16 @@ final class DeltaSchemaMapper {
       SchemaDescriptor.Builder sb,
       StructType structType,
       String prefix,
-      Set<String> partitionKeys,
-      AtomicInteger ordinals) {
+      Set<String> partitionKeys) {
     if (structType == null) {
       return;
     }
 
+    int ordinal = 0;
     for (StructField field : structType.fields()) {
       String name = field.getName();
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
-      walkDeltaField(cid_algo, sb, field, physical, partitionKeys, ordinals);
+      walkDeltaField(cid_algo, sb, field, physical, partitionKeys, ++ordinal);
     }
   }
 
@@ -125,7 +124,7 @@ final class DeltaSchemaMapper {
       StructField field,
       String physical,
       Set<String> partitionKeys,
-      AtomicInteger ordinals) {
+      int ordinal) {
     DataType dataType = field.getDataType();
     // Match by canonical path only: for top-level rows the path equals the name, and a bare-name
     // match would wrongly flag synthetic nested rows (a partition column literally named "key"
@@ -143,20 +142,17 @@ final class DeltaSchemaMapper {
                 .setNullable(field.isNullable())
                 .setPhysicalPath(physical)
                 .setPartitionKey(isPartition)
-                .setOrdinal(ordinals.incrementAndGet())
+                .setOrdinal(ordinal)
                 .setLeaf(!isContainerType(dataType))
                 .build()));
 
     if (dataType instanceof StructType nestedStruct) {
-      walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys, ordinals);
+      walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys);
     } else if (dataType instanceof ArrayType arrayType) {
-      walkDeltaField(
-          cid_algo, sb, arrayType.getElementField(), physical + "[]", partitionKeys, ordinals);
+      walkDeltaField(cid_algo, sb, arrayType.getElementField(), physical + "[]", partitionKeys, 1);
     } else if (dataType instanceof MapType mapType) {
-      walkDeltaField(
-          cid_algo, sb, mapType.getKeyField(), physical + ".key", partitionKeys, ordinals);
-      walkDeltaField(
-          cid_algo, sb, mapType.getValueField(), physical + "{}", partitionKeys, ordinals);
+      walkDeltaField(cid_algo, sb, mapType.getKeyField(), physical + ".key", partitionKeys, 1);
+      walkDeltaField(cid_algo, sb, mapType.getValueField(), physical + "{}", partitionKeys, 2);
     }
   }
 
@@ -232,8 +228,7 @@ final class DeltaSchemaMapper {
       SchemaDescriptor.Builder sb,
       JsonNode node,
       String prefix,
-      Set<String> partitionKeys,
-      AtomicInteger ordinals) {
+      Set<String> partitionKeys) {
     if (node == null || !node.has("fields")) {
       return;
     }
@@ -252,7 +247,7 @@ final class DeltaSchemaMapper {
           fallbackFieldId(field),
           physical,
           partitionKeys,
-          ordinals);
+          i + 1);
     }
   }
 
@@ -266,7 +261,7 @@ final class DeltaSchemaMapper {
       int fieldId,
       String physical,
       Set<String> partitionKeys,
-      AtomicInteger ordinals) {
+      int ordinal) {
     // See walkDeltaField: canonical-path match only, so synthetic element/key/value rows are
     // never flagged by a bare partition-column name.
     boolean isPartition = partitionKeys.contains(physical);
@@ -282,7 +277,7 @@ final class DeltaSchemaMapper {
                 .setNullable(nullable)
                 .setPhysicalPath(physical)
                 .setPartitionKey(isPartition)
-                .setOrdinal(ordinals.incrementAndGet())
+                .setOrdinal(ordinal)
                 .setLeaf(!fallbackContainerType(typeNode))
                 .build()));
 
@@ -291,8 +286,7 @@ final class DeltaSchemaMapper {
     }
     String tag = typeNode.path("type").asText("");
     switch (tag) {
-      case "struct" ->
-          walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys, ordinals);
+      case "struct" -> walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys);
       case "array" ->
           walkFallbackField(
               cid_algo,
@@ -303,7 +297,7 @@ final class DeltaSchemaMapper {
               0,
               physical + "[]",
               partitionKeys,
-              ordinals);
+              1);
       case "map" -> {
         walkFallbackField(
             cid_algo,
@@ -314,7 +308,7 @@ final class DeltaSchemaMapper {
             0,
             physical + ".key",
             partitionKeys,
-            ordinals);
+            1);
         walkFallbackField(
             cid_algo,
             sb,
@@ -324,7 +318,7 @@ final class DeltaSchemaMapper {
             0,
             physical + "{}",
             partitionKeys,
-            ordinals);
+            2);
       }
       default -> {}
     }
