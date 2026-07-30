@@ -36,7 +36,8 @@ public final class SchemaColumns {
    * row — a real struct field named {@code key} keeps its row). These placeholders exist so schema
    * paths and stats paths cover the same node set; user-facing catalog surfaces (e.g. {@code
    * information_schema.columns}) must not present them as columns. Struct-field rows ({@code
-   * parent.child}) are real named fields and are kept.
+   * parent.child}) are real named fields and are kept, as is any top-level row whose path is its
+   * own name.
    */
   public static List<SchemaColumn> withoutSyntheticNodes(List<SchemaColumn> columns) {
     Set<String> mapPaths = new HashSet<>();
@@ -50,6 +51,11 @@ public final class SchemaColumns {
 
   private static boolean isSyntheticContainerNode(SchemaColumn column, Set<String> mapPaths) {
     String path = column.getPhysicalPath();
+    // Synthetic rows are always nested: a top-level row's path is its own name, so a user column
+    // named "items[]" or "m{}" is a real column rather than a container placeholder.
+    if (path.equals(column.getName())) {
+      return false;
+    }
     if (path.endsWith("[]") || path.endsWith("{}")) {
       return true;
     }
