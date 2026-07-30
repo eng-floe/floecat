@@ -24,6 +24,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 /**
@@ -37,7 +38,9 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class MetadataIoRunner {
   private static final Logger LOG = Logger.getLogger(MetadataIoRunner.class);
+  static final String MAX_CONCURRENCY_PROPERTY = "floecat.query.metadata_io.max_concurrency";
   private static final int DEFAULT_CAPACITY = 64;
+  private static final int MAX_CAPACITY = 256;
   private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final long CANCELLATION_POLL_MILLIS = 10;
 
@@ -59,6 +62,26 @@ public class MetadataIoRunner {
   /** Create an isolated runner with a caller-selected capacity, primarily for focused tests. */
   public MetadataIoRunner(int capacity) {
     this(new RuntimeState(capacity));
+  }
+
+  /** Clamp deployment input before it can determine semaphore, worker, and queue sizes. */
+  static int clampConfiguredCapacity(int configured) {
+    return Math.max(1, Math.min(MAX_CAPACITY, configured));
+  }
+
+  /** Read the process-wide capacity once when the shared runtime is first requested. */
+  private static int configuredCapacity() {
+    int configured =
+        ConfigProvider.getConfig()
+            .getOptionalValue(MAX_CONCURRENCY_PROPERTY, Integer.class)
+            .orElse(DEFAULT_CAPACITY);
+    int clamped = clampConfiguredCapacity(configured);
+    if (configured != clamped) {
+      LOG.warnf(
+          "%s must be between 1 and %d; using %d instead of %d",
+          MAX_CONCURRENCY_PROPERTY, MAX_CAPACITY, clamped, configured);
+    }
+    return clamped;
   }
 
   private MetadataIoRunner(RuntimeState runtime) {
@@ -154,7 +177,7 @@ public class MetadataIoRunner {
 
   /** Holder indirection avoids eagerly starting the process runtime when this class is unused. */
   private static final class SharedRuntime {
-    private static final RuntimeState RUNTIME = new RuntimeState(DEFAULT_CAPACITY);
+    private static final RuntimeState RUNTIME = new RuntimeState(configuredCapacity());
   }
 
   /** Stable facade used by direct-construction compatibility paths. */

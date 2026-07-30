@@ -33,6 +33,13 @@ class MetadataIoRunnerTest {
       new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
 
   @Test
+  void configuredProcessCapacityIsClampedToSafeBounds() {
+    assertEquals(1, MetadataIoRunner.clampConfiguredCapacity(Integer.MIN_VALUE));
+    assertEquals(64, MetadataIoRunner.clampConfiguredCapacity(64));
+    assertEquals(256, MetadataIoRunner.clampConfiguredCapacity(Integer.MAX_VALUE));
+  }
+
+  @Test
   void defaultConstructionSharesBoundedProcessRuntimeOutsideCdi() {
     MetadataIoRunner direct = new MetadataIoRunner();
     MetadataIoRunner shared = MetadataIoRunner.shared();

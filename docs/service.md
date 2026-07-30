@@ -203,7 +203,8 @@ Notable `application.properties` keys:
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `floecat.query.resolver.max_parallel_inputs` | Per-request query-input pin-resolution fan-out. Defaults to `8`; values are clamped to `1`–`16`. All requests also share the service-wide metadata I/O admission bound. |
+| `floecat.query.resolver.max_parallel_inputs` | Per-request query-input pin-resolution fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
+| `floecat.query.metadata_io.max_concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Defaults to `64`; values are clamped to `1`–`256`. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
