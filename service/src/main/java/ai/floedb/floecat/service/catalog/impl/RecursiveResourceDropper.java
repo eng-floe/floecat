@@ -707,8 +707,13 @@ public class RecursiveResourceDropper {
     // deleted, so cleanup must not bump its marker (false) and look like a concurrent child
     // mutation.
     cleanupDeletedTable(tableId, null, false);
-    summary.tablesDeleted++;
-    summary.snapshotPrefixesDeleted++;
+    // Purged unconditionally above, but counted only when this call removed the table. A retried
+    // account delete re-runs cleanup over tables an earlier pass already took, and counting those
+    // again inflates the audit record of an irreversible operation.
+    if (committed) {
+      summary.tablesDeleted++;
+      summary.snapshotPrefixesDeleted++;
+    }
     CLEANUP_LOG.infof(
         "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s committed=%s",
         namespaceId.getAccountId(),
@@ -776,7 +781,10 @@ public class RecursiveResourceDropper {
     reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
     topology.evict(viewId);
     metadataGraph.invalidate(viewId);
-    summary.viewsDeleted++;
+    // Counted only when this call removed it — see dropTable.
+    if (committed) {
+      summary.viewsDeleted++;
+    }
     CLEANUP_LOG.infof(
         "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s committed=%s",
         namespaceId.getAccountId(),

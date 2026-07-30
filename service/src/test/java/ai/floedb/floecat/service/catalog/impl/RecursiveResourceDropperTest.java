@@ -641,11 +641,13 @@ class RecursiveResourceDropperTest {
     when(tableRepo.delete(eq(TABLE_ID))).thenReturn(false);
 
     // Account teardown: no retryable abort, and owned state is purged unconditionally so a table
-    // that lost the CAS is not left orphaned along with its root-resync marker and stats.
+    // that lost the CAS is not left orphaned along with its root-resync marker and stats. The
+    // counters, unlike the purge, only move for a table this call removed — a retried DeleteAccount
+    // re-runs cleanup over tables an earlier pass already took.
     var summary = dropper.dropNamespaceContents(root, false);
 
-    assertEquals(1, summary.tablesDeleted);
-    assertEquals(1, summary.snapshotPrefixesDeleted);
+    assertEquals(0, summary.tablesDeleted);
+    assertEquals(0, summary.snapshotPrefixesDeleted);
     verify(tableRoots).purgeRoot(eq(TABLE_ID));
     verify(statsRepo).deleteAllStatsForTable(eq(TABLE_ID));
   }
