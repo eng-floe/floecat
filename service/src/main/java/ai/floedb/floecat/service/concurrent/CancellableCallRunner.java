@@ -129,6 +129,36 @@ public final class CancellableCallRunner {
       String cancellationMessage,
       String interruptionMessage,
       String timeoutMessage) {
+    return callUncancellable(
+        executor,
+        permits,
+        operation,
+        timeout,
+        timeoutUnit,
+        cancellationMessage,
+        interruptionMessage,
+        timeoutMessage,
+        TimeoutListener.NOOP);
+  }
+
+  /**
+   * Variant of {@link #callUncancellable(Executor, Semaphore, Supplier, long, TimeUnit, String,
+   * String, String)} that reports calls which outlive their caller's timeout.
+   *
+   * <p>The listener is notified once when the caller times out and once when the underlying
+   * callable finally exits (or is discarded before it starts). It lets an owner expose retained
+   * admission as an operational gauge without ever releasing capacity while I/O is still live.
+   */
+  public static <T> T callUncancellable(
+      Executor executor,
+      Semaphore permits,
+      Supplier<T> operation,
+      long timeout,
+      TimeUnit timeoutUnit,
+      String cancellationMessage,
+      String interruptionMessage,
+      String timeoutMessage,
+      TimeoutListener timeoutListener) {
     long timeoutNanos = timeoutUnit.toNanos(timeout);
     long startedNanos = System.nanoTime();
     try {
@@ -142,7 +172,7 @@ public final class CancellableCallRunner {
 
     PropagatedContext context = PropagatedContext.capture();
     CompletableFuture<T> result = new CompletableFuture<>();
-    CallLifecycle lifecycle = new CallLifecycle();
+    CallLifecycle lifecycle = new CallLifecycle(timeoutListener);
     PermitLease permitLease = new PermitLease(permits);
     SubmittedCall submitted =
         new SubmittedCall(
@@ -153,6 +183,7 @@ public final class CancellableCallRunner {
               } catch (Throwable failure) {
                 result.completeExceptionally(failure);
               } finally {
+                lifecycle.operationFinished();
                 permitLease.release();
               }
             },
@@ -170,6 +201,7 @@ public final class CancellableCallRunner {
     try {
       long remainingNanos = timeoutNanos - (System.nanoTime() - startedNanos);
       if (remainingNanos <= 0) {
+        lifecycle.timedOut();
         lifecycle.cancel();
         throw new CallTimeoutException(timeoutMessage);
       }
@@ -181,6 +213,7 @@ public final class CancellableCallRunner {
     } catch (TimeoutException e) {
       // The callable may ignore interruption. Keep its permit until it really returns so timed-out
       // callers cannot cause unbounded live store I/O; this only releases a caller thread.
+      lifecycle.timedOut();
       lifecycle.cancel();
       throw new CallTimeoutException(timeoutMessage, e);
     } catch (ExecutionException e) {
@@ -198,6 +231,24 @@ public final class CancellableCallRunner {
     CallTimeoutException(String message, Throwable cause) {
       super(message, cause);
     }
+  }
+
+  /** Receives lifecycle notifications for a call which outlives its caller timeout. */
+  public interface TimeoutListener {
+    TimeoutListener NOOP =
+        new TimeoutListener() {
+          @Override
+          public void timedOut() {}
+
+          @Override
+          public void finished() {}
+        };
+
+    /** The caller timed out while the callable may still own an admission permit. */
+    void timedOut();
+
+    /** A callable previously reported as timed out has finally exited or been discarded. */
+    void finished();
   }
 
   /**
@@ -244,7 +295,39 @@ public final class CancellableCallRunner {
   private static final class CallLifecycle {
     private final AtomicBoolean operationStarted = new AtomicBoolean();
     private final AtomicBoolean cancellationRequested = new AtomicBoolean();
+    private final AtomicBoolean timedOut = new AtomicBoolean();
+    private final AtomicBoolean operationFinished = new AtomicBoolean();
+    private final AtomicBoolean finishedAfterTimeout = new AtomicBoolean();
+    private final TimeoutListener timeoutListener;
     private volatile FutureTask<?> task;
+
+    CallLifecycle() {
+      this(TimeoutListener.NOOP);
+    }
+
+    CallLifecycle(TimeoutListener timeoutListener) {
+      this.timeoutListener = timeoutListener;
+    }
+
+    void timedOut() {
+      if (timedOut.compareAndSet(false, true)) {
+        timeoutListener.timedOut();
+        reportFinishedAfterTimeout();
+      }
+    }
+
+    void operationFinished() {
+      operationFinished.set(true);
+      reportFinishedAfterTimeout();
+    }
+
+    private void reportFinishedAfterTimeout() {
+      if (timedOut.get()
+          && operationFinished.get()
+          && finishedAfterTimeout.compareAndSet(false, true)) {
+        timeoutListener.finished();
+      }
+    }
 
     void cancel() {
       cancellationRequested.set(true);
@@ -294,6 +377,7 @@ public final class CancellableCallRunner {
     protected void done() {
       if (isCancelled() && !lifecycle.operationStarted.get()) {
         result.completeExceptionally(new CancellationException(cancellationMessage));
+        lifecycle.operationFinished();
         permitLease.release();
       }
     }

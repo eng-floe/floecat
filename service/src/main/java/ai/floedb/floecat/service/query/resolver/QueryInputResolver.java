@@ -38,7 +38,9 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
+import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import jakarta.annotation.PostConstruct;
@@ -134,6 +136,10 @@ public class QueryInputResolver {
   // request-local BoundedFanout limit avoids one request monopolizing this capacity; this limiter
   // prevents many requests from multiplying store pressure.
   private final Semaphore concurrentInputResolutionPermits;
+  // Calls which timed out at the caller but still own metadata I/O admission because the
+  // downstream client has not returned. This must remain visible to operators before it exhausts
+  // the global permit pool.
+  private final AtomicInteger timedOutMetadataCalls = new AtomicInteger();
 
   private final CatalogOverlay metadataGraph;
 
@@ -156,6 +162,8 @@ public class QueryInputResolver {
   // unbounded cancelled request closures.
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
+
+  @Inject Observability observability;
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -218,6 +226,12 @@ public class QueryInputResolver {
     ownedMetadataIoExecutor = ioExecutor;
     blockingExecutor = planningExecutor;
     metadataIoExecutor = ioExecutor;
+    if (observability != null) {
+      observability.gauge(
+          ServiceMetrics.Query.METADATA_CALLS_STUCK,
+          timedOutMetadataCalls::get,
+          "Metadata calls still holding resolver admission after their caller timed out");
+    }
   }
 
   @PreDestroy
@@ -696,7 +710,22 @@ public class QueryInputResolver {
             TimeUnit.SECONDS,
             "resolver metadata I/O executor shut down",
             "interrupted while awaiting resolver I/O",
-            "resolver metadata I/O timed out");
+            "resolver metadata I/O timed out",
+            new CancellableCallRunner.TimeoutListener() {
+              @Override
+              public void timedOut() {
+                int stuck = timedOutMetadataCalls.incrementAndGet();
+                LOG.warnf(
+                    "resolver metadata call timed out while still active; %d call(s) retain"
+                        + " metadata admission",
+                    stuck);
+              }
+
+              @Override
+              public void finished() {
+                timedOutMetadataCalls.decrementAndGet();
+              }
+            });
       } catch (CancellableCallRunner.CallTimeoutException e) {
         throw GrpcErrors.timeout(correlationId, null, Map.of(), e);
       }

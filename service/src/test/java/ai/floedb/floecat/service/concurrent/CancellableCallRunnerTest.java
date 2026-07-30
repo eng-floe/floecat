@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class CancellableCallRunnerTest {
@@ -68,6 +69,61 @@ class CancellableCallRunnerTest {
       executor.shutdownNow();
       assertTrue(executor.awaitTermination(1, TimeUnit.SECONDS));
       assertEquals(1, permits.availablePermits());
+    }
+  }
+
+  @Test
+  void uncancellableTimeoutReportsRetainedAdmissionUntilTheCallActuallyExits() throws Exception {
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    var permits = new Semaphore(1);
+    var started = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var stuckCalls = new AtomicInteger();
+    try {
+      assertThrows(
+          CancellableCallRunner.CallTimeoutException.class,
+          () ->
+              CancellableCallRunner.callUncancellable(
+                  executor,
+                  permits,
+                  () -> {
+                    started.countDown();
+                    while (true) {
+                      try {
+                        release.await();
+                        return "done";
+                      } catch (InterruptedException ignored) {
+                        // Simulate a store call whose HTTP client ignores interruption.
+                      }
+                    }
+                  },
+                  25,
+                  TimeUnit.MILLISECONDS,
+                  "cancelled",
+                  "interrupted",
+                  "timed out",
+                  new CancellableCallRunner.TimeoutListener() {
+                    @Override
+                    public void timedOut() {
+                      stuckCalls.incrementAndGet();
+                    }
+
+                    @Override
+                    public void finished() {
+                      stuckCalls.decrementAndGet();
+                    }
+                  }));
+
+      assertTrue(started.await(1, TimeUnit.SECONDS));
+      assertEquals(1, stuckCalls.get());
+      release.countDown();
+      for (int attempt = 0; attempt < 100 && stuckCalls.get() != 0; attempt++) {
+        Thread.sleep(10);
+      }
+      assertEquals(0, stuckCalls.get());
+    } finally {
+      release.countDown();
+      executor.shutdownNow();
     }
   }
 
