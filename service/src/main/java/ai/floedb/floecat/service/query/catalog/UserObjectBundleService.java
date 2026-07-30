@@ -1077,9 +1077,9 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    // The engine captured at iterator construction, not a live provider re-read: this runs on
-    // executor threads where the request context is unreliable, and a silently empty engine would
-    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
+    // Use the engine captured at iterator construction. Overlay reads may cross executor boundaries
+    // before decoration resumes here, so re-reading ambient request context is fragile and a
+    // silently empty engine would skip engine-specific decoration (eng-floe/floecat#361).
     EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
@@ -2097,9 +2097,11 @@ public class UserObjectBundleService {
     /**
      * Assemble one relation on the producer thread. Only overlay-owned repository reads cross the
      * metadata runner; stats, validation, and decorator callbacks retain their caller-thread
-     * contract. The local timing accumulator is merged only after a successful build.
+     * contract. Cancellation is checked between those synchronous callbacks; each collaborator owns
+     * any deadline needed for its active call. The local timing accumulator is merged only after a
+     * successful build.
      */
-    private BuiltRelation buildRelationCancellably(
+    private BuiltRelation buildRelationWithCancellationChecks(
         PendingFound found,
         QueryContext liveContext,
         Optional<RelationPinIdentity> scopedIdentity) {
@@ -2330,7 +2332,7 @@ public class UserObjectBundleService {
         Optional<RelationPinIdentity> scopedIdentity =
             scopedPinIdentity(
                 correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
-        BuiltRelation built = buildRelationCancellably(found, liveCtx, scopedIdentity);
+        BuiltRelation built = buildRelationWithCancellationChecks(found, liveCtx, scopedIdentity);
         TimingAccumulator buildTimings = built.timings();
         timings.addFrom(buildTimings);
         long statsNanos = buildTimings.statsLookupNanos();
