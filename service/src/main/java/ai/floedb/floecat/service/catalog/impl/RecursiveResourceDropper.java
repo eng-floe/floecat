@@ -569,6 +569,9 @@ public class RecursiveResourceDropper {
    * this row together, and aborting would turn that benign race into a retry. Nothing downstream
    * trusts the reclaim either — the emptiness gate re-counts these rows and is the authority on
    * whether the namespace may go.
+   *
+   * <p>A row that names no relation at all is handled by {@link #reclaimUnresolvableName}, which
+   * cannot assert an absent owner because there is no owner to name.
    */
   private boolean reclaimIfOrphaned(
       Pointer namePointer, Namespace namespace, ResourceKind kind, BatchGuard subtreePin) {
@@ -576,9 +579,7 @@ public class RecursiveResourceDropper {
     String accountId = namespaceId.getAccountId();
     String ownerId = ownerIdOf(namePointer);
     if (ownerId.isEmpty()) {
-      // Neither the pointer's ref nor its blob URI names an owner, so orphanhood cannot be proven.
-      // Leave it: the emptiness gate reports a non-empty namespace, which is the honest answer.
-      return false;
+      return reclaimUnresolvableName(namePointer, namespace, kind, subtreePin);
     }
     String canonicalKey =
         kind == ResourceKind.RK_TABLE
@@ -622,6 +623,71 @@ public class RecursiveResourceDropper {
     return true;
   }
 
+  /**
+   * Releases a by-name row that names no relation at all — neither a ref nor a parseable blob URI.
+   *
+   * <p>Such a row cannot be acted on: every removal resolves its relation through the owner this
+   * row does not carry, so no delete, recursive or otherwise, can ever take it away. The emptiness
+   * gate counts it all the same, which made it permanently fatal to a recursive delete: the drop
+   * skipped the row, the gate then reported the namespace non-empty, and under {@code --recursive}
+   * that is a retryable abort — so every attempt destroyed the rest of the subtree, exhausted its
+   * retries, and reported partial teardown, with no path left to finish the job.
+   *
+   * <p>Releasing it destroys nothing reachable. A lookup by name needs the owner reference to
+   * return a relation, so a row without one cannot be the index of anything live; it is unusable
+   * state whose only effect is to wedge the namespace. The delete is still pinned to the exact
+   * version read, so a writer republishing this key right now wins instead.
+   *
+   * <p>The shared relation-name claim goes too, but only when it is provably stranded on its own
+   * terms — its owner is absent, or missing entirely. A claim naming a live relation is left alone:
+   * it belongs to that relation, not to this row.
+   */
+  private boolean reclaimUnresolvableName(
+      Pointer namePointer, Namespace namespace, ResourceKind kind, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+
+    var ops = new ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasDelete(namePointer.getKey(), namePointer.getVersion()));
+
+    String displayName =
+        namePointer.getDisplayName().isEmpty()
+            ? Keys.extractLastSegment(namePointer.getKey())
+            : namePointer.getDisplayName();
+    String claimKey =
+        Keys.relationPointerByName(
+            accountId, namespace.getCatalogId().getId(), namespaceId.getId(), displayName);
+    pointerStore
+        .get(claimKey)
+        .filter(claim -> claimIsStranded(accountId, claim))
+        .ifPresent(claim -> ops.add(new PointerStore.CasDelete(claimKey, claim.getVersion())));
+
+    ops.addAll(subtreePin.ops());
+
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_unresolvable_name_contended account_id=%s namespace_id=%s"
+              + " pointer_key=%s",
+          accountId, namespaceId.getId(), namePointer.getKey());
+      return false;
+    }
+    CLEANUP_LOG.warnf(
+        "recursive_drop_reclaimed_unresolvable_name account_id=%s namespace_id=%s kind=%s"
+            + " pointer_key=%s",
+        accountId, namespaceId.getId(), kind.name(), namePointer.getKey());
+    return true;
+  }
+
+  /** Whether a relation-name claim names nothing, or names a relation whose pointer is gone. */
+  private boolean claimIsStranded(String accountId, Pointer claim) {
+    String ownerId = claim.getResourceId().getId();
+    if (ownerId.isEmpty()) {
+      return true;
+    }
+    return pointerStore.get(Keys.tablePointerById(accountId, ownerId)).isEmpty()
+        && pointerStore.get(Keys.viewPointerById(accountId, ownerId)).isEmpty();
+  }
+
   /** The relation a by-name pointer names: its ref if present, else parsed from its blob URI. */
   private static String ownerIdOf(Pointer namePointer) {
     String fromRef = namePointer.getResourceId().getId();
@@ -640,12 +706,13 @@ public class RecursiveResourceDropper {
     var catalogId = namespace.getCatalogId();
     var resolved = relationIdOf(namePointer, namespaceId.getAccountId(), ResourceKind.RK_TABLE);
     if (resolved.isEmpty()) {
-      // Neither the row's ref nor its blob URI names a table, so there is nothing to resolve and
-      // nothing safe to delete. The emptiness gate will report the namespace non-empty, which is
-      // the honest answer for a row nobody can act on.
+      // Neither the row's ref nor its blob URI names a table, so there is no table to delete — but
+      // the row itself must still go, or the emptiness gate counts a relation nothing can ever
+      // remove and the namespace becomes undeletable for good.
       CLEANUP_LOG.warnf(
           "recursive_drop_table_unresolvable account_id=%s namespace_id=%s pointer_key=%s",
           namespaceId.getAccountId(), namespaceId.getId(), namePointer.getKey());
+      reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
       return;
     }
     var tableId = resolved.get();
@@ -733,9 +800,11 @@ public class RecursiveResourceDropper {
     var catalogId = namespace.getCatalogId();
     var resolved = relationIdOf(namePointer, namespaceId.getAccountId(), ResourceKind.RK_VIEW);
     if (resolved.isEmpty()) {
+      // Same as dropTable: no view to delete, but the row still has to go or it wedges the gate.
       CLEANUP_LOG.warnf(
           "recursive_drop_view_unresolvable account_id=%s namespace_id=%s pointer_key=%s",
           namespaceId.getAccountId(), namespaceId.getId(), namePointer.getKey());
+      reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
       return;
     }
     var viewId = resolved.get();

@@ -204,6 +204,40 @@ class RecursiveResourceDropperTest {
     verify(statsRepo, never()).deleteAllStatsForTable(any());
   }
 
+  /**
+   * A by-name row that names no relation — no ref, no parseable blob URI — is unusable index state:
+   * every removal resolves its relation through the owner this row does not carry, so nothing can
+   * ever delete it, while the emptiness gate counts it like any other relation. Skipping it made a
+   * recursive delete permanently fatal — destroy the rest of the subtree, report the namespace
+   * non-empty, retry, repeat — so the row is released instead, pinned to the version read.
+   */
+  @Test
+  void guardedDropReleasesAByNameRowThatNamesNoRelation() {
+    String unresolvableKey = Keys.tablePointerByName("acct", "cat", "ns", "ghost");
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
+        .thenReturn(
+            List.of(
+                Pointer.newBuilder()
+                    .setKey(unresolvableKey)
+                    .setVersion(9L)
+                    .setDisplayName("ghost")
+                    .build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    // No table was deleted, because there was none to resolve...
+    assertEquals(0, summary.tablesDeleted);
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    // ...but the row the gate would have counted forever is gone, at the version observed.
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    assertEquals(
+        List.<PointerStore.CasOp>of(new PointerStore.CasDelete(unresolvableKey, 9L)),
+        batch.getValue());
+  }
+
   @Test
   void guardedDropSkipsATableAlreadyRemovedConcurrently() {
     // A concurrent DeleteTable won and already ran this same cleanup: nothing to delete or purge.
