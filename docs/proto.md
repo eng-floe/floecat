@@ -126,7 +126,9 @@ engine release.
   `FileGroupResultPayload.realized_stats_selectors` and `.realized_index_selectors` record the
   concrete selector aliases materialized by each group. The finalizer aggregates them into the
   corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later
-  requests expressed through an equivalent name, field ID, or narrower default selection.
+  requests expressed through an equivalent name, field ID, or narrower default selection. Every
+  explicitly requested selector must be reported verbatim; equivalent aliases are additional
+  coverage and are not inferred from selector counts.
   Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
   but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
   `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat

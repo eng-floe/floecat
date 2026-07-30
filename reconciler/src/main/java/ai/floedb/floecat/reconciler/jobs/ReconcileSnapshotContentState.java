@@ -92,9 +92,8 @@ public final class ReconcileSnapshotContentState {
       int sourceFileCount) {
     validateMaterializedStatsCoverage(requestedCoverage, realizedStatsSelectors, sourceFileCount);
     LinkedHashSet<String> materialized = new LinkedHashSet<>();
-    if (requestedCoverage != null) {
-      materialized.addAll(requestedCoverage);
-    }
+    List<String> realizedStats = normalizedSelectors(realizedStatsSelectors);
+    List<String> realizedIndexes = normalizedSelectors(realizedIndexSelectors);
     for (String encoded : requestedCoverage == null ? List.<String>of() : requestedCoverage) {
       CoverageAtom atom = parseAtom(encoded);
       if (atom == null) {
@@ -102,10 +101,15 @@ public final class ReconcileSnapshotContentState {
       }
       List<String> realized =
           switch (atom.output()) {
-            case COLUMN_STATS -> normalizedSelectors(realizedStatsSelectors);
-            case PARQUET_PAGE_INDEX -> normalizedSelectors(realizedIndexSelectors);
+            case COLUMN_STATS -> realizedStats;
+            case PARQUET_PAGE_INDEX -> realizedIndexes;
             default -> List.of();
           };
+      if (sourceFileCount <= 0
+          || !isColumnOutput(atom.output())
+          || requestedColumnCoverageIsProven(atom, realized)) {
+        materialized.add(encoded);
+      }
       for (String selector : realized) {
         materialized.add(atom(atom.output(), atom.target(), selector, atom.semantics()));
       }
@@ -114,6 +118,23 @@ public final class ReconcileSnapshotContentState {
         .filter(value -> value != null && !value.isBlank())
         .sorted()
         .toList();
+  }
+
+  private static boolean isColumnOutput(ReconcileCapturePolicy.Output output) {
+    return output == ReconcileCapturePolicy.Output.COLUMN_STATS
+        || output == ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
+  }
+
+  private static boolean requestedColumnCoverageIsProven(
+      CoverageAtom requested, List<String> realizedSelectors) {
+    if (parseDefaultSelection(requested.selector()) != null) {
+      return !realizedSelectors.isEmpty();
+    }
+    String requestedSelector = requested.selector();
+    if (requestedSelector.isBlank() && isColumnTarget(requested.target())) {
+      requestedSelector = requested.target().trim().substring(7).trim();
+    }
+    return !requestedSelector.isBlank() && realizedSelectors.contains(requestedSelector);
   }
 
   /** Rejects successful non-empty captures that do not prove their requested column coverage. */

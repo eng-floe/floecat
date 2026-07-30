@@ -435,7 +435,7 @@ class ReconcileSnapshotContentStateTest {
   }
 
   @Test
-  void explicitFieldIdMayBeProvenByRealizedNameAlias() {
+  void explicitFieldIdIsNotProvenByAnUnmappedNameAlias() {
     List<String> requested =
         ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(policy("#2")));
 
@@ -443,13 +443,45 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.materializedCoverage(
             requested, List.of("customer_name"), List.of(), 1);
 
-    assertThat(materialized).containsAll(requested);
+    assertThat(materialized).doesNotContainAnyElementsOf(requested);
     assertThat(
             ReconcileSnapshotContentState.missingCoverage(
                 ReconcileSnapshotContentState.coverage(
                     CaptureMode.CAPTURE_ONLY, scope(policy("customer_name"))),
                 materialized))
         .isEmpty();
+    assertThat(ReconcileSnapshotContentState.missingCoverage(requested, materialized)).isNotEmpty();
+  }
+
+  @Test
+  void equalStatsSelectorCountsDoNotProveDifferentRequestedSelectors() {
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(
+            CaptureMode.CAPTURE_ONLY, scope(policy("customer_id", "region")));
+
+    List<String> materialized =
+        ReconcileSnapshotContentState.materializedCoverage(
+            requested, List.of("customer_id", "unrequested"), List.of(), 1);
+
+    assertThat(ReconcileSnapshotContentState.missingCoverage(requested, materialized)).hasSize(1);
+  }
+
+  @Test
+  void partialRealizedIndexSelectorsLeaveUnprovenCoverageMissing() {
+    ReconcileCapturePolicy indexes =
+        ReconcileCapturePolicy.of(
+            List.of(
+                new ReconcileCapturePolicy.Column("customer_id", false, true),
+                new ReconcileCapturePolicy.Column("region", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(indexes));
+
+    List<String> materialized =
+        ReconcileSnapshotContentState.materializedCoverage(
+            requested, List.of(), List.of("customer_id"), 1);
+
+    assertThat(ReconcileSnapshotContentState.missingCoverage(requested, materialized)).hasSize(1);
   }
 
   @Test

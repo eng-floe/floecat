@@ -345,9 +345,8 @@ The worker is responsible for ensuring:
   its column name, so content-state deduplication can recognize later requests using either form
 - `realized_index_selectors` is the sorted, distinct selector set represented by the file group's
   index wrappers; omit it only when page-index output was not requested
-- explicit selectors need not appear verbatim when the persisted artifacts use an equivalent
-  alias; an explicit field-ID request may therefore report its resolved name alias, but page-index
-  capture for a non-empty group must still report at least one realized selector
+- every explicitly requested selector must appear verbatim in the corresponding realized-selector
+  list; report equivalent aliases in addition so later requests can reuse the same artifacts
 - default index selection resolves to a non-empty selector set for non-empty snapshots, uses the
   same set for every file in the group, and does not exceed `max_default_columns` for `FIRST_N`
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
@@ -424,8 +423,8 @@ available, the control plane counts those IDs rather than double-counting their 
 
 For page-index capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_index_selectors` with the sorted, distinct selectors represented
-by the activated index generation. Explicitly requested selectors need not be repeated verbatim
-when the persisted artifacts use a different or unknown alias. For default selection on a
+by the activated index generation. Every explicitly requested selector must be repeated verbatim;
+known equivalent aliases may be included in addition. For default selection on a
 non-empty snapshot, the realized set must be non-empty, every file group must report the same set,
 and the realized column count must not exceed `max_default_columns` for `FIRST_N`. A Delta column
 present in the snapshot schema but absent from an older Parquet file is represented by synthetic

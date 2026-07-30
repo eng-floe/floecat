@@ -105,7 +105,7 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void applyAuthAwsSigV4AllowsExplicitDefaultCredentialChainOptIn() throws Exception {
+  void applyAuthAwsSigV4RejectsMissingCatalogCredentials() throws Exception {
     Method method =
         IcebergConnectorFactory.class.getDeclaredMethod(
             "applyCatalogAuth", Map.class, String.class, Map.class);
@@ -113,9 +113,11 @@ class IcebergConnectorFactoryTest {
     Map<String, String> props = new HashMap<>();
     props.put("s3.region", "us-east-2");
 
-    method.invoke(null, props, "aws-sigv4", null);
-
-    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
+    InvocationTargetException ex =
+        assertThrows(
+            InvocationTargetException.class, () -> method.invoke(null, props, "aws-sigv4", null));
+    assertEquals(IllegalArgumentException.class, ex.getCause().getClass());
+    assertTrue(ex.getCause().getMessage().contains("CATALOG_OPTION_PROVIDER_ID"));
   }
 
   @Test
@@ -259,7 +261,7 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void leaseScopedStorageProviderDoesNotPreventExplicitCatalogDefaultChainOptIn() {
+  void leaseScopedStorageProviderIsNotPromotedToCatalogProvider() {
     Map<String, String> baseProps =
         IcebergConnectorFactory.buildBaseIcebergProperties(
             Map.of(
@@ -282,9 +284,13 @@ class IcebergConnectorFactoryTest {
         IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
 
     IcebergConnectorFactory.applyStorageProperties(props, storageProps);
-    IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of());
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of()));
 
-    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
+    assertTrue(error.getMessage().contains("CATALOG_OPTION_PROVIDER_ID"));
+    assertFalse(props.containsKey("rest.auth.type"));
     assertEquals(
         RegistryBackedAwsCredentialsProvider.class.getName(),
         props.get("client.credentials-provider"));
