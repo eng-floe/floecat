@@ -389,6 +389,53 @@ class ViewMutationIT {
   }
 
   @Test
+  void createViewConflictDetectsOutputColumnDifference() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_fp", "vcat-fp");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "fp_ns", List.of("db_fp"), "ns");
+
+    java.util.function.Function<String, ViewSpec> specWithColumnType =
+        type ->
+            ViewSpec.newBuilder()
+                .setCatalogId(cat.getResourceId())
+                .setNamespaceId(ns.getResourceId())
+                .setDisplayName("fp_view")
+                .addSqlDefinitions(
+                    ViewSqlDefinition.newBuilder().setSql("SELECT c FROM t").setDialect("ansi"))
+                .addOutputColumns(
+                    SchemaColumn.newBuilder()
+                        .setName("c")
+                        .setType(LogicalTypeProtoAdapter.parseToProto(type))
+                        .setNullable(true))
+                .build();
+
+    // Keyed creates take the fingerprint-compare path on name conflict — the same route the
+    // reconciler's ensureView uses (a fresh key per pass).
+    java.util.function.BiFunction<String, String, CreateViewRequest> request =
+        (type, key) ->
+            CreateViewRequest.newBuilder()
+                .setSpec(specWithColumnType.apply(type))
+                .setIdempotency(IdempotencyKey.newBuilder().setKey(key))
+                .build();
+
+    var created = view.createView(request.apply("INT", "fp-k1")).getView();
+
+    // Identical spec (including columns), new key: fingerprint match -> idempotent success.
+    var replay = view.createView(request.apply("INT", "fp-k2")).getView();
+    assertEquals(created.getResourceId(), replay.getResourceId());
+
+    // Same name but different output columns: the columns are part of the view's identity, so
+    // this must surface as a conflict — not silently return the existing (differently-typed)
+    // view. This is what lets the reconciler reach its update path and heal legacy views.
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () -> view.createView(request.apply("STRING", "fp-k3")));
+    assertEquals(io.grpc.Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
+  }
+
+  @Test
   void createViewRejectsUntypedOutputColumn() throws Exception {
     var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_untyped", "vcat-untyped");
     var ns =

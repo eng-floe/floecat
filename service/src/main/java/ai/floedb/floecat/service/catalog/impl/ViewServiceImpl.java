@@ -616,6 +616,23 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .list(
             "sql_definitions",
             definitions.stream().map(def -> def.getDialect() + ":" + def.getSql()).toList())
+        // Output columns are part of the view's identity: without them an idempotent create
+        // against an existing view with different (e.g. legacy untyped) columns is reported as
+        // an exact match and silently keeps the old columns.
+        .list(
+            "output_columns",
+            s.getOutputColumnsList().stream()
+                .map(
+                    c ->
+                        c.getName()
+                            + ":"
+                            + (c.hasType()
+                                ? ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(
+                                    c)
+                                : "")
+                            + ":"
+                            + c.getNullable())
+                .toList())
         .map("properties", s.getPropertiesMap())
         .bytes();
   }
