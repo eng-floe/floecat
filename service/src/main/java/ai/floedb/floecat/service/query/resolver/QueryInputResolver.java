@@ -130,6 +130,7 @@ public class QueryInputResolver {
   // per-request bound only. ConfigProvider keeps construction dependent on graph/store
   // collaborators while production still reads the deployment setting once per resolver.
   private final int maxParallelInputResolutions;
+  private final int maxConcurrentInputResolutions;
 
   // Bounds metadata I/O across every request handled by this application-scoped resolver. The
   // request-local BoundedFanout limit avoids one request monopolizing this capacity; this limiter
@@ -157,11 +158,6 @@ public class QueryInputResolver {
   private volatile ExecutorService metadataIoExecutor = ForkJoinPool.commonPool();
   private ExecutorService ownedMetadataIoExecutor;
 
-  // All overloads retain virtual dispatch through the completed-pin Map extension seam. This
-  // per-thread scope carries the single-flight cache and cancellation signal through that seam
-  // without exposing their synchronization details in its signature.
-  private final ThreadLocal<ResolutionInvocation> resolutionInvocation = new ThreadLocal<>();
-
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
     this(
@@ -179,6 +175,7 @@ public class QueryInputResolver {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
+    this.maxConcurrentInputResolutions = maxConcurrentInputResolutions;
     this.concurrentInputResolutionPermits =
         new Semaphore(maxConcurrentInputResolutions, true /* best-effort request fairness */);
   }
@@ -209,10 +206,8 @@ public class QueryInputResolver {
    */
   @PostConstruct
   void postConstruct() {
-    if (MAX_CONCURRENT_INPUT_RESOLUTIONS > METADATA_IO_POOL_SIZE) {
-      throw new IllegalStateException(
-          "resolver metadata admission must not exceed metadata I/O worker capacity");
-    }
+    validateMetadataIoSizing(
+        maxConcurrentInputResolutions, METADATA_IO_POOL_SIZE, METADATA_IO_QUEUE_CAPACITY);
     ExecutorService planningExecutor = Executors.newVirtualThreadPerTaskExecutor();
     ExecutorService ioExecutor =
         MetadataIoExecutors.newBoundedDaemonPool(
@@ -221,6 +216,39 @@ public class QueryInputResolver {
     ownedMetadataIoExecutor = ioExecutor;
     blockingExecutor = planningExecutor;
     metadataIoExecutor = ioExecutor;
+  }
+
+  /** Validate that every admitted call can be accepted during worker turnover. */
+  static void validateMetadataIoSizing(int admission, int workers, int queueCapacity) {
+    if (admission < 1 || workers < admission || queueCapacity < admission) {
+      throw new IllegalStateException(
+          "metadata I/O workers and queue must each cover the admission bound"
+              + " (admission="
+              + admission
+              + ", workers="
+              + workers
+              + ", queue="
+              + queueCapacity
+              + ")");
+    }
+  }
+
+  /**
+   * Run metadata I/O on this resolver's application-wide executor and admission bound.
+   *
+   * <p>GetUserObjects uses this same runner for candidate and relation work, so all metadata-store
+   * calls share one ceiling instead of multiplying independent per-service limits.
+   */
+  public <T> T runMetadataIo(
+      BooleanSupplier cancelled,
+      Supplier<T> operation,
+      CancellableCallRunner.FailureMessages failureMessages) {
+    return CancellableCallRunner.call(
+        metadataIoExecutor,
+        concurrentInputResolutionPermits,
+        cancelled,
+        operation,
+        failureMessages);
   }
 
   /**
@@ -509,94 +537,15 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ResolutionInvocation current = resolutionInvocation.get();
-    if (current != null) {
-      return resolveInputsViaLegacyOverride(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          currentSnapshotPinCache,
-          diagnostics);
-    }
-    return withResolutionInvocation(
-        new ResolutionInvocation(currentSnapshotPinCache, NEVER_CANCELLED),
-        () ->
-            resolveInputsViaLegacyOverride(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics));
-  }
-
-  /**
-   * Compatibility overload for callers that own a completed-pin {@link Map} cache.
-   *
-   * <p>The supplied cache is not required to be concurrent. Copy it into a concurrent single-flight
-   * cache for this call, then copy successfully resolved pins back on the calling thread. Worker
-   * tasks therefore never mutate a caller-owned plain map. If copy-back fails, restore the map's
-   * original contents before releasing the attempt's transient roots. When restoration cannot be
-   * proven, retain those roots until the store grace period so any copied prefix remains protected.
-   */
-  public ResolutionResult resolveInputs(
-      String queryId,
-      String correlationId,
-      List<QueryInput> inputs,
-      Optional<Timestamp> asOfDefault,
-      Optional<ResourceId> defaultCatalogId,
-      Map<ResourceId, TablePin> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
-    ResolutionInvocation current = resolutionInvocation.get();
-    if (current != null) {
-      return resolveInputsCore(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          current.currentSnapshotPinCache(),
-          diagnostics,
-          current.cancelled());
-    }
-    Map<ResourceId, TablePin> initialCache = snapshotCompletedPinCache(currentSnapshotPinCache);
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
-        toSingleFlightCache(initialCache);
-    ResolutionResult result =
-        resolveInputsCore(
-            queryId,
-            correlationId,
-            inputs,
-            asOfDefault,
-            defaultCatalogId,
-            singleFlightCache,
-            diagnostics,
-            NEVER_CANCELLED);
-    try {
-      copyCompletedPins(singleFlightCache, currentSnapshotPinCache);
-    } catch (RuntimeException | Error copyFailure) {
-      if (restoreCompletedPinCache(currentSnapshotPinCache, initialCache, copyFailure)) {
-        try {
-          if (queryStore != null && queryId != null && !queryId.isEmpty()) {
-            queryStore.releaseResolvingPinBlobs(
-                queryId, QueryPins.gcRootUris(result.relationPinSet()));
-          }
-        } catch (RuntimeException | Error cleanupFailure) {
-          copyFailure.addSuppressed(cleanupFailure);
-        }
-      } else {
-        // A map with non-transactional or rejecting mutations may retain a copied prefix. Keep the
-        // attempt's roots until the store grace period rather than exposing that prefix unrooted.
-        LOG.warnf(
-            "Retaining resolving pin roots after legacy cache rollback failed query_id=%s",
-            queryId);
-      }
-      throw copyFailure;
-    }
-    return result;
+    return resolveInputsCore(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        currentSnapshotPinCache,
+        diagnostics,
+        NEVER_CANCELLED);
   }
 
   /**
@@ -616,20 +565,18 @@ public class QueryInputResolver {
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
     throwIfCancelled(cancelled);
-    return withResolutionInvocation(
-        new ResolutionInvocation(currentSnapshotPinCache, cancelled),
-        () ->
-            resolveInputs(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics));
+    return resolveInputsCore(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        currentSnapshotPinCache,
+        diagnostics,
+        cancelled);
   }
 
-  /** Run the base resolution implementation after compatibility overload dispatch has completed. */
+  /** Run the shared resolution implementation for cancellable and non-cancellable callers. */
   private ResolutionResult resolveInputsCore(
       String queryId,
       String correlationId,
@@ -721,116 +668,6 @@ public class QueryInputResolver {
       throw e;
     }
   }
-
-  /** Dispatch through the completed-pin extension seam and copy any subclass cache writes. */
-  private ResolutionResult resolveInputsViaLegacyOverride(
-      String queryId,
-      String correlationId,
-      List<QueryInput> inputs,
-      Optional<Timestamp> asOfDefault,
-      Optional<ResourceId> defaultCatalogId,
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
-    Map<ResourceId, TablePin> completedPinCache = completedPins(currentSnapshotPinCache);
-    ResolutionResult result =
-        resolveInputs(
-            queryId,
-            correlationId,
-            inputs,
-            asOfDefault,
-            defaultCatalogId,
-            completedPinCache,
-            diagnostics);
-    completedPinCache.forEach(
-        (tableId, pin) ->
-            currentSnapshotPinCache.putIfAbsent(tableId, CompletableFuture.completedFuture(pin)));
-    return result;
-  }
-
-  /**
-   * Install one cancellable invocation while preserving nested resolver calls on the same thread.
-   */
-  private <T> T withResolutionInvocation(ResolutionInvocation invocation, Supplier<T> operation) {
-    ResolutionInvocation previous = resolutionInvocation.get();
-    resolutionInvocation.set(invocation);
-    try {
-      return operation.get();
-    } finally {
-      if (previous == null) {
-        resolutionInvocation.remove();
-      } else {
-        resolutionInvocation.set(previous);
-      }
-    }
-  }
-
-  /** Snapshot a completed-pin cache without exposing it to resolution workers. */
-  private static Map<ResourceId, TablePin> snapshotCompletedPinCache(
-      Map<ResourceId, TablePin> completedPinCache) {
-    synchronized (completedPinCache) {
-      return new LinkedHashMap<>(completedPinCache);
-    }
-  }
-
-  /** Convert a completed-pin snapshot into the resolver's single-flight representation. */
-  private static ConcurrentMap<ResourceId, CompletableFuture<TablePin>> toSingleFlightCache(
-      Map<ResourceId, TablePin> completedPinCache) {
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
-        new ConcurrentHashMap<>();
-    completedPinCache.forEach(
-        (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
-    return singleFlightCache;
-  }
-
-  /** Restore the caller cache after a failed copy, recording rollback failures on the cause. */
-  private static boolean restoreCompletedPinCache(
-      Map<ResourceId, TablePin> completedPinCache,
-      Map<ResourceId, TablePin> initialCache,
-      Throwable copyFailure) {
-    synchronized (completedPinCache) {
-      if (completedPinCache.equals(initialCache)) {
-        return true;
-      }
-      try {
-        completedPinCache.clear();
-        completedPinCache.putAll(initialCache);
-      } catch (RuntimeException | Error rollbackFailure) {
-        copyFailure.addSuppressed(rollbackFailure);
-      }
-      return completedPinCache.equals(initialCache);
-    }
-  }
-
-  /**
-   * Snapshot successful single-flight entries into a completed-pin map after resolution succeeds.
-   */
-  private static void copyCompletedPins(
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache,
-      Map<ResourceId, TablePin> completedPinCache) {
-    synchronized (completedPinCache) {
-      completedPins(singleFlightCache).forEach(completedPinCache::put);
-    }
-  }
-
-  /** Snapshot only successfully completed single-flight entries. */
-  private static Map<ResourceId, TablePin> completedPins(
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache) {
-    Map<ResourceId, TablePin> completed = new LinkedHashMap<>();
-    singleFlightCache.forEach(
-        (tableId, pinFuture) -> {
-          if (pinFuture.isDone()
-              && !pinFuture.isCompletedExceptionally()
-              && !pinFuture.isCancelled()) {
-            completed.put(tableId, Futures.join(pinFuture));
-          }
-        });
-    return completed;
-  }
-
-  /** Per-thread state carried through the completed-pin virtual extension seam. */
-  private record ResolutionInvocation(
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      BooleanSupplier cancelled) {}
 
   // =============================================================================
   // Pin resolution
@@ -941,12 +778,7 @@ public class QueryInputResolver {
       return CancellableCallRunner.callWithoutCancellation(
           metadataIoExecutor, concurrentInputResolutionPermits, operation, METADATA_CALL_FAILURES);
     }
-    return CancellableCallRunner.call(
-        metadataIoExecutor,
-        concurrentInputResolutionPermits,
-        cancelled,
-        operation,
-        METADATA_CANCELLATION_FAILURES);
+    return runMetadataIo(cancelled, operation, METADATA_CANCELLATION_FAILURES);
   }
 
   /** Runs one metadata operation while retaining its global permit until the call truly returns. */

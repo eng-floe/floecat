@@ -65,51 +65,13 @@ public final class BoundedFanout {
   }
 
   /**
-   * As {@link #mapOrdered(List, int, Executor, Function)}, but consumes each successful result on
-   * the caller thread before observing the next result. This preserves input-order validation
-   * precedence when a result consumer can itself fail, while still awaiting all submitted tasks
-   * before surfacing that failure so callers can safely release task-owned resources.
-   */
-  public static <I, O> void forEachOrdered(
-      List<I> items,
-      int permits,
-      Executor executor,
-      Function<I, O> task,
-      Consumer<? super O> consumer) {
-    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
-    OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer);
-    completeAll(items, permits, executor, task, outcomes, ordered::accept);
-  }
-
-  /**
-   * As {@link #mapOrdered(List, int, Executor, Function)}, but {@code cancelled} is polled so a
-   * cancelled stream interrupts every submitted task and returns without waiting for a slow task's
-   * completion. Tasks must cooperate with interruption while blocked in downstream calls. The
-   * submission window observes cancellation before it submits more work. A non-cancellation task
-   * failure waits for every input task before surfacing, so callers can safely release task-owned
-   * resources. {@code cancelled} may be read concurrently by the scheduler and workers; it must be
-   * non-blocking and thread-safe (typically {@link java.util.concurrent.atomic.AtomicBoolean#get}).
-   * Observed cancellation throws {@link CancellationException}.
-   */
-  public static <I, O> List<O> mapOrdered(
-      List<I> items,
-      int permits,
-      ExecutorService executor,
-      Function<I, O> task,
-      BooleanSupplier cancelled) {
-    List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
-    completeAllCancellable(
-        items, permits, executor, task, cancelled, outcomes, (index, outcome) -> {});
-    return orderedResults(outcomes);
-  }
-
-  /**
    * Cancellation-aware ordered result consumption. A consumer failure has the same ordered
    * precedence as a task failure, while submitted work is cancelled promptly when requested. A
    * non-cancellation failure waits for already-submitted siblings before it surfaces, preserving
    * the task-resource completion guarantee at the cost of slowest-sibling failure latency. {@code
-   * cancelled} has the same concurrent-read contract and {@link CancellationException} behavior as
-   * the cancellable {@code mapOrdered} overload.
+   * cancelled} may be read concurrently by the scheduler and workers, so it must be non-blocking
+   * and thread-safe (typically {@link java.util.concurrent.atomic.AtomicBoolean#get}). Observed
+   * cancellation throws {@link CancellationException}.
    */
   public static <I, O> void forEachOrdered(
       List<I> items,
@@ -211,7 +173,11 @@ public final class BoundedFanout {
       cancelSubmittedTasks(active);
       throw cancellationFailure;
     } catch (RuntimeException | Error processingFailure) {
-      awaitSubmittedTasks(active, cancelled);
+      try {
+        awaitSubmittedTasks(active, cancelled);
+      } catch (CancellationException cancellationFailure) {
+        processingFailure.addSuppressed(cancellationFailure);
+      }
       throw processingFailure;
     }
   }

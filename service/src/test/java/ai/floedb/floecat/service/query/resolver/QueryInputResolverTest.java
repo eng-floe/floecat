@@ -55,7 +55,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,6 +68,15 @@ public class QueryInputResolverTest {
   void init() {
     metadataGraph = new FakeGraph();
     resolver = new QueryInputResolver(metadataGraph);
+  }
+
+  @Test
+  void metadataIoSizingMustCoverAdmissionWithWorkersAndQueue() {
+    assertThrows(
+        IllegalStateException.class, () -> QueryInputResolver.validateMetadataIoSizing(3, 2, 3));
+    assertThrows(
+        IllegalStateException.class, () -> QueryInputResolver.validateMetadataIoSizing(3, 3, 2));
+    QueryInputResolver.validateMetadataIoSizing(3, 3, 3);
   }
 
   NameRef name(String cat, String... parts) {
@@ -99,48 +107,6 @@ public class QueryInputResolverTest {
             return failure;
           }
         });
-  }
-
-  @Test
-  void cancellableOverloadPreservesLegacyMapOverrideDispatch() {
-    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
-    QueryInputResolver legacySubclass =
-        new QueryInputResolver(metadataGraph) {
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, TablePin> currentSnapshotPinCache,
-              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
-            legacyOverrideCalled.set(true);
-            return super.resolveInputs(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics);
-          }
-        };
-    ResourceId tableId = rid("legacy-dispatch");
-
-    var result =
-        legacySubclass.resolveInputs(
-            "q-legacy-dispatch",
-            "cid",
-            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
-            Optional.empty(),
-            Optional.empty(),
-            new ConcurrentHashMap<>(),
-            null,
-            () -> false);
-
-    assertTrue(legacyOverrideCalled.get());
-    assertEquals(tableId, result.resolved().getFirst());
   }
 
   /** Verifies cancellation returns promptly even when the active metadata operation ignores it. */
@@ -2040,127 +2006,6 @@ public class QueryInputResolverTest {
     }
   }
 
-  @Test
-  void legacyMapCacheDoesNotRetainPinsFromAFailedResolution() {
-    ResourceId successful = rid("LEGACY_CACHE_SUCCESS");
-    ResourceId failing = rid("LEGACY_CACHE_FAILURE");
-    var graph = new FakeGraph();
-    graph.failPinFor(failing);
-    var withStore =
-        new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    Map<ResourceId, TablePin> legacyCache = new HashMap<>();
-
-    assertThrows(
-        StatusRuntimeException.class,
-        () ->
-            withStore.resolveInputs(
-                "q-legacy-cache",
-                "cid",
-                List.of(
-                    QueryInput.newBuilder().setTableId(successful).build(),
-                    QueryInput.newBuilder().setTableId(failing).build()),
-                Optional.empty(),
-                Optional.empty(),
-                legacyCache,
-                null));
-
-    assertTrue(legacyCache.isEmpty());
-  }
-
-  @Test
-  void legacyMapCopyFailureReleasesSuccessfulResolutionRoots() {
-    ResourceId tableId = rid("LEGACY_CACHE_COPY_FAILURE");
-    var graph = new FakeGraph();
-    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
-    var withStore = new QueryInputResolver(graph, store);
-    Map<ResourceId, TablePin> readOnlyCache =
-        java.util.Collections.unmodifiableMap(new HashMap<>());
-
-    assertThrows(
-        UnsupportedOperationException.class,
-        () ->
-            withStore.resolveInputs(
-                "q-legacy-copy-failure",
-                "cid",
-                List.of(QueryInput.newBuilder().setTableId(tableId).build()),
-                Optional.empty(),
-                Optional.empty(),
-                readOnlyCache,
-                null));
-
-    org.mockito.Mockito.verify(store)
-        .releaseResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.eq("q-legacy-copy-failure"),
-            org.mockito.ArgumentMatchers.argThat(
-                roots ->
-                    roots.contains("s3://LEGACY_CACHE_COPY_FAILURE/table.pb")
-                        && roots.contains("s3://LEGACY_CACHE_COPY_FAILURE/snap.pb")));
-  }
-
-  @Test
-  void legacyMapSecondCopyFailureRollsBackCopiedPrefixBeforeReleasingRoots() {
-    ResourceId first = rid("LEGACY_CACHE_COPY_FIRST");
-    ResourceId second = rid("LEGACY_CACHE_COPY_SECOND");
-    var graph = new FakeGraph();
-    QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
-    var withStore = new QueryInputResolver(graph, store);
-    Map<ResourceId, TablePin> cache = new ThrowOnSecondPutMap<>();
-    org.mockito.Mockito.doAnswer(
-            invocation -> {
-              assertTrue(cache.isEmpty(), "cache must be restored before roots are released");
-              return null;
-            })
-        .when(store)
-        .releaseResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.eq("q-legacy-copy-prefix"),
-            org.mockito.ArgumentMatchers.any());
-
-    assertThrows(
-        UnsupportedOperationException.class,
-        () ->
-            withStore.resolveInputs(
-                "q-legacy-copy-prefix",
-                "cid",
-                List.of(
-                    QueryInput.newBuilder().setTableId(first).build(),
-                    QueryInput.newBuilder().setTableId(second).build()),
-                Optional.empty(),
-                Optional.empty(),
-                cache,
-                null));
-
-    assertTrue(cache.isEmpty());
-    org.mockito.Mockito.verify(store)
-        .releaseResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.eq("q-legacy-copy-prefix"),
-            org.mockito.ArgumentMatchers.argThat(roots -> roots.size() == 4));
-  }
-
-  @Test
-  void parallelResolutionKeepsTheLegacyMemoOnItsOwnerThread() {
-    ResourceId first = rid("LEGACY_MEMO_FIRST");
-    ResourceId second = rid("LEGACY_MEMO_SECOND");
-    ResourceId third = rid("LEGACY_MEMO_THIRD");
-    metadataGraph.setCurrentSnapshot(first, 1);
-    metadataGraph.setCurrentSnapshot(second, 2);
-    metadataGraph.setCurrentSnapshot(third, 3);
-    Map<ResourceId, TablePin> threadConfinedMemo = new ThreadConfinedMap<>();
-
-    resolver.resolveInputs(
-        "q-thread-confined-memo",
-        "cid",
-        List.of(
-            QueryInput.newBuilder().setTableId(first).build(),
-            QueryInput.newBuilder().setTableId(second).build(),
-            QueryInput.newBuilder().setTableId(third).build()),
-        Optional.empty(),
-        Optional.empty(),
-        threadConfinedMemo,
-        null);
-
-    assertEquals(Set.of(first, second, third), threadConfinedMemo.keySet());
-  }
-
   // ----------------------------------------------------------------------
   // Base-relation enrichment (catalog + search-path fallback)
   // ----------------------------------------------------------------------
@@ -2257,60 +2102,6 @@ public class QueryInputResolverTest {
   // ----------------------------------------------------------------------
   // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
-
-  /** A deliberately racy memo fake that rejects access from parallel resolver workers. */
-  private static final class ThreadConfinedMap<K, V> extends HashMap<K, V> {
-    private final Thread owner = Thread.currentThread();
-
-    private void requireOwnerThread() {
-      if (Thread.currentThread() != owner) {
-        throw new AssertionError("thread-confined memo accessed by a resolver worker");
-      }
-    }
-
-    @Override
-    public V get(Object key) {
-      requireOwnerThread();
-      return super.get(key);
-    }
-
-    @Override
-    public V put(K key, V value) {
-      requireOwnerThread();
-      return super.put(key, value);
-    }
-
-    @Override
-    public V putIfAbsent(K key, V value) {
-      requireOwnerThread();
-      return super.putIfAbsent(key, value);
-    }
-
-    @Override
-    public boolean remove(Object key, Object value) {
-      requireOwnerThread();
-      return super.remove(key, value);
-    }
-
-    @Override
-    public void forEach(BiConsumer<? super K, ? super V> action) {
-      requireOwnerThread();
-      super.forEach(action);
-    }
-  }
-
-  /** Accepts one cache copy, rejects the next, and permits rollback through clear(). */
-  private static final class ThrowOnSecondPutMap<K, V> extends HashMap<K, V> {
-    private int puts;
-
-    @Override
-    public V put(K key, V value) {
-      if (++puts == 2) {
-        throw new UnsupportedOperationException("second cache write rejected");
-      }
-      return super.put(key, value);
-    }
-  }
 
   static class FakeGraph extends TestCatalogOverlay {
 

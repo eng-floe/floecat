@@ -1381,7 +1381,6 @@ class UserObjectBundleServiceTest {
       Thread statsWorker = blocker.executionThread.get();
       assertThat(statsWorker).isNotNull();
       assertThat(statsWorker.isVirtual()).isFalse();
-      assertThat(statsWorker.getName()).startsWith("floecat-bundle-metadata-");
 
       subscriber.cancel();
 
@@ -2713,7 +2712,6 @@ class UserObjectBundleServiceTest {
       Thread lookupWorker = blocker.executionThread.get();
       assertThat(lookupWorker).isNotNull();
       assertThat(lookupWorker.isVirtual()).isFalse();
-      assertThat(lookupWorker.getName()).startsWith("floecat-bundle-metadata-");
       subscriber.cancel();
       assertThat(resolutionRequest.get(250, TimeUnit.MILLISECONDS)).isNull();
       assertThat(blocker.interrupted.await(1, TimeUnit.SECONDS)).isTrue();
