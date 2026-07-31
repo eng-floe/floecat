@@ -1784,9 +1784,10 @@ integration and overlay configuration. Legacy connectors remain responsible for 
 metadata, reconciling it into the canonical blob/pointer stores, and serving execution-ready scan
 bundles.</p>
 <p>Integration credential payloads live only in the configured secrets manager. Persisted integration
-records contain an opaque credential reference, which is removed from public responses. Catalog
-mutation paths enforce the overlay-to-catalog dependency so an attached catalog cannot be renamed or
-deleted independently.</p>
+records contain an opaque active credential reference and may temporarily retain opaque references
+for durable cleanup; all internal references are removed from public responses. Catalog mutation
+paths enforce the overlay-to-catalog dependency so an attached catalog cannot be renamed or deleted
+independently.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
 <p>The following modules compose the system (see linked docs for deep dives):</p>
 <table>
