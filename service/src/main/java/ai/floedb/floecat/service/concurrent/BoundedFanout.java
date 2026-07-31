@@ -192,6 +192,14 @@ final class BoundedFanout {
       IntConsumer completionBarrier) {
     // Before capture() or any allocation: an invalid bound should cost nothing and name itself.
     validatePermits(permits);
+    // Every fan-out in this package funnels through here, so this is the one place the
+    // no-fan-out-under-admission invariant is enforced rather than documented. Units dispatched to
+    // other threads acquire their own permits while the caller still holds one, so a fan-out
+    // started inside an admitted operation can wedge the process-wide ceiling.
+    // Unconditional, including for zero inputs. Gating this on item count would make a wiring
+    // mistake data-dependent: silent wherever a caller happens to have no rows, and fatal in
+    // production the first time it does. The caller is structurally wrong either way.
+    MetadataIoRunner.rejectFanOutFromAdmittedOperation("BoundedFanout.forEachOrdered");
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer, cancelled);
     completeAll(
@@ -222,8 +230,7 @@ final class BoundedFanout {
       // Surface a failure a synchronous initial fill already made reachable before blocking on
       // take(). Reconcile cancellation first, exactly as the main loop does: the fill's last task
       // can set cancelled before returning, and an earlier recorded success must not be published
-      // to
-      // a stopped stream — a reachable failure still keeps precedence over the cancellation.
+      // to a stopped stream — a reachable failure still keeps precedence over the cancellation.
       if (runtime.cancellationObserved()) {
         surfaceSubmissionFailure(cancelled(), runtime, active, outcomes, ordered);
       }
@@ -234,8 +241,7 @@ final class BoundedFanout {
           slot = runtime.take(active);
         } catch (CancellationException cancellation) {
           // take observed cancellation with nothing ready in its queue. A sibling may have reached
-          // a
-          // terminal failure whose notification is still pending (on the tail, fillWindow's loop
+          // a terminal failure whose notification is still pending (on the tail, fillWindow's loop
           // body did not run, so nothing reconciled it). Reconcile through the same path as every
           // other cancellation point so that reachable failure keeps precedence over the
           // cancellation instead of being masked by it.
@@ -423,19 +429,16 @@ final class BoundedFanout {
             outcomes.set(slot.index, outcome(slot));
           } catch (CancellationException racedCancellation) {
             // Guard, not a known-live path: outcome() escapes only for a scheduler-cancelled
-            // future,
-            // and every cancel(true) call site runs on this same scheduler thread, so the
+            // future, and every cancel(true) call site runs on this same scheduler thread, so the
             // interleaving should be impossible — but a raw CancellationException was observed
             // escaping forEachOrdered through here in a contended run and never reproduced.
             //
             // Record it as this index's failure rather than dropping it. Dropping leaves a
-            // permanent
-            // null here while the slot is already out of active — exactly the truncation this
-            // method's javadoc warns about: deliverReady stops at the null, active drains, and
+            // permanent null here while the slot is already out of active — exactly the truncation
+            // this method's javadoc warns about: deliverReady stops at the null, active drains, and
             // forEachOrdered returns NORMALLY having delivered a short prefix. Silent data loss is
             // worse than a surfaced cancellation. As a failure at its own index it obeys
-            // input-order
-            // precedence like any other, so an earlier store failure still wins.
+            // input-order precedence like any other, so an earlier store failure still wins.
             CancellationException surfaced =
                 new CancellationException(
                     "fan-out task " + slot.index + " was cancelled while its outcome was read");
@@ -536,24 +539,22 @@ final class BoundedFanout {
       // A caller that cannot cancel (NEVER_CANCELLED, by identity) blocks for the next completion
       // instead of waking every CANCELLATION_POLL_MILLIS to poll a hard-false signal. That polling
       // scales with request concurrency rather than work: ~100 wakeups/second per in-flight
-      // fan-out,
-      // which the sentinel avoids entirely. A wakeup cost on a conforming executor, nothing more —
-      // the two paths differ in liveness only on a same-pool ForkJoinPool, where both stall anyway
-      // (see the class javadoc), so neither is a way to make that shape work.
+      // fan-out, which the sentinel avoids entirely. A wakeup cost on a conforming executor,
+      // nothing more — the two paths differ in liveness only on a same-pool ForkJoinPool, where
+      // both stall anyway (see the class javadoc), so neither is a way to make that shape work.
       boolean cancellable = cancelled != NEVER_CANCELLED;
       while (true) {
         // Drain a completion that is already ready before observing cancellation, so a task that
-        // has
-        // finished (a failure at the next reachable index in particular) is recorded and keeps its
-        // first-failure precedence rather than being masked by a racing cancellation. Cancellation
-        // is observed only when nothing is ready — active work is still cancelled promptly then. A
-        // slot already recorded through recordTerminalCompletions is skipped: its outcome is set
-        // and it is no longer active, so this stale notification must not be redelivered. Under the
-        // current invariants a redelivery is value-identical — outcome() re-reads the same terminal
-        // future — so this guard is defensive rather than load-bearing, and is not pinned by a
-        // test.
-        // (Not because it lands below nextIndex: a later index recorded out of order while the head
-        // still runs is undelivered, so a redelivery can land at or above it.)
+        // has finished (a failure at the next reachable index in particular) is recorded and keeps
+        // its first-failure precedence rather than being masked by a racing cancellation.
+        // Cancellation is observed only when nothing is ready — active work is still cancelled
+        // promptly then. A slot already recorded through recordTerminalCompletions is skipped: its
+        // outcome is set and it is no longer active, so this stale notification must not be
+        // redelivered. Under the current invariants a redelivery is value-identical — outcome()
+        // re-reads the same terminal future — so this guard is defensive rather than load-bearing,
+        // and is not pinned by a test. (Not because it lands below nextIndex: a later index
+        // recorded out of order while the head still runs is undelivered, so a redelivery can land
+        // at or above it.)
         CompletionSlot<O> ready = completions.poll();
         if (ready != null) {
           if (!ready.consumed) {
@@ -641,8 +642,7 @@ final class BoundedFanout {
   // leaves the whole suite green, because FJP grows a worker for an external submission regardless
   // of compensation, so no unit test can isolate it. Attempts to pin it via a same-pool pool only
   // asserted an unsupported topology — see the class javadoc. Keep it: it is the documented,
-  // correct
-  // way for a ForkJoinWorkerThread to block, and costs nothing off an FJP.
+  // correct way for a ForkJoinWorkerThread to block, and costs nothing off an FJP.
   private static <T> T managedTake(BlockingQueue<T> queue) throws InterruptedException {
     QueueTakeBlocker<T> blocker = new QueueTakeBlocker<>(queue);
     ForkJoinPool.managedBlock(blocker);
@@ -777,11 +777,9 @@ final class BoundedFanout {
   private static final class CompletionSlot<O> {
     private final int index;
     private Future<O> task;
-    // Set once this slot's outcome has been recorded through recordTerminalCompletions, so the
-    // queue
-    // notification that lands after the future became terminal is skipped rather than recording —
-    // and
-    // redelivering — the same slot twice. Touched only by the single scheduler thread.
+    // Set once this slot's outcome has been recorded through recordTerminalCompletions, so a queue
+    // notification landing after the future became terminal is skipped rather than recording and
+    // redelivering the same slot twice. Touched only by the scheduler thread.
     private boolean consumed;
 
     private CompletionSlot(int index) {
@@ -820,9 +818,8 @@ final class BoundedFanout {
     private void deliverReady() {
       while (nextIndex < outcomes.size() && outcomes.get(nextIndex) != null) {
         // Recheck before every publish, not just once per drain: a consumer callback can itself
-        // flip
-        // cancellation, and the rest of an already-ready prefix must not then be published to a
-        // stopped stream.
+        // flip cancellation, and the rest of an already-ready prefix must not then be published to
+        // a stopped stream.
         abortIfCancelled();
         int delivered = nextIndex++;
         TaskOutcome<O> outcome = outcomes.get(delivered);
@@ -838,8 +835,7 @@ final class BoundedFanout {
         consumer.accept(outcome.result());
       }
       // And once after the last publish: with the window already drained, the scheduler's loop
-      // would
-      // otherwise exit and return normally on a cancellation the final callback raised.
+      // would otherwise exit and return normally on a cancellation the final callback raised.
       abortIfCancelled();
     }
 

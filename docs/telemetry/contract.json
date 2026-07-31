@@ -550,6 +550,46 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.metadata_io.admission.saturated_waits.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Metadata-I/O admissions that found the concurrency ceiling saturated on arrival.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.admission.waiters",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Threads waiting for metadata-I/O admission.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.permits.capacity",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Configured process-wide metadata-I/O concurrency ceiling.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.permits.in_use",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Metadata-I/O admission permits held by in-flight store calls.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",

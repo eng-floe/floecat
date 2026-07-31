@@ -416,6 +416,31 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsRequired,
         statsAllowed,
         "End-to-end latency of a single sync-first resolution attempt including store reads.");
+    Set<String> metadataIoTags = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    add(
+        defs,
+        ServiceMetrics.MetadataIo.PERMITS_CAPACITY,
+        metadataIoTags,
+        metadataIoTags,
+        ServiceMetrics.MetadataIo.CAPACITY_DESC);
+    add(
+        defs,
+        ServiceMetrics.MetadataIo.PERMITS_IN_USE,
+        metadataIoTags,
+        metadataIoTags,
+        ServiceMetrics.MetadataIo.IN_USE_DESC);
+    add(
+        defs,
+        ServiceMetrics.MetadataIo.ADMISSION_WAITERS,
+        metadataIoTags,
+        metadataIoTags,
+        ServiceMetrics.MetadataIo.WAITERS_DESC);
+    add(
+        defs,
+        ServiceMetrics.MetadataIo.ADMISSION_SATURATED_WAITS,
+        metadataIoTags,
+        metadataIoTags,
+        ServiceMetrics.MetadataIo.SATURATED_DESC);
     return Collections.unmodifiableMap(defs);
   }
 

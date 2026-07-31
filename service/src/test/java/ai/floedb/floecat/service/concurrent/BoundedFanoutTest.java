@@ -296,8 +296,7 @@ class BoundedFanoutTest {
                         try {
                           // Bounded so a cancellation regression fails fast instead of parking this
                           // task — and ExecutorService.close() — for ~24h; the interrupt arrives
-                          // well
-                          // within this if cancellation works.
+                          // well within this if cancellation works.
                           new CountDownLatch(1).await(30, TimeUnit.SECONDS);
                         } catch (InterruptedException e) {
                           activeSiblingInterrupted.countDown();
@@ -647,8 +646,7 @@ class BoundedFanoutTest {
                         try {
                           // Bounded so a cancellation regression fails fast instead of parking this
                           // task — and ExecutorService.close() — for ~24h; the interrupt arrives
-                          // well
-                          // within this if cancellation works.
+                          // well within this if cancellation works.
                           new CountDownLatch(1).await(30, TimeUnit.SECONDS);
                           return ignored;
                         } catch (InterruptedException e) {
@@ -891,8 +889,7 @@ class BoundedFanoutTest {
     // cancellation. The reconciliation must pick up input 1's held failure so it beats the
     // cancellation; without it, input 1's outcome is still unrecorded when deliverReady checks,
     // earliestReachableFailure sees nothing, and the caller gets CancellationException — the store
-    // error masked by teardown, which is the failure mode this whole precedence rule exists to
-    // prevent.
+    // error masked by teardown, the failure mode this precedence rule exists to prevent.
     var input1Terminal = new CountDownLatch(1);
     var releaseInput1Notification = new CountDownLatch(1);
     var cancelled = new AtomicBoolean(false);
@@ -1203,11 +1200,10 @@ class BoundedFanoutTest {
     // its state before done()). At a refill decision that window must not let an already-completed
     // failure look unreachable and admit more work. permits=2 runs inputs 0 (fails) and 1
     // (succeeds); the barrier holds input 0's notification while its future is already terminal,
-    // and
-    // input 1 completes only once input 0 is terminal. Recording input 1 must then reconcile input
-    // 0's terminal failure and skip the refill of input 2. Without that reconciliation input 2 is
-    // submitted — and its task releases the held notification so the run finishes and the assertion
-    // fails cleanly instead of deadlocking.
+    // and input 1 completes only once input 0 is terminal. Recording input 1 must then reconcile
+    // input 0's terminal failure and skip the refill of input 2. Without that reconciliation input
+    // 2 is submitted — and its task releases the held notification so the run finishes and the
+    // assertion fails cleanly instead of deadlocking.
     var input0Terminal = new CountDownLatch(1);
     var releaseInput0Notification = new CountDownLatch(1);
     var input2Submitted = new AtomicBoolean(false);
@@ -1286,8 +1282,7 @@ class BoundedFanoutTest {
   void aCancelledSiblingInterruptDoesNotMaskTheCancellation() {
     // Input 0 succeeds; input 1 is blocked inside a store call when the request cancels. Cancelling
     // the batch interrupts input 1, but reconciliation must not record input 1's cancelled future
-    // as
-    // a task failure and surface it in place of the request's cancellation.
+    // as a task failure and surface it in place of the request's cancellation.
     var input1Started = new CountDownLatch(1);
     var cancelled = new AtomicBoolean(false);
     try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
@@ -1354,9 +1349,8 @@ class BoundedFanoutTest {
     // recordTerminalCompletions can free several slots from a single consumed notification; the
     // window must refill all of them, not one, or the run collapses to concurrency 1. permits=3
     // submits inputs 0..2; inputs 1 and 2 finish and their notifications are held (terminal but not
-    // queued) while input 0 completes last as the only consumed notification. Recording input 0
-    // must
-    // then reopen and refill all three slots, so inputs 3, 4 and 5 all reach the executor together.
+    // queued) while input 0 completes last as the only consumed notification. Recording it must
+    // reopen and refill all three slots, so inputs 3, 4 and 5 reach the executor together.
     var input1Held = new CountDownLatch(1);
     var input2Held = new CountDownLatch(1);
     var releaseHeldNotifications = new CountDownLatch(1);
@@ -1467,10 +1461,9 @@ class BoundedFanoutTest {
   @Test
   void aSynchronousExecutorDeliversIncrementallyRatherThanRunningTheWholeBatchFirst() {
     // With a same-thread executor, recordTerminalCompletions empties active every iteration;
-    // without
-    // a per-call submission cap, one fillWindow call would run the entire input before delivering
-    // any result (and rescan a growing prefix, O(N^2)). Assert the first result is delivered before
-    // the last input runs.
+    // without a per-call submission cap, one fillWindow call would run the entire input before
+    // delivering any result (and rescan a growing prefix, O(N^2)). Assert the first result is
+    // delivered before the last input runs.
     var events = new java.util.ArrayList<String>();
     try (ExecutorService inline = directExecutorService()) {
       BoundedFanout.forEachOrdered(

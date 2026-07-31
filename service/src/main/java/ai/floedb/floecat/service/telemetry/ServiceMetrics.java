@@ -388,4 +388,50 @@ public final class ServiceMetrics {
             CONTRACT,
             "service");
   }
+
+  /** Process-wide metadata-I/O admission (see {@code MetadataIoRunner}). */
+  public static final class MetadataIo {
+    private MetadataIo() {}
+
+    // Single source of truth: MetadataIoMetrics passes these to Observability.gauge (which exports
+    // them verbatim as Prometheus HELP) and ServiceTelemetryContributor registers the same strings
+    // in the published contract. Two copies drifted once; one constant cannot.
+    public static final String CAPACITY_DESC =
+        "Configured process-wide metadata-I/O concurrency ceiling.";
+    public static final String IN_USE_DESC =
+        "Metadata-I/O admission permits held by in-flight store calls.";
+    public static final String WAITERS_DESC = "Threads waiting for metadata-I/O admission.";
+    public static final String SATURATED_DESC =
+        "Metadata-I/O admissions that found the concurrency ceiling saturated on arrival.";
+
+    public static final MetricId PERMITS_CAPACITY =
+        new MetricId(
+            "floecat.service.metadata_io.permits.capacity",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId PERMITS_IN_USE =
+        new MetricId(
+            "floecat.service.metadata_io.permits.in_use",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId ADMISSION_WAITERS =
+        new MetricId(
+            "floecat.service.metadata_io.admission.waiters",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+
+    public static final MetricId ADMISSION_SATURATED_WAITS =
+        new MetricId(
+            "floecat.service.metadata_io.admission.saturated_waits.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+  }
 }
