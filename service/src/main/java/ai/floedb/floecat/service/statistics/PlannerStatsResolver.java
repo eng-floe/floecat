@@ -198,17 +198,16 @@ final class PlannerStatsResolver {
       String pinnedGeneration) {}
 
   /**
-   * Store rungs of the planner batch ladder — cache, pinned/primary generation, newest gap-fill,
-   * stale — leaving capture to the caller. Callers guarantee a non-empty batch sharing one
-   * table/snapshot; the full ladder contract is documented on {@link
+   * Store rungs of the planner batch ladder — cache, pinned/primary generation, newest gap-fill —
+   * leaving capture to the caller. Callers guarantee a non-empty batch sharing one table/snapshot;
+   * the full ladder contract is documented on {@link
    * StatsOrchestrator#resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map,
-   * boolean, long)}.
+   * long)}.
    */
   Resolution resolveFromStore(
       List<StatsCaptureRequest> requests,
       Optional<String> pinnedGenerationToken,
-      Map<String, Predicate<TargetStatsRecord>> completenessByStorageId,
-      boolean staleOk) {
+      Map<String, Predicate<TargetStatsRecord>> completenessByStorageId) {
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
     String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
@@ -372,37 +371,7 @@ final class PlannerStatsResolver {
       afterFill.addAll(misses);
     }
 
-    // 4. Stale fallback — BEFORE sync capture.
-    // Single batch call: finds the latest snapshot with stats once (O(1) pointer read),
-    // then fetches all missing targets from that snapshot in parallel. Replaces N×O(prefix scan).
-    java.util.List<StatsCaptureRequest> stillMissing = new java.util.ArrayList<>();
-    if (staleOk && !afterFill.isEmpty()) {
-      java.util.Map<String, StatsResolutionResult> staleBatch =
-          readPlannerBatchIsolated(
-              first.tableId(),
-              first.snapshotId(),
-              afterFill,
-              statsStore::getStaleTargetStatsBatch,
-              statsStore::getStaleTargetStats,
-              record -> StatsResolutionResult.staleHit(record, "stale_before_sync"));
-      for (StatsCaptureRequest req : afterFill) {
-        String key = storageId(req);
-        StatsResolutionResult stale = staleBatch.get(key);
-        if (stale != null && stale.hasStats()) {
-          diagnostics.record(PlannerLookupOutcome.STALE_HIT);
-          out.put(key, stale);
-        } else if (stale != null && stale.outcome() == StatsSyncOutcome.FAILED) {
-          diagnostics.record(PlannerLookupOutcome.FAILED);
-          out.put(key, stale);
-        } else {
-          stillMissing.add(req);
-        }
-      }
-    } else {
-      stillMissing.addAll(afterFill);
-    }
-
-    return new Resolution(out, stillMissing, diagnostics, pinnedGeneration);
+    return new Resolution(out, List.copyOf(afterFill), diagnostics, pinnedGeneration);
   }
 
   /**
@@ -664,8 +633,6 @@ final class PlannerStatsResolver {
     NEWEST_FILL,
     /** Served a record that does not satisfy the full need (planner degrades per stat). */
     PARTIAL,
-    /** No record at the pinned snapshot; served from an earlier snapshot. */
-    STALE_HIT,
     /** Missing everywhere; a bounded sync capture produced the record. */
     CAPTURED,
     /** Missing everywhere; capture is pending (async mode, budget exhausted, or in flight). */

@@ -149,37 +149,6 @@ public interface StatsStore {
   Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target);
 
-  /**
-   * Returns a stale target stats record when exact stats for {@code snapshotId} are unavailable.
-   *
-   * <p>Implementations should prefer the newest available stats at or before {@code snapshotId}.
-   * The default returns empty for stores that cannot enumerate snapshot-scoped stats.
-   */
-  default Optional<TargetStatsRecord> getStaleTargetStats(
-      ResourceId tableId, long snapshotId, StatsTarget target) {
-    return Optional.empty();
-  }
-
-  /**
-   * Batch stale lookup: returns the newest available stats for each target at or before {@code
-   * snapshotId}.
-   *
-   * <p>The default calls {@link #getStaleTargetStats} per target (N independent prefix scans).
-   * Implementations that maintain a latest-snapshot index should override this for O(1) lookup.
-   */
-  default Map<String, Optional<TargetStatsRecord>> getStaleTargetStatsBatch(
-      ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
-    if (targets == null || targets.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
-    for (StatsTarget target : targets) {
-      out.put(
-          StatsTargetIdentity.storageId(target), getStaleTargetStats(tableId, snapshotId, target));
-    }
-    return Collections.unmodifiableMap(out);
-  }
-
   /** Returns any compatible file-stats wrapper keyed by immutable artifact identity. */
   default Optional<TargetStatsRecord> getReusableTargetStats(
       ResourceId tableId,

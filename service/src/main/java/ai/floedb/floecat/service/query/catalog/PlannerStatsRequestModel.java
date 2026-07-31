@@ -92,8 +92,7 @@ record PlannerStatsServingPolicy(
     long maxConstraintBytes,
     int maxScalarTargets,
     int maxSketchTargets,
-    boolean allowSyncCapture,
-    boolean staleOk) {
+    boolean allowSyncCapture) {
   private static final long DEFAULT_MAX_RESPONSE_BYTES = 8L * 1024L * 1024L;
   private static final long DEFAULT_MAX_CONSTRAINT_BYTES = 1024L * 1024L;
   private static final int DEFAULT_MAX_SCALAR_TARGETS = 10_000;
@@ -115,9 +114,7 @@ record PlannerStatsServingPolicy(
         Math.max(0, scalarTargets),
         opts.getMaxSketchTargets() > 0 ? opts.getMaxSketchTargets() : DEFAULT_MAX_SKETCH_TARGETS,
         /* Optional bool: absent means server default true. */
-        !opts.hasAllowSyncCapture() || opts.getAllowSyncCapture(),
-        /* Optional bool: absent means server default true. */
-        !opts.hasStaleOk() || opts.getStaleOk());
+        !opts.hasAllowSyncCapture() || opts.getAllowSyncCapture());
   }
 }
 
@@ -133,10 +130,7 @@ record PlannerConstraintServingPolicy(long maxConstraintBytes) {
 }
 
 record PlannerTargetStatsLookupResult(
-    Optional<TargetStatsRecord> stats,
-    StatsSyncOutcome outcome,
-    String outcomeDetail,
-    boolean stale) {
+    Optional<TargetStatsRecord> stats, StatsSyncOutcome outcome, String outcomeDetail) {
   PlannerTargetStatsLookupResult {
     stats = stats == null ? Optional.empty() : stats;
     outcome = outcome == null ? StatsSyncOutcome.SKIPPED : outcome;
@@ -144,17 +138,11 @@ record PlannerTargetStatsLookupResult(
   }
 
   static PlannerTargetStatsLookupResult hit(TargetStatsRecord stats) {
-    return new PlannerTargetStatsLookupResult(Optional.of(stats), StatsSyncOutcome.HIT, "", false);
-  }
-
-  static PlannerTargetStatsLookupResult stale(TargetStatsRecord stats, String detail) {
-    return new PlannerTargetStatsLookupResult(
-        Optional.of(stats), StatsSyncOutcome.HIT, detail == null ? "stale_hit" : detail, true);
+    return new PlannerTargetStatsLookupResult(Optional.of(stats), StatsSyncOutcome.HIT, "");
   }
 
   static PlannerTargetStatsLookupResult skipped(String detail) {
-    return new PlannerTargetStatsLookupResult(
-        Optional.empty(), StatsSyncOutcome.SKIPPED, detail, false);
+    return new PlannerTargetStatsLookupResult(Optional.empty(), StatsSyncOutcome.SKIPPED, detail);
   }
 
   static PlannerTargetStatsLookupResult fromResolution(StatsResolutionResult result) {
@@ -162,14 +150,6 @@ record PlannerTargetStatsLookupResult(
       return skipped("missing_resolution_result");
     }
     return new PlannerTargetStatsLookupResult(
-        result.stats(), result.outcome(), result.outcomeDetail(), result.stale());
-  }
-
-  PlannerTargetStatsLookupResult withStaleFallback(
-      boolean staleOk, java.util.function.Supplier<Optional<TargetStatsRecord>> staleLookup) {
-    if (stats.isPresent() || !staleOk) {
-      return this;
-    }
-    return staleLookup.get().map(s -> stale(s, outcomeDetail)).orElse(this);
+        result.stats(), result.outcome(), result.outcomeDetail());
   }
 }
