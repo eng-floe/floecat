@@ -24,6 +24,7 @@ import java.util.List;
 public record StandaloneFileGroupExecutionResult(
     String resultId,
     List<TargetStatsRecord> partialAggregateRecords,
+    List<TargetStatsRecord> publishedFileStatsRecords,
     List<StatsObjectDescriptor> fileStats,
     List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
     List<String> realizedStatsSelectors) {
@@ -31,6 +32,8 @@ public record StandaloneFileGroupExecutionResult(
     resultId = resultId == null ? "" : resultId.trim();
     partialAggregateRecords =
         partialAggregateRecords == null ? List.of() : List.copyOf(partialAggregateRecords);
+    publishedFileStatsRecords =
+        publishedFileStatsRecords == null ? List.of() : List.copyOf(publishedFileStatsRecords);
     fileStats = fileStats == null ? List.of() : List.copyOf(fileStats);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
@@ -43,11 +46,26 @@ public record StandaloneFileGroupExecutionResult(
       List<TargetStatsRecord> partialAggregateRecords,
       List<StatsObjectDescriptor> fileStats,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    this(resultId, partialAggregateRecords, fileStats, stagedIndexArtifacts, List.of());
+    this(resultId, partialAggregateRecords, List.of(), fileStats, stagedIndexArtifacts, List.of());
+  }
+
+  public StandaloneFileGroupExecutionResult(
+      String resultId,
+      List<TargetStatsRecord> partialAggregateRecords,
+      List<TargetStatsRecord> publishedFileStatsRecords,
+      List<StatsObjectDescriptor> fileStats,
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    this(
+        resultId,
+        partialAggregateRecords,
+        publishedFileStatsRecords,
+        fileStats,
+        stagedIndexArtifacts,
+        List.of());
   }
 
   public static StandaloneFileGroupExecutionResult empty(String resultId) {
     return new StandaloneFileGroupExecutionResult(
-        resultId, List.of(), List.of(), List.of(), List.of());
+        resultId, List.of(), List.of(), List.of(), List.of(), List.of());
   }
 }

@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -114,7 +115,7 @@ public class StatsRepository implements StatsStore {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
-    this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore);
+    this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore, blobCache);
   }
 
   /**
@@ -318,21 +319,25 @@ public class StatsRepository implements StatsStore {
       if (value == null) {
         continue;
       }
-      if (value.targetStorageId() == null
+      boolean bundled =
+          value != null && value.blobUri() != null && value.blobUri().contains("/reuse-bundles/");
+      if (value == null
+          || value.targetStorageId() == null
           || value.targetStorageId().isBlank()
           || value.blobUri() == null
           || !value.blobUri().startsWith(requiredPrefix)
           || value.blobBytes() <= 0L
           || value.blobSha256() == null
           || value.blobSha256().length != 32
-          || !value
-              .blobUri()
-              .endsWith(
-                  "/"
-                      + Hashing.sha256Hex(value.targetStorageId())
-                      + "/"
-                      + HexFormat.of().formatHex(value.blobSha256())
-                      + ".pb")) {
+          || (!bundled
+              && !value
+                  .blobUri()
+                  .endsWith(
+                      "/"
+                          + Hashing.sha256Hex(value.targetStorageId())
+                          + "/"
+                          + HexFormat.of().formatHex(value.blobSha256())
+                          + ".pb"))) {
         throw new IllegalArgumentException("invalid prewritten target stats reference");
       }
       PrewrittenStatsWrite write =
@@ -2219,14 +2224,61 @@ public class StatsRepository implements StatsStore {
   }
 
   private static final class TargetStatsStorage extends BaseResourceRepository<TargetStatsRecord> {
+    private final BlobStore blobStore;
+    private final ImmutableBlobCache blobCache;
 
-    private TargetStatsStorage(PointerStore pointerStore, BlobStore blobStore) {
+    private TargetStatsStorage(
+        PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
       super(
           pointerStore,
           blobStore,
           TargetStatsRecord::parseFrom,
           TargetStatsRecord::toByteArray,
           "application/x-protobuf");
+      this.blobStore = blobStore;
+      this.blobCache = blobCache;
+    }
+
+    @Override
+    protected Optional<TargetStatsRecord> loadAndParseReferencedBlob(
+        String pointerKey, String blobUri) {
+      if (!blobUri.contains("/reuse-bundles/")) {
+        return super.loadAndParseReferencedBlob(pointerKey, blobUri);
+      }
+      Optional<ReusableArtifactBundlePayload> bundle =
+          blobCache == null ? loadBundle(blobUri) : blobCache.get(blobUri, this::loadBundle);
+      return bundle.map(value -> targetFromBundle(pointerKey, value));
+    }
+
+    @Override
+    protected TargetStatsRecord parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
+        throws Exception {
+      if (!blobUri.contains("/reuse-bundles/")) {
+        return super.parseReferencedBlob(pointerKey, blobUri, bytes);
+      }
+      return targetFromBundle(pointerKey, ReusableArtifactBundlePayload.parseFrom(bytes));
+    }
+
+    private Optional<ReusableArtifactBundlePayload> loadBundle(String blobUri) {
+      try {
+        return Optional.of(ReusableArtifactBundlePayload.parseFrom(blobStore.get(blobUri)));
+      } catch (StorageNotFoundException e) {
+        return Optional.empty();
+      } catch (InvalidProtocolBufferException e) {
+        throw new CorruptionException("invalid reusable artifact bundle: " + blobUri, e);
+      }
+    }
+
+    private TargetStatsRecord targetFromBundle(
+        String pointerKey, ReusableArtifactBundlePayload bundle) {
+      for (TargetStatsRecord record : bundle.getFileStatsList()) {
+        String targetStorageId = StatsTargetIdentity.storageId(record.getTarget());
+        if (pointerKey.endsWith("/" + Keys.encodeSegment(targetStorageId))) {
+          return record;
+        }
+      }
+      throw new CorruptionException(
+          "target stats bundle has no record for pointer " + pointerKey, null);
     }
 
     private Optional<TargetStatsRecord> getByPointer(String pointerKey) {

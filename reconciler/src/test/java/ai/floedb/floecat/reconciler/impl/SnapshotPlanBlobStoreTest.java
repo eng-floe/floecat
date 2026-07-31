@@ -31,6 +31,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -119,9 +120,7 @@ class SnapshotPlanBlobStoreTest {
     String storedJson =
         new String(
             blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
-    assertFalse(storedJson.contains("reusableFileStats"));
-    assertFalse(storedJson.contains("reusableAuxiliaryStats"));
-    assertFalse(storedJson.contains("reusableIndexArtifact"));
+    assertFalse(!storedJson.contains("fileExecutionPlans"));
 
     List<PlannedFileGroupJob> roundTripped = store.loadPlanJobs(persistedTask);
     assertEquals(1, roundTripped.size());
@@ -133,6 +132,8 @@ class SnapshotPlanBlobStoreTest {
         scope.destinationCaptureRequests(), roundTrippedScope.destinationCaptureRequests());
     assertEquals(scope.capturePolicy().columns(), roundTrippedScope.capturePolicy().columns());
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
+    assertEquals(
+        group.fileExecutionPlans(), roundTripped.getFirst().fileGroupTask().fileExecutionPlans());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
     assertEquals(List.of(group), store.loadFileGroupsByUri(persistedTask.fileGroupPlanBlobUri()));
@@ -171,6 +172,71 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(7, persistedTask.sourceFileCount());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.directStatsBlobUri()));
     assertEquals(List.of(record), store.loadDirectStats(persistedTask));
+  }
+
+  @Test
+  void persistPlanStoresCompactReuseReferencesWithoutEmbeddedRecords() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of("s3://bucket/file.parquet", 123L, "", null)
+            .withReuseReferences(
+                "source-fingerprint",
+                "index-fingerprint",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                new ReusableStatsArtifactReference(
+                    "s3://bucket/file.parquet",
+                    "file:abc",
+                    "s3://artifacts/stats.pb",
+                    321L,
+                    new byte[32],
+                    "source-fingerprint",
+                    "stats-signature",
+                    List.of("col_a")),
+                List.of(),
+                null);
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/file.parquet"),
+            List.of(),
+            List.of(),
+            "",
+            List.of(plan));
+    ReconcileSnapshotTask task =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+
+    ReconcileSnapshotTask persisted =
+        store.persistPlan(
+            "acct", "job-1", task, List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+
+    String json =
+        new String(
+            blobStore.bytesByUri.get(persisted.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
+    assertFalse(json.contains("\"reusableFileStats\":"));
+    assertFalse(json.contains("publishedFileStatsRecords"));
+    assertEquals(
+        plan,
+        store.loadPlanJobs(persisted).getFirst().fileGroupTask().fileExecutionPlans().getFirst());
   }
 
   private static ai.floedb.floecat.common.rpc.ResourceId tableId() {

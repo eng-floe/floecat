@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -59,6 +60,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
   @Inject ConnectorRepository connectorRepo;
   @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   record PlanConnectorPayload(
       String jobId,
@@ -576,8 +578,14 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
             : 0L;
     List<SubmitLeasedPlanSnapshotResultRequest.Chunk> stagedChunks =
         loadStagedPlanSnapshotChunks(principalContext, jobId, leaseEpoch, chunkCount);
+    List<PlannedFileGroupJob> referencedJobs =
+        chunkCount == 0 && plannedFileGroupJobs > 0
+            ? snapshotPlanBlobStore.loadPlanJobs(durableSnapshotTask.fileGroupPlanBlobUri())
+            : List.of();
     long stagedFileGroupJobs =
-        stagedChunks.stream().mapToLong(chunk -> chunk.getFileGroupJobsCount()).sum();
+        referencedJobs.isEmpty()
+            ? stagedChunks.stream().mapToLong(chunk -> chunk.getFileGroupJobsCount()).sum()
+            : referencedJobs.size();
     if (plannedFileGroupJobs != stagedFileGroupJobs) {
       throw Status.FAILED_PRECONDITION
           .withDescription(
@@ -597,6 +605,30 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
             true);
     if (!adopted && !currentSnapshotPlanAdopted(jobId, durableSnapshotTask)) {
       return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
+    }
+    if (!referencedJobs.isEmpty()) {
+      List<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+          referencedJobs.stream()
+              .filter(job -> job != null && job.fileGroupTask() != null)
+              .filter(job -> !job.fileGroupTask().isEmpty())
+              .map(
+                  job ->
+                      ReconcileJobStore.BulkEnqueueSpec.of(
+                          lease.accountId,
+                          lease.connectorId,
+                          lease.fullRescan,
+                          lease.captureMode,
+                          job.scope(),
+                          ReconcileJobKind.EXEC_FILE_GROUP,
+                          ReconcileTableTask.empty(),
+                          ReconcileViewTask.empty(),
+                          ReconcileSnapshotTask.empty(),
+                          job.fileGroupTask(),
+                          effectiveExecutionPolicy(lease),
+                          lease.jobId,
+                          ""))
+              .toList();
+      jobs.bulkEnqueue(childSpecs).requireAllSucceeded("snapshot file-group child enqueue");
     }
     boolean enqueuedFinalizer = false;
     if (plannedFileGroupJobs == 0L) {

@@ -74,7 +74,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -85,6 +84,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -220,10 +220,11 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(
         ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
         payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
-    assertTrue(!payload.fileExecutionPlans().getFirst().sourceFingerprint().isBlank());
+    assertEquals(group.fileExecutionPlans(), payload.fileExecutionPlans());
   }
 
   @Test
+  @Disabled("reuse compatibility is now computed by the remote snapshot planner")
   void resolvePinsCompatiblePriorStatsAndIndexIntoIncrementalFilePlan() {
     String filePath = "s3://bucket/data/file-1.parquet";
     String schema = "{\"type\":\"struct\",\"fields\":[]}";
@@ -338,6 +339,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  @Disabled("legacy reuse is now computed by the remote snapshot planner")
   void resolveMigratesLegacyIcebergStatsWithoutSnapshotOrdering() {
     String filePath = "s3://bucket/data/file-1.parquet";
     String schema = "{\"type\":\"struct\",\"fields\":[]}";
@@ -380,9 +382,10 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  @Disabled("legacy reuse is now computed by the remote snapshot planner")
   void resolveMigratesLegacyDeltaStatsUsingHistoricalLogIdentity() {
     String filePath = "s3://bucket/data/file-1.parquet";
-    String contentIdentity = "delta-add-v1:42::";
+    String contentIdentity = "delta-add-v1:42:::10";
     ReconcileFileExecutionPlan filePlan =
         ReconcileFileExecutionPlan.of(
             filePath, 123L, "{}", null, "PARQUET", 3, List.of(), contentIdentity);
@@ -404,19 +407,6 @@ class LeasedFileGroupExecutionServiceTest {
     stubFileGroupResolve(group, scope, null);
     when(connectorRepo.getById(connectorId()))
         .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_DELTA).build()));
-    service.legacyFileIdentityResolverFactory =
-        (resolvedConnector, namespace, tableName, destinationTableId, filePaths) ->
-            new LeasedFileGroupExecutionService.LegacyFileIdentityResolver() {
-              @Override
-              public Optional<String> contentIdentity(long snapshotId, String requestedFilePath) {
-                return snapshotId == 987L && filePath.equals(requestedFilePath)
-                    ? Optional.of(contentIdentity)
-                    : Optional.empty();
-              }
-
-              @Override
-              public void close() {}
-            };
     when(statsStore.findHistoricalTargetStats(
             eq(tableId()), eq(StatsTargetIdentity.fileTarget(filePath)), any()))
         .thenAnswer(
@@ -440,6 +430,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  @Disabled("legacy reuse is now computed by the remote snapshot planner")
   void resolveMigratesLegacyIndexForIndexOnlyPolicyUsingHistoricalStatsIdentity() {
     String filePath = "s3://bucket/data/file-1.parquet";
     String schema = "{\"type\":\"struct\",\"fields\":[]}";
@@ -965,7 +956,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessAllowsStatsAndIndexPointersForTheSameTarget() {
+  void persistSuccessExpandsOneCompactBundleWithoutReadingIt() {
     String filePath = "s3://bucket/data/file-1.parquet";
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
@@ -999,21 +990,20 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
 
     TargetStatsRecord record = fileStatsRecord(filePath, 10L);
-    StatsObjectDescriptor fileStats = statsObjectDescriptors(List.of(record)).getFirst();
-    byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    StatsObjectDescriptor originalFileStats = statsObjectDescriptors(List.of(record)).getFirst();
+    byte[] bundleBytes = "bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     String indexArtifactObjectPrefix = statsObjectPrefix() + "index-artifacts/";
-    StatsObjectDescriptor indexArtifact =
+    StatsObjectDescriptor bundle =
         StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId("file:" + filePath)
-            .setPayloadUri(
-                indexArtifactObjectPrefix
-                    + Hashing.sha256Hex(fileStats.getTargetStorageId())
-                    + "/"
-                    + HexFormat.of().formatHex(sha256(indexBytes))
-                    + ".pb")
-            .setPayloadBytes(indexBytes.length)
-            .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
+            .setTargetStorageId("reuse-bundle:group-1")
+            .setPayloadUri(statsObjectPrefix() + "reuse-bundles/bundle.pb")
+            .setPayloadBytes(bundleBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(bundleBytes)))
             .build();
+    StatsObjectDescriptor fileStats =
+        bundle.toBuilder().setTargetStorageId(originalFileStats.getTargetStorageId()).build();
+    StatsObjectDescriptor indexArtifact =
+        bundle.toBuilder().setTargetStorageId("file:" + filePath).build();
 
     assertTrue(
         service.persistSuccess(
@@ -1022,8 +1012,13 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(List.of(record), List.of(fileStats), List.of(indexArtifact)),
-            List.of(fileStats),
-            List.of(indexArtifact)));
+            List.of(),
+            List.of(),
+            ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+                .setArtifact(bundle)
+                .addFileStatsTargetStorageIds(fileStats.getTargetStorageId())
+                .addIndexArtifactTargetStorageIds(indexArtifact.getTargetStorageId())
+                .build()));
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
@@ -1035,7 +1030,8 @@ class LeasedFileGroupExecutionServiceTest {
             eq("full-rescan-" + PARENT_JOB_ID),
             eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
             objects.capture());
-    assertEquals(2, objects.getValue().size());
+    assertEquals(1, objects.getValue().size());
+    assertEquals(bundle.getPayloadUri(), objects.getValue().getFirst().blobUri());
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<IndexArtifactRepository.PrewrittenIndexArtifactReference>> references =
         ArgumentCaptor.forClass(List.class);

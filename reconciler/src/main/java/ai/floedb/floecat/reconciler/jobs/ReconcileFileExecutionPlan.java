@@ -31,7 +31,11 @@ public record ReconcileFileExecutionPlan(
     Map<String, String> auxiliaryStatsFingerprints,
     TargetStatsRecord reusableFileStats,
     List<TargetStatsRecord> reusableAuxiliaryStats,
-    IndexArtifactRecord reusableIndexArtifact) {
+    IndexArtifactRecord reusableIndexArtifact,
+    ReusableStatsArtifactReference reusableFileStatsReference,
+    List<ReusableStatsArtifactReference> reusableAuxiliaryStatsReferences,
+    ReusableIndexArtifactReference reusableIndexArtifactReference,
+    List<ReusableArtifactBundleSelection> reusableArtifactBundleSelections) {
 
   public ReconcileFileExecutionPlan {
     filePath = filePath == null ? "" : filePath.trim();
@@ -54,6 +58,16 @@ public record ReconcileFileExecutionPlan(
         reusableIndexArtifact == null
             ? IndexArtifactRecord.getDefaultInstance()
             : reusableIndexArtifact;
+    reusableAuxiliaryStatsReferences =
+        reusableAuxiliaryStatsReferences == null
+            ? List.of()
+            : List.copyOf(reusableAuxiliaryStatsReferences);
+    reusableArtifactBundleSelections =
+        reusableArtifactBundleSelections == null
+            ? List.of()
+            : reusableArtifactBundleSelections.stream()
+                .filter(selection -> selection != null && !selection.isEmpty())
+                .toList();
   }
 
   public ReconcileFileExecutionPlan(
@@ -80,7 +94,11 @@ public record ReconcileFileExecutionPlan(
         Map.of(),
         TargetStatsRecord.getDefaultInstance(),
         List.of(),
-        IndexArtifactRecord.getDefaultInstance());
+        IndexArtifactRecord.getDefaultInstance(),
+        null,
+        List.of(),
+        null,
+        List.of());
   }
 
   public static ReconcileFileExecutionPlan of(
@@ -135,7 +153,11 @@ public record ReconcileFileExecutionPlan(
         Map.of(),
         TargetStatsRecord.getDefaultInstance(),
         List.of(),
-        IndexArtifactRecord.getDefaultInstance());
+        IndexArtifactRecord.getDefaultInstance(),
+        null,
+        List.of(),
+        null,
+        List.of());
   }
 
   public ReconcileFileExecutionPlan withReuse(
@@ -163,17 +185,89 @@ public record ReconcileFileExecutionPlan(
         auxiliaryStatsFingerprints,
         reusableFileStats,
         reusableAuxiliaryStats,
-        reusableIndexArtifact);
+        reusableIndexArtifact,
+        null,
+        List.of(),
+        null,
+        List.of());
+  }
+
+  public ReconcileFileExecutionPlan withReuseReferences(
+      String sourceFingerprint,
+      String indexSourceFingerprint,
+      String statsCaptureSignature,
+      String indexCaptureSignature,
+      Map<String, String> auxiliaryStatsFingerprints,
+      ReusableStatsArtifactReference reusableFileStatsReference,
+      List<ReusableStatsArtifactReference> reusableAuxiliaryStatsReferences,
+      ReusableIndexArtifactReference reusableIndexArtifactReference) {
+    return new ReconcileFileExecutionPlan(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        contentIdentity,
+        sourceFingerprint,
+        indexSourceFingerprint,
+        statsCaptureSignature,
+        indexCaptureSignature,
+        auxiliaryStatsFingerprints,
+        TargetStatsRecord.getDefaultInstance(),
+        List.of(),
+        IndexArtifactRecord.getDefaultInstance(),
+        reusableFileStatsReference,
+        reusableAuxiliaryStatsReferences,
+        reusableIndexArtifactReference,
+        List.of());
+  }
+
+  public ReconcileFileExecutionPlan withReuseBundleSelections(
+      String sourceFingerprint,
+      String indexSourceFingerprint,
+      String statsCaptureSignature,
+      String indexCaptureSignature,
+      Map<String, String> auxiliaryStatsFingerprints,
+      List<ReusableArtifactBundleSelection> selections) {
+    return new ReconcileFileExecutionPlan(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        contentIdentity,
+        sourceFingerprint,
+        indexSourceFingerprint,
+        statsCaptureSignature,
+        indexCaptureSignature,
+        auxiliaryStatsFingerprints,
+        TargetStatsRecord.getDefaultInstance(),
+        List.of(),
+        IndexArtifactRecord.getDefaultInstance(),
+        null,
+        List.of(),
+        null,
+        selections);
   }
 
   public boolean reusesFileStats() {
-    return reusableFileStats != null
-        && !reusableFileStats.equals(TargetStatsRecord.getDefaultInstance());
+    return reusableArtifactBundleSelections.stream()
+            .anyMatch(selection -> selection.statsFilePaths().contains(filePath))
+        || (reusableFileStatsReference != null && !reusableFileStatsReference.isEmpty())
+        || (reusableFileStats != null
+            && !reusableFileStats.equals(TargetStatsRecord.getDefaultInstance()));
   }
 
   public boolean reusesIndexArtifact() {
-    return reusableIndexArtifact != null
-        && !reusableIndexArtifact.equals(IndexArtifactRecord.getDefaultInstance());
+    return reusableArtifactBundleSelections.stream()
+            .anyMatch(selection -> selection.indexFilePaths().contains(filePath))
+        || (reusableIndexArtifactReference != null && !reusableIndexArtifactReference.isEmpty())
+        || (reusableIndexArtifact != null
+            && !reusableIndexArtifact.equals(IndexArtifactRecord.getDefaultInstance()));
   }
 
   public record DeltaDeletionVector(

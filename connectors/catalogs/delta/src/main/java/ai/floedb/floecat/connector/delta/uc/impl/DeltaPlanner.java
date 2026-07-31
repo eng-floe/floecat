@@ -312,7 +312,9 @@ final class DeltaPlanner implements Planner<String> {
                         + ":"
                         + add.getBaseRowId().map(String::valueOf).orElse("")
                         + ":"
-                        + add.getDefaultRowCommitVersion().map(String::valueOf).orElse("")));
+                        + add.getDefaultRowCommitVersion().map(String::valueOf).orElse("")
+                        + ":"
+                        + rowCount));
           }
         }
       }

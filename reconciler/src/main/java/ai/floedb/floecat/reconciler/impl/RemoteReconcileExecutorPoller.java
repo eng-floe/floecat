@@ -463,6 +463,7 @@ public class RemoteReconcileExecutorPoller {
   }
 
   void runLease(LeaseAssignment assignment) {
+    Thread leaseExecutionThread = Thread.currentThread();
     ReconcileExecutor executor = assignment.executor();
     RemoteLeasedJob remoteLease = assignment.lease();
     var lease = remoteLease.lease();
@@ -494,16 +495,43 @@ public class RemoteReconcileExecutorPoller {
     AtomicBoolean cancellationRequested = new AtomicBoolean(false);
     AtomicBoolean completionStarted = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(false);
+    AtomicBoolean leaseDeadlineReported = new AtomicBoolean(false);
     AtomicLong lastLeaseConfirmedAtMs = new AtomicLong(started);
     AtomicLong nextHeartbeatExpectedAtMs = new AtomicLong(started + heartbeatEveryMs);
+    Runnable interruptExpiredExecution =
+        () -> {
+          if (!completionStarted.get()) {
+            leaseExecutionThread.interrupt();
+          }
+        };
     ProgressSnapshot progress = new ProgressSnapshot();
     ScheduledExecutorService heartbeatExecutor =
-        Executors.newSingleThreadScheduledExecutor(
+        Executors.newScheduledThreadPool(
+            2,
             runnable -> {
               Thread thread = new Thread(runnable, "reconcile-lease-heartbeat-" + lease.jobId);
               thread.setDaemon(true);
               return thread;
             });
+    Runnable leaseDeadlineTask =
+        () -> {
+          if (leaseInvalid.get() || completionStarted.get()) {
+            return;
+          }
+          if (leaseDefinitelyExpired(
+              leaseMs,
+              leaseSafetyMarginMs,
+              lastLeaseConfirmedAtMs.get(),
+              System.currentTimeMillis())) {
+            leaseStateUncertain.set(true);
+            if (leaseDeadlineReported.compareAndSet(false, true)) {
+              LOG.warnf(
+                  "Remote reconcile lease confirmation deadline expired for job %s executor=%s; interrupting execution",
+                  lease.jobId, executor.id());
+            }
+            interruptExpiredExecution.run();
+          }
+        };
     Runnable heartbeatTask =
         () -> {
           if (leaseInvalid.get() || completionStarted.get()) {
@@ -532,11 +560,15 @@ public class RemoteReconcileExecutorPoller {
                     lease.jobId, executor.id(), response.cancellationRequested());
               }
               leaseInvalid.set(true);
+              interruptExpiredExecution.run();
             } else {
               lastLeaseConfirmedAtMs.set(System.currentTimeMillis());
               leaseStateUncertain.set(false);
             }
             cancellationRequested.set(response.cancellationRequested());
+            if (response.cancellationRequested()) {
+              interruptExpiredExecution.run();
+            }
           } catch (RuntimeException e) {
             long heartbeatDurationMs = System.currentTimeMillis() - heartbeatStartedAtMs;
             if (isTransportFailure(e)
@@ -563,9 +595,11 @@ public class RemoteReconcileExecutorPoller {
                   executor.id(),
                   heartbeatDurationMs,
                   scheduleDelayMs);
+              interruptExpiredExecution.run();
               return;
             }
             leaseInvalid.set(true);
+            interruptExpiredExecution.run();
             LOG.warnf(
                 e,
                 "Remote reconcile lease heartbeat failed for job %s executor=%s durationMs=%d scheduleDelayMs=%d",
@@ -591,6 +625,7 @@ public class RemoteReconcileExecutorPoller {
               lastLeaseConfirmedAtMs.get(),
               System.currentTimeMillis())) {
             leaseStateUncertain.set(true);
+            return true;
           }
           long now = System.currentTimeMillis();
           if (now >= nextCancelCheckAtMs[0]) {
@@ -613,7 +648,7 @@ public class RemoteReconcileExecutorPoller {
                       "Remote reconcile cancellation state is uncertain for job %s executor=%s",
                       lease.jobId,
                       executor.id());
-                  return false;
+                  return true;
                 }
                 leaseInvalid.set(true);
                 throw e;
@@ -621,7 +656,7 @@ public class RemoteReconcileExecutorPoller {
             }
             nextCancelCheckAtMs[0] = now + cancelCheckEveryMs;
           }
-          return cancellationRequested.get();
+          return cancellationRequested.get() || leaseStateUncertain.get();
         };
 
     try {
@@ -636,6 +671,8 @@ public class RemoteReconcileExecutorPoller {
       }
       heartbeatExecutor.scheduleAtFixedRate(
           heartbeatTask, heartbeatEveryMs, heartbeatEveryMs, TimeUnit.MILLISECONDS);
+      heartbeatExecutor.scheduleAtFixedRate(
+          leaseDeadlineTask, cancelCheckEveryMs, cancelCheckEveryMs, TimeUnit.MILLISECONDS);
       if (!leaseStillCompletable(
           remoteLease,
           lease,
@@ -668,7 +705,7 @@ public class RemoteReconcileExecutorPoller {
             heartbeatExecutor);
         return;
       }
-      if (leaseInvalid.get() || interrupted.get()) {
+      if (leaseInvalid.get() || leaseStateUncertain.get() || interrupted.get()) {
         return;
       }
       var result =

@@ -116,6 +116,68 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             Set.of("customer_id", "customer_name")));
   }
 
+  @Test
+  void reusableBundleMetadataProvidesManifestCoverageWithoutReadingTheBundle() {
+    String statsPrefix = "/stats/group-1/";
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .addFileGroups(
+                FileGroupResultDescriptor.newBuilder()
+                    .setGroupId("group-1")
+                    .setStatsObjectPrefix(statsPrefix))
+            .setFileStatsRecordCount(2)
+            .setIndexArtifactCount(1)
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(
+                        StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("reuse-bundle:group-1")
+                            .setPayloadUri(statsPrefix + "reuse-bundles/bundle.pb")
+                            .setPayloadBytes(123)
+                            .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata
+                            .getDefaultInstance())
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata
+                            .getDefaultInstance())
+                    .addIndexArtifacts(
+                        ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata
+                            .getDefaultInstance()))
+            .build();
+
+    assertDoesNotThrow(
+        () -> LeasedSnapshotFinalizeExecutionService.validateReusableArtifactCoverage(manifest));
+  }
+
+  @Test
+  void reusableBundleMetadataMustCoverDeclaredManifestArtifacts() {
+    String statsPrefix = "/stats/group-1/";
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .addFileGroups(
+                FileGroupResultDescriptor.newBuilder()
+                    .setGroupId("group-1")
+                    .setStatsObjectPrefix(statsPrefix))
+            .setFileStatsRecordCount(2)
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(
+                        StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("reuse-bundle:group-1")
+                            .setPayloadUri(statsPrefix + "reuse-bundles/bundle.pb")
+                            .setPayloadBytes(123)
+                            .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata
+                            .getDefaultInstance()))
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LeasedSnapshotFinalizeExecutionService.validateReusableArtifactCoverage(manifest));
+  }
+
   private static final String ACCOUNT_ID = "acct";
   private static final String FINALIZE_JOB_ID = "finalize-job";
   private static final String LEASE_EPOCH = "lease-1";
@@ -148,6 +210,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.persistence = persistence;
     service.indexArtifactRepository = mock(IndexArtifactRepository.class);
     service.statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    service.snapshotRepo = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
+    service.tableRootWriter = mock(ai.floedb.floecat.service.catalog.impl.TableRootWriter.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -156,6 +220,17 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyString(), anyString(), anyString(), anyString(), any(), any()))
         .thenReturn(true);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(service.snapshotRepo.recordReuseManifest(
+            any(), anyLong(), anyString(), anyLong(), anyString()))
+        .thenReturn(
+            ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+                .setTableId(
+                    ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                        .setAccountId(ACCOUNT_ID)
+                        .setId(TABLE_ID)
+                        .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE))
+                .setSnapshotId(SNAPSHOT_ID)
+                .build());
     when(jobs.beginSnapshotFinalizeCommit(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(service.statsStore.isPreparedFileGroup(
             any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
@@ -222,13 +297,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             + "/"
             + HexFormat.of().formatHex(statsSha256)
             + ".pb";
-    StatsObjectDescriptor statsObject =
-        StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId(targetStorageId)
-            .setPayloadUri(statsUri)
-            .setPayloadBytes(3)
-            .setPayloadSha256(ByteString.copyFrom(statsSha256))
-            .build();
     byte[] payloadBytes = new byte[] {7};
     String payloadUri = "/file-group-result.pb";
     FileGroupResultDescriptor fileGroup =
@@ -254,6 +322,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setFileStatsRecordCount(1)
             .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32]))
             .build();
+    String bundleUri = statsPrefix + "reuse-bundles/bundle.pb";
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
@@ -268,6 +337,19 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .addFileGroups(fileGroup)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(
+                        StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("reuse-bundle:group-1")
+                            .setPayloadUri(bundleUri)
+                            .setPayloadBytes(123)
+                            .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                            .setFilePath("s3://source/file.parquet")
+                            .setSourceFingerprint("source-fingerprint")
+                            .setStatsCaptureSignature("stats-signature")))
             .build();
     byte[] manifestBytes = manifest.toByteArray();
     SnapshotCaptureManifestDescriptor descriptor =
@@ -288,6 +370,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(blobs, times(1)).get(manifestUri());
     verify(blobs, never()).get(payloadUri);
     verify(blobs, never()).get(statsUri);
+    verify(blobs, never()).get(bundleUri);
     verify(persistence)
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());
@@ -337,6 +420,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .addFileGroups(fileGroup)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .addReusableFileStatsRecords(
+                ai.floedb.floecat.catalog.rpc.TargetStatsRecord.getDefaultInstance())
             .build()
             .toByteArray();
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView(1, 1)));
@@ -511,7 +596,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             eq(publicationFence));
     publicationOrder
         .verify(service.indexArtifactRepository)
-        .completePreparedGenerationActivation(any(), eq(SNAPSHOT_ID), eq(preparedActivation));
+        .completePreparedGenerationActivation(
+            any(), eq(SNAPSHOT_ID), eq(preparedActivation), eq(true));
   }
 
   @Test
@@ -553,7 +639,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), anyString(), any(), any(), eq(secondFence));
     verify(service.indexArtifactRepository)
-        .completePreparedGenerationActivation(any(), eq(SNAPSHOT_ID), eq(second));
+        .completePreparedGenerationActivation(any(), eq(SNAPSHOT_ID), eq(second), eq(true));
   }
 
   @Test

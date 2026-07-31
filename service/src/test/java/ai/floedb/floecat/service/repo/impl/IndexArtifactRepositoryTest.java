@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -55,6 +56,51 @@ class IndexArtifactRepositoryTest {
 
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
+
+  @Test
+  void bundledIndexWrappersResolveAllTargetsWithOneBlobRead() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
+    IndexArtifactRepository repository =
+        new IndexArtifactRepository(
+            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    long snapshotId = 714L;
+    String generationId = "full-rescan-bundled";
+    IndexArtifactRecord first = indexRecord(snapshotId, "s3://bucket/first.parquet");
+    IndexArtifactRecord second = indexRecord(snapshotId, "s3://bucket/second.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(first)
+            .addIndexArtifacts(second)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String workerPrefix = "/worker-output/index-artifacts/";
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        workerPrefix,
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/first.parquet", bundleUri, bundle.length, digest),
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/second.parquet", bundleUri, bundle.length, digest)));
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        captureManifest(snapshotId, 2, 2, "customer_id").toByteArray());
+
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, first.getTarget()))
+        .contains(first);
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, second.getTarget()))
+        .contains(second);
+    verify(blobs, times(1)).get(bundleUri);
+  }
 
   @Test
   void prewrittenReferencesUseOptimisticPointerBatchesWithoutReads() {

@@ -211,6 +211,32 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
+  /** Records finalized reuse-manifest metadata without replacing concurrent snapshot updates. */
+  public Snapshot recordReuseManifest(
+      ResourceId tableId, long snapshotId, String uri, long bytes, String sha256) {
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      MutationMeta meta = repo.pointerMetaForSafe(key);
+      Snapshot current =
+          repo.getByKey(key)
+              .orElseThrow(() -> new IllegalStateException("snapshot not found: " + snapshotId));
+      Snapshot next =
+          current.toBuilder()
+              .putSummary(ai.floedb.floecat.reconciler.impl.SnapshotReuseManifestMetadata.URI, uri)
+              .putSummary(
+                  ai.floedb.floecat.reconciler.impl.SnapshotReuseManifestMetadata.BYTES,
+                  Long.toString(bytes))
+              .putSummary(
+                  ai.floedb.floecat.reconciler.impl.SnapshotReuseManifestMetadata.SHA256, sha256)
+              .build();
+      if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
+        return next;
+      }
+    }
+    throw new IllegalStateException(
+        "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
+  }
+
   /**
    * Loads a snapshot directly from its immutable blob URI, bypassing the (table, snapshot id)
    * pointer. Used to read the exact snapshot blob a query pinned: an in-place UpdateSnapshot on the

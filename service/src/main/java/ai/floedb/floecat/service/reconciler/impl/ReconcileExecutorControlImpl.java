@@ -1124,7 +1124,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         fromProtoFileGroupResultDescriptor(
                             request.getSuccess().getResultDescriptor()),
                         request.getSuccess().getFileStatsList(),
-                        request.getSuccess().getIndexArtifactsList());
+                        request.getSuccess().getIndexArtifactsList(),
+                        request.getSuccess().hasArtifactBundle()
+                            ? request.getSuccess().getArtifactBundle()
+                            : null);
                 return CommitLeasedFileGroupResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -1448,16 +1451,32 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setStatsCaptureSignature(plan.statsCaptureSignature())
             .setIndexCaptureSignature(plan.indexCaptureSignature())
             .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
+            .addAllReusableArtifactBundleSelections(
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(ReconcileExecutorControlImpl::toProto)
+                    .toList())
             .addAllReusableAuxiliaryStats(plan.reusableAuxiliaryStats())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(ReconcileExecutorControlImpl::toProtoIcebergDeleteFile)
                     .toList());
-    if (plan.reusesFileStats()) {
+    if (!plan.reusableFileStats()
+        .equals(ai.floedb.floecat.catalog.rpc.TargetStatsRecord.getDefaultInstance())) {
       builder.setReusableFileStats(plan.reusableFileStats());
     }
-    if (plan.reusesIndexArtifact()) {
+    if (!plan.reusableIndexArtifact()
+        .equals(ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.getDefaultInstance())) {
       builder.setReusableIndexArtifact(plan.reusableIndexArtifact());
+    }
+    if (plan.reusableFileStatsReference() != null) {
+      builder.setReusableFileStatsReference(toProto(plan.reusableFileStatsReference()));
+    }
+    builder.addAllReusableAuxiliaryStatsReferences(
+        plan.reusableAuxiliaryStatsReferences().stream()
+            .map(ReconcileExecutorControlImpl::toProto)
+            .toList());
+    if (plan.reusableIndexArtifactReference() != null) {
+      builder.setReusableIndexArtifactReference(toProto(plan.reusableIndexArtifactReference()));
     }
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
@@ -1524,7 +1543,106 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         plan.getAuxiliaryStatsFingerprintsMap(),
         plan.getReusableFileStats(),
         plan.getReusableAuxiliaryStatsList(),
-        plan.getReusableIndexArtifact());
+        plan.getReusableIndexArtifact(),
+        plan.hasReusableFileStatsReference()
+            ? fromProto(plan.getReusableFileStatsReference())
+            : null,
+        plan.getReusableAuxiliaryStatsReferencesList().stream()
+            .map(ReconcileExecutorControlImpl::fromProto)
+            .toList(),
+        plan.hasReusableIndexArtifactReference()
+            ? fromProto(plan.getReusableIndexArtifactReference())
+            : null,
+        plan.getReusableArtifactBundleSelectionsList().stream()
+            .map(ReconcileExecutorControlImpl::fromProto)
+            .toList());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection selection) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(selection.targetStorageId())
+                .setPayloadUri(selection.payloadUri())
+                .setPayloadBytes(selection.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(selection.payloadSha256())))
+        .addAllStatsFilePaths(selection.statsFilePaths())
+        .addAllIndexFilePaths(selection.indexFilePaths())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection selection) {
+    var artifact = selection.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection(
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        selection.getStatsFilePathsList(),
+        selection.getIndexFilePathsList());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference reference) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference.newBuilder()
+        .setFilePath(reference.filePath())
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(reference.targetStorageId())
+                .setPayloadUri(reference.payloadUri())
+                .setPayloadBytes(reference.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(reference.payloadSha256())))
+        .setSourceFingerprint(reference.sourceFingerprint())
+        .setStatsCaptureSignature(reference.statsCaptureSignature())
+        .addAllRealizedStatsSelectors(reference.realizedStatsSelectors())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference reference) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference.newBuilder()
+        .setFilePath(reference.filePath())
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(reference.targetStorageId())
+                .setPayloadUri(reference.payloadUri())
+                .setPayloadBytes(reference.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(reference.payloadSha256())))
+        .setSourceFingerprint(reference.sourceFingerprint())
+        .setIndexCaptureSignature(reference.indexCaptureSignature())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getStatsCaptureSignature(),
+        reference.getRealizedStatsSelectorsList());
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getIndexCaptureSignature());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(

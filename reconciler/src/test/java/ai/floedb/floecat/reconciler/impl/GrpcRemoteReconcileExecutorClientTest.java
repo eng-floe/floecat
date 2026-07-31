@@ -622,20 +622,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     ArgumentCaptor<SubmitLeasedPlanSnapshotResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanSnapshotResultRequest.class);
     verify(chunkStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
-    SubmitLeasedPlanSnapshotResultRequest chunkRequest = requestCaptor.getValue();
-    assertThat(chunkRequest.hasChunk()).isTrue();
-    assertThat(chunkRequest.getChunk().getChunkIndex()).isZero();
-    assertThat(chunkRequest.getChunk().getFileGroupJobsCount()).isEqualTo(1);
-    assertThat(chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask().getGroupId())
-        .isEqualTo("group-1");
-    var protoTask = chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask();
-    assertThat(protoTask.getExecutionSchemaJson()).contains("schema-id");
-    assertThat(protoTask.getFileExecutionPlans(0).getFileFormat()).isEqualTo("PARQUET");
-    assertThat(
-            protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getEqualityFieldIdsList())
-        .containsExactly(7);
-
-    verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
+    verify(successStub, never()).submitLeasedPlanSnapshotResult(any());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
     assertThat(success.getSnapshotTask().getTableId()).isEqualTo("table-1");
     assertThat(success.getSnapshotTask().getSnapshotId()).isEqualTo(55L);
@@ -647,7 +634,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         .isEqualTo(
             SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)));
     assertThat(success.getSnapshotTask().getFileGroupCount()).isEqualTo(1);
-    assertThat(success.getChunkCount()).isEqualTo(1);
+    assertThat(success.getChunkCount()).isZero();
   }
 
   @Test
@@ -1208,7 +1195,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     var descriptor = client.publishFileStats(payload, record);
     var result =
         new StandaloneFileGroupExecutionResult(
-            "result-1", List.of(), java.util.Collections.nCopies(12, descriptor), List.of());
+            "result-1", List.of(), List.of(record), List.of(descriptor), List.of());
 
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
@@ -1216,7 +1203,12 @@ class GrpcRemoteReconcileExecutorClientTest {
         ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
     verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
-    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(12);
+    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
+    assertThat(success.getFileStatsCount()).isZero();
+    assertThat(success.getIndexArtifactsCount()).isZero();
+    assertThat(success.hasArtifactBundle()).isTrue();
+    assertThat(success.getArtifactBundle().getFileStatsTargetStorageIdsCount()).isEqualTo(1);
+    assertThat(success.getSerializedSize()).isLessThan(4 * 1024);
   }
 
   @Test
@@ -1264,9 +1256,14 @@ class GrpcRemoteReconcileExecutorClientTest {
     String payloadUri = requestCaptor.getValue().getSuccess().getResultDescriptor().getPayloadUri();
     ArgumentCaptor<String> uriCaptor = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);
-    verify(client.blobStore, times(2))
+    verify(client.blobStore, times(3))
         .put(uriCaptor.capture(), bytesCaptor.capture(), eq("application/x-protobuf"));
-    int metadataIndex = uriCaptor.getAllValues().get(0).equals(payloadUri) ? 1 : 0;
+    int metadataIndex =
+        java.util.stream.IntStream.range(0, uriCaptor.getAllValues().size())
+            .filter(
+                index -> uriCaptor.getAllValues().get(index).startsWith("/stats/index-artifacts/"))
+            .findFirst()
+            .orElseThrow();
     assertThat(uriCaptor.getAllValues().get(metadataIndex)).startsWith("/stats/index-artifacts/");
     assertThat(
             IndexArtifactRecord.parseFrom(bytesCaptor.getAllValues().get(metadataIndex))

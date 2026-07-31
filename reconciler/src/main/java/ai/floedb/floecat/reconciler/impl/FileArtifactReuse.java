@@ -48,6 +48,24 @@ public final class FileArtifactReuse {
     digest.add(plan.partitionDataJson());
     digest.add(plan.partitionSpecId());
     digest.add(executionSchemaJson);
+    ReconcileFileExecutionPlan.DeltaDeletionVector dv = plan.deletionVector();
+    digest.add(dv != null);
+    if (dv != null) {
+      digest.add(dv.storageType());
+      digest.add(dv.pathOrInlineDv());
+      digest.add(dv.offset() == null ? "" : Integer.toString(dv.offset()));
+      digest.add(dv.sizeInBytes());
+      digest.add(dv.cardinality());
+    }
+    Map<String, String> auxiliaryFingerprints = auxiliaryStatsFingerprints(plan);
+    digest.add(auxiliaryFingerprints.size());
+    auxiliaryFingerprints.entrySet().stream()
+        .sorted(Map.Entry.comparingByKey())
+        .forEach(
+            entry -> {
+              digest.add(entry.getKey());
+              digest.add(entry.getValue());
+            });
     return digest.finish();
   }
 
@@ -238,6 +256,7 @@ public final class FileArtifactReuse {
       TargetStatsRecord record, ReconcileFileExecutionPlan plan) {
     if (record == null
         || !record.hasFile()
+        || hasDeleteContext(plan)
         || !plan.contentIdentity().startsWith("iceberg-data-v1:")
         || !plan.filePath().equals(record.getFile().getFilePath())
         || plan.fileSizeInBytes() != record.getFile().getSizeBytes()) {
@@ -255,12 +274,35 @@ public final class FileArtifactReuse {
 
   public static boolean legacyCompatibleDeltaStats(
       TargetStatsRecord record, ReconcileFileExecutionPlan plan, String historicalContentIdentity) {
+    Long physicalRowCount = deltaContentRowCount(plan.contentIdentity());
     return record != null
         && record.hasFile()
+        && !hasDeleteContext(plan)
         && plan.contentIdentity().startsWith("delta-add-v1:")
         && plan.contentIdentity().equals(historicalContentIdentity)
         && plan.filePath().equals(record.getFile().getFilePath())
-        && plan.fileSizeInBytes() == record.getFile().getSizeBytes();
+        && plan.fileSizeInBytes() == record.getFile().getSizeBytes()
+        && physicalRowCount != null
+        && physicalRowCount == record.getFile().getRowCount();
+  }
+
+  private static boolean hasDeleteContext(ReconcileFileExecutionPlan plan) {
+    return plan.deletionVector() != null || !plan.icebergDeleteFiles().isEmpty();
+  }
+
+  private static Long deltaContentRowCount(String encoded) {
+    if (encoded == null || !encoded.startsWith("delta-add-v1:")) {
+      return null;
+    }
+    String[] parts = encoded.substring("delta-add-v1:".length()).split(":", -1);
+    if (parts.length != 4) {
+      return null;
+    }
+    try {
+      return Math.max(0L, Long.parseLong(parts[3]));
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 
   private static IcebergContentIdentity parseIcebergContentIdentity(String encoded) {

@@ -19,11 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CONNECTOR;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
-import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
-import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -36,10 +32,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
-import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
-import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
@@ -54,6 +47,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
+import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -72,11 +66,10 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
@@ -88,8 +81,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject IdempotencyRepository idempotencyStore;
-  LegacyFileIdentityResolverFactory legacyFileIdentityResolverFactory =
-      LeasedFileGroupExecutionService::openLegacyFileIdentityResolver;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -134,29 +125,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             ? new IndexArtifactRepository.GenerationInput(
                 capturedIndexInput.predecessor(), List.of())
             : capturedIndexInput;
-    LegacyFileIdentityResolver legacyIdentityResolver =
-        lease.fullRescan
-            ? LegacyFileIdentityResolver.NONE
-            : legacyFileIdentityResolverFactory.open(
-                resolvedConnector,
-                sourceNamespace,
-                sourceTable,
-                tableId,
-                Set.copyOf(plannedTask.filePaths()));
-    List<ReconcileFileExecutionPlan> executionPlans;
-    try {
-      executionPlans =
-          enrichExecutionPlans(
-              tableId,
-              plannedTask.snapshotId(),
-              plannedTask.executionSchemaJson(),
-              plannedTask.fileExecutionPlans(),
-              capturePolicy,
-              lease.fullRescan,
-              legacyIdentityResolver);
-    } finally {
-      legacyIdentityResolver.close();
-    }
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -180,7 +148,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             lease.leaseEpoch),
         plannedTask.filePaths(),
         plannedTask.executionSchemaJson(),
-        executionPlans,
+        plannedTask.fileExecutionPlans(),
         capturePolicy,
         new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
             indexInput.predecessor().generationId(),
@@ -188,282 +156,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             indexInput.predecessor().captureManifestUri(),
             indexInput.predecessor().captureManifestPointerVersion()),
         indexInput.artifacts());
-  }
-
-  private List<ReconcileFileExecutionPlan> enrichExecutionPlans(
-      ResourceId tableId,
-      long snapshotId,
-      String executionSchemaJson,
-      List<ReconcileFileExecutionPlan> plans,
-      ReconcileCapturePolicy capturePolicy,
-      boolean fullRescan,
-      LegacyFileIdentityResolver legacyIdentityResolver) {
-    String statsSignature = FileArtifactReuse.statsCaptureSignature(capturePolicy);
-    String indexSignature = FileArtifactReuse.indexCaptureSignature(capturePolicy);
-    boolean requestsStats =
-        !FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(capturePolicy).isEmpty();
-    boolean requestsIndexes = capturePolicy.requestsIndexes();
-    List<ReconcileFileExecutionPlan> enriched = new ArrayList<>();
-    for (ReconcileFileExecutionPlan plan :
-        plans == null ? List.<ReconcileFileExecutionPlan>of() : plans) {
-      String sourceFingerprint = FileArtifactReuse.sourceFingerprint(plan, executionSchemaJson);
-      String indexSourceFingerprint = FileArtifactReuse.indexSourceFingerprint(plan);
-      Map<String, String> auxiliaryFingerprints =
-          FileArtifactReuse.auxiliaryStatsFingerprints(plan);
-      TargetStatsRecord reusableStats = TargetStatsRecord.getDefaultInstance();
-      List<TargetStatsRecord> reusableAuxiliaryStats = List.of();
-      IndexArtifactRecord reusableIndex = IndexArtifactRecord.getDefaultInstance();
-      boolean hasContentIdentity = !plan.contentIdentity().isBlank();
-      TargetStatsRecord priorStats = null;
-      boolean migratedLegacyStats = false;
-      if (!fullRescan && hasContentIdentity && snapshotId >= 0L && requestsStats) {
-        priorStats =
-            statsStore
-                .getReusableTargetStats(
-                    tableId,
-                    StatsTargetIdentity.fileTarget(plan.filePath()),
-                    sourceFingerprint,
-                    statsSignature)
-                .orElse(null);
-        if (priorStats == null && legacyStatsPolicyCompatible(capturePolicy)) {
-          priorStats =
-              statsStore
-                  .findHistoricalTargetStats(
-                      tableId,
-                      StatsTargetIdentity.fileTarget(plan.filePath()),
-                      candidate ->
-                          legacyStatsCompatible(
-                              candidate, plan, capturePolicy, legacyIdentityResolver))
-                  .orElse(null);
-          migratedLegacyStats = priorStats != null;
-        }
-        if (FileArtifactReuse.compatibleStats(
-                priorStats, plan.filePath(), sourceFingerprint, statsSignature)
-            || migratedLegacyStats) {
-          reusableStats =
-              FileArtifactReuse.bindStatsToSnapshot(
-                  priorStats, tableId, snapshotId, sourceFingerprint, statsSignature);
-          if (migratedLegacyStats) {
-            reusableStats =
-                FileArtifactReuse.stampStats(
-                    reusableStats,
-                    sourceFingerprint,
-                    statsSignature,
-                    priorStats.getFile().getColumnsList().stream()
-                        .map(column -> "#" + column.getColumnId())
-                        .toList());
-          }
-        }
-        ArrayList<TargetStatsRecord> auxiliary = new ArrayList<>();
-        for (Map.Entry<String, String> entry : auxiliaryFingerprints.entrySet()) {
-          TargetStatsRecord priorAuxiliary =
-              statsStore
-                  .getReusableTargetStats(
-                      tableId,
-                      StatsTargetIdentity.fileTarget(entry.getKey()),
-                      entry.getValue(),
-                      statsSignature)
-                  .orElse(null);
-          auxiliary.add(
-              FileArtifactReuse.compatibleStats(
-                      priorAuxiliary, entry.getKey(), entry.getValue(), statsSignature)
-                  ? FileArtifactReuse.bindStatsToSnapshot(
-                      priorAuxiliary, tableId, snapshotId, entry.getValue(), statsSignature)
-                  : FileArtifactReuse.auxiliaryStatsRecord(
-                      plan, entry.getKey(), tableId, snapshotId, entry.getValue(), statsSignature));
-        }
-        reusableAuxiliaryStats = List.copyOf(auxiliary);
-      }
-      if (!fullRescan
-          && hasContentIdentity
-          && snapshotId >= 0L
-          && requestsIndexes
-          && priorStats == null) {
-        priorStats =
-            statsStore
-                .findHistoricalTargetStats(
-                    tableId,
-                    StatsTargetIdentity.fileTarget(plan.filePath()),
-                    candidate ->
-                        legacySourceIdentityCompatible(candidate, plan, legacyIdentityResolver))
-                .orElse(null);
-      }
-      if (!fullRescan && hasContentIdentity && snapshotId >= 0L && requestsIndexes) {
-        IndexTarget target =
-            IndexTarget.newBuilder()
-                .setFile(IndexFileTarget.newBuilder().setFilePath(plan.filePath()))
-                .build();
-        IndexArtifactRecord prior =
-            indexArtifactRepository
-                .getReusableIndexArtifact(tableId, target, indexSourceFingerprint, indexSignature)
-                .orElse(null);
-        if (prior == null && priorStats != null && legacyIndexPolicyCompatible(capturePolicy)) {
-          prior =
-              indexArtifactRepository
-                  .getIndexArtifact(tableId, priorStats.getSnapshotId(), target)
-                  .filter(candidate -> legacyIndexCompatible(candidate, plan, capturePolicy))
-                  .orElse(null);
-        }
-        if (FileArtifactReuse.compatibleIndex(
-                prior, plan.filePath(), indexSourceFingerprint, indexSignature)
-            || (priorStats != null && legacyIndexCompatible(prior, plan, capturePolicy))) {
-          reusableIndex =
-              FileArtifactReuse.bindIndexToSnapshot(
-                  prior, tableId, snapshotId, indexSourceFingerprint, indexSignature);
-        }
-      }
-      enriched.add(
-          plan.withReuse(
-              sourceFingerprint,
-              indexSourceFingerprint,
-              statsSignature,
-              indexSignature,
-              auxiliaryFingerprints,
-              reusableStats,
-              reusableAuxiliaryStats,
-              reusableIndex));
-    }
-    return List.copyOf(enriched);
-  }
-
-  private static boolean legacyStatsPolicyCompatible(ReconcileCapturePolicy policy) {
-    ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
-    if (!effective.properties().isEmpty()) {
-      return false;
-    }
-    if (!effective.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
-      return true;
-    }
-    Set<String> selectors = effective.selectorsForStats();
-    return !selectors.isEmpty()
-        && selectors.stream().allMatch(selector -> selector.startsWith("#"));
-  }
-
-  private static boolean legacyStatsCompatible(
-      TargetStatsRecord record,
-      ReconcileFileExecutionPlan plan,
-      ReconcileCapturePolicy policy,
-      LegacyFileIdentityResolver legacyIdentityResolver) {
-    if (!legacySourceIdentityCompatible(record, plan, legacyIdentityResolver)) {
-      return false;
-    }
-    Set<String> selectors = policy.selectorsForStats();
-    if (selectors.isEmpty()) {
-      return true;
-    }
-    Set<String> present =
-        record.getFile().getColumnsList().stream()
-            .map(column -> "#" + column.getColumnId())
-            .collect(java.util.stream.Collectors.toSet());
-    return present.containsAll(selectors);
-  }
-
-  private static boolean legacySourceIdentityCompatible(
-      TargetStatsRecord record,
-      ReconcileFileExecutionPlan plan,
-      LegacyFileIdentityResolver legacyIdentityResolver) {
-    if (FileArtifactReuse.legacyCompatibleIcebergStats(record, plan)) {
-      return true;
-    }
-    if (record == null || !plan.contentIdentity().startsWith("delta-add-v1:")) {
-      return false;
-    }
-    String historicalIdentity =
-        legacyIdentityResolver.contentIdentity(record.getSnapshotId(), plan.filePath()).orElse("");
-    return FileArtifactReuse.legacyCompatibleDeltaStats(record, plan, historicalIdentity);
-  }
-
-  private static boolean legacyIndexPolicyCompatible(ReconcileCapturePolicy policy) {
-    ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
-    return effective.properties().isEmpty() && !effective.selectorsForIndex().isEmpty();
-  }
-
-  private static boolean legacyIndexCompatible(
-      IndexArtifactRecord record, ReconcileFileExecutionPlan plan, ReconcileCapturePolicy policy) {
-    if (record == null
-        || !record.hasTarget()
-        || !record.getTarget().hasFile()
-        || !plan.filePath().equals(record.getTarget().getFile().getFilePath())
-        || record.getState() != ai.floedb.floecat.catalog.rpc.IndexArtifactState.IAS_READY
-        || record.getArtifactUri().isBlank()) {
-      return false;
-    }
-    Set<String> indexed =
-        java.util.Arrays.stream(record.getPropertiesOrDefault("indexed_columns", "").split(","))
-            .map(String::trim)
-            .filter(selector -> !selector.isBlank())
-            .collect(java.util.stream.Collectors.toSet());
-    return indexed.containsAll(policy.selectorsForIndex());
-  }
-
-  @FunctionalInterface
-  interface LegacyFileIdentityResolverFactory {
-    LegacyFileIdentityResolver open(
-        Connector connector,
-        String namespace,
-        String table,
-        ResourceId tableId,
-        Set<String> filePaths);
-  }
-
-  interface LegacyFileIdentityResolver {
-    LegacyFileIdentityResolver NONE =
-        new LegacyFileIdentityResolver() {
-          @Override
-          public java.util.Optional<String> contentIdentity(long snapshotId, String filePath) {
-            return java.util.Optional.empty();
-          }
-
-          @Override
-          public void close() {}
-        };
-
-    java.util.Optional<String> contentIdentity(long snapshotId, String filePath);
-
-    void close();
-  }
-
-  private static LegacyFileIdentityResolver openLegacyFileIdentityResolver(
-      Connector connector,
-      String namespace,
-      String table,
-      ResourceId tableId,
-      Set<String> filePaths) {
-    if (connector == null || connector.getKind() != ConnectorKind.CK_DELTA) {
-      return LegacyFileIdentityResolver.NONE;
-    }
-    try {
-      FloecatConnector source = ConnectorFactory.create(ConnectorConfigMapper.fromProto(connector));
-      Map<Long, Map<String, String>> bySnapshot = new HashMap<>();
-      return new LegacyFileIdentityResolver() {
-        @Override
-        public java.util.Optional<String> contentIdentity(long snapshotId, String filePath) {
-          Map<String, String> identities =
-              bySnapshot.computeIfAbsent(
-                  snapshotId,
-                  id -> {
-                    try {
-                      return source.snapshotFileContentIdentities(
-                          namespace, table, tableId, id, filePaths);
-                    } catch (RuntimeException ignored) {
-                      return Map.of();
-                    }
-                  });
-          return java.util.Optional.ofNullable(identities.get(filePath))
-              .filter(identity -> !identity.isBlank());
-        }
-
-        @Override
-        public void close() {
-          try {
-            source.close();
-          } catch (Exception ignored) {
-          }
-        }
-      };
-    } catch (RuntimeException ignored) {
-      return LegacyFileIdentityResolver.NONE;
-    }
   }
 
   private IndexArtifactRepository.GenerationInput pinnedIndexInput(
@@ -607,6 +299,19 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ReconcileFileGroupResultDescriptor descriptor,
       List<StatsObjectDescriptor> fileStats,
       List<StatsObjectDescriptor> indexArtifacts) {
+    return persistSuccess(
+        principalContext, jobId, leaseEpoch, resultId, descriptor, fileStats, indexArtifacts, null);
+  }
+
+  public boolean persistSuccess(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      ReconcileFileGroupResultDescriptor descriptor,
+      List<StatsObjectDescriptor> fileStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      FileGroupArtifactBundleDescriptor artifactBundle) {
     String corr = principalContext.getCorrelationId();
     String requiredResultId = requireResultId(resultId);
     ReconcileJobStore.ReconcileJob existing = jobs.getLeaseView(jobId).orElse(null);
@@ -626,6 +331,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               descriptor,
               fileStats,
               indexArtifacts,
+              artifactBundle,
               publishesFileStats(existing.scope.capturePolicy()));
       stageArtifactReferences(staged);
       return true;
@@ -644,6 +350,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             validated,
             fileStats,
             indexArtifacts,
+            artifactBundle,
             publishesFileStats(lease.scope.capturePolicy()));
     boolean accepted =
         jobs.completeFileGroupSuccess(
@@ -746,10 +453,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ReconcileFileGroupResultDescriptor descriptor,
       List<StatsObjectDescriptor> fileStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      FileGroupArtifactBundleDescriptor artifactBundle,
       boolean publishFileStats) {
-    List<StatsObjectDescriptor> requiredFileStats = fileStats == null ? List.of() : fileStats;
-    List<StatsObjectDescriptor> requiredIndexArtifacts =
-        indexArtifacts == null ? List.of() : indexArtifacts;
+    ArtifactMappings mappings =
+        artifactMappings(fileStats, indexArtifacts, artifactBundle, descriptor);
+    List<StatsObjectDescriptor> requiredFileStats = mappings.fileStats();
+    List<StatsObjectDescriptor> requiredIndexArtifacts = mappings.indexArtifacts();
     if (descriptor.fileStatsRecordCount() != requiredFileStats.size()
         || descriptor.indexArtifactCount() != requiredIndexArtifacts.size()) {
       throw new IllegalArgumentException("file-group pointer counts do not match descriptor");
@@ -769,21 +478,28 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     String indexArtifactObjectPrefix = descriptor.statsObjectPrefix() + "index-artifacts/";
     List<StatsObjectDescriptor> descriptors = new ArrayList<>(requiredFileStats);
     descriptors.addAll(requiredIndexArtifacts);
-    HashSet<String> payloadUris = new HashSet<>();
+    Map<String, StatsObjectDescriptor> payloads = new LinkedHashMap<>();
     for (StatsObjectDescriptor object : descriptors) {
+      boolean bundled = object.getPayloadUri().contains("/reuse-bundles/");
+      StatsObjectDescriptor existingPayload = payloads.putIfAbsent(object.getPayloadUri(), object);
       if (object.getTargetStorageId().isBlank()
           || object.getPayloadUri().isBlank()
-          || !payloadUris.add(object.getPayloadUri())
+          || (existingPayload != null
+              && (!bundled
+                  || existingPayload.getPayloadBytes() != object.getPayloadBytes()
+                  || !existingPayload.getPayloadSha256().equals(object.getPayloadSha256())))
           || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
           || object.getPayloadBytes() <= 0L
           || object.getPayloadSha256().size() != 32) {
         throw new IllegalArgumentException("invalid target stats object descriptor");
       }
-      objects.add(
-          new StatsStore.PrewrittenStatsObject(
-              object.getPayloadUri(),
-              object.getPayloadBytes(),
-              object.getPayloadSha256().toByteArray()));
+      if (existingPayload == null) {
+        objects.add(
+            new StatsStore.PrewrittenStatsObject(
+                object.getPayloadUri(),
+                object.getPayloadBytes(),
+                object.getPayloadSha256().toByteArray()));
+      }
     }
     HashSet<String> statsTargets = new HashSet<>();
     HashSet<String> plannedStatsTargets = new HashSet<>();
@@ -834,7 +550,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             "index artifact target is outside the leased file group: "
                 + object.getTargetStorageId());
       }
-      if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)) {
+      if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)
+          && !object.getPayloadUri().contains("/reuse-bundles/")) {
         throw new IllegalArgumentException("invalid prewritten index artifact object prefix");
       }
       if (!indexTargets.add(object.getTargetStorageId())) {
@@ -865,6 +582,43 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         List.copyOf(objects),
         List.copyOf(statsReferences),
         List.copyOf(indexReferences));
+  }
+
+  private record ArtifactMappings(
+      List<StatsObjectDescriptor> fileStats, List<StatsObjectDescriptor> indexArtifacts) {}
+
+  private static ArtifactMappings artifactMappings(
+      List<StatsObjectDescriptor> fileStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      FileGroupArtifactBundleDescriptor artifactBundle,
+      ReconcileFileGroupResultDescriptor descriptor) {
+    List<StatsObjectDescriptor> legacyFileStats = fileStats == null ? List.of() : fileStats;
+    List<StatsObjectDescriptor> legacyIndexArtifacts =
+        indexArtifacts == null ? List.of() : indexArtifacts;
+    if (artifactBundle == null || !artifactBundle.hasArtifact()) {
+      return new ArtifactMappings(legacyFileStats, legacyIndexArtifacts);
+    }
+    if (!legacyFileStats.isEmpty() || !legacyIndexArtifacts.isEmpty()) {
+      throw new IllegalArgumentException(
+          "file-group commit must use either a compact artifact bundle or legacy mappings");
+    }
+    StatsObjectDescriptor artifact = artifactBundle.getArtifact();
+    if (artifact.getPayloadUri().isBlank()
+        || !artifact.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
+        || !artifact.getPayloadUri().contains("/reuse-bundles/")
+        || artifact.getPayloadBytes() <= 0L
+        || artifact.getPayloadSha256().size() != 32) {
+      throw new IllegalArgumentException("invalid file-group artifact bundle descriptor");
+    }
+    List<StatsObjectDescriptor> bundledFileStats =
+        artifactBundle.getFileStatsTargetStorageIdsList().stream()
+            .map(target -> artifact.toBuilder().setTargetStorageId(target).build())
+            .toList();
+    List<StatsObjectDescriptor> bundledIndexArtifacts =
+        artifactBundle.getIndexArtifactTargetStorageIdsList().stream()
+            .map(target -> artifact.toBuilder().setTargetStorageId(target).build())
+            .toList();
+    return new ArtifactMappings(bundledFileStats, bundledIndexArtifacts);
   }
 
   private static boolean publishesFileStats(ReconcileCapturePolicy policy) {
@@ -1054,6 +808,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         lease == null || lease.fileGroupTask == null
             ? ReconcileFileGroupTask.empty()
             : lease.fileGroupTask;
+    if (!task.isEmpty()
+        && !task.filePaths().isEmpty()
+        && task.fileExecutionPlans().size() == task.filePaths().size()) {
+      return task;
+    }
+    // Legacy fallback for child jobs staged before bounded execution plans were self-contained.
     if (jobs == null
         || lease == null
         || lease.parentJobId == null

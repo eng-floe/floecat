@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -41,6 +42,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionRequest;
@@ -59,6 +61,8 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
@@ -69,6 +73,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
@@ -90,6 +95,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -830,60 +836,9 @@ class GrpcRemoteReconcileExecutorClient
                 lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, directStats)
             : snapshotPlanBlobStore.persistPlan(
                 lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, fileGroupJobs);
-    List<List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob>> chunks = List.of();
-    if (persistedSnapshotTask.completionMode()
-        == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS) {
-      List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob> protoFileGroupJobs =
-          new ArrayList<>();
-      for (PlannedFileGroupJob fileGroupJob :
-          fileGroupJobs == null ? List.<PlannedFileGroupJob>of() : fileGroupJobs) {
-        if (fileGroupJob == null || fileGroupJob.fileGroupTask() == null) {
-          continue;
-        }
-        protoFileGroupJobs.add(
-            ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob.newBuilder()
-                .setScope(toProtoScope(fileGroupJob.scope(), lease.lease()))
-                .setFileGroupTask(toProtoFileGroupTask(fileGroupJob.fileGroupTask()))
-                .build());
-      }
-      try {
-        chunks = chunksBySerializedSize(protoFileGroupJobs, PLAN_CHILD_JOB_CHUNK_TARGET_BYTES);
-        for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
-          int submittedChunkIndex = chunkIndex;
-          List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob> chunk =
-              chunks.get(chunkIndex);
-          boolean accepted =
-              invokeWorkerControlMutationOnce(
-                  "submitLeasedPlanSnapshotResult",
-                  correlationId(lease),
-                  lease.lease().accountId,
-                  stub ->
-                      stub.submitLeasedPlanSnapshotResult(
-                              SubmitLeasedPlanSnapshotResultRequest.newBuilder()
-                                  .setJobId(lease.lease().jobId)
-                                  .setLeaseEpoch(lease.lease().leaseEpoch)
-                                  .setChunk(
-                                      SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder()
-                                          .setSnapshotTask(
-                                              toProtoSnapshotTask(persistedSnapshotTask))
-                                          .setChunkIndex(submittedChunkIndex)
-                                          .addAllFileGroupJobs(chunk)
-                                          .build())
-                                  .build())
-                          .getAccepted());
-          if (!accepted) {
-            return false;
-          }
-        }
-      } catch (RuntimeException error) {
-        throw leasePreconditionOrOriginal("submitLeasedPlanSnapshotResult", error);
-      }
-    }
     SubmitLeasedPlanSnapshotResultRequest.Success.Builder success =
         SubmitLeasedPlanSnapshotResultRequest.Success.newBuilder();
-    success
-        .setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask))
-        .setChunkCount(chunks.size());
+    success.setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask)).setChunkCount(0);
     try {
       return invokeWorkerControlMutationOnce(
           "submitLeasedPlanSnapshotResult",
@@ -1021,6 +976,37 @@ class GrpcRemoteReconcileExecutorClient
             .toList();
     List<StatsObjectDescriptor> fileStatsObjects = result.fileStats();
     List<TargetStatsRecord> partialAggregates = result.partialAggregateRecords();
+    List<IndexArtifactRecord> publishedIndexRecords =
+        result.stagedIndexArtifacts().stream()
+            .map(ReconcilerBackend.StagedIndexArtifact::record)
+            .filter(java.util.Objects::nonNull)
+            .toList();
+    boolean completeBundlePayload =
+        result.publishedFileStatsRecords().size() == fileStatsObjects.size()
+            && publishedIndexRecords.size() == indexArtifacts.size();
+    ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference reuseBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.getDefaultInstance();
+    if (completeBundlePayload) {
+      reuseBundle =
+          publishReuseBundle(payload, result.publishedFileStatsRecords(), publishedIndexRecords);
+      StatsObjectDescriptor bundleArtifact = reuseBundle.getArtifact();
+      fileStatsObjects =
+          fileStatsObjects.stream()
+              .map(
+                  artifact ->
+                      bundleArtifact.toBuilder()
+                          .setTargetStorageId(artifact.getTargetStorageId())
+                          .build())
+              .toList();
+      indexArtifacts =
+          indexArtifacts.stream()
+              .map(
+                  artifact ->
+                      bundleArtifact.toBuilder()
+                          .setTargetStorageId(artifact.getTargetStorageId())
+                          .build())
+              .toList();
+    }
     ReconcileFileGroupTask plannedTask =
         ReconcileFileGroupTask.of(
             payload.planId(),
@@ -1051,8 +1037,20 @@ class GrpcRemoteReconcileExecutorClient
             .addAllPartialAggregateRecords(partialAggregates)
             .addAllIndexArtifacts(indexArtifacts)
             .addAllFileStats(fileStatsObjects)
+            .addAllReusableFileStats(
+                reusableStatsReferences(result.publishedFileStatsRecords(), fileStatsObjects))
+            .addAllReusableIndexArtifacts(
+                reusableIndexReferences(
+                    result.stagedIndexArtifacts().stream()
+                        .map(ReconcilerBackend.StagedIndexArtifact::record)
+                        .filter(java.util.Objects::nonNull)
+                        .toList(),
+                    indexArtifacts))
             .addAllRealizedIndexSelectors(realizedIndexSelectors)
             .addAllRealizedStatsSelectors(result.realizedStatsSelectors());
+    if (reuseBundle.hasArtifact()) {
+      packedPayloadBuilder.setReusableArtifactBundle(reuseBundle);
+    }
     if (payload.capturePageIndex()) {
       packedPayloadBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
     }
@@ -1090,13 +1088,22 @@ class GrpcRemoteReconcileExecutorClient
       descriptorBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
     }
     FileGroupResultDescriptor descriptor = descriptorBuilder.build();
-    CommitLeasedFileGroupResultRequest.Success success =
+    CommitLeasedFileGroupResultRequest.Success.Builder successBuilder =
         CommitLeasedFileGroupResultRequest.Success.newBuilder()
             .setResultId(resultId)
-            .setResultDescriptor(descriptor)
-            .addAllFileStats(fileStatsObjects)
-            .addAllIndexArtifacts(indexArtifacts)
-            .build();
+            .setResultDescriptor(descriptor);
+    if (reuseBundle.hasArtifact()) {
+      successBuilder.setArtifactBundle(
+          FileGroupArtifactBundleDescriptor.newBuilder()
+              .setArtifact(reuseBundle.getArtifact())
+              .addAllFileStatsTargetStorageIds(
+                  fileStatsObjects.stream().map(StatsObjectDescriptor::getTargetStorageId).toList())
+              .addAllIndexArtifactTargetStorageIds(
+                  indexArtifacts.stream().map(StatsObjectDescriptor::getTargetStorageId).toList()));
+    } else {
+      successBuilder.addAllFileStats(fileStatsObjects).addAllIndexArtifacts(indexArtifacts);
+    }
+    CommitLeasedFileGroupResultRequest.Success success = successBuilder.build();
     return invokeWorkerControl(
         "commitLeasedFileGroupResult",
         correlationId(lease),
@@ -1110,6 +1117,79 @@ class GrpcRemoteReconcileExecutorClient
                         .setSuccess(success)
                         .build())
                 .getAccepted());
+  }
+
+  private ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference publishReuseBundle(
+      StandaloneFileGroupExecutionPayload execution,
+      List<TargetStatsRecord> stats,
+      List<IndexArtifactRecord> indexes) {
+    Map<String, TargetStatsRecord> uniqueStats = new java.util.TreeMap<>();
+    stats.forEach(
+        record ->
+            uniqueStats.putIfAbsent(
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(record.getTarget()),
+                record));
+    Map<String, IndexArtifactRecord> uniqueIndexes = new java.util.TreeMap<>();
+    indexes.forEach(
+        record ->
+            uniqueIndexes.putIfAbsent(
+                record.hasTarget() && record.getTarget().hasFile()
+                    ? record.getTarget().getFile().getFilePath()
+                    : "",
+                record));
+    var payload =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addAllFileStats(uniqueStats.values())
+            .addAllIndexArtifacts(uniqueIndexes.values())
+            .build();
+    byte[] bytes = payload.toByteArray();
+    byte[] digest = sha256(bytes);
+    String uri =
+        execution.statsObjectPrefix() + "reuse-bundles/" + HexFormat.of().formatHex(digest) + ".pb";
+    blobStore.put(uri, bytes, "application/x-protobuf");
+    var reference =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:" + execution.groupId())
+                    .setPayloadUri(uri)
+                    .setPayloadBytes(bytes.length)
+                    .setPayloadSha256(ByteString.copyFrom(digest)));
+    for (TargetStatsRecord record : uniqueStats.values()) {
+      reference.addFileStats(
+          ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+              .setFilePath(
+                  record.hasTarget() && record.getTarget().hasFile()
+                      ? record.getTarget().getFile().getFilePath()
+                      : "")
+              .setSourceFingerprint(
+                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+              .setStatsCaptureSignature(
+                  record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
+              .addAllRealizedStatsSelectors(
+                  java.util.Arrays.stream(
+                          record
+                              .getPropertiesOrDefault(
+                                  FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "")
+                              .split(","))
+                      .map(String::trim)
+                      .filter(value -> !value.isBlank())
+                      .toList()));
+    }
+    for (IndexArtifactRecord record : uniqueIndexes.values()) {
+      reference.addIndexArtifacts(
+          ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+              .setFilePath(
+                  record.hasTarget() && record.getTarget().hasFile()
+                      ? record.getTarget().getFile().getFilePath()
+                      : "")
+              .setSourceFingerprint(
+                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+              .setIndexCaptureSignature(
+                  record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, "")));
+    }
+    return reference.build();
   }
 
   @Override
@@ -1301,8 +1381,12 @@ class GrpcRemoteReconcileExecutorClient
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
+      List<ReusableStatsArtifactReference> reusableFileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<ReusableIndexArtifactReference> reusableIndexArtifacts,
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
+          reusableArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor) {
@@ -1328,6 +1412,10 @@ class GrpcRemoteReconcileExecutorClient
         fileStats == null
             ? List.of()
             : fileStats.stream().filter(java.util.Objects::nonNull).toList();
+    List<ReusableStatsArtifactReference> stableReusableFileStats =
+        reusableFileStats == null
+            ? List.of()
+            : reusableFileStats.stream().filter(java.util.Objects::nonNull).toList();
     List<ReconcileFileGroupResultDescriptor> stableFileGroups =
         fileGroups == null
             ? List.of()
@@ -1336,6 +1424,14 @@ class GrpcRemoteReconcileExecutorClient
         indexArtifacts == null
             ? List.of()
             : indexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
+    List<ReusableIndexArtifactReference> stableReusableIndexArtifacts =
+        reusableIndexArtifacts == null
+            ? List.of()
+            : reusableIndexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> stableReuseBundles =
+        reusableArtifactBundles == null
+            ? List.of()
+            : reusableArtifactBundles.stream().filter(java.util.Objects::nonNull).toList();
     List<String> stableRealizedIndexSelectors =
         realizedIndexSelectors == null
             ? List.of()
@@ -1392,6 +1488,11 @@ class GrpcRemoteReconcileExecutorClient
                     .sum())
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size())
+            .addAllReusableFileStats(
+                stableReuseBundles.isEmpty() ? stableReusableFileStats : List.of())
+            .addAllReusableIndexArtifacts(
+                stableReuseBundles.isEmpty() ? stableReusableIndexArtifacts : List.of())
+            .addAllReusableArtifactBundles(stableReuseBundles)
             .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
             .addAllRealizedStatsSelectors(stableRealizedStatsSelectors);
     if (indexPredecessor != null) {
@@ -1428,7 +1529,17 @@ class GrpcRemoteReconcileExecutorClient
       }
     }
     byte[] manifestBytes = manifest.build().toByteArray();
+    LOG.infof(
+        "Persisting snapshot capture manifest uri=%s bytes=%d fileGroups=%d reusableStats=%d reusableIndexes=%d",
+        stableManifestUri,
+        manifestBytes.length,
+        stableFileGroups.size(),
+        stableReusableFileStats.size(),
+        stableReusableIndexArtifacts.size());
     blobStore.put(stableManifestUri, manifestBytes, "application/x-protobuf");
+    LOG.infof(
+        "Persisted snapshot capture manifest uri=%s bytes=%d",
+        stableManifestUri, manifestBytes.length);
     SnapshotCaptureManifestDescriptor manifestDescriptor =
         SnapshotCaptureManifestDescriptor.newBuilder()
             .setFormatVersion(1)
@@ -1449,6 +1560,90 @@ class GrpcRemoteReconcileExecutorClient
             .setIndexArtifactCount(stableIndexArtifacts.size())
             .build();
     return new PreparedSnapshotFinalizeSuccess(stableResultId, manifestDescriptor);
+  }
+
+  private static List<ReusableStatsArtifactReference> reusableStatsReferences(
+      List<TargetStatsRecord> records, List<StatsObjectDescriptor> descriptors) {
+    Map<String, StatsObjectDescriptor> byTarget =
+        descriptors.stream()
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    StatsObjectDescriptor::getTargetStorageId,
+                    descriptor -> descriptor,
+                    (left, right) -> {
+                      if (!left.equals(right)) {
+                        throw new IllegalArgumentException("conflicting stats object descriptors");
+                      }
+                      return left;
+                    }));
+    Map<String, TargetStatsRecord> uniqueRecords = new java.util.LinkedHashMap<>();
+    records.forEach(
+        record ->
+            uniqueRecords.putIfAbsent(
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(record.getTarget()),
+                record));
+    return uniqueRecords.values().stream()
+        .map(
+            record -> {
+              String target =
+                  ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+                      record.getTarget());
+              StatsObjectDescriptor descriptor = byTarget.get(target);
+              if (descriptor == null || !record.getTarget().hasFile()) {
+                throw new IllegalArgumentException(
+                    "published stats record has no object descriptor");
+              }
+              String selectors =
+                  record.getPropertiesOrDefault(
+                      FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "");
+              return ReusableStatsArtifactReference.newBuilder()
+                  .setFilePath(record.getTarget().getFile().getFilePath())
+                  .setArtifact(descriptor)
+                  .setSourceFingerprint(
+                      record.getPropertiesOrDefault(
+                          FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+                  .setStatsCaptureSignature(
+                      record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
+                  .addAllRealizedStatsSelectors(
+                      java.util.Arrays.stream(selectors.split(","))
+                          .map(String::trim)
+                          .filter(value -> !value.isBlank())
+                          .toList())
+                  .build();
+            })
+        .toList();
+  }
+
+  private static List<ReusableIndexArtifactReference> reusableIndexReferences(
+      List<IndexArtifactRecord> records, List<StatsObjectDescriptor> descriptors) {
+    Map<String, StatsObjectDescriptor> byTarget =
+        descriptors.stream()
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    StatsObjectDescriptor::getTargetStorageId, descriptor -> descriptor));
+    return records.stream()
+        .map(
+            record -> {
+              String filePath =
+                  record.hasTarget() && record.getTarget().hasFile()
+                      ? record.getTarget().getFile().getFilePath()
+                      : "";
+              StatsObjectDescriptor descriptor = byTarget.get("file:" + filePath);
+              if (descriptor == null || filePath.isBlank()) {
+                throw new IllegalArgumentException(
+                    "published index record has no object descriptor");
+              }
+              return ReusableIndexArtifactReference.newBuilder()
+                  .setFilePath(filePath)
+                  .setArtifact(descriptor)
+                  .setSourceFingerprint(
+                      record.getPropertiesOrDefault(
+                          FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+                  .setIndexCaptureSignature(
+                      record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, ""))
+                  .build();
+            })
+        .toList();
   }
 
   @Override
@@ -2168,16 +2363,32 @@ class GrpcRemoteReconcileExecutorClient
             .setStatsCaptureSignature(plan.statsCaptureSignature())
             .setIndexCaptureSignature(plan.indexCaptureSignature())
             .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
+            .addAllReusableArtifactBundleSelections(
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(GrpcRemoteReconcileExecutorClient::toProto)
+                    .toList())
             .addAllReusableAuxiliaryStats(plan.reusableAuxiliaryStats())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(GrpcRemoteReconcileExecutorClient::toProtoIcebergDeleteFile)
                     .toList());
-    if (plan.reusesFileStats()) {
+    if (!plan.reusableFileStats()
+        .equals(ai.floedb.floecat.catalog.rpc.TargetStatsRecord.getDefaultInstance())) {
       builder.setReusableFileStats(plan.reusableFileStats());
     }
-    if (plan.reusesIndexArtifact()) {
+    if (!plan.reusableIndexArtifact()
+        .equals(ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.getDefaultInstance())) {
       builder.setReusableIndexArtifact(plan.reusableIndexArtifact());
+    }
+    if (plan.reusableFileStatsReference() != null) {
+      builder.setReusableFileStatsReference(toProto(plan.reusableFileStatsReference()));
+    }
+    builder.addAllReusableAuxiliaryStatsReferences(
+        plan.reusableAuxiliaryStatsReferences().stream()
+            .map(GrpcRemoteReconcileExecutorClient::toProto)
+            .toList());
+    if (plan.reusableIndexArtifactReference() != null) {
+      builder.setReusableIndexArtifactReference(toProto(plan.reusableIndexArtifactReference()));
     }
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
@@ -2244,7 +2455,106 @@ class GrpcRemoteReconcileExecutorClient
         plan.getAuxiliaryStatsFingerprintsMap(),
         plan.getReusableFileStats(),
         plan.getReusableAuxiliaryStatsList(),
-        plan.getReusableIndexArtifact());
+        plan.getReusableIndexArtifact(),
+        plan.hasReusableFileStatsReference()
+            ? fromProto(plan.getReusableFileStatsReference())
+            : null,
+        plan.getReusableAuxiliaryStatsReferencesList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProto)
+            .toList(),
+        plan.hasReusableIndexArtifactReference()
+            ? fromProto(plan.getReusableIndexArtifactReference())
+            : null,
+        plan.getReusableArtifactBundleSelectionsList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProto)
+            .toList());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection selection) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(selection.targetStorageId())
+                .setPayloadUri(selection.payloadUri())
+                .setPayloadBytes(selection.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(selection.payloadSha256())))
+        .addAllStatsFilePaths(selection.statsFilePaths())
+        .addAllIndexFilePaths(selection.indexFilePaths())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection selection) {
+    var artifact = selection.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection(
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        selection.getStatsFilePathsList(),
+        selection.getIndexFilePathsList());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference reference) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference.newBuilder()
+        .setFilePath(reference.filePath())
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(reference.targetStorageId())
+                .setPayloadUri(reference.payloadUri())
+                .setPayloadBytes(reference.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(reference.payloadSha256())))
+        .setSourceFingerprint(reference.sourceFingerprint())
+        .setStatsCaptureSignature(reference.statsCaptureSignature())
+        .addAllRealizedStatsSelectors(reference.realizedStatsSelectors())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference toProto(
+      ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference reference) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference.newBuilder()
+        .setFilePath(reference.filePath())
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(reference.targetStorageId())
+                .setPayloadUri(reference.payloadUri())
+                .setPayloadBytes(reference.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(reference.payloadSha256())))
+        .setSourceFingerprint(reference.sourceFingerprint())
+        .setIndexCaptureSignature(reference.indexCaptureSignature())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getStatsCaptureSignature(),
+        reference.getRealizedStatsSelectorsList());
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference fromProto(
+      ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getIndexCaptureSignature());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(

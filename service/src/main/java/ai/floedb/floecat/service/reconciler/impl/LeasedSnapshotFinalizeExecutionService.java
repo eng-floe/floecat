@@ -34,10 +34,12 @@ import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -72,6 +74,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject StatsStore statsStore;
   @Inject BlobStore blobStore;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRootWriter tableRootWriter;
 
   public boolean persistSuccess(
       PrincipalContext principalContext,
@@ -169,6 +173,14 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         long publishStartNanos = System.nanoTime();
         try {
           publishCaptureArtifacts(lease, tableId, snapshotTask, manifest);
+          var updatedSnapshot =
+              snapshotRepo.recordReuseManifest(
+                  tableId,
+                  snapshotTask.snapshotId(),
+                  validated.getManifestUri(),
+                  validated.getManifestBytes(),
+                  Base64.getEncoder().encodeToString(validated.getManifestSha256().toByteArray()));
+          tableRootWriter.commitSnapshotEntry(tableId, updatedSnapshot);
           currentSnapshotPointerService.maybeAdvance(
               tableId, snapshotTask.snapshotId(), lease.jobId);
         } finally {
@@ -328,6 +340,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
+    validateReusableArtifactCoverage(manifest);
     validateCapturePolicy(lease, manifest.getCapturePolicy());
     validateIndexPredecessor(lease, snapshotTask, manifest);
     validateRealizedStatsSelectors(lease, manifest);
@@ -345,6 +358,70 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           "snapshot capture manifest index artifacts do not cover planned files");
     }
     return manifest;
+  }
+
+  static void validateReusableArtifactCoverage(SnapshotCaptureManifest manifest) {
+    if (manifest.getReusableArtifactBundlesCount() == 0) {
+      if ((manifest.getReusableFileStatsCount() != manifest.getFileStatsRecordCount()
+              && manifest.getReusableFileStatsRecordsCount() != manifest.getFileStatsRecordCount())
+          || (manifest.getReusableIndexArtifactsCount() != manifest.getIndexArtifactCount()
+              && manifest.getReusableIndexArtifactRecordsCount()
+                  != manifest.getIndexArtifactCount())) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest legacy reusable artifact coverage mismatch");
+      }
+      return;
+    }
+
+    if (manifest.getReusableFileStatsCount() != 0
+        || manifest.getReusableFileStatsRecordsCount() != 0
+        || manifest.getReusableIndexArtifactsCount() != 0
+        || manifest.getReusableIndexArtifactRecordsCount() != 0) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest mixes bundle and legacy reusable artifacts");
+    }
+
+    Map<String, String> groupStatsPrefixes = new LinkedHashMap<>();
+    for (var group : manifest.getFileGroupsList()) {
+      if (groupStatsPrefixes.put(group.getGroupId(), group.getStatsObjectPrefix()) != null) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest has duplicate file-group identity");
+      }
+    }
+
+    long reusableFileStats = 0L;
+    long reusableIndexArtifacts = 0L;
+    Set<String> bundleUris = new HashSet<>();
+    for (var bundle : manifest.getReusableArtifactBundlesList()) {
+      if (!bundle.hasArtifact()) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest reuse bundle has no artifact");
+      }
+      StatsObjectDescriptor artifact = bundle.getArtifact();
+      String targetPrefix = "reuse-bundle:";
+      String targetStorageId = artifact.getTargetStorageId();
+      String groupId =
+          targetStorageId.startsWith(targetPrefix)
+              ? targetStorageId.substring(targetPrefix.length())
+              : "";
+      String statsPrefix = groupStatsPrefixes.get(groupId);
+      if (statsPrefix == null
+          || artifact.getPayloadUri().isBlank()
+          || !artifact.getPayloadUri().startsWith(statsPrefix + "reuse-bundles/")
+          || artifact.getPayloadBytes() <= 0L
+          || artifact.getPayloadSha256().size() != 32
+          || !bundleUris.add(artifact.getPayloadUri())) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest reuse bundle identity mismatch");
+      }
+      reusableFileStats += bundle.getFileStatsCount();
+      reusableIndexArtifacts += bundle.getIndexArtifactsCount();
+    }
+    if (reusableFileStats != manifest.getFileStatsRecordCount()
+        || reusableIndexArtifacts != manifest.getIndexArtifactCount()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest reuse bundle coverage mismatch");
+    }
   }
 
   static void validateRealizedIndexSelectors(
@@ -636,7 +713,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     if (preparedIndexActivation != null) {
       indexArtifactRepository.completePreparedGenerationActivation(
-          tableId, snapshotTask.snapshotId(), preparedIndexActivation);
+          tableId,
+          snapshotTask.snapshotId(),
+          preparedIndexActivation,
+          manifest.getReusableArtifactBundlesCount() == 0);
     }
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);

@@ -45,12 +45,68 @@ class FileArtifactReuseTest {
             "content-a");
 
     assertThat(FileArtifactReuse.sourceFingerprint(base, "schema-a"))
-        .isEqualTo(FileArtifactReuse.sourceFingerprint(withDv, "schema-a"))
+        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(withDv, "schema-a"))
         .isNotEqualTo(FileArtifactReuse.sourceFingerprint(changedContent, "schema-a"))
         .isNotEqualTo(FileArtifactReuse.sourceFingerprint(base, "schema-b"));
     assertThat(FileArtifactReuse.indexSourceFingerprint(base))
         .isEqualTo(FileArtifactReuse.indexSourceFingerprint(withDv))
         .isNotEqualTo(FileArtifactReuse.indexSourceFingerprint(changedContent));
+  }
+
+  @Test
+  void statsFingerprintIncludesIcebergDeleteContextIndependentOfPlanOrder() {
+    var firstDelete =
+        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+            "s3://bucket/delete-a.parquet",
+            10L,
+            ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+            1,
+            List.of(),
+            "iceberg-delete-v1:1:2");
+    var secondDelete =
+        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+            "s3://bucket/delete-b.parquet",
+            20L,
+            ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY,
+            1,
+            List.of(3),
+            "iceberg-delete-v1:2:3");
+    var base =
+        ReconcileFileExecutionPlan.of(
+            "s3://bucket/data.parquet",
+            100L,
+            "{}",
+            null,
+            "PARQUET",
+            1,
+            List.of(),
+            "iceberg-data-v1:1:10");
+    var ordered =
+        ReconcileFileExecutionPlan.of(
+            base.filePath(),
+            base.fileSizeInBytes(),
+            base.partitionDataJson(),
+            null,
+            base.fileFormat(),
+            base.partitionSpecId(),
+            List.of(firstDelete, secondDelete),
+            base.contentIdentity());
+    var reversed =
+        ReconcileFileExecutionPlan.of(
+            base.filePath(),
+            base.fileSizeInBytes(),
+            base.partitionDataJson(),
+            null,
+            base.fileFormat(),
+            base.partitionSpecId(),
+            List.of(secondDelete, firstDelete),
+            base.contentIdentity());
+
+    assertThat(FileArtifactReuse.sourceFingerprint(ordered, "schema"))
+        .isEqualTo(FileArtifactReuse.sourceFingerprint(reversed, "schema"))
+        .isNotEqualTo(FileArtifactReuse.sourceFingerprint(base, "schema"));
+    assertThat(FileArtifactReuse.indexSourceFingerprint(ordered))
+        .isEqualTo(FileArtifactReuse.indexSourceFingerprint(base));
   }
 
   @Test
@@ -117,24 +173,46 @@ class FileArtifactReuseTest {
     String filePath = "s3://bucket/data.parquet";
     var plan =
         ReconcileFileExecutionPlan.of(
-            filePath, 100L, "{}", null, "PARQUET", 0, List.of(), "delta-add-v1:42::");
+            filePath, 100L, "{}", null, "PARQUET", 0, List.of(), "delta-add-v1:42:::10");
     TargetStatsRecord legacy =
         TargetStatsRecord.newBuilder()
             .setTarget(
                 StatsTarget.newBuilder()
                     .setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
-            .setFile(FileTargetStats.newBuilder().setFilePath(filePath).setSizeBytes(100L))
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath(filePath)
+                    .setSizeBytes(100L)
+                    .setRowCount(10L))
             .build();
 
-    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:42::"))
+    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:42:::10"))
         .isTrue();
-    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:41::"))
+    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:41:::10"))
         .isFalse();
     assertThat(
             FileArtifactReuse.legacyCompatibleDeltaStats(
                 legacy.toBuilder().setFile(legacy.getFile().toBuilder().setSizeBytes(99L)).build(),
                 plan,
-                "delta-add-v1:42::"))
+                "delta-add-v1:42:::10"))
+        .isFalse();
+    assertThat(
+            FileArtifactReuse.legacyCompatibleDeltaStats(
+                legacy.toBuilder().setFile(legacy.getFile().toBuilder().setRowCount(9L)).build(),
+                plan,
+                "delta-add-v1:42:::10"))
+        .isFalse();
+    var withDv =
+        ReconcileFileExecutionPlan.of(
+            filePath,
+            100L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector("u", "dv.bin", 4, 8, 2),
+            "PARQUET",
+            0,
+            List.of(),
+            "delta-add-v1:42:::10");
+    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, withDv, "delta-add-v1:42:::10"))
         .isFalse();
   }
 }
