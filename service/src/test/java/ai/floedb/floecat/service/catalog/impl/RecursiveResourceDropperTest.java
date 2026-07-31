@@ -215,6 +215,50 @@ class RecursiveResourceDropperTest {
   }
 
   /**
+   * A create asks this after a name collision, and it must answer without scanning the namespace: a
+   * name held by a live relation collides on every attempt, so a sweep there is pure cost.
+   */
+  @Test
+  void relationNameHeldAnswersFromTheClaimWithoutScanningTheNamespace() {
+    String claimKey = Keys.relationPointerByName("acct", "cat", "ns", "orders");
+    when(pointerStore.get(eq(claimKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(claimKey)
+                    .setVersion(3L)
+                    .setResourceId(TABLE_ID)
+                    .build()));
+    String canonical = Keys.tablePointerById("acct", "tbl");
+    when(pointerStore.get(eq(canonical)))
+        .thenReturn(Optional.of(Pointer.newBuilder().setKey(canonical).setVersion(1L).build()));
+
+    assertTrue(dropper.relationNameHeld(root, "orders"));
+
+    // The claim named a live table, so neither by-name index was consulted and nothing was listed.
+    verify(pointerStore, never()).get(eq(Keys.tablePointerByName("acct", "cat", "ns", "orders")));
+    verify(tableRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
+    verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
+  }
+
+  /** A claim whose relation is gone is exactly what the sweep exists to release. */
+  @Test
+  void relationNameHeldIsFalseWhenTheClaimsRelationIsGone() {
+    String claimKey = Keys.relationPointerByName("acct", "cat", "ns", "orders");
+    when(pointerStore.get(eq(claimKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(claimKey)
+                    .setVersion(3L)
+                    .setResourceId(TABLE_ID)
+                    .build()));
+    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
+
+    assertFalse(dropper.relationNameHeld(root, "orders"));
+  }
+
+  /**
    * Releasing a row is a relation-scoped write, so a caller that holds only one kind's grant sweeps
    * only that kind — a CreateTable authorized by table.write alone must not clear view rows.
    */

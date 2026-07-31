@@ -553,6 +553,42 @@ public class RecursiveResourceDropper {
   }
 
   /**
+   * Whether {@code displayName} in this namespace is held by a relation that still exists.
+   *
+   * <p>A bounded answer — at most the shared relation-name claim and the two kind-specific by-name
+   * rows, plus one canonical read for each owner they name — to the question a create asks after a
+   * name collision. The collision itself does not distinguish "taken by something live" from "taken
+   * by a row whose relation is gone": only the second is worth reconciling, and the first is the
+   * common case, since a name held by a live relation of either kind collides deterministically on
+   * every attempt. Answering here keeps that case from paying for a sweep of the whole namespace.
+   */
+  public boolean relationNameHeld(Namespace namespace, String displayName) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    String catalogId = namespace.getCatalogId().getId();
+    var claim =
+        pointerStore.get(
+            Keys.relationPointerByName(accountId, catalogId, namespaceId.getId(), displayName));
+    if (claim.isPresent() && !claimIsStranded(accountId, claim.get())) {
+      return true;
+    }
+    // The claim postdates some rows, so fall back to the kind-specific indexes it would have
+    // covered.
+    return resolvesByName(
+            Keys.tablePointerByName(accountId, catalogId, namespaceId.getId(), displayName),
+            accountId,
+            ResourceKind.RK_TABLE)
+        || resolvesByName(
+            Keys.viewPointerByName(accountId, catalogId, namespaceId.getId(), displayName),
+            accountId,
+            ResourceKind.RK_VIEW);
+  }
+
+  private boolean resolvesByName(String nameKey, String accountId, ResourceKind kind) {
+    return pointerStore.get(nameKey).map(row -> resolves(row, accountId, kind)).orElse(false);
+  }
+
+  /**
    * Whether any by-name row in this namespace still names a relation that exists, answering at the
    * first one it finds.
    *

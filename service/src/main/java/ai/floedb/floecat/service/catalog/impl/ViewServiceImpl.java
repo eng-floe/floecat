@@ -717,19 +717,21 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         authz.allows(pc, "table.write")
             ? RecursiveResourceDropper.ALL_RELATION_KINDS
             : Set.of(ResourceKind.RK_VIEW);
-    int reclaimed =
-        recursiveDropper.reclaimStrandedRelationNames(
-            ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
-                .setResourceId(spec.getNamespaceId())
-                .setCatalogId(spec.getCatalogId())
-                .build(),
-            kinds);
+    int reclaimed = recursiveDropper.reclaimStrandedRelationNames(namespaceOf(spec), kinds);
     if (reclaimed > 0) {
       LOG.infof(
           "view_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",
           spec.getNamespaceId().getId(), normName, reclaimed);
     }
     return reclaimed;
+  }
+
+  /** The namespace the reconcile works in, from the spec alone: id and catalog are all it needs. */
+  private static ai.floedb.floecat.catalog.rpc.Namespace namespaceOf(ViewSpec spec) {
+    return ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+        .setResourceId(spec.getNamespaceId())
+        .setCatalogId(spec.getCatalogId())
+        .build();
   }
 
   /**
@@ -740,6 +742,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
    */
   private boolean retryCreateAfterReclaimingStrandedNames(
       View view, ViewSpec spec, String normName) {
+    // A name held by a live relation — a view, or a table through the shared claim — collides
+    // deterministically, and the sweep only releases rows whose relation is gone. Rule that out in
+    // a
+    // bounded number of reads rather than scanning the namespace for it. See TableServiceImpl.
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), normName)) {
+      return false;
+    }
     if (reclaimStrandedNames(spec, normName) == 0) {
       return false;
     }

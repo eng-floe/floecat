@@ -596,13 +596,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         authz.allows(pc, "view.write")
             ? RecursiveResourceDropper.ALL_RELATION_KINDS
             : Set.of(ResourceKind.RK_TABLE);
-    int reclaimed =
-        recursiveDropper.reclaimStrandedRelationNames(
-            ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
-                .setResourceId(spec.getNamespaceId())
-                .setCatalogId(spec.getCatalogId())
-                .build(),
-            kinds);
+    int reclaimed = recursiveDropper.reclaimStrandedRelationNames(namespaceOf(spec), kinds);
     if (reclaimed > 0) {
       LOG.infof(
           "table_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",
@@ -611,8 +605,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     return reclaimed;
   }
 
+  /** The namespace the reconcile works in, from the spec alone: id and catalog are all it needs. */
+  private static ai.floedb.floecat.catalog.rpc.Namespace namespaceOf(TableSpec spec) {
+    return ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+        .setResourceId(spec.getNamespaceId())
+        .setCatalogId(spec.getCatalogId())
+        .build();
+  }
+
   private boolean retryCreateAfterReclaimingStrandedNames(
       Table table, TableSpec spec, String normName) {
+    // A name held by a live relation — a table, or a view through the shared claim — collides on
+    // every attempt, deterministically. Establish that in a bounded number of reads before spending
+    // a sweep of every by-name row in the namespace on it: the sweep only ever releases rows whose
+    // relation is gone, so it has nothing to offer here.
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), normName)) {
+      return false;
+    }
     if (reclaimStrandedNames(spec, normName) == 0) {
       return false;
     }
