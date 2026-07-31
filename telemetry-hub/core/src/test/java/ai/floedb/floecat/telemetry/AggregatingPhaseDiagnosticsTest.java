@@ -84,10 +84,12 @@ class AggregatingPhaseDiagnosticsTest {
   }
 
   @Test
-  void oneShotAndEmitAreDropped() {
+  void oneShotAndEmitAreOmitted() {
     AggregatingPhaseDiagnostics agg = new AggregatingPhaseDiagnostics();
     agg.put("k", "v");
     agg.put("n", 1L);
+    agg.put("ratio", 1.0d);
+    agg.put("enabled", true);
     agg.emit("event");
 
     CapturingDiagnostics target = new CapturingDiagnostics();

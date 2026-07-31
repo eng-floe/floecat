@@ -94,6 +94,11 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return ctx != null ? ctx : fallback.get();
   }
 
+  @Override
+  public boolean supportsConcurrentResolution() {
+    return true;
+  }
+
   /**
    * Resolves a graph node by ID, checking system graph first, then user graph.
    *

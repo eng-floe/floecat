@@ -15,13 +15,38 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
 
 /** Pins the unwrapping contract the fan-out relies on to surface a task's original failure. */
 class FuturesTest {
+
+  @Test
+  void joinSurfacesTheTasksOwnRuntimeExceptionUnwrapped() {
+    IllegalStateException original = new IllegalStateException("store error");
+
+    // Not the CompletionException wrapper CompletableFuture.join() would otherwise expose.
+    assertThatThrownBy(() -> Futures.join(CompletableFuture.failedFuture(original)))
+        .isSameAs(original);
+  }
+
+  @Test
+  void joinWrapsAnImpossibleCheckedCauseAsIllegalState() {
+    IOException checked = new IOException("impossible here: these tasks throw only unchecked");
+
+    assertThatThrownBy(() -> Futures.join(CompletableFuture.failedFuture(checked)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasCause(checked);
+  }
+
+  @Test
+  void joinReturnsTheValueOfACompletedFuture() {
+    assertThat(Futures.join(CompletableFuture.completedFuture("ok"))).isEqualTo("ok");
+  }
 
   @Test
   void propagateReturnsTheOriginalUncheckedFailureForTheCallerToThrow() {

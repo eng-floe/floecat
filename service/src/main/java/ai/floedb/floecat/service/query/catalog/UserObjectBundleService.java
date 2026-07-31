@@ -58,7 +58,9 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.concurrent.MetadataIoExecutors;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -81,6 +83,7 @@ import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
@@ -95,7 +98,16 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
@@ -107,7 +119,95 @@ import org.jboss.logging.Logger;
 public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
+  private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
+  private static final BooleanSupplier NEVER_CANCELLED = () -> false;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
+
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if (cancelled.getAsBoolean()) {
+      throw new CancellationException("GetUserObjects stream cancelled");
+    }
+  }
+
+  /** Arbitrates the single terminal telemetry outcome against producer activity. */
+  static final class StreamTelemetryGate {
+    /** The terminal outcome whose sole telemetry publication a gate transition may grant. */
+    enum Publication {
+      NONE,
+      COMPLETION,
+      FAILURE,
+      CANCELLATION
+    }
+
+    /** Whether this cancellation is duplicate, owns teardown, or also publishes immediately. */
+    enum CancellationDecision {
+      IGNORED,
+      ACCEPTED,
+      PUBLISH
+    }
+
+    private boolean producerActive;
+    private boolean cancellationPending;
+    private boolean publicationClaimed;
+
+    /** Begin one producer step unless cancellation already won. */
+    synchronized void begin(BooleanSupplier cancelled) {
+      throwIfCancelled(cancelled);
+      producerActive = true;
+    }
+
+    /**
+     * Atomically expose cancellation to request work and terminal-outcome arbitration. The caller
+     * owns teardown unless another cancellation already won.
+     */
+    synchronized CancellationDecision cancel(AtomicBoolean cancelled) {
+      if (!cancelled.compareAndSet(false, true)) {
+        return CancellationDecision.IGNORED;
+      }
+      cancellationPending = true;
+      if (producerActive) {
+        return CancellationDecision.ACCEPTED;
+      }
+      cancellationPending = false;
+      return claimInternal() ? CancellationDecision.PUBLISH : CancellationDecision.ACCEPTED;
+    }
+
+    /**
+     * Finish a producer step with {@link Publication#NONE}, {@link Publication#COMPLETION}, or
+     * {@link Publication#FAILURE}. Failure takes precedence over racing cancellation, and
+     * cancellation takes precedence over completion. A non-{@code NONE} return grants ownership of
+     * the stream's sole terminal telemetry publication.
+     */
+    synchronized Publication finish(Publication terminalOutcome) {
+      boolean publishFailure = terminalOutcome == Publication.FAILURE && claimInternal();
+      producerActive = false;
+      boolean publishCancellation = !publishFailure && cancellationPending && claimInternal();
+      cancellationPending = false;
+      if (publishFailure) {
+        return Publication.FAILURE;
+      }
+      if (publishCancellation) {
+        return Publication.CANCELLATION;
+      }
+      return terminalOutcome == Publication.COMPLETION && claimInternal()
+          ? Publication.COMPLETION
+          : Publication.NONE;
+    }
+
+    /** Claim publication from a non-racing terminal path. */
+    synchronized boolean claim() {
+      return claimInternal();
+    }
+
+    private boolean claimInternal() {
+      if (publicationClaimed) {
+        return false;
+      }
+      publicationClaimed = true;
+      return true;
+    }
+  }
+
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
   private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
   private static final String RELATION_HINT_PERSIST_NANOS_KEY =
@@ -129,8 +229,25 @@ public class UserObjectBundleService {
   private final long slowRpcMs;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
-
+  // Cancellation can be signalled by a transport thread; release its store roots on a managed
+  // virtual-thread executor instead of blocking that termination callback.
+  private final ExecutorService cancellationTeardownExecutor =
+      Executors.newVirtualThreadPerTaskExecutor();
   @Inject Observability observability;
+
+  /** Stop cancellation teardown work without owning the resolver's shared metadata executor. */
+  @PreDestroy
+  void closeCancellationTeardownExecutor() {
+    shutdownExecutor(cancellationTeardownExecutor);
+  }
+
+  /** Bound bean destruction even if a store call ignores interruption during shutdown. */
+  private static void shutdownExecutor(ExecutorService executor) {
+    if (!MetadataIoExecutors.shutdownNowAndAwait(
+        executor, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      LOG.warn("bundle cancellation teardown executor did not terminate before shutdown timeout");
+    }
+  }
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -269,9 +386,15 @@ public class UserObjectBundleService {
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
-                  .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
-                  .onTermination()
-                  .invoke(() -> iterator.publishStreamTelemetry("cancelled"));
+                  .invoke(
+                      failure -> {
+                        if (!(failure instanceof CancellationException)) {
+                          iterator.publishStreamTelemetry("failed");
+                        }
+                        iterator.cancel();
+                      })
+                  .onCancellation()
+                  .invoke(iterator::cancel);
             });
   }
 
@@ -347,12 +470,19 @@ public class UserObjectBundleService {
     }
   }
 
+  /**
+   * Resolve canonical inputs for one chunk and transfer transient-root ownership to the iterator.
+   * Cancellation after resolution releases the returned pins before propagating instead of leaving
+   * an uncommitted root behind.
+   */
   private RelationPinSet collectChunkPins(
       String correlationId,
       QueryContext ctx,
       List<ResolvedRelation> relations,
-      Map<ResourceId, TablePin> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    throwIfCancelled(cancelled);
     if (relations == null || relations.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
     }
@@ -382,12 +512,22 @@ public class UserObjectBundleService {
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
             currentSnapshotPinCache,
-            diagnostics);
+            diagnostics,
+            cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
-    diagnostics.add("pin.output_pins", pins.getPinsCount());
-    return pins;
+    boolean handedOff = false;
+    try {
+      throwIfCancelled(cancelled);
+      diagnostics.add("pin.output_pins", pins.getPinsCount());
+      handedOff = true;
+      return pins;
+    } finally {
+      if (!handedOff) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(pins));
+      }
+    }
   }
 
   private UserObjectsBundleChunk headerChunk(String queryId, int seq) {
@@ -509,7 +649,24 @@ public class UserObjectBundleService {
           + decorateColumnsNanos
           + decorateCompleteNanos;
     }
+
+    /** Merge one completed build task's isolated timings on the stream producer thread. */
+    private void addFrom(TimingAccumulator other) {
+      statsLookupNanos += other.statsLookupNanos;
+      decorateRelationNanos += other.decorateRelationNanos;
+      decorateViewNanos += other.decorateViewNanos;
+      decorateColumnsNanos += other.decorateColumnsNanos;
+      decorateColumnInvokeNanos += other.decorateColumnInvokeNanos;
+      decorateCompleteNanos += other.decorateCompleteNanos;
+      decoratePersistRelationNanos += other.decoratePersistRelationNanos;
+      decoratePersistColumnsNanos += other.decoratePersistColumnsNanos;
+      decorateColumnWarmHits += other.decorateColumnWarmHits;
+    }
   }
+
+  /** One relation payload and the task-local timing measurements produced while building it. */
+  private record BuiltRelation(
+      RelationInfo info, boolean identityOnly, long buildNanos, TimingAccumulator timings) {}
 
   /**
    * True when the payload built for this candidate carries the relation's complete column set (no
@@ -533,9 +690,8 @@ public class UserObjectBundleService {
   private Optional<PinIdentitySource> pinIdentityFor(
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
     // Only a USER table carries a per-query snapshot pin; route it through the pin's identity.
-    // Views AND system tables have no query pin, so they take the derived content token below —
-    // previously system tables fell into the pin branch and emitted no identity at all, so
-    // clients could never cache them despite that being the whole point of the content token.
+    // Views AND system tables have no query pin, so they take the derived content token below;
+    // system tables need that token for clients to cache them.
     // Discriminate on kind+origin (a system table is also a TABLE node, and a view may be USER
     // origin) rather than the concrete node class, so the routing holds for every node backing.
     if (relation.node().kind() == GraphNodeKind.TABLE
@@ -747,7 +903,8 @@ public class UserObjectBundleService {
       Optional<RelationPinIdentity> scopedIdentity,
       StatsProvider statsProvider,
       Set<String> knownBlobVersions,
-      TimingAccumulator timings) {
+      TimingAccumulator timings,
+      BooleanSupplier cancelled) {
     // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
     // so a client that proved possession under a different engine cannot be served identity-only.
     // A blank version can never prove possession: a user table whose definition blob had no etag
@@ -768,6 +925,7 @@ public class UserObjectBundleService {
     long statsLookupStartNs = System.nanoTime();
     attachTableStats(slim, relation.relationId(), statsProvider);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
+    throwIfCancelled(cancelled);
     return slim.build();
   }
 
@@ -804,7 +962,9 @@ public class UserObjectBundleService {
       MetadataResolutionContext resolutionContext,
       StatsProvider statsProvider,
       TimingAccumulator timings,
-      Optional<RelationPinIdentity> scopedIdentity) {
+      Optional<RelationPinIdentity> scopedIdentity,
+      BooleanSupplier cancelled) {
+    throwIfCancelled(cancelled);
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -830,13 +990,15 @@ public class UserObjectBundleService {
                     logicalSchemaForRelation(
                             correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
-                : overlay.tableSchema(relation.node().id());
+                : Optional.ofNullable(overlay.tableSchema(relation.node().id()))
+                    .orElseGet(List::of);
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
 
     List<ColumnInfo> columns =
         UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
+    throwIfCancelled(cancelled);
 
     RelationInfo.Builder builder = baseRelationInfo(relation);
 
@@ -863,6 +1025,7 @@ public class UserObjectBundleService {
     long statsLookupStartNs = System.nanoTime();
     attachTableStats(builder, relation.relationId(), statsProvider);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
+    throwIfCancelled(cancelled);
 
     // If this is a view, keep a mutable builder around for decoration.
     ViewDefinition.Builder viewBuilder = null;
@@ -871,9 +1034,9 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    // The engine captured at iterator construction, not a live provider re-read: this runs on
-    // executor threads where the request context is unreliable, and a silently empty engine would
-    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
+    // Use the engine captured at iterator construction. Overlay reads may cross executor boundaries
+    // before decoration resumes here, so re-reading ambient request context is fragile and a
+    // silently empty engine would skip engine-specific decoration (eng-floe/floecat#361).
     EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
@@ -899,12 +1062,16 @@ public class UserObjectBundleService {
               resolutionContext);
 
       try {
+        throwIfCancelled(cancelled);
         long decorateRelationStartNs = System.nanoTime();
         try {
           decorator.get().decorateRelation(ctx, relationDecoration);
         } finally {
           timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
         }
+        throwIfCancelled(cancelled);
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         relationDecorationSucceeded = false;
         LOG.debugf(
@@ -924,12 +1091,16 @@ public class UserObjectBundleService {
                 builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
 
         try {
+          throwIfCancelled(cancelled);
           long decorateViewStartNs = System.nanoTime();
           try {
             decorator.get().decorateView(ctx, viewDecoration);
           } finally {
             timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
           }
+          throwIfCancelled(cancelled);
+        } catch (CancellationException e) {
+          throw e;
         } catch (RuntimeException e) {
           viewDecorationSucceeded = false;
           LOG.debugf(
@@ -950,7 +1121,9 @@ public class UserObjectBundleService {
             ctx,
             decorationRequired,
             relation.relationId(),
-            timings);
+            timings,
+            cancelled);
+    throwIfCancelled(cancelled);
     long relationWarmHitCount = decorationCounter(relationDecoration, COLUMN_WARM_HIT_COUNT_KEY);
     timings.addDecorateColumnWarmHits(relationWarmHitCount);
 
@@ -970,6 +1143,7 @@ public class UserObjectBundleService {
             readyColumnIds.size());
       }
       try {
+        throwIfCancelled(cancelled);
         long decorateCompleteStartNs = System.nanoTime();
         try {
           decorator
@@ -983,6 +1157,9 @@ public class UserObjectBundleService {
           timings.addDecoratePersistColumnsNanos(
               decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
         }
+        throwIfCancelled(cancelled);
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         completeRelationSucceeded = false;
         LOG.debugf(
@@ -1015,8 +1192,8 @@ public class UserObjectBundleService {
     // constraints_ref_version)
     //     is a property of the pinned relation, not of the served payload shape. Callers rely on it
     //     to tell a current pin from a historical one and to skip the constraints RPC, so it is
-    //     stamped UNCONDITIONALLY whenever the relation is pinned — including on projected or
-    //     decoration-incomplete replies, which previously lost it entirely.
+    //     stamped UNCONDITIONALLY whenever the relation is pinned, including on projected or
+    //     decoration-incomplete replies.
     //
     //   - The possession token (table_blob_version) is payload-scoped: a client that advertises it
     //     is later served identity-only and reuses its cached payload verbatim. It is kept only
@@ -1119,7 +1296,8 @@ public class UserObjectBundleService {
         ctx,
         decorationRequired,
         relationId,
-        new TimingAccumulator());
+        new TimingAccumulator(),
+        NEVER_CANCELLED);
   }
 
   private List<ColumnResult> decorateColumns(
@@ -1130,7 +1308,8 @@ public class UserObjectBundleService {
       EngineContext ctx,
       boolean decorationRequired,
       ResourceId relationId,
-      TimingAccumulator timings) {
+      TimingAccumulator timings,
+      BooleanSupplier cancelled) {
 
     if (pruned == null || pruned.size() != columns.size()) {
       String msg =
@@ -1181,6 +1360,7 @@ public class UserObjectBundleService {
 
     List<ColumnResult> decorated = new ArrayList<>(columns.size());
     for (int i = 0; i < columns.size(); i++) {
+      throwIfCancelled(cancelled);
       long decorateColumnTotalStartNs = System.nanoTime();
       ColumnInfo column = columns.get(i);
       SchemaColumn schema = pruned.get(i);
@@ -1196,6 +1376,7 @@ public class UserObjectBundleService {
         } finally {
           timings.addDecorateColumnInvokeNanos(System.nanoTime() - decorateColumnInvokeStartNs);
         }
+        throwIfCancelled(cancelled);
         ColumnInfo decoratedColumn = columnDecoration.builder().build();
         if (hasRequiredEnginePayload(decoratedColumn, ctx)) {
           decorated.add(readyColumn(decoratedColumn));
@@ -1218,6 +1399,8 @@ public class UserObjectBundleService {
                       "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
                       "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
         }
+      } catch (CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         ColumnFailure failure = mapFailure(e, ctx);
         LOG.debugf(
@@ -1489,6 +1672,7 @@ public class UserObjectBundleService {
     return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
   }
 
+  /** Read canonical names directly from the graph; production overlays serve these from memory. */
   private NameRef canonicalName(ResourceId id, GraphNode node) {
     return switch (node.kind()) {
       case TABLE ->
@@ -1596,12 +1780,20 @@ public class UserObjectBundleService {
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new HashMap<>();
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache =
+        new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
+    // Coordinates the resolving-root handoff. Cancellation can arrive on a different thread than
+    // chunk production, so it must neither release pins being committed nor miss pins accumulated
+    // after its cleanup pass. Store I/O always happens outside this lock.
+    private final Object pendingChunkPinsLock = new Object();
     private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
+    // A teardown may publish only after the active next() call has finished mutating iterator
+    // diagnostics and caches; a real failure wins when cancellation races that final step.
+    private final StreamTelemetryGate telemetryGate = new StreamTelemetryGate();
 
     private int seq = 1;
     private int nextInputIndex = 0;
@@ -1610,7 +1802,7 @@ public class UserObjectBundleService {
     private int emittedResolutionChunks = 0;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
-    private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
     private long resolveNanos = 0L;
@@ -1667,41 +1859,57 @@ public class UserObjectBundleService {
 
     @Override
     public UserObjectsBundleChunk next() {
-      if (!headerEmitted) {
-        headerEmitted = true;
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
+      beginProducerStep();
+      StreamTelemetryGate.Publication terminalOutcome = StreamTelemetryGate.Publication.NONE;
+      // Reads in this step are auto-admitted at the repository layer; bind the request-scoped
+      // cancellation token so each one (on this thread or a fan-out worker) can abort on cancel.
+      try (var cancellationScope = PropagatedContext.bindCancellation(this::isCancelled)) {
+        if (!headerEmitted) {
+          headerEmitted = true;
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
+          }
+          return headerChunk(ctx.getQueryId(), seq++);
         }
-        return headerChunk(ctx.getQueryId(), seq++);
-      }
 
-      if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
-        fillPending();
-      }
-
-      if (!pending.isEmpty()) {
-        return flushResolutionChunk();
-      }
-
-      if (!endEmitted) {
-        endEmitted = true;
-        publishStreamTelemetry("completed");
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf(
-              "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
-              ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+        if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
+          fillPending();
         }
-        return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
-      }
 
-      throw new NoSuchElementException();
+        if (!pending.isEmpty()) {
+          return flushResolutionChunk();
+        }
+
+        if (!endEmitted) {
+          endEmitted = true;
+          terminalOutcome = StreamTelemetryGate.Publication.COMPLETION;
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf(
+                "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
+                ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+          }
+          return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
+        }
+
+        throw new NoSuchElementException();
+      } catch (RuntimeException | Error failure) {
+        if (!(failure instanceof CancellationException)) {
+          terminalOutcome = StreamTelemetryGate.Publication.FAILURE;
+        }
+        throw failure;
+      } finally {
+        finishProducerStep(terminalOutcome);
+      }
     }
 
     private void fillPending() {
+      throwIfCancelled(this::isCancelled);
       List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
       drainEagerBaseTables(toPin);
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        throwIfCancelled(this::isCancelled);
         PendingItem item = resolveNextResolution();
+        throwIfCancelled(this::isCancelled);
         pending.add(item);
         if (item instanceof PendingFound found) {
           toPin.add(found.relation());
@@ -1715,16 +1923,146 @@ public class UserObjectBundleService {
         long pinStartNs = System.nanoTime();
         try {
           RelationPinSet chunkPins =
-              collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache, diagnostics);
-          long accumulateStartNs = System.nanoTime();
+              collectChunkPins(
+                  correlationId,
+                  ctx,
+                  toPin,
+                  currentSnapshotPinCache,
+                  diagnostics,
+                  this::isCancelled);
+          boolean pinsAccumulated = false;
           try {
-            accumulateChunkPins(chunkPins);
+            throwIfCancelled(this::isCancelled);
+            long accumulateStartNs = System.nanoTime();
+            try {
+              pinsAccumulated = accumulateChunkPins(chunkPins);
+            } finally {
+              diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+            }
           } finally {
-            diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+            if (!pinsAccumulated) {
+              queryStore.releaseResolvingPinBlobs(
+                  ctx.getQueryId(), QueryPins.gcRootUris(chunkPins));
+            }
           }
         } finally {
           pinCollectNanos += System.nanoTime() - pinStartNs;
         }
+      }
+    }
+
+    private boolean isCancelled() {
+      return cancelled.get();
+    }
+
+    /**
+     * Mark the iterator cancelled, detach pending pins, publish only stable telemetry, and offload
+     * root release so a transport/event-loop termination callback never performs store I/O.
+     */
+    private void cancel() {
+      StreamTelemetryGate.CancellationDecision cancellation = telemetryGate.cancel(cancelled);
+      if (cancellation != StreamTelemetryGate.CancellationDecision.IGNORED) {
+        RelationPinSet toRelease;
+        synchronized (pendingChunkPinsLock) {
+          toRelease = pendingChunkPins;
+          pendingChunkPins = RelationPinSet.getDefaultInstance();
+        }
+        if (cancellation == StreamTelemetryGate.CancellationDecision.PUBLISH) {
+          // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
+          // this termination callback returns. Emit while it is still recording.
+          publishClaimedTelemetrySafely("cancelled");
+        }
+        // onTermination may run on a transport/event-loop thread. Root release can perform store
+        // I/O, so teardown runs on a managed executor. Telemetry is published only after the
+        // producer reports that no mutable iterator state remains active.
+        try {
+          cancellationTeardownExecutor.submit(
+              () -> {
+                try {
+                  queryStore.releaseResolvingPinBlobs(
+                      ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
+                } catch (RuntimeException releaseFailure) {
+                  LOG.warnf(
+                      releaseFailure,
+                      "Failed to release cancelled stream pin roots query_id=%s",
+                      ctx.getQueryId());
+                }
+              });
+        } catch (RejectedExecutionException shutdown) {
+          LOG.warnf(
+              shutdown,
+              "Cancellation teardown executor stopped before pin-root release query_id=%s",
+              ctx.getQueryId());
+        }
+      }
+    }
+
+    /** Claim mutable iterator state for one producer step unless cancellation already won. */
+    private void beginProducerStep() {
+      telemetryGate.begin(this::isCancelled);
+    }
+
+    /**
+     * Release producer ownership and publish exactly one terminal outcome, giving a real failure
+     * precedence over cancellation that raced the active step.
+     */
+    private void finishProducerStep(StreamTelemetryGate.Publication terminalOutcome) {
+      StreamTelemetryGate.Publication publication = telemetryGate.finish(terminalOutcome);
+      switch (publication) {
+        case COMPLETION -> publishClaimedTelemetrySafely("completed");
+        case FAILURE -> publishClaimedTelemetrySafely("failed");
+        case CANCELLATION -> publishClaimedTelemetrySafely("cancelled");
+        case NONE -> {}
+      }
+    }
+
+    /**
+     * Assemble one relation on the producer thread. Only overlay-owned repository reads cross the
+     * metadata runner; stats, validation, and decorator callbacks retain their caller-thread
+     * contract. Cancellation is checked between those synchronous callbacks; each collaborator owns
+     * any deadline needed for its active call. The local timing accumulator is merged only after a
+     * successful build.
+     */
+    private BuiltRelation buildRelationWithCancellationChecks(
+        PendingFound found,
+        QueryContext liveContext,
+        Optional<RelationPinIdentity> scopedIdentity) {
+      TimingAccumulator taskTimings = new TimingAccumulator();
+      long buildStartNs = System.nanoTime();
+      RelationInfo identityOnly =
+          identityOnlyOrNull(
+              found.relation(),
+              scopedIdentity,
+              statsProvider,
+              knownBlobVersions,
+              taskTimings,
+              this::isCancelled);
+      if (identityOnly != null) {
+        return new BuiltRelation(identityOnly, true, System.nanoTime() - buildStartNs, taskTimings);
+      }
+      RelationInfo full =
+          buildRelation(
+              correlationId,
+              found.relation(),
+              liveContext,
+              resolutionContext,
+              statsProvider,
+              taskTimings,
+              scopedIdentity,
+              this::isCancelled);
+      return new BuiltRelation(full, false, System.nanoTime() - buildStartNs, taskTimings);
+    }
+
+    /** Publish a claimed outcome without allowing telemetry failure to mask stream termination. */
+    private void publishClaimedTelemetrySafely(String outcome) {
+      try {
+        publishClaimedStreamTelemetry(outcome);
+      } catch (RuntimeException telemetryFailure) {
+        LOG.warnf(
+            telemetryFailure,
+            "Failed to publish %s stream telemetry query_id=%s",
+            outcome,
+            ctx.getQueryId());
       }
     }
 
@@ -1739,6 +2077,7 @@ public class UserObjectBundleService {
      */
     private void drainEagerBaseTables(List<ResolvedRelation> toPin) {
       while (pending.size() < MAX_RESOLUTIONS_PER_CHUNK && !eagerBaseQueue.isEmpty()) {
+        throwIfCancelled(this::isCancelled);
         EagerBaseCursor cursor = eagerBaseQueue.peekFirst();
         if (cursor == null) {
           break;
@@ -1753,6 +2092,7 @@ public class UserObjectBundleService {
       List<NameRef> baseRelations = cursor.view.baseRelations();
       while (cursor.nextBaseIndex < baseRelations.size()
           && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        throwIfCancelled(this::isCancelled);
         NameRef baseRef = baseRelations.get(cursor.nextBaseIndex++);
         long resolveStartNs = System.nanoTime();
         try {
@@ -1788,6 +2128,7 @@ public class UserObjectBundleService {
     }
 
     private PendingItem resolveNextResolution() {
+      throwIfCancelled(this::isCancelled);
       long resolveStartNs = System.nanoTime();
       try {
         TableReferenceCandidate candidate = tables.get(nextInputIndex);
@@ -1865,21 +2206,24 @@ public class UserObjectBundleService {
     }
 
     private UserObjectsBundleChunk flushResolutionChunk() {
+      throwIfCancelled(this::isCancelled);
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPins.getPinsCount());
+            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPinCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
+      throwIfCancelled(this::isCancelled);
       long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
       pinCommitNanos += System.nanoTime() - pinCommitStartNs;
       QueryContext liveCtx = null;
       List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
       for (PendingItem item : chunkItems) {
+        throwIfCancelled(this::isCancelled);
         if (item instanceof PendingResolved resolved) {
           resolutions.add(resolved.resolution());
           continue;
@@ -1896,9 +2240,6 @@ public class UserObjectBundleService {
                   .build());
           continue;
         }
-        long statsBeforeNanos = timings.statsLookupNanos();
-        long decorationBeforeNanos = timings.decorationTotalNanos();
-        long buildStartNs = System.nanoTime();
         if (liveCtx == null) {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
         }
@@ -1911,47 +2252,31 @@ public class UserObjectBundleService {
         Optional<RelationPinIdentity> scopedIdentity =
             scopedPinIdentity(
                 correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
-        /* Identity-only fast path: never cached — the info cache must only
-         * ever hold full payloads, or a later request that did NOT prove
-         * possession would be served a payload-less relation. */
-        RelationInfo slim =
-            identityOnlyOrNull(
-                found.relation(), scopedIdentity, statsProvider, knownBlobVersions, timings);
-        if (slim != null) {
-          // Account the slim path symmetric with the full path below: its stats time already landed
-          // in timings via identityOnlyOrNull; fold the remaining (identity-build) time into
-          // relationBuildNanos so identity-only resolutions are not invisible to the summary event.
-          long buildNanos = System.nanoTime() - buildStartNs;
-          long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
-          relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
+        BuiltRelation built = buildRelationWithCancellationChecks(found, liveCtx, scopedIdentity);
+        TimingAccumulator buildTimings = built.timings();
+        timings.addFrom(buildTimings);
+        long statsNanos = buildTimings.statsLookupNanos();
+        long buildDecorationNanos = buildTimings.decorationTotalNanos();
+        if (built.identityOnly()) {
+          // Identity-only responses are not cached: the cache must hold full payloads for later
+          // requests that did not prove possession.
+          relationBuildNanos += Math.max(0L, built.buildNanos() - statsNanos);
           resolutions.add(
               RelationResolution.newBuilder()
                   .setInputIndex(found.inputIndex())
                   .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-                  .setRelation(slim)
+                  .setRelation(built.info())
                   .build());
           continue;
         }
-        RelationInfo info =
-            buildRelation(
-                correlationId,
-                found.relation(),
-                liveCtx,
-                resolutionContext,
-                statsProvider,
-                timings,
-                scopedIdentity);
-        long buildNanos = System.nanoTime() - buildStartNs;
-        long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
-        long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
-        relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos - decorationDeltaNanos);
-        decorationNanos += Math.max(0L, decorationDeltaNanos);
-        relationInfoCache.put(cacheKey, info);
+        relationBuildNanos += Math.max(0L, built.buildNanos() - statsNanos - buildDecorationNanos);
+        decorationNanos += Math.max(0L, buildDecorationNanos);
+        relationInfoCache.put(cacheKey, built.info());
         resolutions.add(
             RelationResolution.newBuilder()
                 .setInputIndex(found.inputIndex())
                 .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-                .setRelation(info)
+                .setRelation(built.info())
                 .build());
       }
       emittedResolutionChunks++;
@@ -1975,9 +2300,14 @@ public class UserObjectBundleService {
     }
 
     private void publishStreamTelemetry(String outcome) {
-      if (!telemetryPublished.compareAndSet(false, true)) {
+      if (!telemetryGate.claim()) {
         return;
       }
+      publishClaimedStreamTelemetry(outcome);
+    }
+
+    /** Publish after the telemetry gate has atomically selected this terminal outcome. */
+    private void publishClaimedStreamTelemetry(String outcome) {
       long totalNanos = System.nanoTime() - streamStartNs;
       long schedulingNanos =
           Math.max(
@@ -2268,31 +2598,44 @@ public class UserObjectBundleService {
       }
     }
 
-    // Track every pin that must be durable before the next chunk is emitted.
-    private void accumulateChunkPins(RelationPinSet incomingPins) {
+    /** Merge pins into pending commit ownership unless cancellation already detached that state. */
+    private boolean accumulateChunkPins(RelationPinSet incomingPins) {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
-        return;
+        return true;
       }
-      try {
+      synchronized (pendingChunkPinsLock) {
+        if (isCancelled()) {
+          return false;
+        }
         pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
-      } catch (RuntimeException | Error e) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
-        throw e;
+        return true;
       }
     }
 
+    /**
+     * Atomically detach pending pins, commit them as durable query roots, and release their
+     * transient roots on every failed or missing-context outcome. Store I/O runs outside the
+     * cancellation lock so termination cannot block behind the update.
+     */
     private void commitChunkPins() {
-      if (pendingChunkPins.getPinsCount() == 0) {
-        return;
+      RelationPinSet toCommit;
+      synchronized (pendingChunkPinsLock) {
+        throwIfCancelled(this::isCancelled);
+        if (pendingChunkPins.getPinsCount() == 0) {
+          return;
+        }
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Committing chunk pins query_id=%s pin_count=%d",
+              ctx.getQueryId(), pendingChunkPins.getPinsCount());
+        }
+        toCommit = pendingChunkPins;
+        pendingChunkPins = RelationPinSet.getDefaultInstance();
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Committing chunk pins query_id=%s pin_count=%d",
-            ctx.getQueryId(), pendingChunkPins.getPinsCount());
-      }
-      RelationPinSet toCommit = pendingChunkPins;
-      // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
-      // protected across the collect→commit window; this update makes the context a durable root.
+
+      // A concurrent cancellation sees this set as in-flight and leaves it to this method: a
+      // successful update establishes the durable root; a failed update releases the transient
+      // root below. That avoids both the GC window and blocking cancellation on store I/O.
       Optional<QueryContext> updated;
       try {
         updated =
@@ -2302,7 +2645,6 @@ public class UserObjectBundleService {
         queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
         throw e;
       }
-      pendingChunkPins = RelationPinSet.getDefaultInstance();
       if (updated.isEmpty()) {
         queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
         LOG.warnf(
@@ -2312,6 +2654,12 @@ public class UserObjectBundleService {
       }
       if (LOG.isDebugEnabled()) {
         LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
+      }
+    }
+
+    private int pendingChunkPinCount() {
+      synchronized (pendingChunkPinsLock) {
+        return pendingChunkPins.getPinsCount();
       }
     }
   }
