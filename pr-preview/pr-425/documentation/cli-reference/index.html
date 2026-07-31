@@ -1687,6 +1687,7 @@ integration update &lt;name|id&gt; [--display &lt;name&gt;] [--uri &lt;uri&gt;] 
     [--state active|paused] [--auth-scheme &lt;scheme&gt;] [--auth k=v ...]
     [--head k=v ...] [--cred-type &lt;type&gt;] [--cred k=v ...]
     [--cred-head k=v ...] [--props k=v ...] [--etag &lt;etag&gt;]
+# Auth changes replace stored credentials; resupply --cred-type and credential values.
 integration delete &lt;name|id&gt; [--etag &lt;etag&gt;]
 integration validate &lt;name|id&gt;
 

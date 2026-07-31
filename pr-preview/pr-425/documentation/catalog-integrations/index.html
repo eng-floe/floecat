@@ -1717,7 +1717,12 @@ the overlay automatically.</p>
 on an existing overlay. Detailed reconcile and capture controls remain on the legacy connector
 commands until reconciliation moves to the new resource model.</p>
 <p>Credentials supplied with <code>--cred-type</code> and <code>--cred</code> are stored out of band. Integration records
-and read responses never contain the credential payload.</p>
+and read responses never contain the credential payload. The interactive Shell also excludes
+commands containing <code>--cred</code> or <code>--cred-head</code> from its persistent history.</p>
+<p>The API replaces authentication as a unit. The CLI carries forward omitted public settings, but
+credentials are not returned and cannot be carried forward. Resupply <code>--cred-type</code> and the
+credential values when changing the scheme, auth properties, headers, or credentials; the CLI
+rejects partial auth updates that could silently remove the stored secret.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <ul>
 <li>An integration cannot be deleted while overlays refer to it.</li>

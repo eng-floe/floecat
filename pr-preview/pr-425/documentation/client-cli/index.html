@@ -1867,7 +1867,9 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
   <code>GrpcErrors</code>.</li>
 <li><strong>Secret handling</strong> – Secret-bearing integration, connector, and storage-authority values must be supplied via
   <code>--cred-type</code> / <code>--cred</code>, not <code>--auth k=v</code>. The service stores those secrets out-of-band and
-  only returns redacted or client-safe values.</li>
+  only returns redacted or client-safe values. Commands containing <code>--cred</code> or <code>--cred-head</code> are
+  excluded from the interactive Shell's persistent history. Integration auth updates replace the
+  stored credentials and therefore require the credential values to be resupplied.</li>
 <li><strong>Pagination defaults</strong> – Commands paginate internally in batches of 100 rows. User-facing limits
   are exposed only on ordered result sets such as <code>snapshots</code>, <code>connector jobs</code>, and ordered stats
   commands.</li>
