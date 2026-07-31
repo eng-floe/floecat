@@ -27,9 +27,13 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferBundle;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferEntry;
+import com.google.protobuf.Timestamp;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.zip.ZipFile;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -157,6 +161,44 @@ class ConnectorArchiveTest {
     assertThatThrownBy(() -> ConnectorArchive.read(archive))
         .isInstanceOf(IOException.class)
         .hasMessageContaining("embeds credentials");
+  }
+
+  @Test
+  void rejectsBundlesLargerThanTheReaderLimit() {
+    assertThatThrownBy(() -> ConnectorArchive.validateBundleSize(64 * 1024 * 1024 + 1))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("exceeds size limit");
+  }
+
+  @Test
+  void writesRfc3339ManifestTimestampWithNanosecondPrecision() throws Exception {
+    Path archive = temporaryDirectory.resolve("timestamp.zip");
+    var bundle =
+        ConnectorTransferBundle.newBuilder()
+            .setFormatVersion(ConnectorArchive.FORMAT_VERSION)
+            .setExportedAt(Timestamp.newBuilder().setSeconds(123).setNanos(5))
+            .build();
+
+    ConnectorArchive.write(archive, bundle, false);
+
+    try (var zip = new ZipFile(archive.toFile())) {
+      assertThat(read(zip, "manifest.json"))
+          .contains("\"exportedAt\": \"1970-01-01T00:02:03.000000005Z\"");
+    }
+  }
+
+  @Test
+  void protectsArchiveWithOwnerOnlyPermissions() throws Exception {
+    Path archive = temporaryDirectory.resolve("permissions.zip");
+    var bundle =
+        ConnectorTransferBundle.newBuilder()
+            .setFormatVersion(ConnectorArchive.FORMAT_VERSION)
+            .build();
+
+    ConnectorArchive.write(archive, bundle, false);
+
+    assertThat(Files.getPosixFilePermissions(archive))
+        .isEqualTo(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
   }
 
   private static String read(ZipFile zip, String entry) throws IOException {

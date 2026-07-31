@@ -26,9 +26,11 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +117,36 @@ class PortableConnectorSpecsTest {
                     directory))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("table-id");
+  }
+
+  @Test
+  void validatesResolvableCatalogBeforeImport() {
+    var directory = mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+    when(directory.resolveCatalog(any()))
+        .thenReturn(
+            ResolveCatalogResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("catalog-id"))
+                .build());
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDestination(DestinationTarget.newBuilder().setCatalogDisplayName("catalog"))
+            .build();
+
+    PortableConnectorSpecs.validateForImport(spec, directory);
+  }
+
+  @Test
+  void rejectsUnresolvedCatalogBeforeImport() {
+    var directory = mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+    when(directory.resolveCatalog(any())).thenReturn(ResolveCatalogResponse.getDefaultInstance());
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDestination(DestinationTarget.newBuilder().setCatalogDisplayName("missing"))
+            .build();
+
+    assertThatThrownBy(() -> PortableConnectorSpecs.validateForImport(spec, directory))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("missing");
   }
 
   private static Connector connectorWithDestination(DestinationTarget destination) {

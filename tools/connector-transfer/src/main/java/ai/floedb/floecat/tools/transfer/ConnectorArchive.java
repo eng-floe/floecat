@@ -19,6 +19,7 @@ package ai.floedb.floecat.tools.transfer;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferBundle;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
+import com.google.protobuf.util.Timestamps;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,6 +42,8 @@ final class ConnectorArchive {
   private ConnectorArchive() {}
 
   static void write(Path output, ConnectorTransferBundle bundle, boolean force) throws IOException {
+    int bundleSize = bundle.getSerializedSize();
+    validateBundleSize(bundleSize);
     Path absolute = output.toAbsolutePath();
     if (Files.exists(absolute) && !force) {
       throw new IOException("output already exists (use --force): " + absolute);
@@ -78,6 +81,17 @@ final class ConnectorArchive {
       setOwnerOnly(absolute);
     } finally {
       Files.deleteIfExists(temporary);
+    }
+  }
+
+  static void validateBundleSize(int bundleSize) throws IOException {
+    if (bundleSize > MAX_BUNDLE_BYTES) {
+      throw new IOException(
+          "connector archive bundle exceeds size limit: "
+              + bundleSize
+              + " bytes (maximum "
+              + MAX_BUNDLE_BYTES
+              + ")");
     }
   }
 
@@ -172,10 +186,8 @@ final class ConnectorArchive {
         .append(jsonEscape(bundle.getSourceAccountId()))
         .append("\",");
     out.append("\n  \"exportedAt\": \"")
-        .append(bundle.getExportedAt().getSeconds())
-        .append(".")
-        .append(bundle.getExportedAt().getNanos())
-        .append("Z\",");
+        .append(Timestamps.toString(bundle.getExportedAt()))
+        .append("\",");
     out.append("\n  \"connectors\": [");
     for (int i = 0; i < bundle.getEntriesCount(); i++) {
       var entry = bundle.getEntries(i);
@@ -217,13 +229,14 @@ final class ConnectorArchive {
     return out.toString();
   }
 
-  private static void setOwnerOnly(Path path) {
+  private static void setOwnerOnly(Path path) throws IOException {
     try {
       Set<PosixFilePermission> permissions =
           EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
       Files.setPosixFilePermissions(path, permissions);
-    } catch (IOException | UnsupportedOperationException ignored) {
-      // Non-POSIX filesystems do not expose these permissions.
+    } catch (UnsupportedOperationException e) {
+      throw new IOException(
+          "cannot protect connector archive with owner-only file permissions: " + path, e);
     }
   }
 }

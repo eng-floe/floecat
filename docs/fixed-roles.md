@@ -9,8 +9,8 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 | Role name | Purpose | Granted permissions |
 |-----------|---------|---------------------|
 | `default` | Baseline read-only tenant access. Used when no roles are provided in normal (`oidc`) mode. | `account.read`, `catalog.read`, `namespace.read`, `table.read`, `view.read` |
-| `administrator` | Full tenant-scoped administration of metadata and connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `system-objects.read`, `account.delete` |
-| `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `system-objects.read`, `account.delete` |
+| `administrator` | Full tenant-scoped administration of metadata and connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `connector.export`, `system-objects.read`, `account.delete` |
+| `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `connector.export`, `system-objects.read`, `account.delete` |
 | `platform-admin` (or configured value of `floecat.auth.platform-admin.role`) | Platform-level account management role from IdP. | `account.read`, `account.write`, `account.delete` |
 | `init-account` | Bootstrap role used to initialize account + initial resources. | `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.create` |
 | `delete-account` | Narrow internal role used to trigger account teardown. Floecat performs the implied cleanup internally. | `account.delete` |

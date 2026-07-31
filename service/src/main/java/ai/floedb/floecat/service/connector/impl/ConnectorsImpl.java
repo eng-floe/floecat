@@ -300,6 +300,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+                  var initialState = initialConnectorState(spec.getState(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -430,7 +431,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .setPolicy(spec.getPolicy())
                           .setCreatedAt(tsNow)
                           .setUpdatedAt(tsNow)
-                          .setState(ConnectorState.CS_ACTIVE);
+                          .setState(initialState);
 
                   if (spec.hasDescription()) builder.setDescription(spec.getDescription());
                   if (spec.hasSource()) builder.setSource(spec.getSource());
@@ -848,6 +849,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
   }
 
+  static ConnectorState initialConnectorState(ConnectorState requestedState, String corr) {
+    return switch (requestedState) {
+      case CS_UNSPECIFIED, CS_ACTIVE -> ConnectorState.CS_ACTIVE;
+      case CS_PAUSED -> ConnectorState.CS_PAUSED;
+      case CS_DELETING, UNRECOGNIZED ->
+          throw GrpcErrors.invalidArgument(
+              corr, GeneratedErrorMessages.MessageKey.FIELD, Map.of("field", "state"));
+    };
+  }
+
   private DestinationTarget resolveUpdatedDestination(
       DestinationTarget destination, SourceSelector source, String accountId, String corr) {
     var resolved = destination.toBuilder();
@@ -1225,21 +1236,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       boolean hasCatalogRef =
           inDst.hasCatalogId()
               || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
-      boolean hasNamespaceRef =
-          inDst.hasNamespaceId()
-              || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
 
       if (!hasCatalogRef) {
         throw GrpcErrors.invalidArgument(
             corr,
             GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
             Map.of("field", "destination.catalog"));
-      }
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
       }
       if (inDst.hasCatalogId()) {
         ensureKind(
@@ -1419,14 +1421,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             corr,
             GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
             Map.of("field", "destination.catalog"));
-      }
-      boolean hasNamespaceRef =
-          d.hasNamespaceId() || (d.hasNamespace() && d.getNamespace().getSegmentsCount() > 0);
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
       }
     }
 

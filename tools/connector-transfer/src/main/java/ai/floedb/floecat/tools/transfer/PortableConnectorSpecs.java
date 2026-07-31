@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
@@ -46,6 +48,49 @@ final class PortableConnectorSpecs {
       spec.setDestination(portableDestination(connector.getDestination(), directory));
     }
     return spec.build();
+  }
+
+  static void validateForImport(
+      ConnectorSpec spec, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+    if (!spec.hasDestination()) {
+      throw new IllegalArgumentException("connector destination is required");
+    }
+    var destination = spec.getDestination();
+    if (destination.hasCatalogDisplayName()) {
+      String displayName = destination.getCatalogDisplayName().trim();
+      if (displayName.isBlank()) {
+        throw new IllegalArgumentException("destination catalog display name is blank");
+      }
+      var response =
+          directory.resolveCatalog(
+              ResolveCatalogRequest.newBuilder()
+                  .setRef(NameRef.newBuilder().setCatalog(displayName))
+                  .build());
+      if (!response.hasResourceId() || response.getResourceId().getId().isBlank()) {
+        throw new IllegalArgumentException(
+            "destination catalog could not be resolved: " + displayName);
+      }
+    } else if (destination.hasCatalogId()) {
+      var response =
+          directory.lookupCatalog(
+              LookupCatalogRequest.newBuilder().setResourceId(destination.getCatalogId()).build());
+      if (response.getDisplayName().isBlank()) {
+        throw new IllegalArgumentException(
+            "destination catalog could not be resolved: " + destination.getCatalogId().getId());
+      }
+    } else {
+      throw new IllegalArgumentException("connector destination catalog is required");
+    }
+
+    if (destination.hasNamespace()
+        && (destination.getNamespace().getSegmentsCount() == 0
+            || destination.getNamespace().getSegmentsList().stream().anyMatch(String::isBlank))) {
+      throw new IllegalArgumentException("destination namespace contains an empty path segment");
+    }
+    if (destination.hasTableDisplayName()
+        && destination.getTableDisplayName().trim().isBlank()) {
+      throw new IllegalArgumentException("destination table display name is blank");
+    }
   }
 
   private static DestinationTarget portableDestination(

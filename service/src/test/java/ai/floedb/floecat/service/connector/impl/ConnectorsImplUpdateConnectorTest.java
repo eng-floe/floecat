@@ -35,6 +35,7 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -52,6 +53,23 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class ConnectorsImplUpdateConnectorTest {
+  @Test
+  void createStatePreservesPausedAndDefaultsUnspecifiedToActive() {
+    assertEquals(
+        ConnectorState.CS_PAUSED,
+        ConnectorsImpl.initialConnectorState(ConnectorState.CS_PAUSED, "corr"));
+    assertEquals(
+        ConnectorState.CS_ACTIVE,
+        ConnectorsImpl.initialConnectorState(ConnectorState.CS_UNSPECIFIED, "corr"));
+  }
+
+  @Test
+  void createStateRejectsDeleting() {
+    assertThrows(
+        RuntimeException.class,
+        () -> ConnectorsImpl.initialConnectorState(ConnectorState.CS_DELETING, "corr"));
+  }
+
   @Test
   void uriUpdateDoesNotResolveExistingDestinationReferences() throws Exception {
     var service = new ConnectorsImpl();
@@ -144,6 +162,48 @@ class ConnectorsImplUpdateConnectorTest {
     var updated = captureUpdatedConnector(service);
     assertEquals(replacement, updated.getDestination());
     verifyNoInteractions(service.tableRepo);
+  }
+
+  @Test
+  void fullDestinationUpdateAcceptsCatalogOnlyTarget() throws Exception {
+    var service = new ConnectorsImpl();
+    service.connectorRepo = mock(ConnectorRepository.class);
+    service.tableRepo = mock(TableRepository.class);
+    service.principalProvider = mock(PrincipalProvider.class);
+    service.authz = mock(Authorizer.class);
+    service.credentialResolver = mock(CredentialResolver.class);
+    installBasePrincipal(service, service.principalProvider);
+
+    var connectorId = resourceId("connector-1", ResourceKind.RK_CONNECTOR);
+    var catalogId = resourceId("catalog-1", ResourceKind.RK_CATALOG);
+    var current =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName("connector")
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("uri")
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("sales")))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(resourceId("namespace-1", ResourceKind.RK_NAMESPACE)))
+            .build();
+    var replacement = DestinationTarget.newBuilder().setCatalogId(catalogId).build();
+    stubSuccessfulUpdate(service, connectorId, current);
+
+    service
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().setDestination(replacement))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("destination"))
+                .build())
+        .await()
+        .indefinitely();
+
+    assertEquals(replacement, captureUpdatedConnector(service).getDestination());
   }
 
   @Test

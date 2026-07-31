@@ -43,8 +43,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -84,8 +84,10 @@ public final class ConnectorTransferCli implements Runnable {
   @CommandLine.Option(names = "--port", description = "gRPC port (default: ${DEFAULT-VALUE})")
   int port = envInt("FLOECAT_GRPC_PORT", 9100);
 
-  @CommandLine.Option(names = "--tls", description = "Use TLS for the gRPC connection")
-  boolean tls;
+  @CommandLine.Option(
+      names = "--plaintext",
+      description = "Use an unencrypted gRPC connection (intended only for local development)")
+  boolean plaintext;
 
   @CommandLine.Option(names = "--token", description = "Bearer token (or FLOECAT_TOKEN)")
   String token = env("FLOECAT_TOKEN", "");
@@ -111,7 +113,7 @@ public final class ConnectorTransferCli implements Runnable {
   }
 
   private Client client() {
-    return new Client(host, port, tls, token, sessionToken, accountId);
+    return new Client(host, port, !plaintext, token, sessionToken, accountId);
   }
 
   @CommandLine.Command(
@@ -238,24 +240,13 @@ public final class ConnectorTransferCli implements Runnable {
         String importRunNonce = UUID.randomUUID().toString();
         List<PreparedImport> prepared = new ArrayList<>();
         for (var entry : bundle.getEntriesList()) {
-          ConnectorSpec spec = specWithCredentials(entry);
-          if (spec.getState() == ConnectorState.CS_DELETING) {
-            throw new IllegalArgumentException(
-                "cannot import connector in deleting state: " + spec.getDisplayName());
-          }
-          var validation =
-              client.connectors.validateConnector(
-                  ValidateConnectorRequest.newBuilder().setSpec(spec).build());
-          if (!validation.getOk()) {
-            throw new IllegalArgumentException(
-                "connector validation failed for "
-                    + spec.getDisplayName()
-                    + ": "
-                    + validation.getSummary());
-          }
-          Connector current = existing.get(spec.getDisplayName());
-          ImportAction action = importAction(current != null, conflictMode);
-          prepared.add(new PreparedImport(entry, spec, current, action, validation.getSummary()));
+          Connector current = existing.get(entry.getPortableSpec().getDisplayName());
+          prepared.add(
+              prepareImport(
+                  entry,
+                  current,
+                  conflictMode,
+                  spec -> validateImport(client, spec)));
         }
 
         for (PreparedImport item : prepared) {
@@ -326,7 +317,6 @@ public final class ConnectorTransferCli implements Runnable {
                                     .setKey(idempotencyKey(importRunNonce, bundle, item.entry())))
                             .build())
                     .getConnector();
-            restoreState(client.connectors, importedConnector, item.spec().getState());
           }
           System.out.printf(
               "%s -> %s%n",
@@ -368,20 +358,6 @@ public final class ConnectorTransferCli implements Runnable {
     }
   }
 
-  private static void restoreState(
-      ConnectorsGrpc.ConnectorsBlockingStub connectors,
-      Connector created,
-      ConnectorState requestedState) {
-    if (requestedState == ConnectorState.CS_UNSPECIFIED
-        || requestedState == ConnectorState.CS_ACTIVE) return;
-    connectors.updateConnector(
-        UpdateConnectorRequest.newBuilder()
-            .setConnectorId(created.getResourceId())
-            .setSpec(ConnectorSpec.newBuilder().setState(requestedState))
-            .setUpdateMask(FieldMask.newBuilder().addPaths("state"))
-            .build());
-  }
-
   private static ConnectorSpec specWithCredentials(ConnectorTransferEntry entry) {
     if (!entry.hasCredentials()) return entry.getPortableSpec();
     var spec = entry.getPortableSpec().toBuilder();
@@ -393,28 +369,63 @@ public final class ConnectorTransferCli implements Runnable {
     return spec.setAuth(auth).build();
   }
 
-  private static List<Connector> select(List<Connector> all, List<String> requested) {
+  static List<Connector> select(List<Connector> all, List<String> requested) {
     all = all.stream().sorted(Comparator.comparing(Connector::getDisplayName)).toList();
     if (requested == null || requested.isEmpty()) return all;
-    Set<String> wanted = new HashSet<>(requested);
-    List<Connector> selected =
-        all.stream()
-            .filter(
-                connector ->
-                    wanted.contains(connector.getDisplayName())
-                        || wanted.contains(connector.getResourceId().getId()))
-            .toList();
-    Set<String> found = new HashSet<>();
-    for (Connector connector : selected) {
-      found.add(connector.getDisplayName());
-      found.add(connector.getResourceId().getId());
+    Map<String, Connector> byId = new HashMap<>();
+    Map<String, Connector> byName = new HashMap<>();
+    for (Connector connector : all) {
+      byId.put(connector.getResourceId().getId(), connector);
+      byName.put(connector.getDisplayName(), connector);
     }
-    List<String> missing =
-        wanted.stream().filter(value -> !found.contains(value)).sorted().toList();
+    Set<String> selectedIds = new LinkedHashSet<>();
+    List<String> missing = new ArrayList<>();
+    for (String selector : new LinkedHashSet<>(requested)) {
+      Connector selected = byId.get(selector);
+      if (selected == null) selected = byName.get(selector);
+      if (selected == null) missing.add(selector);
+      else selectedIds.add(selected.getResourceId().getId());
+    }
     if (!missing.isEmpty()) {
+      missing.sort(String::compareTo);
       throw new IllegalArgumentException("unknown connector(s): " + String.join(", ", missing));
     }
-    return selected;
+    return all.stream()
+        .filter(connector -> selectedIds.contains(connector.getResourceId().getId()))
+        .toList();
+  }
+
+  static PreparedImport prepareImport(
+      ConnectorTransferEntry entry,
+      Connector current,
+      ConflictMode conflictMode,
+      ImportValidator validator) {
+    ConnectorSpec spec = specWithCredentials(entry);
+    ImportAction action = importAction(current != null, conflictMode);
+    String validationSummary = "";
+    if (action == ImportAction.CREATE || action == ImportAction.REPLACE) {
+      validationSummary = validator.validate(spec);
+    }
+    return new PreparedImport(entry, spec, current, action, validationSummary);
+  }
+
+  private static String validateImport(Client client, ConnectorSpec spec) {
+    if (spec.getState() == ConnectorState.CS_DELETING) {
+      throw new IllegalArgumentException(
+          "cannot import connector in deleting state: " + spec.getDisplayName());
+    }
+    PortableConnectorSpecs.validateForImport(spec, client.directory);
+    var validation =
+        client.connectors.validateConnector(
+            ValidateConnectorRequest.newBuilder().setSpec(spec).build());
+    if (!validation.getOk()) {
+      throw new IllegalArgumentException(
+          "connector validation failed for "
+              + spec.getDisplayName()
+              + ": "
+              + validation.getSummary());
+    }
+    return validation.getSummary();
   }
 
   static ImportAction importAction(boolean exists, ConflictMode conflictMode) {
@@ -469,7 +480,12 @@ public final class ConnectorTransferCli implements Runnable {
     return value == null || value.isBlank() ? fallback : Integer.parseInt(value.trim());
   }
 
-  private record PreparedImport(
+  @FunctionalInterface
+  interface ImportValidator {
+    String validate(ConnectorSpec spec);
+  }
+
+  record PreparedImport(
       ConnectorTransferEntry entry,
       ConnectorSpec spec,
       Connector current,

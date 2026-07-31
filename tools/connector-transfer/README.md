@@ -19,7 +19,7 @@ Export every connector from an account:
 
 ```shell
 tools/connector-transfer/floecat-connector-transfer \
-  --host localhost --port 9100 --account-id ACCOUNT_ID \
+  --host localhost --port 9100 --plaintext --account-id ACCOUNT_ID \
   export connectors.zip --plaintext-secrets
 ```
 
@@ -56,5 +56,5 @@ same-name connector in place, preserving its target connector ID. The tool emits
 connector ID and target connector ID for each successful import.
 
 Authentication can be provided through `--token`, `--session-token`, `FLOECAT_TOKEN`, or
-`FLOECAT_SESSION_TOKEN`. Connections are plaintext by default, matching the Floecat development
-CLI; pass `--tls` for a TLS endpoint.
+`FLOECAT_SESSION_TOKEN`. Connections use TLS by default. For a local development endpoint that
+does not support TLS, pass `--plaintext` explicitly; never use it across an untrusted network.

@@ -81,7 +81,8 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
-  wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
+  wires reconciliation job submission, and exposes credential-bearing `ExportConnector`,
+  `ValidateConnector`, and `StartCapture`.
   `CaptureNow` maps to reconciler capture modes:
   - metadata only -> `METADATA_ONLY`
   - capture only -> `CAPTURE_ONLY`
@@ -221,7 +222,9 @@ Extension points:
   durable reconcile backend evolves further; they are no longer intended to share one generic
   pointer-prefix queue abstraction.
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
-- **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
+- **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`;
+  `ExportConnector` returns complete definitions and requires the dedicated `connector.export`
+  permission.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
   additional connector metadata via the `QueryScanService` streaming RPCs / `ScanBundleService` on the query
   path. Reconcile planning/execution does not use `ScanBundleService`; it goes through

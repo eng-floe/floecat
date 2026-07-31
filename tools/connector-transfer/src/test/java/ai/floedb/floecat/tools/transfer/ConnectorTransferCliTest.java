@@ -24,9 +24,23 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferBundle;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferEntry;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import picocli.CommandLine;
 
 class ConnectorTransferCliTest {
+  @Test
+  void usesTlsByDefaultAndRequiresExplicitPlaintextOptIn() {
+    var defaults = new ConnectorTransferCli();
+    var plaintext = new ConnectorTransferCli();
+
+    new CommandLine(plaintext).parseArgs("--plaintext");
+
+    assertThat(defaults.plaintext).isFalse();
+    assertThat(plaintext.plaintext).isTrue();
+  }
+
   @Test
   void selectsCreateWhenNoConnectorExists() {
     for (var mode : ConnectorTransferCli.ConflictMode.values()) {
@@ -86,5 +100,82 @@ class ConnectorTransferCliTest {
             "policy",
             "state",
             "properties");
+  }
+
+  @Test
+  void connectorIdSelectorWinsOverAnotherConnectorsDisplayName() {
+    var namedAfterId = connector("connector-a", "connector-b");
+    var idMatch = connector("connector-b", "other-name");
+
+    assertThat(ConnectorTransferCli.select(List.of(namedAfterId, idMatch), List.of("connector-b")))
+        .containsExactly(idMatch);
+  }
+
+  @Test
+  void skippedAndFailedImportsDoNotRunMutationValidation() {
+    var validations = new AtomicInteger();
+    var entry =
+        ConnectorTransferEntry.newBuilder()
+            .setPortableSpec(ConnectorSpec.newBuilder().setDisplayName("connector"))
+            .build();
+    var current = connector("connector-id", "connector");
+
+    var skipped =
+        ConnectorTransferCli.prepareImport(
+            entry,
+            current,
+            ConnectorTransferCli.ConflictMode.SKIP,
+            spec -> {
+              validations.incrementAndGet();
+              return "valid";
+            });
+    var failed =
+        ConnectorTransferCli.prepareImport(
+            entry,
+            current,
+            ConnectorTransferCli.ConflictMode.FAIL,
+            spec -> {
+              validations.incrementAndGet();
+              return "valid";
+            });
+
+    assertThat(skipped.action()).isEqualTo(ConnectorTransferCli.ImportAction.SKIP);
+    assertThat(failed.action()).isEqualTo(ConnectorTransferCli.ImportAction.FAIL);
+    assertThat(validations).hasValue(0);
+  }
+
+  @Test
+  void createdAndReplacedImportsRunMutationValidation() {
+    var validations = new AtomicInteger();
+    var entry =
+        ConnectorTransferEntry.newBuilder()
+            .setPortableSpec(ConnectorSpec.newBuilder().setDisplayName("connector"))
+            .build();
+    ConnectorTransferCli.ImportValidator validator =
+        spec -> {
+          validations.incrementAndGet();
+          return "valid";
+        };
+
+    var created =
+        ConnectorTransferCli.prepareImport(
+            entry, null, ConnectorTransferCli.ConflictMode.FAIL, validator);
+    var replaced =
+        ConnectorTransferCli.prepareImport(
+            entry,
+            connector("connector-id", "connector"),
+            ConnectorTransferCli.ConflictMode.REPLACE,
+            validator);
+
+    assertThat(created.validationSummary()).isEqualTo("valid");
+    assertThat(replaced.validationSummary()).isEqualTo("valid");
+    assertThat(validations).hasValue(2);
+  }
+
+  private static Connector connector(String id, String displayName) {
+    return Connector.newBuilder()
+        .setResourceId(ResourceId.newBuilder().setId(id))
+        .setDisplayName(displayName)
+        .build();
   }
 }
