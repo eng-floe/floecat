@@ -140,8 +140,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   public Uni<CreateNamespaceResponse> createNamespace(CreateNamespaceRequest request) {
     var L = LogHelper.start(LOG, "CreateNamespace");
 
+    // A child namespace is a published child like any other and carries the parent's fence — and an
+    // implicitly created chain carries one per level. A retryable guard break is therefore ordinary;
+    // see TableServiceImpl#createTable for why the retry has to run on a worker.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var princ = principal.get();
                   var accountId = princ.getAccountId();
@@ -368,8 +371,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   public Uni<UpdateNamespaceResponse> updateNamespace(UpdateNamespaceRequest request) {
     var L = LogHelper.start(LOG, "UpdateNamespace");
 
+    // A reparent publishes into the destination parent and carries its fence; see createNamespace.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var princ = principal.get();
                   var corr = princ.getCorrelationId();

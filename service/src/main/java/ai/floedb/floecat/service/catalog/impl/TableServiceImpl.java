@@ -153,8 +153,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<CreateTableResponse> createTable(CreateTableRequest request) {
     var L = LogHelper.start(LOG, "CreateTable");
 
+    // Publishing a child carries the namespace fence, so BatchGuardFailedException — retryable by
+    // design — is now an ordinary outcome here: any concurrent write to the parent namespace, a
+    // rename included, breaks the guard. The body blocks on storage, and a plain retry re-subscribes
+    // on the Vert.x event loop where that fails outright, so the retry belongs on a worker.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var pc = principal.get();
                   var accountId = pc.getAccountId();
@@ -350,8 +354,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<UpdateTableResponse> updateTable(UpdateTableRequest request) {
     var L = LogHelper.start(LOG, "UpdateTable");
 
+    // A reparent publishes into the destination namespace and carries its fence; see createTable.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var pctx = principal.get();
                   var corr = pctx.getCorrelationId();

@@ -150,8 +150,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<CreateViewResponse> createView(CreateViewRequest request) {
     var L = LogHelper.start(LOG, "CreateView");
 
+    // Carries the namespace fence, so a retryable guard break is ordinary here; see
+    // TableServiceImpl#createTable for why the retry has to run on a worker.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var pc = principal.get();
                   var corr = pc.getCorrelationId();
@@ -338,8 +340,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<UpdateViewResponse> updateView(UpdateViewRequest request) {
     var L = LogHelper.start(LOG, "UpdateView");
 
+    // A reparent publishes into the destination namespace and carries its fence; see createView.
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var pctx = principal.get();
                   var corr = pctx.getCorrelationId();
