@@ -2034,12 +2034,14 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
 <li><strong>AccountServiceImpl</strong> – Administers accounts and enforces conventional permissions.</li>
 <li><strong>CatalogIntegrationsImpl</strong> – Manages reusable upstream endpoint/authentication records. Secret
   payloads are stored only through the credential resolver under unique opaque references; records
-  and API responses never contain credential payloads. Secret-bearing general/auth map keys are
+  and API responses never contain credential payloads. Superseded references remain durably queued
+  on the integration until secret deletion succeeds. Secret-bearing general/auth map keys are
   rejected, and connectivity is validated through the connector SPI.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Maps an integration and optional namespace filters to one SQL-visible
   catalog. Overlay creation creates that catalog unless an existing empty catalog ID is supplied.
   Caller-owned attached catalogs are preserved when their overlay is deleted; overlay-owned
-  catalogs are deleted only after an empty-catalog check.</li>
+  catalogs are deleted only after an empty-catalog check and a durable overlay deletion tombstone.
+  Overlay writes require both <code>catalog.write</code> and <code>connector.manage</code>.</li>
 <li><strong>ConnectorsImpl</strong> – Manages connector lifecycle, validates <code>ConnectorSpec</code> via SPI factories,
   wires reconciliation job submission, and exposes <code>ValidateConnector</code> + <code>StartCapture</code>.
   <code>CaptureNow</code> maps to reconciler capture modes:</li>
