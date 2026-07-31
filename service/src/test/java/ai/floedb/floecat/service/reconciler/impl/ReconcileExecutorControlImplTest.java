@@ -676,7 +676,7 @@ class ReconcileExecutorControlImplTest {
   @Test
   void commitLeasedFileGroupResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any(), any()))
         .thenReturn(true);
 
     var response =
@@ -712,6 +712,7 @@ class ReconcileExecutorControlImplTest {
                             .equals("/capture-1.pb")
                         && descriptor.indexPredecessor().captureManifestPointerVersion() == 9L),
             any(),
+            any(),
             any());
   }
 
@@ -720,7 +721,7 @@ class ReconcileExecutorControlImplTest {
     service.connectorRepo = mock(ConnectorRepository.class);
     when(service.connectorRepo.existsById(any())).thenReturn(false);
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any(), any()))
         .thenReturn(true);
 
     var response =
@@ -740,7 +741,8 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
+        .persistSuccess(
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any(), any());
   }
 
   @Test

@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -177,22 +178,32 @@ public class IndexArtifactRepository {
     LinkedHashMap<String, PrewrittenIndexWrite> unique = new LinkedHashMap<>();
     for (PrewrittenIndexArtifactReference reference :
         references == null ? List.<PrewrittenIndexArtifactReference>of() : references) {
+      boolean bundled =
+          reference != null
+              && reference.blobUri() != null
+              && reference.blobUri().contains("/reuse-bundles/");
+      String bundledPrefix =
+          requiredBlobPrefix.endsWith("index-artifacts/")
+              ? requiredBlobPrefix.substring(
+                  0, requiredBlobPrefix.length() - "index-artifacts/".length())
+              : requiredBlobPrefix;
       if (reference == null
           || reference.targetStorageId() == null
           || reference.targetStorageId().isBlank()
           || reference.blobUri() == null
-          || !reference.blobUri().startsWith(requiredBlobPrefix)
+          || !reference.blobUri().startsWith(bundled ? bundledPrefix : requiredBlobPrefix)
           || reference.blobBytes() <= 0L
           || reference.blobSha256() == null
           || reference.blobSha256().length != 32
-          || !reference
-              .blobUri()
-              .endsWith(
-                  "/"
-                      + Hashing.sha256Hex(reference.targetStorageId())
-                      + "/"
-                      + HexFormat.of().formatHex(reference.blobSha256())
-                      + ".pb")) {
+          || (!bundled
+              && !reference
+                  .blobUri()
+                  .endsWith(
+                      "/"
+                          + Hashing.sha256Hex(reference.targetStorageId())
+                          + "/"
+                          + HexFormat.of().formatHex(reference.blobSha256())
+                          + ".pb"))) {
         throw new IllegalArgumentException("invalid prewritten index artifact reference");
       }
       String pointerKey =
@@ -727,10 +738,41 @@ public class IndexArtifactRepository {
 
   private IndexArtifactRecord readRecord(Pointer pointer) {
     try {
-      return IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri()));
+      if (!pointer.getBlobUri().contains("/reuse-bundles/")) {
+        return IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri()));
+      }
+      ReusableArtifactBundlePayload bundle =
+          (blobCache == null
+                  ? loadReusableArtifactBundle(pointer.getBlobUri())
+                  : blobCache.get(pointer.getBlobUri(), this::loadReusableArtifactBundle))
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "missing index artifact bundle at " + pointer.getBlobUri()));
+      for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
+        String targetStorageId = indexArtifactTargetStorageId(record.getTarget());
+        if (pointer.getKey().endsWith("/" + Keys.encodeSegment(targetStorageId))) {
+          return record;
+        }
+      }
+      throw new InvalidProtocolBufferException(
+          "index artifact bundle has no record for pointer " + pointer.getKey());
     } catch (InvalidProtocolBufferException e) {
       throw new IllegalStateException(
           "invalid index artifact wrapper at " + pointer.getBlobUri(), e);
+    }
+  }
+
+  private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundle(String uri) {
+    try {
+      byte[] bytes = blobStore.get(uri);
+      return bytes == null
+          ? Optional.empty()
+          : Optional.of(ReusableArtifactBundlePayload.parseFrom(bytes));
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException("invalid reusable artifact bundle at " + uri, e);
     }
   }
 
