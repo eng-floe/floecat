@@ -59,7 +59,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     var bundle =
         new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
             existing.getSnapshotId(),
-            existing.getParentSnapshotId(),
+            -1L,
             Instant.now().toEpochMilli(),
             "",
             null,
@@ -79,6 +79,21 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(result.getSummaryMap()).containsEntry("existing-key", "existing-val");
     assertThat(result.getSummaryMap()).containsEntry("new-key", "new-val");
     assertThat(result.getMetadataLocation()).isEqualTo("s3://bucket/new.metadata.json");
+  }
+
+  @Test
+  void buildSnapshotPreservesZeroAsExplicitParentSnapshotId() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    var bundle =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
+            1L, 0L, Instant.now().toEpochMilli(), "{}", null, 0L, null, Map.of(), 0, null);
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+
+    Snapshot result = queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, null).orElseThrow();
+
+    assertThat(result.hasParentSnapshotId()).isTrue();
+    assertThat(result.getParentSnapshotId()).isZero();
   }
 
   @Test

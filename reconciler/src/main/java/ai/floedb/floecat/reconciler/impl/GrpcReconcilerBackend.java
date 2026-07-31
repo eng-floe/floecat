@@ -27,8 +27,6 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
-import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -653,65 +651,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       throw e;
     }
-  }
-
-  @Override
-  public List<TargetStatsRecord> listFileStats(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    List<TargetStatsRecord> records = new ArrayList<>();
-    String pageToken = "";
-    try {
-      do {
-        var response =
-            statistics(ctx)
-                .listTargetStats(
-                    ListTargetStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                        .addTargetKinds(StatsTargetKind.STK_FILE)
-                        .setPage(PageRequest.newBuilder().setPageSize(256).setPageToken(pageToken))
-                        .build());
-        if (response == null) {
-          break;
-        }
-        records.addAll(response.getRecordsList());
-        pageToken = response.hasPage() ? response.getPage().getNextPageToken() : "";
-      } while (pageToken != null && !pageToken.isBlank());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
-    return List.copyOf(records);
-  }
-
-  @Override
-  public List<IndexArtifactRecord> listFileIndexArtifacts(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    List<IndexArtifactRecord> records = new ArrayList<>();
-    String pageToken = "";
-    try {
-      do {
-        var response =
-            index(ctx)
-                .listIndexArtifacts(
-                    ListIndexArtifactsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                        .setPage(PageRequest.newBuilder().setPageSize(256).setPageToken(pageToken))
-                        .build());
-        if (response == null) {
-          break;
-        }
-        records.addAll(response.getRecordsList());
-        pageToken = response.hasPage() ? response.getPage().getNextPageToken() : "";
-      } while (pageToken != null && !pageToken.isBlank());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
-    return List.copyOf(records);
   }
 
   @Override

@@ -88,18 +88,6 @@ public interface ReconcilerBackend {
 
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 
-  /** Lists the persisted file-scoped stats used by remote snapshot planning. */
-  default List<TargetStatsRecord> listFileStats(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return List.of();
-  }
-
-  /** Lists the persisted file-scoped index artifacts used by remote snapshot planning. */
-  default List<IndexArtifactRecord> listFileIndexArtifacts(
-      ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return List.of();
-  }
-
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 
   /**

@@ -621,6 +621,7 @@ public interface FloecatConnector extends Closeable {
 
   record SnapshotBundle(
       long snapshotId,
+      /** The explicit predecessor snapshot ID, or {@code -1} when there is no predecessor. */
       long parentId,
       long upstreamCreatedAtMs,
       String schemaJson,

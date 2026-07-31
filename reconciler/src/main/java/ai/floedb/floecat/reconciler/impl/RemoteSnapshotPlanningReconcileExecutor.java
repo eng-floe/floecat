@@ -476,41 +476,16 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> historicalBundles =
         new ArrayList<>();
     if (!lease.fullRescan) {
-      List<Long> historicalSnapshotIds =
-          backend.existingSnapshotIds(context, tableId).stream()
-              .filter(snapshotId -> snapshotId < task.snapshotId())
-              .sorted(Comparator.reverseOrder())
-              .toList();
-      boolean foundReuseManifest = false;
-      for (long historicalSnapshotId : historicalSnapshotIds) {
-        Optional<HistoricalArtifacts> manifestArtifacts =
-            loadReuseManifest(context, tableId, historicalSnapshotId);
-        if (manifestArtifacts.isPresent()) {
-          historicalStats.addAll(manifestArtifacts.get().stats());
-          historicalIndexes.addAll(manifestArtifacts.get().indexes());
-          historicalStatsReferences.addAll(manifestArtifacts.get().statsReferences());
-          historicalIndexReferences.addAll(manifestArtifacts.get().indexReferences());
-          historicalBundles.addAll(manifestArtifacts.get().bundles());
-          foundReuseManifest = true;
-          break;
-        }
-      }
-      // Existing tables finalized before reuse manifests were introduced retain the old lookup.
-      if (!foundReuseManifest) {
-        for (long historicalSnapshotId : historicalSnapshotIds) {
-          if (historicalStats.isEmpty()) {
-            historicalStats.addAll(backend.listFileStats(context, tableId, historicalSnapshotId));
-          }
-          if (capturePolicy.requestsIndexes() && historicalIndexes.isEmpty()) {
-            historicalIndexes.addAll(
-                backend.listFileIndexArtifacts(context, tableId, historicalSnapshotId));
-          }
-          if (!historicalStats.isEmpty()
-              && (!capturePolicy.requestsIndexes() || !historicalIndexes.isEmpty())) {
-            break;
-          }
-        }
-      }
+      Optional<HistoricalArtifacts> manifestArtifacts =
+          loadPredecessorReuseManifest(context, tableId, task.snapshotId());
+      manifestArtifacts.ifPresent(
+          artifacts -> {
+            historicalStats.addAll(artifacts.stats());
+            historicalIndexes.addAll(artifacts.indexes());
+            historicalStatsReferences.addAll(artifacts.statsReferences());
+            historicalIndexReferences.addAll(artifacts.indexReferences());
+            historicalBundles.addAll(artifacts.bundles());
+          });
     }
     Map<Long, Map<String, String>> historicalIdentities = new HashMap<>();
     List<ReconcileFileGroupTask> enriched =
@@ -823,6 +798,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     } catch (com.google.protobuf.InvalidProtocolBufferException e) {
       throw new IllegalStateException("invalid snapshot reuse manifest: " + uri, e);
     }
+  }
+
+  private Optional<HistoricalArtifacts> loadPredecessorReuseManifest(
+      ReconcileContext context, ResourceId tableId, long snapshotId) {
+    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
+    if (snapshot == null || !snapshot.hasParentSnapshotId()) {
+      return Optional.empty();
+    }
+    return loadReuseManifest(context, tableId, snapshot.getParentSnapshotId());
   }
 
   private static byte[] sha256(byte[] bytes) {

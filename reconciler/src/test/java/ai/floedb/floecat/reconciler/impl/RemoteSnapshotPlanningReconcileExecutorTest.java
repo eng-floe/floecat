@@ -59,7 +59,6 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -131,7 +130,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void planningReadsOneReuseManifestAndSkipsHistoricalArtifactListings() throws Exception {
+  void planningLoadsReuseManifestFromExplicitParentSnapshot() throws Exception {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -158,21 +157,28 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             Optional.of(
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.existingSnapshotIds(any(), any())).thenReturn(Set.of(54L));
-    byte[] manifestBytes =
-        SnapshotCaptureManifest.newBuilder()
-            .setFormatVersion(1)
-            .setTableId("table-1")
-            .setSnapshotId(54L)
-            .build()
-            .toByteArray();
-    String uri = "/reuse/54.pb";
-    when(backend.fetchSnapshot(any(), any(), eq(54L)))
+    when(backend.fetchSnapshot(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()
                     .setTableId(tableId())
-                    .setSnapshotId(54L)
+                    .setSnapshotId(55L)
+                    .setParentSnapshotId(9001L)
+                    .build()));
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setTableId("table-1")
+            .setSnapshotId(9001L)
+            .build()
+            .toByteArray();
+    String uri = "/reuse/9001.pb";
+    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(9001L)
                     .putSummary(SnapshotReuseManifestMetadata.URI, uri)
                     .putSummary(
                         SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
@@ -193,8 +199,80 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
             .success());
     verify(blobStore).get(uri);
-    verify(backend, never()).listFileStats(any(), any(), anyLong());
-    verify(backend, never()).listFileIndexArtifacts(any(), any(), anyLong());
+    verify(backend, never()).existingSnapshotIds(any(), any());
+  }
+
+  @Test
+  void planningRegeneratesWhenExplicitParentHasNoReuseManifest() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(
+            backend, workerClient, ignored -> Optional.empty(), 2, true);
+    executor.blobStore = blobStore;
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    List.of(snapshotFile("file-1", 10L)), List.of())));
+    when(backend.fetchSnapshot(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(55L)
+                    .setParentSnapshotId(9001L)
+                    .build()));
+    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+        .thenReturn(
+            Optional.of(Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L).build()));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .success());
+    verify(workerClient)
+        .submitPlanSnapshotSuccess(
+            any(),
+            any(),
+            argThat(
+                fileGroupJobs ->
+                    fileGroupJobs.stream()
+                        .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
+                        .allMatch(
+                            plan ->
+                                plan.reusableFileStats()
+                                        .equals(TargetStatsRecord.getDefaultInstance())
+                                    && plan.reusableAuxiliaryStats().isEmpty()
+                                    && plan.reusableIndexArtifact()
+                                        .equals(
+                                            ai.floedb.floecat.catalog.rpc.IndexArtifactRecord
+                                                .getDefaultInstance())
+                                    && plan.reusableFileStatsReference() == null
+                                    && plan.reusableAuxiliaryStatsReferences().isEmpty()
+                                    && plan.reusableIndexArtifactReference() == null
+                                    && plan.reusableArtifactBundleSelections().isEmpty())),
+            any());
+    verify(backend, never()).existingSnapshotIds(any(), any());
+    verify(blobStore, never()).get(any());
   }
 
   @Test

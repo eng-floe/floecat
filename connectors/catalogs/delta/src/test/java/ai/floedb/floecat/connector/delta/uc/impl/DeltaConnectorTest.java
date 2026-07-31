@@ -83,6 +83,27 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void enumerateSnapshotsUsesMinusOneOnlyWhenThereIsNoPredecessor() {
+    Snapshot versionZero = snapshot(0L, 0L);
+    Snapshot versionOne = snapshot(1L, 1000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(versionOne, Map.of(0L, versionZero, 1L, versionOne)));
+
+    List<FloecatConnector.SnapshotBundle> bundles =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)));
+
+    assertEquals(
+        List.of(0L, 1L),
+        bundles.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList());
+    assertEquals(
+        List.of(-1L, 0L), bundles.stream().map(FloecatConnector.SnapshotBundle::parentId).toList());
+  }
+
+  @Test
   void latestNSelectsLatestVersionsWithinTargetEligibility() {
     Snapshot latest = snapshot(9L, 9000L);
     TestDeltaConnector connector =
