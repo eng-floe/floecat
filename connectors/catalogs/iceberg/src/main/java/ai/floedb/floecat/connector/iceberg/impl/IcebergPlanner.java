@@ -255,7 +255,11 @@ final class IcebergPlanner implements Planner<Integer> {
         uppers,
         partJson,
         spec == null ? 0 : spec.specId(),
-        sequenceNumber);
+        sequenceNumber,
+        "iceberg-data-v1:"
+            + (sequenceNumber == null ? "" : sequenceNumber)
+            + ":"
+            + dataFile.recordCount());
   }
 
   private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {

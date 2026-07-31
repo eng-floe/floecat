@@ -30,4 +30,38 @@ public record PlannedFile<K>(
     Map<K, Object> upperBounds,
     String partitionDataJson,
     int partitionSpecId,
-    Long sequenceNumber) {}
+    Long sequenceNumber,
+    String contentIdentity) {
+  public PlannedFile(
+      String path,
+      String format,
+      long rowCount,
+      long sizeBytes,
+      Map<K, Long> rowCounts,
+      Map<K, Long> nullCounts,
+      Map<K, Long> nanCounts,
+      Map<K, Object> lowerBounds,
+      Map<K, Object> upperBounds,
+      String partitionDataJson,
+      int partitionSpecId,
+      Long sequenceNumber) {
+    this(
+        path,
+        format,
+        rowCount,
+        sizeBytes,
+        rowCounts,
+        nullCounts,
+        nanCounts,
+        lowerBounds,
+        upperBounds,
+        partitionDataJson,
+        partitionSpecId,
+        sequenceNumber,
+        "");
+  }
+
+  public PlannedFile {
+    contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+  }
+}

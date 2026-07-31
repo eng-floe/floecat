@@ -119,6 +119,21 @@ public interface FloecatConnector extends Closeable {
   }
 
   /**
+   * Returns immutable source identities for selected files at an historical snapshot.
+   *
+   * <p>This is a metadata-only lookup used to adopt artifacts written before source identities were
+   * persisted with them. Connectors that cannot prove historical file identity return an empty map.
+   */
+  default Map<String, String> snapshotFileContentIdentities(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> filePaths) {
+    return Map.of();
+  }
+
+  /**
    * Plans table-scoped reconcile work for this connector.
    *
    * <p>Default behavior derives tasks from {@link #listTables(String)} and applies an optional
@@ -642,7 +657,8 @@ public interface FloecatConnector extends Closeable {
       List<Integer> equalityFieldIds,
       Long sequenceNumber,
       SnapshotDeletionVector deletionVector,
-      List<SnapshotIcebergDeleteFile> icebergDeleteFiles) {
+      List<SnapshotIcebergDeleteFile> icebergDeleteFiles,
+      String contentIdentity) {
     public SnapshotFileEntry(
         String filePath,
         String fileFormat,
@@ -664,7 +680,8 @@ public interface FloecatConnector extends Closeable {
           equalityFieldIds,
           sequenceNumber,
           null,
-          List.of());
+          List.of(),
+          "");
     }
 
     public SnapshotFileEntry(
@@ -689,7 +706,35 @@ public interface FloecatConnector extends Closeable {
           equalityFieldIds,
           sequenceNumber,
           deletionVector,
-          List.of());
+          List.of(),
+          "");
+    }
+
+    public SnapshotFileEntry(
+        String filePath,
+        String fileFormat,
+        long fileSizeInBytes,
+        long recordCount,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber,
+        SnapshotDeletionVector deletionVector,
+        List<SnapshotIcebergDeleteFile> icebergDeleteFiles) {
+      this(
+          filePath,
+          fileFormat,
+          fileSizeInBytes,
+          recordCount,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          deletionVector,
+          icebergDeleteFiles,
+          "");
     }
 
     public SnapshotFileEntry {
@@ -701,6 +746,7 @@ public interface FloecatConnector extends Closeable {
       partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
       equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
       icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
     }
   }
 
@@ -709,10 +755,21 @@ public interface FloecatConnector extends Closeable {
       long fileSizeInBytes,
       FileContent fileContent,
       int partitionSpecId,
-      List<Integer> equalityFieldIds) {
+      List<Integer> equalityFieldIds,
+      String contentIdentity) {
+    public SnapshotIcebergDeleteFile(
+        String filePath,
+        long fileSizeInBytes,
+        FileContent fileContent,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds) {
+      this(filePath, fileSizeInBytes, fileContent, partitionSpecId, equalityFieldIds, "");
+    }
+
     public SnapshotIcebergDeleteFile {
       filePath = filePath == null ? "" : filePath;
       fileSizeInBytes = Math.max(0L, fileSizeInBytes);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
       fileContent = fileContent == null ? FileContent.FC_UNSPECIFIED : fileContent;
       equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
     }

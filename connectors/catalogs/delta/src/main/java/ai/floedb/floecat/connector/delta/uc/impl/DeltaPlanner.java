@@ -306,7 +306,15 @@ final class DeltaPlanner implements Planner<String> {
                     maxs,
                     partitionJson,
                     0,
-                    null));
+                    null,
+                    "delta-add-v1:"
+                        + add.getModificationTime()
+                        + ":"
+                        + add.getBaseRowId().map(String::valueOf).orElse("")
+                        + ":"
+                        + add.getDefaultRowCommitVersion().map(String::valueOf).orElse("")
+                        + ":"
+                        + rowCount));
           }
         }
       }

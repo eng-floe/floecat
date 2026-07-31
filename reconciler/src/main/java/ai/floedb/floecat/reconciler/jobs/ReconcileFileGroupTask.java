@@ -262,6 +262,23 @@ public record ReconcileFileGroupTask(
         fileExecutionPlans);
   }
 
+  public ReconcileFileGroupTask withFileExecutionPlans(
+      List<ReconcileFileExecutionPlan> fileExecutionPlans) {
+    return new ReconcileFileGroupTask(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        fileStatsBlobUri,
+        fileStatsRecordCount,
+        filePaths,
+        fileResults,
+        partialAggregateRecords,
+        executionSchemaJson,
+        fileExecutionPlans);
+  }
+
   public ReconcileFileGroupTask withFileStatsBlob(String blobUri, int recordCount) {
     return new ReconcileFileGroupTask(
         planId,
