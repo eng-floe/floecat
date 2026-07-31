@@ -87,8 +87,7 @@ final class PortableConnectorSpecs {
             || destination.getNamespace().getSegmentsList().stream().anyMatch(String::isBlank))) {
       throw new IllegalArgumentException("destination namespace contains an empty path segment");
     }
-    if (destination.hasTableDisplayName()
-        && destination.getTableDisplayName().trim().isBlank()) {
+    if (destination.hasTableDisplayName() && destination.getTableDisplayName().trim().isBlank()) {
       throw new IllegalArgumentException("destination table display name is blank");
     }
   }

@@ -90,11 +90,9 @@ class ConnectorsImplCreateConnectorTest {
                             .setUri("https://source.example")
                             .setSource(
                                 SourceSelector.newBuilder()
-                                    .setNamespace(
-                                        NamespacePath.newBuilder().addSegments("source")))
+                                    .setNamespace(NamespacePath.newBuilder().addSegments("source")))
                             .setDestination(
-                                DestinationTarget.newBuilder()
-                                    .setCatalogDisplayName("catalog"))
+                                DestinationTarget.newBuilder().setCatalogDisplayName("catalog"))
                             .setState(ConnectorState.CS_PAUSED))
                     .build())
             .await()

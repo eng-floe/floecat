@@ -242,11 +242,7 @@ public final class ConnectorTransferCli implements Runnable {
         for (var entry : bundle.getEntriesList()) {
           Connector current = existing.get(entry.getPortableSpec().getDisplayName());
           prepared.add(
-              prepareImport(
-                  entry,
-                  current,
-                  conflictMode,
-                  spec -> validateImport(client, spec)));
+              prepareImport(entry, current, conflictMode, spec -> validateImport(client, spec)));
         }
 
         for (PreparedImport item : prepared) {
