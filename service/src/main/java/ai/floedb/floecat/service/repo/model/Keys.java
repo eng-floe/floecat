@@ -584,7 +584,6 @@ public final class Keys {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets-active";
   }
 
-
   public static String snapshotTargetStatsGenerationRootPointer(
       String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "target-generations/";

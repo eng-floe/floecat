@@ -799,7 +799,6 @@ public class StatsRepository implements StatsStore {
     }
   }
 
-
   @Override
   public boolean deleteTargetStats(ResourceId tableId, long snapshotId, StatsTarget target) {
     return activeGeneration(tableId, snapshotId)
