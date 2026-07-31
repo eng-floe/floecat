@@ -344,7 +344,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
     when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
 

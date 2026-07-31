@@ -373,6 +373,7 @@ class RemoteFileGroupReconcileExecutorTest {
                 new StandaloneFileGroupExecutionResult(
                     "job-1:plan-1:group-1:lease-1:success",
                     List.of(),
+                    List.of(fileStat),
                     List.of(descriptor),
                     List.of())));
   }

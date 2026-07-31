@@ -18,6 +18,9 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import java.util.List;
@@ -27,7 +30,7 @@ interface RemoteSnapshotFinalizeWorkerClient {
 
   List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(RemoteLeasedJob lease);
 
-  PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
+  default PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
       RemoteLeasedJob lease,
       String resultId,
       String statsObjectPrefix,
@@ -37,6 +40,73 @@ interface RemoteSnapshotFinalizeWorkerClient {
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
+    return prepareSnapshotFinalizeSuccess(
+        lease,
+        resultId,
+        statsObjectPrefix,
+        captureManifestUri,
+        sourceFileCount,
+        fileGroups,
+        fileStats,
+        List.of(),
+        finalStats,
+        indexArtifacts,
+        List.of(),
+        List.of(),
+        realizedStatsSelectors,
+        realizedIndexSelectors,
+        indexPredecessor);
+  }
+
+  default PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease,
+      String resultId,
+      String statsObjectPrefix,
+      String captureManifestUri,
+      int sourceFileCount,
+      List<ReconcileFileGroupResultDescriptor> fileGroups,
+      List<StatsObjectDescriptor> fileStats,
+      List<ReusableStatsArtifactReference> reusableFileStats,
+      List<TargetStatsRecord> finalStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      List<ReusableIndexArtifactReference> reusableIndexArtifacts,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
+    return prepareSnapshotFinalizeSuccess(
+        lease,
+        resultId,
+        statsObjectPrefix,
+        captureManifestUri,
+        sourceFileCount,
+        fileGroups,
+        fileStats,
+        reusableFileStats,
+        finalStats,
+        indexArtifacts,
+        reusableIndexArtifacts,
+        List.of(),
+        realizedStatsSelectors,
+        realizedIndexSelectors,
+        indexPredecessor);
+  }
+
+  PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease,
+      String resultId,
+      String statsObjectPrefix,
+      String captureManifestUri,
+      int sourceFileCount,
+      List<ReconcileFileGroupResultDescriptor> fileGroups,
+      List<StatsObjectDescriptor> fileStats,
+      List<ReusableStatsArtifactReference> reusableFileStats,
+      List<TargetStatsRecord> finalStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      List<ReusableIndexArtifactReference> reusableIndexArtifacts,
+      List<ReusableArtifactBundleReference> reusableArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);

@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -32,22 +34,36 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference;
+import ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -62,6 +78,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private final boolean enabled;
   private final boolean workerAuthRequired;
   private final int maxFilesPerGroup;
+  @Inject BlobStore blobStore;
 
   @Inject
   public RemoteSnapshotPlanningReconcileExecutor(
@@ -411,7 +428,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (directSnapshotTask.isPresent()) {
       return directSnapshotTask.get();
     }
-    List<ReconcileFileGroupTask> fileGroupTasks = buildFileGroupTasks(lease, task);
+    List<ReconcileFileGroupTask> fileGroupTasks =
+        enrichFileGroupTasks(lease, payload, task, buildFileGroupTasks(lease, task));
     return PlannedSnapshotCapture.fileGroups(
         ReconcileSnapshotTask.of(
             task.tableId(),
@@ -431,6 +449,553 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             task.requestedCoverage(),
             task.indexPredecessor()),
         fileGroupTasks);
+  }
+
+  private List<ReconcileFileGroupTask> enrichFileGroupTasks(
+      ReconcileJobStore.LeasedJob lease,
+      StandalonePlanSnapshotPayload payload,
+      ReconcileSnapshotTask task,
+      List<ReconcileFileGroupTask> groups) {
+    if (groups.isEmpty()) {
+      return groups;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(task.tableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ReconcileContext context = reconcileContext(lease);
+    ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
+    ReconcileCapturePolicy capturePolicy =
+        scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
+    List<TargetStatsRecord> historicalStats = new ArrayList<>();
+    List<IndexArtifactRecord> historicalIndexes = new ArrayList<>();
+    List<ReusableStatsArtifactReference> historicalStatsReferences = new ArrayList<>();
+    List<ReusableIndexArtifactReference> historicalIndexReferences = new ArrayList<>();
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> historicalBundles =
+        new ArrayList<>();
+    if (!lease.fullRescan) {
+      List<Long> historicalSnapshotIds =
+          backend.existingSnapshotIds(context, tableId).stream()
+              .filter(snapshotId -> snapshotId < task.snapshotId())
+              .sorted(Comparator.reverseOrder())
+              .toList();
+      boolean foundReuseManifest = false;
+      for (long historicalSnapshotId : historicalSnapshotIds) {
+        Optional<HistoricalArtifacts> manifestArtifacts =
+            loadReuseManifest(context, tableId, historicalSnapshotId);
+        if (manifestArtifacts.isPresent()) {
+          historicalStats.addAll(manifestArtifacts.get().stats());
+          historicalIndexes.addAll(manifestArtifacts.get().indexes());
+          historicalStatsReferences.addAll(manifestArtifacts.get().statsReferences());
+          historicalIndexReferences.addAll(manifestArtifacts.get().indexReferences());
+          historicalBundles.addAll(manifestArtifacts.get().bundles());
+          foundReuseManifest = true;
+          break;
+        }
+      }
+      // Existing tables finalized before reuse manifests were introduced retain the old lookup.
+      if (!foundReuseManifest) {
+        for (long historicalSnapshotId : historicalSnapshotIds) {
+          if (historicalStats.isEmpty()) {
+            historicalStats.addAll(backend.listFileStats(context, tableId, historicalSnapshotId));
+          }
+          if (capturePolicy.requestsIndexes() && historicalIndexes.isEmpty()) {
+            historicalIndexes.addAll(
+                backend.listFileIndexArtifacts(context, tableId, historicalSnapshotId));
+          }
+          if (!historicalStats.isEmpty()
+              && (!capturePolicy.requestsIndexes() || !historicalIndexes.isEmpty())) {
+            break;
+          }
+        }
+      }
+    }
+    Map<Long, Map<String, String>> historicalIdentities = new HashMap<>();
+    List<ReconcileFileGroupTask> enriched =
+        groups.stream()
+            .map(
+                group ->
+                    group.withFileExecutionPlans(
+                        !historicalBundles.isEmpty()
+                            ? RemoteFileArtifactReusePlanner.enrichFromBundles(
+                                group.executionSchemaJson(),
+                                group.fileExecutionPlans(),
+                                capturePolicy,
+                                lease.fullRescan,
+                                historicalBundles)
+                            : !historicalStatsReferences.isEmpty()
+                                    || !historicalIndexReferences.isEmpty()
+                                ? RemoteFileArtifactReusePlanner.enrichFromReferences(
+                                    group.executionSchemaJson(),
+                                    group.fileExecutionPlans(),
+                                    capturePolicy,
+                                    lease.fullRescan,
+                                    historicalStatsReferences,
+                                    historicalIndexReferences)
+                                : RemoteFileArtifactReusePlanner.enrich(
+                                    tableId,
+                                    task.snapshotId(),
+                                    group.executionSchemaJson(),
+                                    group.fileExecutionPlans(),
+                                    capturePolicy,
+                                    lease.fullRescan,
+                                    historicalStats,
+                                    historicalIndexes,
+                                    (snapshotId, filePath) ->
+                                        historicalIdentities
+                                            .computeIfAbsent(
+                                                snapshotId,
+                                                ignored ->
+                                                    historicalContentIdentities(
+                                                        context, tableId, snapshotId))
+                                            .getOrDefault(filePath, ""))))
+            .toList();
+    return historicalBundles.isEmpty()
+        ? enriched
+        : regroupByReuseBundleAffinity(enriched, maxFilesPerGroup);
+  }
+
+  static List<ReconcileFileGroupTask> regroupByReuseBundleAffinity(
+      List<ReconcileFileGroupTask> groups, int maxFilesPerGroup) {
+    if (groups == null || groups.isEmpty()) {
+      return List.of();
+    }
+    ReconcileFileGroupTask template = groups.get(0);
+    List<ReconcileFileExecutionPlan> plans =
+        groups.stream().flatMap(group -> group.fileExecutionPlans().stream()).toList();
+    if (plans.isEmpty()) {
+      return List.copyOf(groups);
+    }
+    int effectiveMaxFiles = Math.max(1, maxFilesPerGroup);
+    Map<String, List<ReconcileFileExecutionPlan>> plansByBundle = new java.util.TreeMap<>();
+    List<ReconcileFileExecutionPlan> unbound = new ArrayList<>();
+    for (ReconcileFileExecutionPlan plan : plans) {
+      String affinity = primaryReuseBundleUri(plan);
+      if (affinity.isBlank()) {
+        unbound.add(plan);
+      } else {
+        plansByBundle.computeIfAbsent(affinity, ignored -> new ArrayList<>()).add(plan);
+      }
+    }
+    if (plansByBundle.isEmpty()) {
+      return List.copyOf(groups);
+    }
+
+    List<ExecutionPlanBucket> buckets = new ArrayList<>();
+    for (List<ReconcileFileExecutionPlan> bundlePlans : plansByBundle.values()) {
+      int bundleGroupCount = (bundlePlans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+      List<ExecutionPlanBucket> bundleBuckets = new ArrayList<>(bundleGroupCount);
+      PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
+      for (int index = 0; index < bundleGroupCount; index++) {
+        ExecutionPlanBucket bucket = new ExecutionPlanBucket(buckets.size() + index);
+        bundleBuckets.add(bucket);
+        available.add(bucket);
+      }
+      for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(bundlePlans)) {
+        ExecutionPlanBucket bucket = available.remove();
+        bucket.add(plan);
+        if (bucket.fileCount() < effectiveMaxFiles) {
+          available.add(bucket);
+        }
+      }
+      buckets.addAll(bundleBuckets);
+    }
+
+    int minimumGroupCount = (plans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+    while (buckets.size() < minimumGroupCount) {
+      buckets.add(new ExecutionPlanBucket(buckets.size()));
+    }
+    PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
+    buckets.stream()
+        .filter(bucket -> bucket.fileCount() < effectiveMaxFiles)
+        .forEach(available::add);
+    for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(unbound)) {
+      ExecutionPlanBucket bucket = available.remove();
+      bucket.add(plan);
+      if (bucket.fileCount() < effectiveMaxFiles) {
+        available.add(bucket);
+      }
+    }
+
+    List<ReconcileFileGroupTask> regrouped = new ArrayList<>(buckets.size());
+    for (ExecutionPlanBucket bucket : buckets) {
+      if (bucket.fileCount() == 0) {
+        continue;
+      }
+      List<ReconcileFileExecutionPlan> bucketPlans = bucket.immutablePlans();
+      String groupId = "snapshot-" + template.snapshotId() + "-group-" + regrouped.size();
+      List<String> filePaths =
+          bucketPlans.stream().map(ReconcileFileExecutionPlan::filePath).toList();
+      regrouped.add(
+          ReconcileFileGroupTask.of(
+              template.planId(),
+              groupId,
+              template.tableId(),
+              template.snapshotId(),
+              filePaths.size(),
+              "",
+              0,
+              filePaths,
+              List.of(),
+              List.of(),
+              template.executionSchemaJson(),
+              bucketPlans));
+    }
+    return List.copyOf(regrouped);
+  }
+
+  private static String primaryReuseBundleUri(ReconcileFileExecutionPlan plan) {
+    return plan.reusableArtifactBundleSelections().stream()
+        .filter(
+            selection ->
+                selection.statsFilePaths().contains(plan.filePath())
+                    || selection.indexFilePaths().contains(plan.filePath()))
+        .map(ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection::payloadUri)
+        .filter(uri -> uri != null && !uri.isBlank())
+        .sorted()
+        .findFirst()
+        .orElseGet(
+            () ->
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(
+                        ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection
+                            ::payloadUri)
+                    .filter(uri -> uri != null && !uri.isBlank())
+                    .sorted()
+                    .findFirst()
+                    .orElse(""));
+  }
+
+  private static List<ReconcileFileExecutionPlan> plansByEstimatedWork(
+      List<ReconcileFileExecutionPlan> plans) {
+    return plans.stream()
+        .sorted(
+            Comparator.comparingLong(
+                    RemoteSnapshotPlanningReconcileExecutor::estimatedExecutionPlanWork)
+                .reversed()
+                .thenComparing(ReconcileFileExecutionPlan::filePath)
+                .thenComparing(ReconcileFileExecutionPlan::fileFormat))
+        .toList();
+  }
+
+  private static PriorityQueue<ExecutionPlanBucket> executionPlanBucketQueue() {
+    return new PriorityQueue<>(
+        Comparator.comparingLong(ExecutionPlanBucket::estimatedWork)
+            .thenComparingInt(ExecutionPlanBucket::fileCount)
+            .thenComparingInt(ExecutionPlanBucket::index));
+  }
+
+  private static long estimatedExecutionPlanWork(ReconcileFileExecutionPlan plan) {
+    long estimatedWork = saturatedAdd(plan.fileSizeInBytes(), ESTIMATED_FILE_OVERHEAD_BYTES);
+    if (plan.deletionVector() != null) {
+      estimatedWork = saturatedAdd(estimatedWork, plan.deletionVector().sizeInBytes());
+    }
+    for (ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile : plan.icebergDeleteFiles()) {
+      estimatedWork = saturatedAdd(estimatedWork, deleteFile.fileSizeInBytes());
+    }
+    return estimatedWork;
+  }
+
+  private static final class ExecutionPlanBucket {
+    private final int index;
+    private final List<ReconcileFileExecutionPlan> plans = new ArrayList<>();
+    private long estimatedWork;
+
+    private ExecutionPlanBucket(int index) {
+      this.index = index;
+    }
+
+    private void add(ReconcileFileExecutionPlan plan) {
+      plans.add(plan);
+      estimatedWork = saturatedAdd(estimatedWork, estimatedExecutionPlanWork(plan));
+    }
+
+    private int index() {
+      return index;
+    }
+
+    private int fileCount() {
+      return plans.size();
+    }
+
+    private long estimatedWork() {
+      return estimatedWork;
+    }
+
+    private List<ReconcileFileExecutionPlan> immutablePlans() {
+      return plans.stream()
+          .sorted(Comparator.comparing(ReconcileFileExecutionPlan::filePath))
+          .toList();
+    }
+  }
+
+  private Optional<HistoricalArtifacts> loadReuseManifest(
+      ReconcileContext context, ResourceId tableId, long snapshotId) {
+    if (blobStore == null) {
+      return Optional.empty();
+    }
+    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+    String uri = snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.URI, "").trim();
+    if (uri.isBlank()) {
+      return Optional.empty();
+    }
+    byte[] bytes = blobStore.get(uri);
+    String declaredBytes =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
+    String declaredSha256 =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.SHA256, "").trim();
+    if (declaredBytes.isBlank()
+        || Long.parseLong(declaredBytes) != bytes.length
+        || declaredSha256.isBlank()
+        || !MessageDigest.isEqual(
+            declaredSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+            Base64.getEncoder()
+                .encodeToString(sha256(bytes))
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+      throw new IllegalStateException("snapshot reuse manifest metadata mismatch: " + uri);
+    }
+    try {
+      SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(bytes);
+      if (manifest.getFormatVersion() != 1
+          || !tableId.getId().equals(manifest.getTableId())
+          || snapshotId != manifest.getSnapshotId()) {
+        throw new IllegalStateException("snapshot reuse manifest identity mismatch: " + uri);
+      }
+      String statsObjectPrefix =
+          manifest.getFileGroupsList().stream()
+              .map(ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor::getStatsObjectPrefix)
+              .filter(prefix -> prefix != null && !prefix.isBlank())
+              .findFirst()
+              .orElse("");
+      List<ReusableStatsArtifactReference> statsReferences =
+          manifest.getReusableFileStatsList().stream()
+              .map(RemoteSnapshotPlanningReconcileExecutor::toStatsReference)
+              .toList();
+      List<ReusableIndexArtifactReference> indexReferences =
+          manifest.getReusableIndexArtifactsList().stream()
+              .map(RemoteSnapshotPlanningReconcileExecutor::toIndexReference)
+              .toList();
+      if (statsReferences.isEmpty() && indexReferences.isEmpty() && !statsObjectPrefix.isBlank()) {
+        List<ReusableStatsArtifactReference> migratedStats =
+            manifest.getReusableFileStatsRecordsList().stream()
+                .map(record -> legacyStatsReference(statsObjectPrefix, record))
+                .toList();
+        List<ReusableIndexArtifactReference> migratedIndexes =
+            manifest.getReusableIndexArtifactRecordsList().stream()
+                .map(record -> legacyIndexReference(statsObjectPrefix, record))
+                .toList();
+        boolean statsConvertible =
+            migratedStats.stream()
+                .allMatch(
+                    reference ->
+                        !reference.sourceFingerprint().isBlank()
+                            && !reference.statsCaptureSignature().isBlank());
+        boolean indexesConvertible =
+            migratedIndexes.stream()
+                .allMatch(
+                    reference ->
+                        !reference.sourceFingerprint().isBlank()
+                            && !reference.indexCaptureSignature().isBlank());
+        if (statsConvertible && indexesConvertible) {
+          publishLegacyArtifacts(
+              statsObjectPrefix,
+              manifest.getReusableFileStatsRecordsList(),
+              manifest.getReusableIndexArtifactRecordsList());
+          statsReferences = migratedStats;
+          indexReferences = migratedIndexes;
+          LOG.infof(
+              "Migrated legacy snapshot reuse manifest to compact references uri=%s stats=%d indexes=%d",
+              uri, statsReferences.size(), indexReferences.size());
+        }
+      }
+      return Optional.of(
+          new HistoricalArtifacts(
+              manifest.getReusableFileStatsRecordsList(),
+              manifest.getReusableIndexArtifactRecordsList(),
+              statsReferences,
+              indexReferences,
+              manifest.getReusableArtifactBundlesList()));
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalStateException("invalid snapshot reuse manifest: " + uri, e);
+    }
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  static ReusableStatsArtifactReference legacyStatsReference(
+      String prefix, TargetStatsRecord record) {
+    TargetStatsRecord canonical =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.canonicalize(record);
+    byte[] payload = canonical.toByteArray();
+    byte[] payloadSha256 = sha256(payload);
+    String targetStorageId =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(canonical.getTarget());
+    String filePath =
+        canonical.hasTarget() && canonical.getTarget().hasFile()
+            ? canonical.getTarget().getFile().getFilePath()
+            : "";
+    String selectors =
+        record.getPropertiesOrDefault(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "");
+    return new ReusableStatsArtifactReference(
+        filePath,
+        targetStorageId,
+        artifactUri(prefix, targetStorageId, payloadSha256),
+        payload.length,
+        payloadSha256,
+        record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""),
+        record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""),
+        java.util.Arrays.stream(selectors.split(","))
+            .map(String::trim)
+            .filter(value -> !value.isBlank())
+            .toList());
+  }
+
+  void publishLegacyArtifacts(
+      String prefix, List<TargetStatsRecord> stats, List<IndexArtifactRecord> indexes) {
+    int artifactCount = stats.size() + indexes.size();
+    if (artifactCount == 0) {
+      return;
+    }
+    long startedNanos = System.nanoTime();
+    int parallelism = Math.min(16, artifactCount);
+    ExecutorService publisher = Executors.newFixedThreadPool(parallelism);
+    List<Future<?>> writes = new ArrayList<>(artifactCount);
+    try {
+      for (TargetStatsRecord record : stats) {
+        writes.add(
+            publisher.submit(
+                () -> {
+                  TargetStatsRecord canonical =
+                      ai.floedb.floecat.stats.identity.TargetStatsRecords.canonicalize(record);
+                  ReusableStatsArtifactReference reference = legacyStatsReference(prefix, record);
+                  blobStore.put(
+                      reference.payloadUri(), canonical.toByteArray(), "application/x-protobuf");
+                }));
+      }
+      for (IndexArtifactRecord record : indexes) {
+        writes.add(
+            publisher.submit(
+                () -> {
+                  ReusableIndexArtifactReference reference = legacyIndexReference(prefix, record);
+                  blobStore.put(
+                      reference.payloadUri(), record.toByteArray(), "application/x-protobuf");
+                }));
+      }
+      for (Future<?> write : writes) {
+        write.get();
+      }
+      LOG.infof(
+          "Published durable artifacts for legacy snapshot reuse manifest artifacts=%d durationMs=%d",
+          artifactCount, (System.nanoTime() - startedNanos) / 1_000_000L);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      writes.forEach(write -> write.cancel(true));
+      throw new IllegalStateException("Interrupted publishing legacy snapshot reuse artifacts", e);
+    } catch (ExecutionException e) {
+      writes.forEach(write -> write.cancel(true));
+      Throwable cause = e.getCause();
+      if (cause instanceof RuntimeException runtimeException) {
+        throw runtimeException;
+      }
+      throw new IllegalStateException("Failed publishing legacy snapshot reuse artifacts", cause);
+    } finally {
+      publisher.shutdownNow();
+    }
+  }
+
+  static ReusableIndexArtifactReference legacyIndexReference(
+      String prefix, IndexArtifactRecord record) {
+    byte[] payload = record.toByteArray();
+    byte[] payloadSha256 = sha256(payload);
+    String filePath =
+        record.hasTarget() && record.getTarget().hasFile()
+            ? record.getTarget().getFile().getFilePath()
+            : "";
+    String targetStorageId = "file:" + filePath;
+    return new ReusableIndexArtifactReference(
+        filePath,
+        targetStorageId,
+        artifactUri(prefix + "index-artifacts/", targetStorageId, payloadSha256),
+        payload.length,
+        payloadSha256,
+        record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""),
+        record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, ""));
+  }
+
+  private static String artifactUri(String prefix, String targetStorageId, byte[] payloadSha256) {
+    return prefix
+        + HexFormat.of()
+            .formatHex(sha256(targetStorageId.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+        + "/"
+        + HexFormat.of().formatHex(payloadSha256)
+        + ".pb";
+  }
+
+  private record HistoricalArtifacts(
+      List<TargetStatsRecord> stats,
+      List<IndexArtifactRecord> indexes,
+      List<ReusableStatsArtifactReference> statsReferences,
+      List<ReusableIndexArtifactReference> indexReferences,
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> bundles) {}
+
+  private static ReusableStatsArtifactReference toStatsReference(
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ReusableStatsArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getStatsCaptureSignature(),
+        reference.getRealizedStatsSelectorsList());
+  }
+
+  private static ReusableIndexArtifactReference toIndexReference(
+      ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference reference) {
+    var artifact = reference.getArtifact();
+    return new ReusableIndexArtifactReference(
+        reference.getFilePath(),
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        reference.getSourceFingerprint(),
+        reference.getIndexCaptureSignature());
+  }
+
+  private Map<String, String> historicalContentIdentities(
+      ReconcileContext context, ResourceId tableId, long snapshotId) {
+    try {
+      return backend
+          .fetchSnapshotFilePlan(context, tableId, snapshotId)
+          .map(
+              plan -> {
+                Map<String, String> identities = new HashMap<>();
+                plan.dataFiles().stream()
+                    .filter(file -> file != null)
+                    .filter(file -> file.filePath() != null && !file.filePath().isBlank())
+                    .filter(
+                        file -> file.contentIdentity() != null && !file.contentIdentity().isBlank())
+                    .forEach(file -> identities.put(file.filePath(), file.contentIdentity()));
+                return Map.copyOf(identities);
+              })
+          .orElse(Map.of());
+    } catch (RuntimeException ignored) {
+      return Map.of();
+    }
   }
 
   private Optional<PlannedSnapshotCapture> tryDirectStatsCapture(

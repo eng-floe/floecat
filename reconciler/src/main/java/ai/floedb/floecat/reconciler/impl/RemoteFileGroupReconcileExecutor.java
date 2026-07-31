@@ -125,17 +125,22 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
       List<StatsObjectDescriptor> fileStats = new ArrayList<>();
+      List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> publishedFileStats = new ArrayList<>();
       StandaloneFileGroupExecutionPayload executionPayload = payload;
       var captured =
           runner.execute(
               payload,
               context.shouldStop(),
-              fileStat -> fileStats.add(workerClient.publishFileStats(executionPayload, fileStat)));
+              fileStat -> {
+                publishedFileStats.add(fileStat);
+                fileStats.add(workerClient.publishFileStats(executionPayload, fileStat));
+              });
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
               successResultId,
               captured.statsRecords(),
+              publishedFileStats,
               fileStats,
               captured.stagedIndexArtifacts(),
               captured.realizedStatsSelectors());

@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -28,30 +29,173 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotPlanningReconcileExecutorTest {
+
+  @Test
+  void derivesCompactReferenceFromLegacyEmbeddedStatsRecord() {
+    TargetStatsRecord record =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setFile(FileStatsTarget.newBuilder().setFilePath("s3://bucket/file.parquet")))
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath("s3://bucket/file.parquet")
+                    .setFileFormat("PARQUET")
+                    .setRowCount(1))
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "signature")
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1,#2")
+            .build();
+
+    var reference = RemoteSnapshotPlanningReconcileExecutor.legacyStatsReference("/stats/", record);
+
+    assertEquals("s3://bucket/file.parquet", reference.filePath());
+    assertTrue(reference.payloadUri().startsWith("/stats/"));
+    assertTrue(reference.payloadUri().endsWith(".pb"));
+    assertEquals("source", reference.sourceFingerprint());
+    assertEquals("signature", reference.statsCaptureSignature());
+    assertEquals(List.of("#1", "#2"), reference.realizedStatsSelectors());
+    assertEquals(
+        TargetStatsRecords.canonicalize(record).toByteArray().length, reference.payloadBytes());
+  }
+
+  @Test
+  void publishesLegacyEmbeddedStatsAsDurableReferencedArtifact() {
+    TargetStatsRecord record =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setFile(FileStatsTarget.newBuilder().setFilePath("s3://bucket/file.parquet")))
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setFilePath("s3://bucket/file.parquet")
+                    .setFileFormat("PARQUET")
+                    .setRowCount(1))
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "signature")
+            .build();
+    BlobStore blobStore = mock(BlobStore.class);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(
+            mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class),
+            mock(RemotePlannerWorkerClient.class),
+            ignored -> Optional.empty(),
+            2,
+            true);
+    executor.blobStore = blobStore;
+    var reference = RemoteSnapshotPlanningReconcileExecutor.legacyStatsReference("/stats/", record);
+
+    executor.publishLegacyArtifacts("/stats/", List.of(record), List.of());
+
+    verify(blobStore)
+        .put(
+            eq(reference.payloadUri()),
+            aryEq(TargetStatsRecords.canonicalize(record).toByteArray()),
+            eq("application/x-protobuf"));
+  }
+
+  @Test
+  void planningReadsOneReuseManifestAndSkipsHistoricalArtifactListings() throws Exception {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(
+            backend, workerClient, ignored -> Optional.empty(), 2, true);
+    executor.blobStore = blobStore;
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    List.of(snapshotFile("file-1", 10L)), List.of())));
+    when(backend.existingSnapshotIds(any(), any())).thenReturn(Set.of(54L));
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setTableId("table-1")
+            .setSnapshotId(54L)
+            .build()
+            .toByteArray();
+    String uri = "/reuse/54.pb";
+    when(backend.fetchSnapshot(any(), any(), eq(54L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(54L)
+                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
+                    .putSummary(
+                        SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
+                    .putSummary(
+                        SnapshotReuseManifestMetadata.SHA256,
+                        Base64.getEncoder()
+                            .encodeToString(
+                                java.security.MessageDigest.getInstance("SHA-256")
+                                    .digest(manifestBytes)))
+                    .build()));
+    when(blobStore.get(uri)).thenReturn(manifestBytes);
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .success());
+    verify(blobStore).get(uri);
+    verify(backend, never()).listFileStats(any(), any(), anyLong());
+    verify(backend, never()).listFileIndexArtifacts(any(), any(), anyLong());
+  }
 
   @Test
   void executeUsesDirectStatsFastPathForStatsOnlySnapshot() {
@@ -436,6 +580,55 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void regroupByReuseBundleAffinityReadsEachPredecessorBundleOnce() {
+    List<ReconcileFileExecutionPlan> plans = new ArrayList<>();
+    for (int index = 0; index < 6; index++) {
+      plans.add(reusablePlan("old-a-" + index, "s3://reuse/bundle-a.pb"));
+      plans.add(reusablePlan("old-b-" + index, "s3://reuse/bundle-b.pb"));
+    }
+    plans.add(executionPlan("new-a"));
+    plans.add(executionPlan("new-b"));
+    List<ReconcileFileGroupTask> original = new ArrayList<>();
+    for (int start = 0; start < plans.size(); start += 4) {
+      List<ReconcileFileExecutionPlan> groupPlans =
+          plans.subList(start, Math.min(start + 4, plans.size()));
+      original.add(fileGroup(original.size(), groupPlans));
+    }
+
+    List<ReconcileFileGroupTask> regrouped =
+        RemoteSnapshotPlanningReconcileExecutor.regroupByReuseBundleAffinity(original, 4);
+
+    assertThat(regrouped).hasSize(4).allMatch(group -> group.fileCount() <= 4);
+    assertThat(regrouped.stream().flatMap(group -> group.filePaths().stream()))
+        .containsExactlyInAnyOrderElementsOf(
+            plans.stream().map(ReconcileFileExecutionPlan::filePath).toList());
+    assertThat(
+            regrouped.stream()
+                .map(
+                    group ->
+                        group.fileExecutionPlans().stream()
+                            .flatMap(plan -> plan.reusableArtifactBundleSelections().stream())
+                            .map(ReusableArtifactBundleSelection::payloadUri)
+                            .distinct()
+                            .count())
+                .mapToLong(Long::longValue)
+                .sum())
+        .isEqualTo(4L);
+    assertThat(
+            regrouped.stream()
+                .filter(
+                    group ->
+                        group.fileExecutionPlans().stream()
+                            .anyMatch(plan -> plan.filePath().contains("old-a")))
+                .flatMap(group -> group.fileExecutionPlans().stream())
+                .filter(plan -> !plan.reusableArtifactBundleSelections().isEmpty())
+                .flatMap(plan -> plan.reusableArtifactBundleSelections().stream())
+                .map(ReusableArtifactBundleSelection::payloadUri)
+                .distinct())
+        .containsExactly("s3://reuse/bundle-a.pb");
+  }
+
+  @Test
   void executeFailsTerminalWhenExpectedSnapshotIsMissing() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -648,6 +841,47 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
         null,
         List.of(),
         "test-file-v1:" + name);
+  }
+
+  private static ReconcileFileExecutionPlan reusablePlan(String name, String bundleUri) {
+    ReconcileFileExecutionPlan plan = executionPlan(name);
+    return plan.withReuseBundleSelections(
+        "source",
+        "index-source",
+        "stats-signature",
+        "index-signature",
+        java.util.Map.of(),
+        List.of(
+            new ReusableArtifactBundleSelection(
+                "bundle",
+                bundleUri,
+                100L,
+                new byte[32],
+                List.of(plan.filePath()),
+                List.of(plan.filePath()))));
+  }
+
+  private static ReconcileFileExecutionPlan executionPlan(String name) {
+    return ReconcileFileExecutionPlan.of(
+        "s3://bucket/" + name + ".parquet", 10L, "", null, "PARQUET", 0, List.of());
+  }
+
+  private static ReconcileFileGroupTask fileGroup(
+      int index, List<ReconcileFileExecutionPlan> plans) {
+    List<String> paths = plans.stream().map(ReconcileFileExecutionPlan::filePath).toList();
+    return ReconcileFileGroupTask.of(
+        "plan",
+        "snapshot-55-group-" + index,
+        "table-1",
+        55L,
+        paths.size(),
+        "",
+        0,
+        paths,
+        List.of(),
+        List.of(),
+        "schema",
+        plans);
   }
 
   private static ReconcileJobStore.LeasedJob lease(
