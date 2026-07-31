@@ -164,6 +164,29 @@ public class NamespaceRepository {
   }
 
   /**
+   * The same refs, streamed a page at a time and in key order — which for by-path rows means each
+   * namespace arrives before everything beneath it, and everything beneath it before any namespace
+   * outside it.
+   *
+   * <p>That ordering is what lets a subtree walk hold O(depth) instead of the whole subtree: see
+   * {@code RecursiveResourceDropper#forEachNamespaceDeepestFirst}. Callers that only need identity
+   * and placement must not inherit {@link #list}'s dependency on every blob parsing, least of all
+   * teardown, which runs after the account pointer is gone and cannot be retried.
+   */
+  public void forEachRefUnder(
+      String accountId,
+      String catalogId,
+      List<String> parentSegmentsOrEmpty,
+      java.util.function.Consumer<NamespaceRef> action) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+    repo.forEachRefByPrefix(
+        prefix,
+        pointer ->
+            toNamespaceRef(accountId, catalogId, catalogResourceId, pointer).ifPresent(action));
+  }
+
+  /**
    * Whether {@code parentPath} has at least one direct child namespace.
    *
    * <p>Streams pages and returns on the first hit rather than draining the prefix like {@link

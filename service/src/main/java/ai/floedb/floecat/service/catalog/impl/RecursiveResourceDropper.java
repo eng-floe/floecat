@@ -38,7 +38,6 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -106,32 +105,16 @@ public class RecursiveResourceDropper {
     var rootId = root.getResourceId();
     var rootPath = new ArrayList<>(root.getParentsList());
     rootPath.add(root.getDisplayName());
-    // Scan only the root's subtree by its path prefix rather than the whole catalog; the by-path
-    // prefix over-returns the root itself, which isDescendantPath filters out.
-    //
-    // Enumerated from the by-path pointer rows, not their content: a by-path row carries the
-    // namespace's id and its full path, which is everything the drop needs, and the content-bearing
-    // scan would fail outright on one present-but-unparseable namespace blob — mid-subtree, after
-    // deeper namespaces had already been destroyed, since descendants are dropped deepest-first.
-    //
-    // Held as refs, not as the namespaces built from them: the set has to be known before anything
-    // is deleted, because a namespace can only go once its children are gone and the by-path prefix
-    // yields parents first. A ref is an id and a path; the Namespace is built one at a time inside
-    // the loop and discarded. Bounding this further would mean walking the subtree bottom-up, which
-    // the pointer store cannot do — it scans a prefix forward only.
-    var descendants = new ArrayList<TopologyGraph.NamespaceRef>();
-    for (var ref :
-        namespaceRepo.listRefsUnder(rootId.getAccountId(), root.getCatalogId().getId(), rootPath)) {
-      if (isDescendantPath(ref.pathSegments(), rootPath)) {
-        descendants.add(ref);
-      }
-    }
-    descendants.sort(
-        Comparator.comparingInt((TopologyGraph.NamespaceRef r) -> r.pathSegments().size())
-            .reversed());
-    for (var descendant : descendants) {
-      dropNamespace(namespaceFromRef(descendant, root.getCatalogId()), summary, rootPath, guarded);
-    }
+    // Only the root's own subtree, by path prefix, rather than the whole catalog — and from the
+    // by-path pointer rows, not their content: a row carries the id and full path the drop needs,
+    // while a content-bearing scan would fail outright on one unparseable namespace blob, mid-drop,
+    // after everything deeper had already been destroyed.
+    forEachNamespaceDeepestFirst(
+        rootId.getAccountId(),
+        root.getCatalogId(),
+        rootPath,
+        ref ->
+            dropNamespace(namespaceFromRef(ref, root.getCatalogId()), summary, rootPath, guarded));
     // The root's own relations are pinned to the root the caller resolved, so a concurrent reparent
     // of the root cannot have its contents emptied out from under it either.
     dropNamespaceRelations(root, summary, guarded, subtreePin(rootId, guarded));
@@ -151,38 +134,63 @@ public class RecursiveResourceDropper {
   }
 
   /**
-   * The namespaces to tear down in a catalog, as pointer rows.
+   * Tears down every namespace in a catalog, and everything they own, deepest-first.
    *
-   * <p>Teardown runs after the account pointer has been removed, so anything that throws in it
-   * cannot be retried — the retry finds no account and reports success, leaving whatever cleanup
-   * had not reached permanently orphaned. Neither discovery nor the drop may therefore depend on a
-   * namespace blob being parseable, and a row carries the id and path that both need.
+   * <p>Enumerated from by-path pointer rows rather than content, because this runs after the
+   * account pointer is gone and so cannot be retried: a namespace whose blob does not parse must
+   * still be removed, not abort the sweep. Every namespace in the catalog is visited, not only the
+   * top-level ones — a damaged tree can leave a deep namespace whose ancestors are already gone,
+   * and nothing else would ever reach it.
    */
-  public List<TopologyGraph.NamespaceRef> namespaceRefs(String accountId, String catalogId) {
-    return namespaceRepo.listRefsUnder(accountId, catalogId, List.of());
+  public DropSummary dropCatalogNamespaces(String accountId, ResourceId catalogId) {
+    var summary = new DropSummary();
+    forEachNamespaceDeepestFirst(
+        accountId,
+        catalogId,
+        List.of(),
+        ref -> dropNamespace(namespaceFromRef(ref, catalogId), summary, List.of(), false));
+    return summary;
   }
 
   /**
-   * Teardown entry point for one namespace and everything under it, driven from its pointer row so
-   * an unparseable namespace is still removed rather than aborting the account's cleanup.
+   * Hands every namespace strictly under {@code rootPath} to {@code drop}, each one only after
+   * everything beneath it, while holding no more than one namespace per level of depth.
    *
-   * <p>Callers enumerate every namespace in the catalog, not just the top-level ones, because a
-   * damaged tree can leave a deep namespace whose ancestors are already gone and nothing else would
-   * reach it. By-path keys sort parents before children, so the shallowest ref destroys its whole
-   * subtree and the nested refs that follow are already handled by the time they come up. Those are
-   * skipped here — a redundant pass would re-run both scans, the marker bumps, and the cache
-   * evictions, and would count namespaces it did not delete into an audit record for an
-   * irreversible operation.
+   * <p>A namespace can only be deleted once its children are gone, and a by-path scan runs the
+   * other way: parents first. Collecting the subtree to reverse it made peak memory proportional to
+   * the subtree — the one unbounded allocation on a teardown path that runs after the account
+   * pointer is gone, where exhausting the heap orphans whatever the sweep had not reached,
+   * permanently.
+   *
+   * <p>No collection is needed. Key order puts a namespace immediately before its own descendants
+   * and all of those before any namespace outside it, so a row that is not a descendant of the one
+   * on top of the stack proves that one's subtree is complete: pop it, drop it, repeat. The stack
+   * therefore holds an ancestor chain, never a subtree, and each row is read once.
    */
-  public DropSummary dropNamespaceTree(TopologyGraph.NamespaceRef ref, ResourceId catalogId) {
-    var namespace = namespaceFromRef(ref, catalogId);
-    String byPathKey =
-        Keys.namespacePointerByPath(
-            catalogId.getAccountId(), catalogId.getId(), ref.pathSegments());
-    if (pointerStore.get(byPathKey).isEmpty()) {
-      return new DropSummary();
+  private void forEachNamespaceDeepestFirst(
+      String accountId,
+      ResourceId catalogId,
+      List<String> rootPath,
+      java.util.function.Consumer<TopologyGraph.NamespaceRef> drop) {
+    var openAncestors = new java.util.ArrayDeque<TopologyGraph.NamespaceRef>();
+    namespaceRepo.forEachRefUnder(
+        accountId,
+        catalogId.getId(),
+        rootPath,
+        ref -> {
+          // The prefix scan over-returns the root itself; it is the caller's to delete, not ours.
+          if (!isDescendantPath(ref.pathSegments(), rootPath)) {
+            return;
+          }
+          while (!openAncestors.isEmpty()
+              && !isDescendantPath(ref.pathSegments(), openAncestors.peek().pathSegments())) {
+            drop.accept(openAncestors.pop());
+          }
+          openAncestors.push(ref);
+        });
+    while (!openAncestors.isEmpty()) {
+      drop.accept(openAncestors.pop());
     }
-    return dropNamespaceTree(namespace);
   }
 
   /**

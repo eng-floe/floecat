@@ -494,18 +494,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     CLEANUP_LOG.infof(
         "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
         catalogId.getAccountId(), catalogId.getId());
-    for (var namespaceRef :
-        recursiveDropper.namespaceRefs(catalogId.getAccountId(), catalogId.getId())) {
-      // Driven from pointer rows: a namespace whose blob cannot be parsed must still be torn down,
-      // because this runs after the account pointer is gone and cannot be retried.
-      // A previous tree may have removed this namespace as its descendant, in which case the drop
-      // finds nothing left to do.
-      var dropped = recursiveDropper.dropNamespaceTree(namespaceRef, catalogId);
-      summary.namespacesDeleted += dropped.namespacesDeleted;
-      summary.tablesDeleted += dropped.tablesDeleted;
-      summary.viewsDeleted += dropped.viewsDeleted;
-      summary.snapshotPrefixesDeleted += dropped.snapshotPrefixesDeleted;
-    }
+    // Driven from pointer rows, deepest-first, in one streamed pass: a namespace whose blob cannot
+    // be
+    // parsed must still be torn down, because this runs after the account pointer is gone and
+    // cannot
+    // be retried, and nothing here may hold the catalog's namespaces in memory for the same reason.
+    var dropped = recursiveDropper.dropCatalogNamespaces(catalogId.getAccountId(), catalogId);
+    summary.namespacesDeleted += dropped.namespacesDeleted;
+    summary.tablesDeleted += dropped.tablesDeleted;
+    summary.viewsDeleted += dropped.viewsDeleted;
+    summary.snapshotPrefixesDeleted += dropped.snapshotPrefixesDeleted;
     catalogRepo.delete(catalogId);
     metadataGraph.invalidate(catalogId);
     summary.catalogsDeleted++;

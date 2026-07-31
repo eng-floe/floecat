@@ -156,10 +156,10 @@ class RecursiveResourceDropperTest {
     dropper.markerStore = markerStore;
     dropper.pointerStore = pointerStore;
 
-    // No descendants: dropNamespaceContents processes only the root's own relations. Descendants
-    // are enumerated from by-path pointer rows, so an unparseable namespace blob cannot break the
-    // walk either.
-    when(namespaceRepo.listRefsUnder(anyString(), anyString(), any())).thenReturn(List.of());
+    // No descendants unless a test stubs some: the subtree walk hands rows to a consumer, so an
+    // unstubbed void call hands over nothing. Descendants are enumerated from by-path pointer rows,
+    // so an unparseable namespace blob cannot break the walk either.
+    //
     // One table under the root. Relations are enumerated through their by-name pointer rows, not
     // their blobs, so a corrupt relation cannot break the listing itself.
     stubTableNamePointers("ns", List.of(TABLE_NAME_POINTER));
@@ -182,6 +182,23 @@ class RecursiveResourceDropperTest {
     doAnswer(feed(rows))
         .when(tableRepo)
         .forEachNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+  }
+
+  /**
+   * Feeds {@code refs} to the subtree walk's consumer, in the key order a by-path scan produces:
+   * the walk turns that order into deepest-first itself, so a test that hands over parents before
+   * children is describing exactly what the store returns.
+   */
+  private void stubNamespaceRefsUnder(
+      List<String> parentPath, List<TopologyGraph.NamespaceRef> refs) {
+    doAnswer(
+            invocation -> {
+              Consumer<TopologyGraph.NamespaceRef> consumer = invocation.getArgument(3);
+              refs.forEach(consumer);
+              return null;
+            })
+        .when(namespaceRepo)
+        .forEachRefUnder(eq("acct"), eq("cat"), eq(parentPath), any());
   }
 
   private void stubViewNamePointers(String namespaceId, List<Pointer> rows) {
@@ -400,10 +417,9 @@ class RecursiveResourceDropperTest {
             .addParents("ns")
             .setDisplayName("child")
             .build();
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(movedId, "child", CATALOG, List.of("ns", "child"))));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(movedId, "child", CATALOG, List.of("ns", "child"))));
     when(namespaceRepo.metaForSafe(eq(movedId)))
         .thenReturn(meta("blob://acct/namespaces/ns-child/v2", 5L));
     // ...but re-reading it at its own pointer shows it now hangs off a different root entirely.
@@ -533,10 +549,9 @@ class RecursiveResourceDropperTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
     String childTableBlob = "blob://acct/tables/tbl-child/v1";
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
     // The namespace is gone...
     when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
     // ...but it still owns a table, reachable only through its namespace id.
@@ -596,10 +611,9 @@ class RecursiveResourceDropperTest {
             .setId("ns-child")
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
     // Canonical pointer gone: a concurrent delete that could only remove that one.
     when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
     String byPathKey = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child"));
@@ -647,10 +661,9 @@ class RecursiveResourceDropperTest {
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
     // Scanned as "ns.child"...
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
     when(namespaceRepo.metaForSafe(eq(childId)))
         .thenReturn(meta("blob://acct/namespaces/ns-child/v3", 5L));
     // ...but it has since been renamed in place to "ns.renamed", still inside the subtree.
@@ -696,10 +709,9 @@ class RecursiveResourceDropperTest {
             .setId("ns-child")
             .setKind(ResourceKind.RK_NAMESPACE)
             .build();
-    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
-        .thenReturn(
-            List.of(
-                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
     when(namespaceRepo.metaForSafe(eq(childId)))
         .thenReturn(meta("blob://acct/namespaces/ns-child/v9", 5L));
     when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v9")))
@@ -771,29 +783,41 @@ class RecursiveResourceDropperTest {
   }
 
   /**
-   * Account teardown enumerates every namespace in the catalog, so a nested one is reached again
-   * after its parent's subtree already destroyed it. Re-processing it would re-run both scans, the
-   * marker bumps and the cache evictions, and would add it to a count that is the audit record for
-   * an irreversible operation — the reported total has to be namespaces actually removed.
+   * Account teardown sweeps a whole catalog in one streamed pass, and the walk must turn the
+   * store's parents-first key order into deepest-first: a namespace is deleted only after
+   * everything beneath it, and exactly once. Visiting one twice would re-run its scans and cache
+   * evictions and would count it twice in the audit record for an irreversible operation.
    */
   @Test
-  void teardownSkipsANestedNamespaceAlreadyDestroyedWithItsParent() {
-    var nestedId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("ns-nested")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
-    var nested = new TopologyGraph.NamespaceRef(nestedId, "child", CATALOG, List.of("ns", "child"));
-    // Its by-path row is gone: the parent's subtree drop already took it.
-    when(pointerStore.get(eq(Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child")))))
-        .thenReturn(Optional.empty());
+  void teardownDropsEveryNamespaceOnceDeepestFirst() {
+    var parentId = namespaceId("ns-parent");
+    var childId = namespaceId("ns-child");
+    var siblingId = namespaceId("ns-sibling");
+    // Key order: a namespace, then what is under it, then the next namespace along.
+    stubNamespaceRefsUnder(
+        List.of(),
+        List.of(
+            new TopologyGraph.NamespaceRef(parentId, "parent", CATALOG, List.of("parent")),
+            new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("parent", "child")),
+            new TopologyGraph.NamespaceRef(siblingId, "sibling", CATALOG, List.of("sibling"))));
+    when(namespaceRepo.delete(any(), any())).thenReturn(true);
 
-    var summary = dropper.dropNamespaceTree(nested, CATALOG);
+    var summary = dropper.dropCatalogNamespaces("acct", CATALOG);
 
-    assertEquals(0, summary.namespacesDeleted);
-    verify(namespaceRepo, never()).delete(eq(nestedId), any());
-    verify(markerStore, never()).bumpCatalogMarker(any());
+    assertEquals(3, summary.namespacesDeleted);
+    // The child goes before its parent, and each namespace is deleted once.
+    var inOrder = org.mockito.Mockito.inOrder(namespaceRepo);
+    inOrder.verify(namespaceRepo).delete(eq(childId), any());
+    inOrder.verify(namespaceRepo).delete(eq(parentId), any());
+    verify(namespaceRepo).delete(eq(siblingId), any());
+  }
+
+  private static ResourceId namespaceId(String id) {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setId(id)
+        .setKind(ResourceKind.RK_NAMESPACE)
+        .build();
   }
 
   @Test

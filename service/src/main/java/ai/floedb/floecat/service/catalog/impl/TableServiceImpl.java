@@ -155,7 +155,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     // Publishing a child carries the namespace fence, so BatchGuardFailedException — retryable by
     // design — is now an ordinary outcome here: any concurrent write to the parent namespace, a
-    // rename included, breaks the guard. The body blocks on storage, and a plain retry re-subscribes
+    // rename included, breaks the guard. The body blocks on storage, and a plain retry
+    // re-subscribes
     // on the Vert.x event loop where that fails outright, so the retry belongs on a worker.
     return mapFailures(
             runWithRetryOnWorker(
