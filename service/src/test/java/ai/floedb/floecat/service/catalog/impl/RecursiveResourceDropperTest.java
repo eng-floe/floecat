@@ -300,6 +300,33 @@ class RecursiveResourceDropperTest {
     verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
   }
 
+  /**
+   * A claim row predating {@code Pointer.resource_id} names its owner only in the blob URI. Reading
+   * the ref alone makes such a claim look like it names nothing — and a claim that names nothing is
+   * released, which would hand the name of a live table to a view, the one thing the shared claim
+   * exists to prevent.
+   */
+  @Test
+  void relationNameHeldReadsALegacyClaimsOwnerFromItsBlobUri() {
+    String claimKey = Keys.relationPointerByName("acct", "cat", "ns", "orders");
+    when(pointerStore.get(eq(claimKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(claimKey)
+                    .setVersion(3L)
+                    // No resource_id — only the blob URI, which names the table.
+                    .setBlobUri(TABLE_BLOB)
+                    .build()));
+    String canonical = Keys.tablePointerById("acct", "tbl");
+    when(pointerStore.get(eq(canonical)))
+        .thenReturn(Optional.of(Pointer.newBuilder().setKey(canonical).setVersion(1L).build()));
+
+    assertTrue(
+        dropper.relationNameHeld(root, "orders"),
+        "a legacy claim naming a live table still holds the name");
+  }
+
   /** A claim whose relation is gone is exactly what the sweep exists to release. */
   @Test
   void relationNameHeldIsFalseWhenTheClaimsRelationIsGone() {

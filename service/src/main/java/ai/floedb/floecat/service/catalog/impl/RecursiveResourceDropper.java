@@ -912,9 +912,17 @@ public class RecursiveResourceDropper {
     return true;
   }
 
-  /** Whether a relation-name claim names nothing, or names a relation whose pointer is gone. */
+  /**
+   * Whether a relation-name claim names nothing, or names a relation whose pointer is gone.
+   *
+   * <p>Read through {@link #ownerIdOf}, which is what defines "the relation a pointer row names"
+   * for this class: a row predating {@code Pointer.resource_id} carries its owner only in the blob
+   * URI. Reading the ref alone called such a claim stranded, and a stranded claim gets deleted — so
+   * a legacy claim held by a live table was released, and the name it reserved became available to
+   * a view of the same name, which is exactly the cross-kind collision the claim exists to prevent.
+   */
   private boolean claimIsStranded(String accountId, Pointer claim) {
-    String ownerId = claim.getResourceId().getId();
+    String ownerId = ownerIdOf(claim);
     if (ownerId.isEmpty()) {
       return true;
     }
