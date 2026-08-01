@@ -178,12 +178,36 @@ public class NamespaceRepository {
       String catalogId,
       List<String> parentSegmentsOrEmpty,
       java.util.function.Consumer<NamespaceRef> action) {
+    forEachRefUnder(accountId, catalogId, parentSegmentsOrEmpty, action, unresolvable -> {});
+  }
+
+  /**
+   * Same, with the rows that name no namespace handed to {@code onUnresolvable} instead of dropped.
+   *
+   * <p>A by-path row whose ref and blob URI both fail to yield an id resolves to nothing, so a
+   * caller walking namespaces cannot act on it — but {@link #hasChildUnder} counts rows by key
+   * shape and does count it. Silently skipping it therefore leaves a child that the emptiness gate
+   * sees and the drop cannot remove, which is a permanent dead end. A caller that can reclaim such
+   * a row must be able to see it.
+   */
+  public void forEachRefUnder(
+      String accountId,
+      String catalogId,
+      List<String> parentSegmentsOrEmpty,
+      java.util.function.Consumer<NamespaceRef> action,
+      java.util.function.Consumer<ai.floedb.floecat.common.rpc.Pointer> onUnresolvable) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
     repo.forEachRefByPrefix(
         prefix,
-        pointer ->
-            toNamespaceRef(accountId, catalogId, catalogResourceId, pointer).ifPresent(action));
+        pointer -> {
+          var ref = toNamespaceRef(accountId, catalogId, catalogResourceId, pointer);
+          if (ref.isPresent()) {
+            action.accept(ref.get());
+          } else {
+            onUnresolvable.accept(pointer);
+          }
+        });
   }
 
   /**

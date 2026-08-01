@@ -200,7 +200,8 @@ public class RecursiveResourceDropper {
             drop.accept(open.pop().ref());
           }
           open.push(new OpenNamespace(key, ref));
-        });
+        },
+        unresolvable -> reclaimUnresolvableNamespacePath(accountId, rootPath, unresolvable));
     while (!open.isEmpty()) {
       drop.accept(open.pop().ref());
     }
@@ -1088,6 +1089,36 @@ public class RecursiveResourceDropper {
         namespace.getDisplayName(),
         removed);
     return removed;
+  }
+
+  /**
+   * Releases a by-path row that names no namespace at all — neither a ref nor a parseable blob URI.
+   *
+   * <p>The namespace counterpart of {@link #reclaimUnresolvableName}, and the same dead end: the
+   * subtree walk cannot act on a row it cannot resolve, while the immediate-child probe counts rows
+   * by key shape and does count it. Left in place it is a child that the emptiness gate sees and no
+   * drop can remove — so a recursive delete destroys the subtree and then reports partial teardown
+   * on that attempt and every retry, and account teardown leaves the row behind for good.
+   *
+   * <p>Releasing it destroys nothing reachable: no namespace resolves through a row that names
+   * none, and the delete is pinned to the version read, so a writer republishing this path wins
+   * instead.
+   */
+  private void reclaimUnresolvableNamespacePath(
+      String accountId, List<String> rootPath, Pointer row) {
+    CLEANUP_LOG.warnf(
+        "recursive_drop_namespace_path_unresolvable account_id=%s root_path=%s pointer_key=%s",
+        accountId, String.join(".", rootPath), row.getKey());
+    if (!pointerStore.compareAndSetBatch(
+        List.of(new PointerStore.CasDelete(row.getKey(), row.getVersion())))) {
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_unresolvable_path_contended account_id=%s pointer_key=%s",
+          accountId, row.getKey());
+      return;
+    }
+    CLEANUP_LOG.warnf(
+        "recursive_drop_reclaimed_unresolvable_path account_id=%s pointer_key=%s",
+        accountId, row.getKey());
   }
 
   /**

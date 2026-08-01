@@ -196,14 +196,25 @@ class RecursiveResourceDropperTest {
    */
   private void stubNamespaceRefsUnder(
       List<String> parentPath, List<TopologyGraph.NamespaceRef> refs) {
+    stubNamespaceRefsUnder(parentPath, refs, List.of());
+  }
+
+  /**
+   * Same, plus the by-path rows the scan returns that resolve to no namespace — which the walk sees
+   * through a second consumer rather than not at all, since only it can reclaim them.
+   */
+  private void stubNamespaceRefsUnder(
+      List<String> parentPath, List<TopologyGraph.NamespaceRef> refs, List<Pointer> unresolvable) {
     doAnswer(
             invocation -> {
               Consumer<TopologyGraph.NamespaceRef> consumer = invocation.getArgument(3);
               refs.forEach(consumer);
+              Consumer<Pointer> onUnresolvable = invocation.getArgument(4);
+              unresolvable.forEach(onUnresolvable);
               return null;
             })
         .when(namespaceRepo)
-        .forEachRefUnder(eq("acct"), eq("cat"), eq(parentPath), any());
+        .forEachRefUnder(eq("acct"), eq("cat"), eq(parentPath), any(), any());
   }
 
   private void stubViewNamePointers(String namespaceId, List<Pointer> rows) {
@@ -440,6 +451,33 @@ class RecursiveResourceDropperTest {
     verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRoots, never()).purgeRoot(any());
+  }
+
+  /**
+   * A by-path row that names no namespace — no ref, no parseable blob URI — is the namespace
+   * counterpart of an unresolvable by-name row. The walk cannot act on it, but the immediate-child
+   * probe counts rows by key shape and does count it, so leaving it makes the parent permanently
+   * non-empty: the drop empties the subtree and then reports partial teardown on every retry.
+   */
+  @Test
+  void guardedDropReleasesAByPathRowThatNamesNoNamespace() {
+    String unresolvableKey = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "ghost"));
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(),
+        List.of(Pointer.newBuilder().setKey(unresolvableKey).setVersion(4L).build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    dropper.dropNamespaceContents(root, true);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    assertEquals(
+        List.<PointerStore.CasOp>of(new PointerStore.CasDelete(unresolvableKey, 4L)),
+        batch.getValue());
   }
 
   /**
