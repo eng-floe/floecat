@@ -663,6 +663,38 @@ class BackendStorageIT {
   }
 
   /**
+   * A parent whose blob cannot be read must not make its subtree unusable. The child-publish fence
+   * needs only the parent's id, which its by-path row carries, so resolving the parent through its
+   * content would fail every create beneath it with INTERNAL — for a reason that has nothing to do
+   * with the write being attempted.
+   */
+  @Test
+  void createNamespaceUnderAParentWhoseBlobCannotBeReadStillWorks() {
+    var cat = TestSupport.createCatalog(catalog, "cat_unreadparent_" + clock.millis(), "parent");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(namespace, catId, "parent", List.of("db_unreadparent"), "p");
+    var parentId = parent.getResourceId();
+
+    String parentById = Keys.namespacePointerById(parentId.getAccountId(), parentId.getId());
+    blobs.put(
+        ptr.get(parentById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    var child =
+        TestSupport.createNamespace(
+            namespace, catId, "child", List.of("db_unreadparent", "parent"), "under a corrupt p");
+
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    child.getResourceId().getAccountId(), child.getResourceId().getId()))
+            .isPresent(),
+        "the child must be published even though its parent's blob is unreadable");
+  }
+
+  /**
    * The namespace version of the same hazard, and worse: descendants are dropped deepest-first, so
    * failing on an unparseable namespace blob would abort after everything below it was already
    * destroyed, leaving the tree half torn down.

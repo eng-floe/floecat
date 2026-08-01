@@ -194,8 +194,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       canonicalFingerprint(spec.getCatalogId(), parents, display, spec);
 
                   if (!request.hasIdempotency() || request.getIdempotency().getKey().isBlank()) {
+                    // Existence, not content: a namespace already at this path is a conflict
+                    // whether or not its blob can be read, and reading it would answer INTERNAL
+                    // instead of ALREADY_EXISTS.
                     var existing =
-                        namespaceRepo.getByPath(accountId, spec.getCatalogId().getId(), fullPath);
+                        namespaceRepo.refByPath(accountId, spec.getCatalogId().getId(), fullPath);
                     if (existing.isPresent()) {
                       throw GrpcErrors.alreadyExists(
                           correlationId,
@@ -330,8 +333,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       }
       chain.add(seg);
 
-      var existing = namespaceRepo.getByPath(accountId, catalogId.getId(), chain);
-      if (existing.isPresent()) {
+      // Existence, not content — see the duplicate check in createNamespace. A level whose blob
+      // cannot be read still exists, and parsing it here would fail the whole create with INTERNAL
+      // for an ancestor the request is merely passing through.
+      if (namespaceRepo.refByPath(accountId, catalogId.getId(), chain).isPresent()) {
         continue;
       }
 
@@ -358,7 +363,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         metadataGraph.invalidate(rid);
         topology.evictNamespaceRefs(catalogId);
       } catch (BaseResourceRepository.NameConflictException nce) {
-        if (namespaceRepo.getByPath(accountId, catalogId.getId(), chain).isPresent()) {
+        if (namespaceRepo.refByPath(accountId, catalogId.getId(), chain).isPresent()) {
           continue;
         }
         throw nce;
@@ -1044,6 +1049,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * delete of its parent cannot both commit. Root-level namespaces have no parent namespace to
    * fence against — their containment is the catalog, whose own children marker is not part of this
    * protocol — so they are published unguarded.
+   *
+   * <p>Resolved from the parent's by-path row, not its blob. All that is needed is the id to fence
+   * on, and reading the content instead would make a parent whose blob cannot be parsed fail every
+   * create beneath it with INTERNAL — a whole subtree unusable for a reason unrelated to the write.
    */
   private BatchGuard parentNamespaceGuard(
       String accountId, ResourceId catalogId, List<String> parentPath) {
@@ -1051,8 +1060,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       return BatchGuard.NONE;
     }
     return namespaceRepo
-        .getByPath(accountId, catalogId.getId(), parentPath)
-        .map(parent -> markerStore.namespaceChildGuard(parent.getResourceId()))
+        .refByPath(accountId, catalogId.getId(), parentPath)
+        .map(parent -> markerStore.namespaceChildGuard(parent.id()))
         .orElseThrow(
             () ->
                 new BaseResourceRepository.BatchGuardFailedException(
@@ -1074,16 +1083,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     if (parentPath == null || parentPath.isEmpty()) {
       return BatchGuard.NONE;
     }
+    // From the by-path row rather than the blob: only the id is needed to fence on, and a
+    // destination whose blob cannot be parsed must not fail every reparent into it. See
+    // parentNamespaceGuard.
     var parent =
         namespaceRepo
-            .getByPath(accountId, catalogId.getId(), parentPath)
+            .refByPath(accountId, catalogId.getId(), parentPath)
             .orElseThrow(
                 () ->
                     GrpcErrors.notFound(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE,
                         Map.of("id", String.join(".", parentPath))));
-    return markerStore.namespaceChildGuard(parent.getResourceId());
+    return markerStore.namespaceChildGuard(parent.id());
   }
 
   /**
