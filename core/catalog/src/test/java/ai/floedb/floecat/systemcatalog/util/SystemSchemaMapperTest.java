@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -47,6 +48,35 @@ class SystemSchemaMapperTest {
 
     assertThat(schemaColumn.getId()).isEqualTo(42);
     assertThat(schemaColumn.getOrdinal()).isEqualTo(3);
+  }
+
+  @Test
+  void toSchemaColumn_keepsAColumnWhoseEngineTypeIsOutsideTheFloecatVocabulary() {
+    // Extensions declare types in their engine's vocabulary: a Postgres catalog is full of oid,
+    // regproc and friends. Those do not parse, and the column still has to exist.
+    SystemColumnDef column = new SystemColumnDef("oid", name("regproc"), false, 2, 7L, List.of());
+
+    SchemaColumn schemaColumn = SystemSchemaMapper.toSchemaColumn(column);
+
+    assertThat(schemaColumn.hasType()).isFalse();
+    assertThat(schemaColumn.getName()).isEqualTo("oid");
+    assertThat(schemaColumn.getOrdinal()).isEqualTo(2);
+    assertThat(schemaColumn.getId()).isEqualTo(7L);
+  }
+
+  @Test
+  void toSchemaColumns_mapsTypedColumnsAroundAnUnparseableOne() {
+    // One unmappable column must not cost the relation — or, through the registry build, the whole
+    // extension catalog — its other columns.
+    List<SystemColumnDef> columns =
+        List.of(
+            new SystemColumnDef("id", name("INT"), false, 1, null, List.of()),
+            new SystemColumnDef("proc", name("regproc"), true, 2, null, List.of()),
+            new SystemColumnDef("label", name("VARCHAR"), true, 3, null, List.of()));
+
+    assertThat(SystemSchemaMapper.toSchemaColumns(columns))
+        .extracting(SchemaColumn::getName, SchemaColumn::hasType)
+        .containsExactly(tuple("id", true), tuple("proc", false), tuple("label", true));
   }
 
   @Test

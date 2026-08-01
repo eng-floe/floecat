@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -284,6 +285,63 @@ class SystemNodeRegistryTest {
 
     assertThat(nodes.tableNames()).containsKey("custom.ok");
     assertThat(nodes.tableNames()).doesNotContainKey("orphan");
+  }
+
+  @Test
+  void engineDeclaredColumnTypeOutsideTheFloecatVocabularyStillBuildsTheCatalog() {
+    // A Postgres-shaped extension types columns as oid/regproc/name. Nothing between here and the
+    // provider catches a mapping failure, so one such column used to cost the engine every
+    // relation it declares.
+    SystemNamespaceDef namespace =
+        new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of());
+    SystemTableDef table =
+        new SystemTableDef(
+            NameRefUtil.name("pg_catalog", "pg_proc"),
+            "pg_proc",
+            List.of(
+                column("id"),
+                new SystemColumnDef(
+                    "prolang",
+                    NameRef.newBuilder().setName("oid").build(),
+                    false,
+                    2,
+                    null,
+                    List.of())),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(table),
+            List.of(),
+            List.of());
+
+    SystemDefinitionRegistry defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
+    var nodes = registryWith(defs).nodesFor("kind", "");
+
+    assertThat(nodes.tableNames()).containsKey("pg_catalog.pg_proc");
+    var columns =
+        nodes.tableNodes().stream()
+            .filter(t -> "pg_proc".equals(t.displayName()))
+            .findFirst()
+            .orElseThrow()
+            .columns();
+    // The unmappable column keeps its identity — dropping it would renumber the ones after it —
+    // and is simply described as untyped.
+    assertThat(columns).extracting(SchemaColumn::getName).containsExactly("id", "prolang");
+    assertThat(columns).extracting(SchemaColumn::hasType).containsExactly(true, false);
   }
 
   @Test

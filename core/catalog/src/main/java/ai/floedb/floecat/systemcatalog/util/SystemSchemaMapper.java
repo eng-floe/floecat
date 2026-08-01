@@ -22,9 +22,12 @@ import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import java.util.Objects;
+import org.jboss.logging.Logger;
 
 /** Helper that adapts between {@link SystemColumnDef} and {@link SchemaColumn}. */
 public final class SystemSchemaMapper {
+
+  private static final Logger LOG = Logger.getLogger(SystemSchemaMapper.class);
 
   private SystemSchemaMapper() {}
 
@@ -33,9 +36,23 @@ public final class SystemSchemaMapper {
     SchemaColumn.Builder builder =
         SchemaColumn.newBuilder()
             .setName(column.name())
-            .setType(LogicalTypeProtoAdapter.parseToProto(column.type().getName()))
             .setNullable(column.nullable())
             .setOrdinal(column.ordinal());
+    // An extension declares column types in its own vocabulary, which is wider than Floecat's:
+    // Postgres relations are full of oid, regproc, name, xid. Those do not parse, and this mapper
+    // runs while the registry materializes every relation an extension contributes, with no catch
+    // between here and the top of that build — so throwing on one column would cost the engine its
+    // entire catalog. Leave such a column untyped instead: it keeps its name, ordinal and id, and
+    // readers already degrade for untyped columns (information_schema.columns reports UNKNOWN).
+    String declaredType = column.type().getName();
+    try {
+      builder.setType(LogicalTypeProtoAdapter.parseToProto(declaredType));
+    } catch (IllegalArgumentException unparseable) {
+      LOG.warnf(
+          "System column '%s' declares type '%s', which is not a Floecat logical type;"
+              + " describing it as untyped",
+          column.name(), declaredType);
+    }
     builder.setId(column.hasId() ? column.id() : column.ordinal());
     return builder.build();
   }
