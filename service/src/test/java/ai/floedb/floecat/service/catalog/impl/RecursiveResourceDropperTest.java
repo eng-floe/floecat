@@ -813,17 +813,15 @@ class RecursiveResourceDropperTest {
   /**
    * The namespace analogue, and the stakes are higher: descendants are dropped deepest-first, so
    * refusing on an unparseable namespace blob aborts an operation that has already destroyed
-   * everything below it, leaving the tree half torn down. Placement came from the by-path row the
-   * walk followed, and the removal stays pinned to the canonical version read here.
+   * everything below it, leaving the tree half torn down.
+   *
+   * <p>Such a namespace cannot state its own path, so placement rests on the by-path row that led
+   * here — and that row is carried into the delete batch, not merely read, so a concurrent move
+   * loses the CAS.
    */
   @Test
   void guardedDropDeletesADescendantNamespaceWhoseBlobCannotBeParsed() {
-    var childId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("ns-child")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
+    var childId = namespaceId("ns-child");
     stubNamespaceRefsUnder(
         List.of("ns"),
         List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
@@ -831,9 +829,21 @@ class RecursiveResourceDropperTest {
         .thenReturn(meta("blob://acct/namespaces/ns-child/v9", 5L));
     when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v9")))
         .thenThrow(new BaseResourceRepository.CorruptionException("parse failed", null));
+    // The by-path row still names it: proof it has not moved, which is all an unreadable namespace
+    // has.
+    String byPathKey = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child"));
+    when(pointerStore.get(eq(byPathKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(byPathKey)
+                    .setVersion(3L)
+                    .setResourceId(childId)
+                    .build()));
     // Empty and stable, so the marker protocol lets it go.
     when(markerStore.advanceNamespaceMarker(eq(childId), anyLong())).thenReturn(true);
     when(markerStore.namespaceMarkerVersion(eq(childId))).thenReturn(0L, 1L, 1L);
+    when(markerStore.namespaceDeleteGuard(eq(childId), anyLong())).thenReturn(BatchGuard.NONE);
     when(namespaceRepo.deleteWithPrecondition(eq(childId), eq(5L), any())).thenReturn(true);
     // The root's own table is incidental here; let it drop cleanly.
     when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
@@ -842,8 +852,48 @@ class RecursiveResourceDropperTest {
     var summary = dropper.dropNamespaceContents(root, true);
 
     assertEquals(1, summary.namespacesDeleted);
-    // Pinned to the version the by-path walk resolved, so a reparent still loses the CAS.
-    verify(namespaceRepo).deleteWithPrecondition(eq(childId), eq(5L), any());
+    // Pinned to the canonical version the walk resolved...
+    var guard = ArgumentCaptor.forClass(BatchGuard.class);
+    verify(namespaceRepo).deleteWithPrecondition(eq(childId), eq(5L), guard.capture());
+    // ...and to the by-path row that proves where it lives, inside the same batch.
+    assertTrue(
+        guard.getValue().ops().contains(new PointerStore.CasCheck(byPathKey, 3L)),
+        "the delete must assert the placement row it was pinned to");
+    verify(namespaceRepo, never()).delete(any(), any());
+  }
+
+  /**
+   * And when that row no longer names it, the namespace has moved or been renamed under a blob
+   * nobody can read. That is a conflict, not a permanent state: refuse, so the retry re-scans and
+   * finds it wherever it now is, rather than destroying it at a location never verified.
+   */
+  @Test
+  void guardedDropRefusesAnUnreadableDescendantWhosePlacementRowNoLongerNamesIt() {
+    var childId = namespaceId("ns-child");
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    when(namespaceRepo.metaForSafe(eq(childId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v9", 5L));
+    when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v9")))
+        .thenThrow(new BaseResourceRepository.CorruptionException("parse failed", null));
+    // Someone else owns this path now — the namespace was reparented away and another took its
+    // place.
+    String byPathKey = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child"));
+    when(pointerStore.get(eq(byPathKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(byPathKey)
+                    .setVersion(3L)
+                    .setResourceId(namespaceId("ns-someone-else"))
+                    .build()));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    verify(namespaceRepo, never()).deleteWithPrecondition(eq(childId), anyLong(), any());
     verify(namespaceRepo, never()).delete(any(), any());
   }
 

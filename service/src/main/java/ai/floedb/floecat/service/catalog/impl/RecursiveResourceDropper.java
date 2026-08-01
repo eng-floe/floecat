@@ -279,7 +279,14 @@ public class RecursiveResourceDropper {
       markerStore.deleteNamespaceMarker(namespaceId);
       return;
     }
-    var subtreePin = markerStore.namespacePinnedGuard(namespaceId, pinned.get().pointerVersion());
+    // Both guards below also assert the placement proof, when there is one: for a namespace whose
+    // blob cannot be read, the by-path row is the only thing that says where it lives, so every
+    // batch that destroys something has to contend on it rather than trust a read that preceded it.
+    var placement = pinned.get().placement();
+    var subtreePin =
+        withPlacement(
+            markerStore.namespacePinnedGuard(namespaceId, pinned.get().pointerVersion()),
+            placement);
 
     // Everything below works from the namespace the pin resolved, not the row the walk started
     // from. They differ after an in-place rename: the scan's path is then stale, and probing for
@@ -287,7 +294,7 @@ public class RecursiveResourceDropper {
     // namespace out from over a live child.
     var resolved = pinned.get().resolved();
     dropNamespaceRelations(resolved, summary, true, subtreePin);
-    var childrenGuard = requireNamespaceEmptyAndStable(resolved);
+    var childrenGuard = withPlacement(requireNamespaceEmptyAndStable(resolved), placement);
     deleteNamespace(resolved, childrenGuard, pinned.get().pointerVersion());
     summary.namespacesDeleted++;
   }
@@ -335,28 +342,23 @@ public class RecursiveResourceDropper {
       live = namespaceRepo.getByBlobUri(meta.getBlobUri());
     } catch (BaseResourceRepository.CorruptionException unparseable) {
       // Same reasoning as a relation with an unreadable blob (see pinToNamespace), and the stakes
-      // are higher here: descendants are dropped deepest-first, so refusing at this point aborts
-      // an operation that has already destroyed everything below this namespace. Placement was
-      // established by the by-path row this scan followed, and the removal stays pinned to the
-      // canonical version read here, so a reparent still loses the CAS.
+      // are higher here: descendants are dropped deepest-first, so refusing at this point aborts an
+      // operation that has already destroyed everything below this namespace.
       CLEANUP_LOG.warnf(
           "recursive_drop_namespace_blob_unparseable account_id=%s namespace_id=%s blob_uri=%s",
           namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
-      // Nothing better than the scanned row to work from: an unreadable namespace cannot state its
-      // own path, so its placement stays whatever the walk observed.
-      return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
+      return pinToScannedPath(scanned, meta.getPointerVersion(), rootPath);
     }
     if (live.isEmpty()) {
       // The blob is gone rather than unreadable, which is just as stable: aborting here would
       // report
       // NAMESPACE_RECURSIVE_PARTIAL on every attempt, after this namespace's own descendants are
       // already destroyed, with nothing a retry could change. Same treatment as the unparseable
-      // case,
-      // and the same protection — the removal is pinned to the version read above.
+      // case.
       CLEANUP_LOG.warnf(
           "recursive_drop_namespace_blob_absent account_id=%s namespace_id=%s blob_uri=%s",
           namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
-      return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
+      return pinToScannedPath(scanned, meta.getPointerVersion(), rootPath);
     }
     if (!isDescendant(live.get(), scanned.getCatalogId(), rootPath)) {
       throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
@@ -365,12 +367,92 @@ public class RecursiveResourceDropper {
   }
 
   /**
+   * Placement for a namespace that cannot state its own: proved by the by-path row the walk
+   * followed still naming it, and carried into every batch below so a concurrent move loses.
+   *
+   * <p>The canonical version alone proves nothing about location. It is read here, after any move
+   * that already happened, so a namespace reparented out of the subtree before this read passes the
+   * CAS and would be destroyed where it now lives — and with an unreadable blob there is no path in
+   * the content to fall back on. The by-path row is the only remaining evidence: a reparent removes
+   * the row at the old path and writes one at the new, so a row still naming this namespace at the
+   * scanned path is proof it has not moved, and pinning that row's version keeps it that way for
+   * the batches that follow.
+   *
+   * <p>A row that names something else — or nothing — means a concurrent move or rename, which is a
+   * genuine conflict rather than a permanent state: refuse, and let the retry re-scan and find it
+   * wherever it now is.
+   */
+  private Optional<DescendantPin> pinToScannedPath(
+      Namespace scanned, long pointerVersion, List<String> rootPath) {
+    var namespaceId = scanned.getResourceId();
+    var path = new ArrayList<>(scanned.getParentsList());
+    path.add(scanned.getDisplayName());
+    String byPathKey =
+        Keys.namespacePointerByPath(
+            namespaceId.getAccountId(), scanned.getCatalogId().getId(), path);
+    var row = pointerStore.get(byPathKey).orElse(null);
+    if (row == null || !namespaceId.getId().equals(ownerIdOf(row))) {
+      throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
+    }
+    return Optional.of(
+        new DescendantPin(
+            pointerVersion, scanned, new PlacementProof(byPathKey, row.getVersion())));
+  }
+
+  /** The by-path row that proves where a blob-less namespace lives, at the version proved. */
+  private record PlacementProof(String key, long version) {}
+
+  /**
+   * {@code guard} with the placement proof folded in, so the batch it protects commits only while
+   * the by-path row that placed this namespace is still exactly as read. A no-op when there is no
+   * proof to carry — a namespace whose blob parses states its own path and is checked against it.
+   *
+   * <p>The outcome of the combined guard is the more severe of the two: a moved placement row is
+   * never benign contention, so it reports BROKEN and the drop refuses rather than retrying into
+   * the same conflict.
+   */
+  private BatchGuard withPlacement(BatchGuard guard, PlacementProof placement) {
+    if (placement == null) {
+      return guard;
+    }
+    return new BatchGuard() {
+      @Override
+      public List<PointerStore.CasOp> ops() {
+        var ops = new ArrayList<>(guard.ops());
+        ops.add(new PointerStore.CasCheck(placement.key(), placement.version()));
+        return ops;
+      }
+
+      @Override
+      public Outcome reevaluate() {
+        var row = pointerStore.get(placement.key()).orElse(null);
+        if (row == null || row.getVersion() != placement.version()) {
+          return Outcome.BROKEN;
+        }
+        return guard.reevaluate();
+      }
+
+      @Override
+      public String describe() {
+        return guard.describe() + " at " + placement.key();
+      }
+    };
+  }
+
+  /**
    * The canonical pointer version a scanned descendant is pinned to, and the namespace that version
    * resolved to — the live one where its blob could be read, the scanned row where it could not.
    * Emptiness probes and the delete itself must both use {@code resolved}: it carries the path the
    * namespace has now, which an in-place rename makes differ from the path the walk found it under.
+   *
+   * <p>{@code placement} is set only for the blob-less cases, where the row is the sole evidence of
+   * location; a readable namespace states its own path and is checked against it directly.
    */
-  private record DescendantPin(long pointerVersion, Namespace resolved) {}
+  private record DescendantPin(long pointerVersion, Namespace resolved, PlacementProof placement) {
+    DescendantPin(long pointerVersion, Namespace resolved) {
+      this(pointerVersion, resolved, null);
+    }
+  }
 
   /**
    * Uses the same marker protocol as ordinary namespace deletion. This prevents a concurrently
