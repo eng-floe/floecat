@@ -121,8 +121,10 @@ public class UserObjectBundleService {
   private final EngineMetadataDecoratorProvider decoratorProvider;
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
-  // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
-  // into the identity-only possession token so a decorator change invalidates cached decoration.
+  // Bumped when the served payload's encoding changes WITHOUT moving the engine version or
+  // anything the content version tracks — a decorator behavior change, or a change to how columns
+  // themselves are encoded. Folded into every identity-only possession token, so the bump reaches
+  // decorated and undecorated clients alike. Historically decoration-only, hence the name.
   private final String decorationEpoch;
   private final StatsProviderFactory statsFactory;
   private final PinValidator pinValidator;
@@ -214,6 +216,34 @@ public class UserObjectBundleService {
       int flightPort,
       boolean grpcPlainText,
       String quarkusProfile) {
+    this(
+        overlay,
+        inputResolver,
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContext,
+        engineSpecificEnabled,
+        "1",
+        flightHost,
+        flightPort,
+        grpcPlainText,
+        quarkusProfile);
+  }
+
+  UserObjectBundleService(
+      CatalogOverlay overlay,
+      QueryInputResolver inputResolver,
+      QueryContextStore queryStore,
+      StatsProviderFactory statsFactory,
+      EngineMetadataDecoratorProvider decoratorProvider,
+      EngineContextProvider engineContext,
+      boolean engineSpecificEnabled,
+      String decorationEpoch,
+      String flightHost,
+      int flightPort,
+      boolean grpcPlainText,
+      String quarkusProfile) {
     // Test-only: these tests never reach per-read pin validation (their schema flows go through
     // the fake overlay). Fail explicitly if one ever does, rather than NPE-ing on null repos.
     this(
@@ -232,7 +262,7 @@ public class UserObjectBundleService {
           }
         },
         engineSpecificEnabled,
-        "1",
+        decorationEpoch,
         flightHost,
         flightPort,
         grpcPlainText,
@@ -705,10 +735,15 @@ public class UserObjectBundleService {
    * until the table's next snapshot write stamps a fingerprint. Views and system relations pass an
    * empty scope — their content hash is already the schema identity.
    *
-   * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
-   * behavior changes without moving the engine version. When there is nothing to fold in — no
-   * schema scope (views/system) AND no engine decoration — the token IS the content version,
-   * byte-identical to the unscoped behavior.
+   * <p>{@code decorationEpoch} additionally invalidates cached payload when the way this server
+   * encodes it changes without moving anything the content version tracks. It is folded in for
+   * EVERY token, not only decorated ones: the encoding changes it exists to announce reach the
+   * undecorated payload too — epoch 2 marks the typed SchemaColumn migration, which rewrote every
+   * complex column's planner type tree, decoration or not — so folding it only when decorating
+   * would leave exactly the clients it must reach holding tokens that still match. Bumping it
+   * therefore costs one cold fetch per cached relation, which is the point of bumping it. Set it
+   * empty to opt out: with no epoch, no schema scope (views/system) and no engine decoration there
+   * is nothing to fold in, and the token IS the content version.
    */
   private String possessionToken(String contentVersion, String schemaScope, EngineContext ctx) {
     if (contentVersion == null || contentVersion.isBlank()) {
@@ -716,7 +751,7 @@ public class UserObjectBundleService {
     }
     String scope = safe(schemaScope);
     boolean decorate = decorationRequired(ctx);
-    if (scope.isBlank() && !decorate) {
+    if (scope.isBlank() && !decorate && decorationEpoch.isBlank()) {
       return contentVersion;
     }
     StringBuilder material = new StringBuilder(contentVersion).append('\0').append(scope);
@@ -725,10 +760,9 @@ public class UserObjectBundleService {
           .append('\0')
           .append(safe(ctx.normalizedKind()))
           .append('\0')
-          .append(safe(ctx.normalizedVersion()))
-          .append('\0')
-          .append(decorationEpoch);
+          .append(safe(ctx.normalizedVersion()));
     }
+    material.append('\0').append(decorationEpoch);
     return Hashing.sha256Hex(material.toString());
   }
 

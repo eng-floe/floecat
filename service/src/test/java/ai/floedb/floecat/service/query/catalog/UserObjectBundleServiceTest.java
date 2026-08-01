@@ -419,6 +419,65 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void bumpingTheEpochInvalidatesPossessionTokensThatWereNeverDecorated() {
+    // The epoch announces a change in how this server encodes the payload. Epoch 2 marks the typed
+    // SchemaColumn migration, which rewrote every complex column's planner type tree — columns are
+    // served with or without a decorator, so a client that never decorates holds pre-migration
+    // payload just the same, and the bump has to reach it.
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    UserObjectBundleService epoch1 = undecoratedServiceAtEpoch("1");
+    UserObjectBundleService epoch2 = undecoratedServiceAtEpoch("2");
+
+    String tokenAtEpoch1 =
+        firstRelationOf(epoch1, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    assertThat(tokenAtEpoch1).isNotEmpty();
+
+    RelationInfo underStaleToken = firstRelationOf(epoch2, candidate, Set.of(tokenAtEpoch1));
+    assertThat(underStaleToken.getColumnsCount())
+        .as("a token minted before the bump must not gate an identity-only reply after it")
+        .isPositive();
+    String tokenAtEpoch2 = underStaleToken.getPinIdentity().getTableBlobVersion();
+    assertThat(tokenAtEpoch2).isNotEqualTo(tokenAtEpoch1);
+
+    // Control: within one epoch the token still works, so the bump costs exactly one cold fetch.
+    assertThat(firstRelationOf(epoch2, candidate, Set.of(tokenAtEpoch2)).getColumnsCount())
+        .isZero();
+  }
+
+  private UserObjectBundleService undecoratedServiceAtEpoch(String epoch) {
+    return new UserObjectBundleService(
+        overlay,
+        resolver,
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContextProvider,
+        false,
+        epoch,
+        "localhost",
+        47470,
+        false,
+        "test");
+  }
+
+  private RelationInfo firstRelationOf(
+      UserObjectBundleService svc, TableReferenceCandidate candidate, Set<String> known) {
+    return svc.stream("cid", ctx, List.of(candidate), known)
+        .collect()
+        .asList()
+        .await()
+        .indefinitely()
+        .get(1)
+        .getResolutions()
+        .getItems(0)
+        .getRelation();
+  }
+
+  @Test
   void identityOnlyPossessionIsScopedToTheRequestingEngine() {
     // With engine-specific decoration in play the withheld columns are engine-keyed, so a version
     // proved under one engine must NOT be honored identity-only under another — otherwise a client
