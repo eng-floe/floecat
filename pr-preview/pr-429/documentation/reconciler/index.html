@@ -1900,8 +1900,10 @@ reconcile control RPCs:</p>
     fingerprints, stats/index capture signatures, auxiliary-target fingerprints, and any selected
     reusable bundle records. Empty physical content identity disables cross-snapshot reuse for that
     file.</li>
-<li>Snapshot planning reads the predecessor snapshot's compact capture manifest to select compatible
-    bundle records. It does not read reusable bundle payloads, source files, or page-index sidecars.
+<li>Snapshot planning reads the compact capture manifest from the most recently reconciled snapshot
+    with finalized reusable artifacts, ordered by durable <code>ingested_at</code> rather than snapshot id or
+    source parentage. It does not read reusable bundle payloads, source files, or page-index
+    sidecars.
     The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
     rebinds selected records to the destination snapshot, and captures only missing outputs.</li>
 <li>The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
