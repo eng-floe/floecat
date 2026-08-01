@@ -183,14 +183,13 @@ class ColumnsScannerTest {
               assertThat(row.get(4)).isEqualTo("INT");
             });
 
-    // Find row for "missing_col" column and check data_type is null or whatever current behavior is
+    // A column whose type cannot be decoded still reports a value: data_type is declared
+    // nullable=false, so a null there would contradict the column's own schema (and the Arrow field
+    // built from it). The row survives the scan, which is the point — it just says UNKNOWN.
     assertThat(rows)
-        .anySatisfy(
-            row -> {
-              if ("missing_col".equals(row.get(3))) {
-                assertThat(row.get(4)).isNull();
-              }
-            });
+        .filteredOn(row -> "missing_col".equals(row.get(3)))
+        .singleElement()
+        .satisfies(row -> assertThat(row.get(4)).isEqualTo("UNKNOWN"));
   }
 
   @Test

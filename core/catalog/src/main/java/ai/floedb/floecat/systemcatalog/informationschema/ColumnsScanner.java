@@ -251,7 +251,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         schemaName,
                         table.displayName(),
                         col.getName(),
-                        typeStringOrNull(col),
+                        typeString(col),
                         col.getFieldId()
                       }));
     }
@@ -267,7 +267,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 table.displayName(),
                 col.getName(),
-                typeStringOrNull(col),
+                typeString(col),
                 ordinal++
               }));
     }
@@ -294,34 +294,36 @@ public final class ColumnsScanner implements SystemObjectScanner {
       rows.add(
           new SystemObjectRow(
               new Object[] {
-                catalogName,
-                schemaName,
-                view.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                i + 1
+                catalogName, schemaName, view.displayName(), col.getName(), typeString(col), i + 1
               }));
     }
     return rows.stream();
   }
 
-  private static String blankToNull(String value) {
-    return value == null || value.isBlank() ? null : value;
-  }
+  /** What data_type reports for a column whose persisted type cannot be decoded. */
+  private static final String UNKNOWN_TYPE = "UNKNOWN";
 
   /**
-   * data_type display string, or null for legacy columns persisted without a typed field. A single
-   * undecodable column (e.g. a poisoned persisted type) must not kill the whole
-   * information_schema.columns scan, so decode failures also render as null.
+   * The data_type display string, and never null.
+   *
+   * <p>{@code data_type} is declared {@code nullable=false}, and that declaration is what {@link
+   * ArrowSchemaUtil#toArrowSchema} turns into the Arrow field, so a null here is a value the
+   * column's own contract says cannot occur — as it does in SQL, where
+   * information_schema.columns.data_type is NOT NULL.
+   *
+   * <p>A single column whose type cannot be decoded — one persisted before the typed field existed,
+   * or a poisoned one — still must not kill the whole scan. So it degrades to a value rather than
+   * to nothing: {@value #UNKNOWN_TYPE}, which no formatter produces for a real type, so it cannot
+   * be mistaken for one.
    */
-  private static String typeStringOrNull(SchemaColumn col) {
+  private static String typeString(SchemaColumn col) {
     if (!col.hasType()) {
-      return null;
+      return UNKNOWN_TYPE;
     }
     try {
       return LogicalTypeProtoAdapter.columnTypeString(col);
-    } catch (IllegalArgumentException e) {
-      return null;
+    } catch (IllegalArgumentException undecodable) {
+      return UNKNOWN_TYPE;
     }
   }
 
@@ -349,7 +351,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         schemaName,
                         table.displayName(),
                         col.getName(),
-                        typeStringOrNull(col),
+                        typeString(col),
                         col.getFieldId()))
             .toList();
       }
@@ -362,7 +364,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 table.displayName(),
                 col.getName(),
-                typeStringOrNull(col),
+                typeString(col),
                 ordinal++));
       }
       return entries;
@@ -379,7 +381,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 schemaName,
                 view.displayName(),
                 col.getName(),
-                typeStringOrNull(col),
+                typeString(col),
                 i + 1));
       }
       return entries;
