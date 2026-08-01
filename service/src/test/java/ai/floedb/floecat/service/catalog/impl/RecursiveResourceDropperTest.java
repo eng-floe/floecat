@@ -925,6 +925,46 @@ class RecursiveResourceDropperTest {
   }
 
   /**
+   * Teardown's unguarded delete answers false for a namespace that was already gone and for one
+   * whose CAS it lost. The second is still live, and its children marker is the fence a concurrent
+   * create advances and a concurrent delete checks — take it away and both can commit, orphaning
+   * the new table under a namespace that has been deleted. The marker goes only once the pointer is
+   * provably gone.
+   */
+  @Test
+  void teardownKeepsTheChildFenceOfANamespaceItFailedToDelete() {
+    var childId = namespaceId("ns-child");
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    // The delete lost its CAS — and the pointer is still there, at a version someone else moved it
+    // to.
+    when(namespaceRepo.delete(eq(childId), any())).thenReturn(false);
+    when(namespaceRepo.metaForSafe(eq(childId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v2", 6L));
+
+    var summary = dropper.dropNamespaceContents(root, false);
+
+    assertEquals(0, summary.namespacesDeleted);
+    verify(markerStore, never()).deleteNamespaceMarker(eq(childId));
+  }
+
+  /** The other side of it: a namespace that really is gone leaves no marker row behind. */
+  @Test
+  void teardownReclaimsTheChildFenceOfANamespaceAlreadyDeleted() {
+    var childId = namespaceId("ns-child");
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    when(namespaceRepo.delete(eq(childId), any())).thenReturn(false);
+    when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
+
+    dropper.dropNamespaceContents(root, false);
+
+    verify(markerStore).deleteNamespaceMarker(eq(childId));
+  }
+
+  /**
    * A corrupt relation blob must not wedge the subtree. Clearing damaged state is what a recursive
    * delete is for, so an unparseable table is deleted on the evidence that survives — the by-name
    * row that led here, and the canonical pointer version it is pinned to — rather than aborting the

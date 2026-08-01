@@ -1136,7 +1136,16 @@ public class RecursiveResourceDropper {
       throw namespaceChanged(namespaceId);
     }
     reclaimStrandedNamespacePath(namespace);
-    markerStore.deleteNamespaceMarker(namespaceId);
+    // Only once the pointer is provably gone. Teardown's unguarded delete answers false both for a
+    // namespace that was already deleted and for one whose CAS it lost — and in the second case the
+    // namespace is still live, so taking its children marker would strip a fence that is still in
+    // use: a create publishing into it advances a marker this call has removed, and a delete whose
+    // scan found the namespace empty then contends on an absent key instead of that advance, so
+    // both
+    // commit and the new table is orphaned. See MarkerStore#deleteNamespaceMarker.
+    if (removed || namespaceRepo.metaForSafe(namespaceId).getPointerVersion() == 0L) {
+      markerStore.deleteNamespaceMarker(namespaceId);
+    }
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);
