@@ -211,6 +211,77 @@ class QueryServiceSchemaIT {
   }
 
   @Test
+  void describeInputsDescribesNestedTablesWithTopLevelColumnsOnly() {
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "cat_nested", "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "nested");
+
+    // A struct column's children are rows in the flattened schema, and ordinals are 1-based within
+    // their parent: keeping them would describe this table as id=1, addr=2, city=1, zip=2.
+    Schema schema =
+        new Schema(
+            Types.NestedField.required(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(
+                2,
+                "addr",
+                Types.StructType.of(
+                    Types.NestedField.optional(3, "city", Types.StringType.get()),
+                    Types.NestedField.optional(4, "zip", Types.StringType.get()))));
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "people",
+            "s3://bucket/people",
+            SchemaParser.toJson(schema),
+            "desc");
+
+    var snap =
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 1L, System.currentTimeMillis() - 5_000L);
+
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(10)
+                .build());
+
+    var resp =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(begin.getQuery().getQueryId())
+                .addInputs(
+                    QueryInput.newBuilder()
+                        .setName(
+                            NameRef.newBuilder()
+                                .setCatalog(cat.getDisplayName())
+                                .addPath("db")
+                                .addPath("sch")
+                                .setName("people"))
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId())))
+                .build());
+
+    assertEquals(1, resp.getSchemasCount());
+    var columns = resp.getSchemas(0).getColumnsList();
+    assertEquals(
+        List.of("id", "addr"),
+        columns.stream().map(c -> c.getName()).toList(),
+        "struct children must not be described as columns of their own");
+    assertEquals(
+        List.of(1, 2),
+        columns.stream().map(c -> c.getOrdinal()).toList(),
+        "ordinals must be unique across the described columns");
+    // The struct's shape still reaches the planner, through the column's type tree.
+    assertEquals(
+        2,
+        columns.get(1).getType().getStruct().getFieldsCount(),
+        "addr must still carry its nested fields");
+  }
+
+  @Test
   void describeInputsHandlesViewInputs() {
     var cat = TestSupport.createCatalog(catalog, catalogPrefix + "cat_view", "");
     var ns =

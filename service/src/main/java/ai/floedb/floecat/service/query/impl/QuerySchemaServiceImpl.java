@@ -292,13 +292,17 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     CatalogOverlay.SchemaResolution resolved =
         catalogOverlay.schemaFor(
             correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
-    // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
-    // plumbing; the planner reads nested typing from the columns' type trees.
+    // Planner-facing, so TOP-LEVEL columns only, the same set the relation payloads in
+    // UserObjectBundleService carry. Ordinals are 1-based within their parent, so keeping nested
+    // rows — struct children included, not just the synthetic element/key/value placeholders —
+    // hands the planner several columns sharing one ordinal, and so one attnum: t(a INT, s
+    // STRUCT<x, y>) describes as 1, 2, 1, 2. Nested typing reaches the planner through each
+    // column's own type tree.
     SchemaDescriptor mapped = schemaMapper.map(resolved.table(), resolved.schemaJson());
     return UserObjectBundleUtils.qualifyNestedColumnNames(
         mapped.toBuilder()
             .clearColumns()
-            .addAllColumns(SchemaColumns.withoutSyntheticNodes(mapped.getColumnsList()))
+            .addAllColumns(SchemaColumns.topLevelOnly(mapped.getColumnsList()))
             .build());
   }
 
