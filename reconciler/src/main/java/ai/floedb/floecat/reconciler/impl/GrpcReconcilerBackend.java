@@ -1143,11 +1143,22 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .addPaths("creation_search_path")
             .addPaths("output_columns")
             .build();
+    // Merged, exactly as ensureView does it. properties is in the mask, so the spec's map replaces
+    // the stored one wholesale — and the reconciler's spec has no engine.hint.*/view.metadata.*
+    // keys,
+    // because it does not own them. Sending it raw deletes every one of them on any pass that finds
+    // something else to update, and viewMatchesSpec compares only the keys the reconciler owns, so
+    // nothing would ever notice they were gone.
+    ViewSpec mergedSpec =
+        spec.toBuilder()
+            .clearProperties()
+            .putAllProperties(mergedReconcileViewProperties(current, spec))
+            .build();
     view(ctx)
         .updateView(
             UpdateViewRequest.newBuilder()
                 .setViewId(viewId)
-                .setSpec(spec)
+                .setSpec(mergedSpec)
                 .setUpdateMask(mask)
                 .build());
     return true;

@@ -1049,6 +1049,96 @@ class GrpcReconcilerBackendTest {
             "output_columns");
   }
 
+  /**
+   * The reconciler's spec carries only the properties it owns, and "properties" is in the update
+   * mask, so the spec's map replaces the stored one. Server-managed keys — engine hints, view
+   * metadata — therefore have to be merged back in, exactly as ensureView does, or any pass that
+   * finds something else to update deletes them. Nothing downstream would notice: viewMatchesSpec
+   * deliberately compares only the keys the reconciler owns.
+   */
+  @Test
+  void updateViewByIdPreservesServerManagedViewProperties() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.view =
+        mock(ai.floedb.floecat.catalog.rpc.ViewServiceGrpc.ViewServiceBlockingStub.class);
+    when(backend.view.withInterceptors(any())).thenReturn(backend.view);
+
+    ReconcileContext ctx =
+        new ReconcileContext(
+            "corr",
+            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
+            "svc",
+            Instant.now(),
+            Optional.empty());
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("view")
+            .build();
+
+    ViewSpec spec =
+        ViewSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .putProperties("comment", "after")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("SELECT order_id FROM orders")
+                    .setDialect("spark")
+                    .build())
+            .build();
+
+    // What is stored: the reconciler's own key, a stale one it no longer sets, and two the server
+    // owns.
+    View existing =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .putProperties("comment", "before")
+            .putProperties("source.stale", "drop me")
+            .putProperties("engine.hint.rowcount", "1000")
+            .putProperties("view.metadata.owner", "analytics")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("SELECT 1")
+                    .setDialect("ansi")
+                    .build())
+            .build();
+
+    when(backend.view.getView(any()))
+        .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
+    when(backend.view.updateView(any()))
+        .thenReturn(UpdateViewResponse.newBuilder().setView(existing).build());
+
+    assertThat(backend.updateViewById(ctx, viewId, spec)).isTrue();
+
+    var updateCaptor = org.mockito.ArgumentCaptor.forClass(UpdateViewRequest.class);
+    verify(backend.view).updateView(updateCaptor.capture());
+    assertThat(updateCaptor.getValue().getSpec().getPropertiesMap())
+        .containsEntry("engine.hint.rowcount", "1000")
+        .containsEntry("view.metadata.owner", "analytics")
+        .containsEntry("comment", "after")
+        .doesNotContainKey("source.stale");
+  }
+
   @Test
   void updateTableByIdPreservesExistingTableProperties() {
     GrpcReconcilerBackend backend =
