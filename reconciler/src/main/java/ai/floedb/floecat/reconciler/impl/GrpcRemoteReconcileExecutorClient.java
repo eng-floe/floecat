@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
@@ -2162,9 +2163,19 @@ class GrpcRemoteReconcileExecutorClient
             .setPartitionDataJson(plan.partitionDataJson())
             .setFileFormat(plan.fileFormat())
             .setPartitionSpecId(plan.partitionSpecId())
+            .setContentIdentity(plan.contentIdentity())
+            .setSourceFingerprint(plan.sourceFingerprint())
+            .setIndexSourceFingerprint(plan.indexSourceFingerprint())
+            .setStatsCaptureSignature(plan.statsCaptureSignature())
+            .setIndexCaptureSignature(plan.indexCaptureSignature())
+            .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(GrpcRemoteReconcileExecutorClient::toProtoIcebergDeleteFile)
+                    .toList())
+            .addAllReusableArtifactBundleSelections(
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(GrpcRemoteReconcileExecutorClient::toProtoBundleSelection)
                     .toList());
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
@@ -2180,6 +2191,20 @@ class GrpcRemoteReconcileExecutorClient
       builder.setDeletionVector(dvBuilder);
     }
     return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection
+      toProtoBundleSelection(ReusableArtifactBundleSelection selection) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+        .setArtifact(
+            StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(selection.targetStorageId())
+                .setPayloadUri(selection.payloadUri())
+                .setPayloadBytes(selection.payloadBytes())
+                .setPayloadSha256(ByteString.copyFrom(selection.payloadSha256())))
+        .addAllStatsFilePaths(selection.statsFilePaths())
+        .addAllIndexFilePaths(selection.indexFilePaths())
+        .build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile toProtoIcebergDeleteFile(
@@ -2198,6 +2223,7 @@ class GrpcRemoteReconcileExecutorClient
             })
         .setPartitionSpecId(deleteFile.partitionSpecId())
         .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .setContentIdentity(deleteFile.contentIdentity())
         .build();
   }
 
@@ -2213,15 +2239,37 @@ class GrpcRemoteReconcileExecutorClient
                 plan.getDeletionVector().getCardinality())
             : null;
     return ReconcileFileExecutionPlan.of(
-        plan.getFilePath(),
-        plan.getFileSizeInBytes(),
-        plan.getPartitionDataJson(),
-        dv,
-        plan.getFileFormat(),
-        plan.getPartitionSpecId(),
-        plan.getIcebergDeleteFilesList().stream()
-            .map(GrpcRemoteReconcileExecutorClient::fromProtoIcebergDeleteFile)
-            .toList());
+            plan.getFilePath(),
+            plan.getFileSizeInBytes(),
+            plan.getPartitionDataJson(),
+            dv,
+            plan.getFileFormat(),
+            plan.getPartitionSpecId(),
+            plan.getIcebergDeleteFilesList().stream()
+                .map(GrpcRemoteReconcileExecutorClient::fromProtoIcebergDeleteFile)
+                .toList(),
+            plan.getContentIdentity())
+        .withReuseBundleSelections(
+            plan.getSourceFingerprint(),
+            plan.getIndexSourceFingerprint(),
+            plan.getStatsCaptureSignature(),
+            plan.getIndexCaptureSignature(),
+            plan.getAuxiliaryStatsFingerprintsMap(),
+            plan.getReusableArtifactBundleSelectionsList().stream()
+                .map(GrpcRemoteReconcileExecutorClient::fromProtoBundleSelection)
+                .toList());
+  }
+
+  private static ReusableArtifactBundleSelection fromProtoBundleSelection(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection selection) {
+    StatsObjectDescriptor artifact = selection.getArtifact();
+    return new ReusableArtifactBundleSelection(
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        selection.getStatsFilePathsList(),
+        selection.getIndexFilePathsList());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
@@ -2237,7 +2285,8 @@ class GrpcRemoteReconcileExecutorClient
         deleteFile.getFileSizeInBytes(),
         content,
         deleteFile.getPartitionSpecId(),
-        deleteFile.getEqualityFieldIdsList());
+        deleteFile.getEqualityFieldIdsList(),
+        deleteFile.getContentIdentity());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(

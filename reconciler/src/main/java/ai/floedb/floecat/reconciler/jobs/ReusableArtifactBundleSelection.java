@@ -6,7 +6,9 @@
  */
 package ai.floedb.floecat.reconciler.jobs;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /** A file plan's selected records from one durable file-group reuse bundle. */
 public record ReusableArtifactBundleSelection(
@@ -36,5 +38,24 @@ public record ReusableArtifactBundleSelection(
         || payloadBytes <= 0
         || payloadSha256.length != 32
         || (statsFilePaths.isEmpty() && indexFilePaths.isEmpty());
+  }
+
+  @Override
+  public boolean equals(Object value) {
+    return value instanceof ReusableArtifactBundleSelection other
+        && payloadBytes == other.payloadBytes
+        && targetStorageId.equals(other.targetStorageId)
+        && payloadUri.equals(other.payloadUri)
+        && Arrays.equals(payloadSha256, other.payloadSha256)
+        && statsFilePaths.equals(other.statsFilePaths)
+        && indexFilePaths.equals(other.indexFilePaths);
+  }
+
+  @Override
+  public int hashCode() {
+    return 31
+            * Objects.hash(
+                targetStorageId, payloadUri, payloadBytes, statsFilePaths, indexFilePaths)
+        + Arrays.hashCode(payloadSha256);
   }
 }

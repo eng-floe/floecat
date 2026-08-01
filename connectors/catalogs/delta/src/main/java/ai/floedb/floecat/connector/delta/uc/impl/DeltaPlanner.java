@@ -307,14 +307,10 @@ final class DeltaPlanner implements Planner<String> {
                     partitionJson,
                     0,
                     null,
-                    "delta-add-v1:"
-                        + add.getModificationTime()
-                        + ":"
-                        + add.getBaseRowId().map(String::valueOf).orElse("")
-                        + ":"
-                        + add.getDefaultRowCommitVersion().map(String::valueOf).orElse("")
-                        + ":"
-                        + rowCount));
+                    contentIdentity(
+                        add.getModificationTime(),
+                        add.getBaseRowId().orElse(null),
+                        add.getDefaultRowCommitVersion().orElse(null))));
           }
         }
       }
@@ -329,6 +325,16 @@ final class DeltaPlanner implements Planner<String> {
 
   boolean missingLogStats() {
     return missingLogStats;
+  }
+
+  static String contentIdentity(
+      long modificationTime, Long baseRowId, Long defaultRowCommitVersion) {
+    return "delta-add-v1:"
+        + modificationTime
+        + ":"
+        + (baseRowId == null ? "" : baseRowId)
+        + ":"
+        + (defaultRowCommitVersion == null ? "" : defaultRowCommitVersion);
   }
 
   int missingLogStatsFileCount() {

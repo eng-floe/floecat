@@ -180,6 +180,16 @@ class DeltaPlannerTest {
         .isEqualTo("s3://other/part-000.parquet");
   }
 
+  @Test
+  void contentIdentityUsesStableAddFileMetadataIndependentOfStatsPlanning() {
+    assertThat(DeltaPlanner.contentIdentity(1234L, 50L, 7L)).isEqualTo("delta-add-v1:1234:50:7");
+  }
+
+  @Test
+  void contentIdentityKeepsAbsentRowTrackingMetadataCanonical() {
+    assertThat(DeltaPlanner.contentIdentity(1234L, null, null)).isEqualTo("delta-add-v1:1234::");
+  }
+
   private static final class RowBuilder {
     private final StructType schema;
     private final Map<Integer, Object> values = new LinkedHashMap<>();

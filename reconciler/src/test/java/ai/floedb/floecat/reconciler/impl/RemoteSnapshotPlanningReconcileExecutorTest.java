@@ -156,7 +156,9 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                                     4L,
                                     ai.floedb.floecat.catalog.rpc.FileContent.FC_EQUALITY_DELETES,
                                     3,
-                                    List.of(7))))),
+                                    List.of(7),
+                                    "iceberg-delete-v1:11:2")),
+                            "iceberg-data-v1:12:1")),
                     List.of(),
                     "{\"type\":\"struct\",\"fields\":[]}")));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
@@ -202,10 +204,26 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             .fileGroupTask()
                             .fileExecutionPlans()
                             .getFirst()
+                            .contentIdentity()
+                            .equals("iceberg-data-v1:12:1")
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .fileExecutionPlans()
+                            .getFirst()
                             .icebergDeleteFiles()
                             .getFirst()
                             .equalityFieldIds()
-                            .equals(List.of(7))),
+                            .equals(List.of(7))
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .fileExecutionPlans()
+                            .getFirst()
+                            .icebergDeleteFiles()
+                            .getFirst()
+                            .contentIdentity()
+                            .equals("iceberg-delete-v1:11:2")),
             argThat(stats -> stats != null && stats.isEmpty()));
   }
 
@@ -245,7 +263,10 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             "",
                             0,
                             List.of(),
-                            null)),
+                            null,
+                            null,
+                            List.of(),
+                            "test-file-v1:file-1")),
                     List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
@@ -605,7 +626,10 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               "",
               0,
               List.of(),
-              null));
+              null,
+              null,
+              List.of(),
+              "test-file-v1:" + i));
     }
     return List.copyOf(out);
   }
@@ -620,7 +644,10 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
         "",
         0,
         List.of(),
-        null);
+        null,
+        null,
+        List.of(),
+        "test-file-v1:" + name);
   }
 
   private static ReconcileJobStore.LeasedJob lease(

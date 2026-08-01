@@ -256,10 +256,21 @@ final class IcebergPlanner implements Planner<Integer> {
         partJson,
         spec == null ? 0 : spec.specId(),
         sequenceNumber,
-        "iceberg-data-v1:"
-            + (sequenceNumber == null ? "" : sequenceNumber)
-            + ":"
-            + dataFile.recordCount());
+        dataContentIdentity(sequenceNumber, dataFile.recordCount()));
+  }
+
+  static String dataContentIdentity(Long sequenceNumber, long recordCount) {
+    return icebergContentIdentity("iceberg-data-v1", sequenceNumber, recordCount);
+  }
+
+  static String deleteContentIdentity(Long sequenceNumber, long recordCount) {
+    return icebergContentIdentity("iceberg-delete-v1", sequenceNumber, recordCount);
+  }
+
+  private static String icebergContentIdentity(
+      String prefix, Long sequenceNumber, long recordCount) {
+    Long effectiveSequence = sequenceNumber != null && sequenceNumber > 0L ? sequenceNumber : null;
+    return prefix + ":" + (effectiveSequence == null ? "" : effectiveSequence) + ":" + recordCount;
   }
 
   private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {

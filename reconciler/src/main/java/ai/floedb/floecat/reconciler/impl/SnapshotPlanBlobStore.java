@@ -16,15 +16,12 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
-import ai.floedb.floecat.reconciler.jobs.ReusableIndexArtifactReference;
-import ai.floedb.floecat.reconciler.jobs.ReusableStatsArtifactReference;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -403,17 +400,13 @@ public class SnapshotPlanBlobStore {
     public String statsCaptureSignature = "";
     public String indexCaptureSignature = "";
     public Map<String, String> auxiliaryStatsFingerprints = Map.of();
-    public byte[] reusableFileStats = new byte[0];
-    public List<byte[]> reusableAuxiliaryStats = List.of();
-    public byte[] reusableIndexArtifact = new byte[0];
-    public StoredReusableStatsReference reusableFileStatsReference;
-    public List<StoredReusableStatsReference> reusableAuxiliaryStatsReferences = List.of();
-    public StoredReusableIndexReference reusableIndexArtifactReference;
     public List<StoredReusableArtifactBundleSelection> reusableArtifactBundleSelections = List.of();
 
     static StoredFileExecutionPlan from(ReconcileFileExecutionPlan plan) {
       ReconcileFileExecutionPlan effective =
-          plan == null ? ReconcileFileExecutionPlan.of("", 0L, "", null) : plan;
+          plan == null
+              ? ReconcileFileExecutionPlan.of("", 0L, "", null, "", 0, List.of(), "")
+              : plan;
       StoredFileExecutionPlan stored = new StoredFileExecutionPlan();
       stored.filePath = effective.filePath();
       stored.fileSizeInBytes = effective.fileSizeInBytes();
@@ -429,22 +422,6 @@ public class SnapshotPlanBlobStore {
       stored.statsCaptureSignature = effective.statsCaptureSignature();
       stored.indexCaptureSignature = effective.indexCaptureSignature();
       stored.auxiliaryStatsFingerprints = effective.auxiliaryStatsFingerprints();
-      stored.reusableFileStats =
-          effective.reusesFileStats() ? effective.reusableFileStats().toByteArray() : new byte[0];
-      stored.reusableAuxiliaryStats =
-          effective.reusableAuxiliaryStats().stream().map(TargetStatsRecord::toByteArray).toList();
-      stored.reusableIndexArtifact =
-          effective.reusesIndexArtifact()
-              ? effective.reusableIndexArtifact().toByteArray()
-              : new byte[0];
-      stored.reusableFileStatsReference =
-          StoredReusableStatsReference.from(effective.reusableFileStatsReference());
-      stored.reusableAuxiliaryStatsReferences =
-          effective.reusableAuxiliaryStatsReferences().stream()
-              .map(StoredReusableStatsReference::from)
-              .toList();
-      stored.reusableIndexArtifactReference =
-          StoredReusableIndexReference.from(effective.reusableIndexArtifactReference());
       stored.reusableArtifactBundleSelections =
           effective.reusableArtifactBundleSelections().stream()
               .map(StoredReusableArtifactBundleSelection::from)
@@ -465,52 +442,17 @@ public class SnapshotPlanBlobStore {
                   ? List.of()
                   : icebergDeleteFiles.stream().map(StoredIcebergDeleteFile::toDeleteFile).toList(),
               contentIdentity);
-      boolean hasReferences =
-          reusableFileStatsReference != null
-              || (reusableAuxiliaryStatsReferences != null
-                  && !reusableAuxiliaryStatsReferences.isEmpty())
-              || reusableIndexArtifactReference != null;
-      if (reusableArtifactBundleSelections != null && !reusableArtifactBundleSelections.isEmpty()) {
-        return plan.withReuseBundleSelections(
-            sourceFingerprint,
-            indexSourceFingerprint,
-            statsCaptureSignature,
-            indexCaptureSignature,
-            auxiliaryStatsFingerprints,
-            reusableArtifactBundleSelections.stream()
-                .map(StoredReusableArtifactBundleSelection::toSelection)
-                .toList());
-      }
-      if (hasReferences) {
-        return plan.withReuseReferences(
-            sourceFingerprint,
-            indexSourceFingerprint,
-            statsCaptureSignature,
-            indexCaptureSignature,
-            auxiliaryStatsFingerprints,
-            reusableFileStatsReference == null ? null : reusableFileStatsReference.toReference(),
-            reusableAuxiliaryStatsReferences == null
-                ? List.of()
-                : reusableAuxiliaryStatsReferences.stream()
-                    .map(StoredReusableStatsReference::toReference)
-                    .toList(),
-            reusableIndexArtifactReference == null
-                ? null
-                : reusableIndexArtifactReference.toReference());
-      }
-      return plan.withReuse(
+      return plan.withReuseBundleSelections(
           sourceFingerprint,
           indexSourceFingerprint,
           statsCaptureSignature,
           indexCaptureSignature,
           auxiliaryStatsFingerprints,
-          parseTargetStatsRecordOrDefault(reusableFileStats),
-          reusableAuxiliaryStats == null
+          reusableArtifactBundleSelections == null
               ? List.of()
-              : reusableAuxiliaryStats.stream()
-                  .map(SnapshotPlanBlobStore::parseTargetStatsRecord)
-                  .toList(),
-          parseIndexArtifactRecordOrDefault(reusableIndexArtifact));
+              : reusableArtifactBundleSelections.stream()
+                  .map(StoredReusableArtifactBundleSelection::toSelection)
+                  .toList());
     }
   }
 
@@ -536,81 +478,6 @@ public class SnapshotPlanBlobStore {
     ReusableArtifactBundleSelection toSelection() {
       return new ReusableArtifactBundleSelection(
           targetStorageId, payloadUri, payloadBytes, payloadSha256, statsFilePaths, indexFilePaths);
-    }
-  }
-
-  static final class StoredReusableStatsReference {
-    public String filePath = "";
-    public String targetStorageId = "";
-    public String payloadUri = "";
-    public long payloadBytes;
-    public byte[] payloadSha256 = new byte[0];
-    public String sourceFingerprint = "";
-    public String statsCaptureSignature = "";
-    public List<String> realizedStatsSelectors = List.of();
-
-    static StoredReusableStatsReference from(ReusableStatsArtifactReference reference) {
-      if (reference == null || reference.isEmpty()) {
-        return null;
-      }
-      StoredReusableStatsReference stored = new StoredReusableStatsReference();
-      stored.filePath = reference.filePath();
-      stored.targetStorageId = reference.targetStorageId();
-      stored.payloadUri = reference.payloadUri();
-      stored.payloadBytes = reference.payloadBytes();
-      stored.payloadSha256 = reference.payloadSha256();
-      stored.sourceFingerprint = reference.sourceFingerprint();
-      stored.statsCaptureSignature = reference.statsCaptureSignature();
-      stored.realizedStatsSelectors = reference.realizedStatsSelectors();
-      return stored;
-    }
-
-    ReusableStatsArtifactReference toReference() {
-      return new ReusableStatsArtifactReference(
-          filePath,
-          targetStorageId,
-          payloadUri,
-          payloadBytes,
-          payloadSha256,
-          sourceFingerprint,
-          statsCaptureSignature,
-          realizedStatsSelectors);
-    }
-  }
-
-  static final class StoredReusableIndexReference {
-    public String filePath = "";
-    public String targetStorageId = "";
-    public String payloadUri = "";
-    public long payloadBytes;
-    public byte[] payloadSha256 = new byte[0];
-    public String sourceFingerprint = "";
-    public String indexCaptureSignature = "";
-
-    static StoredReusableIndexReference from(ReusableIndexArtifactReference reference) {
-      if (reference == null || reference.isEmpty()) {
-        return null;
-      }
-      StoredReusableIndexReference stored = new StoredReusableIndexReference();
-      stored.filePath = reference.filePath();
-      stored.targetStorageId = reference.targetStorageId();
-      stored.payloadUri = reference.payloadUri();
-      stored.payloadBytes = reference.payloadBytes();
-      stored.payloadSha256 = reference.payloadSha256();
-      stored.sourceFingerprint = reference.sourceFingerprint();
-      stored.indexCaptureSignature = reference.indexCaptureSignature();
-      return stored;
-    }
-
-    ReusableIndexArtifactReference toReference() {
-      return new ReusableIndexArtifactReference(
-          filePath,
-          targetStorageId,
-          payloadUri,
-          payloadBytes,
-          payloadSha256,
-          sourceFingerprint,
-          indexCaptureSignature);
     }
   }
 
@@ -685,23 +552,6 @@ public class SnapshotPlanBlobStore {
       return TargetStatsRecord.parseFrom(payload);
     } catch (Exception e) {
       throw new IllegalStateException("Failed to decode direct stats record payload", e);
-    }
-  }
-
-  private static TargetStatsRecord parseTargetStatsRecordOrDefault(byte[] payload) {
-    return payload == null || payload.length == 0
-        ? TargetStatsRecord.getDefaultInstance()
-        : parseTargetStatsRecord(payload);
-  }
-
-  private static IndexArtifactRecord parseIndexArtifactRecordOrDefault(byte[] payload) {
-    if (payload == null || payload.length == 0) {
-      return IndexArtifactRecord.getDefaultInstance();
-    }
-    try {
-      return IndexArtifactRecord.parseFrom(payload);
-    } catch (Exception e) {
-      throw new IllegalStateException("Failed to decode reusable index artifact payload", e);
     }
   }
 

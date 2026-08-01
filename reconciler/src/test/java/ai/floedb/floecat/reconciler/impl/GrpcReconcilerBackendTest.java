@@ -743,7 +743,10 @@ class GrpcReconcilerBackendTest {
                     "",
                     0,
                     List.of(),
-                    null)),
+                    null,
+                    null,
+                    List.of(),
+                    "test-file-v1:path/file.parquet")),
             List.of());
     when(source.planSnapshotFiles(anyString(), anyString(), any(), anyLong()))
         .thenReturn(Optional.of(plan));

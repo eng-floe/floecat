@@ -129,6 +129,23 @@ class FileArtifactReuseTest {
   }
 
   @Test
+  void captureSignatureSeparatesSelectorsFromOutputs() {
+    var explicitFileStatsColumn =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("FILE_STATS", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    var defaultColumnsAndFileStats =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.COLUMN_STATS));
+
+    assertThat(FileArtifactReuse.statsCaptureSignature(explicitFileStatsColumn))
+        .isNotEqualTo(FileArtifactReuse.statsCaptureSignature(defaultColumnsAndFileStats));
+  }
+
+  @Test
   void bindingStatsUpdatesEverySnapshotEnvelope() {
     ResourceId table =
         ResourceId.newBuilder()
@@ -166,53 +183,5 @@ class FileArtifactReuseTest {
         .isEqualTo("2");
     assertThat(FileArtifactReuse.compatibleStats(rebound, "data.parquet", "source", "stats"))
         .isTrue();
-  }
-
-  @Test
-  void legacyDeltaStatsRequireTheSameHistoricalAddFileIdentity() {
-    String filePath = "s3://bucket/data.parquet";
-    var plan =
-        ReconcileFileExecutionPlan.of(
-            filePath, 100L, "{}", null, "PARQUET", 0, List.of(), "delta-add-v1:42:::10");
-    TargetStatsRecord legacy =
-        TargetStatsRecord.newBuilder()
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
-            .setFile(
-                FileTargetStats.newBuilder()
-                    .setFilePath(filePath)
-                    .setSizeBytes(100L)
-                    .setRowCount(10L))
-            .build();
-
-    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:42:::10"))
-        .isTrue();
-    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, plan, "delta-add-v1:41:::10"))
-        .isFalse();
-    assertThat(
-            FileArtifactReuse.legacyCompatibleDeltaStats(
-                legacy.toBuilder().setFile(legacy.getFile().toBuilder().setSizeBytes(99L)).build(),
-                plan,
-                "delta-add-v1:42:::10"))
-        .isFalse();
-    assertThat(
-            FileArtifactReuse.legacyCompatibleDeltaStats(
-                legacy.toBuilder().setFile(legacy.getFile().toBuilder().setRowCount(9L)).build(),
-                plan,
-                "delta-add-v1:42:::10"))
-        .isFalse();
-    var withDv =
-        ReconcileFileExecutionPlan.of(
-            filePath,
-            100L,
-            "{}",
-            new ReconcileFileExecutionPlan.DeltaDeletionVector("u", "dv.bin", 4, 8, 2),
-            "PARQUET",
-            0,
-            List.of(),
-            "delta-add-v1:42:::10");
-    assertThat(FileArtifactReuse.legacyCompatibleDeltaStats(legacy, withDv, "delta-add-v1:42:::10"))
-        .isFalse();
   }
 }

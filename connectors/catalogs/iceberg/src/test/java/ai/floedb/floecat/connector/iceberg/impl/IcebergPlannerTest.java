@@ -33,6 +33,18 @@ import org.junit.jupiter.api.Test;
 class IcebergPlannerTest {
 
   @Test
+  void contentIdentitiesUseCommittedSequenceAndRecordCount() {
+    assertThat(IcebergPlanner.dataContentIdentity(7L, 10L)).isEqualTo("iceberg-data-v1:7:10");
+    assertThat(IcebergPlanner.deleteContentIdentity(8L, 2L)).isEqualTo("iceberg-delete-v1:8:2");
+  }
+
+  @Test
+  void contentIdentitiesCanonicalizeUnassignedSequenceNumbers() {
+    assertThat(IcebergPlanner.dataContentIdentity(null, 10L)).isEqualTo("iceberg-data-v1::10");
+    assertThat(IcebergPlanner.deleteContentIdentity(0L, 2L)).isEqualTo("iceberg-delete-v1::2");
+  }
+
+  @Test
   void plannerIndexesNestedSnapshotFieldIds() {
     Schema schema =
         new Schema(

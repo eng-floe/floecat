@@ -1109,10 +1109,8 @@ public abstract class IcebergConnector implements FloecatConnector {
         mapDeleteContent(deleteFile.content()),
         deleteFile.partitionSpecId(),
         deleteFile.equalityFieldIds(),
-        "iceberg-delete-v1:"
-            + (deleteFile.fileSequenceNumber() == null ? "" : deleteFile.fileSequenceNumber())
-            + ":"
-            + deleteFile.recordCount());
+        IcebergPlanner.deleteContentIdentity(
+            deleteFile.fileSequenceNumber(), deleteFile.recordCount()));
   }
 
   private static FileContent mapDeleteContent(org.apache.iceberg.FileContent content) {

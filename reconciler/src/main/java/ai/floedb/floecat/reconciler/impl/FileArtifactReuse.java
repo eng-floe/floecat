@@ -115,28 +115,45 @@ public final class FileArtifactReuse {
 
   private static String captureSignature(ReconcileCapturePolicy policy, boolean stats) {
     ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
-    DigestBuilder digest = new DigestBuilder(stats ? "stats-capture-v1" : "index-capture-v1");
+    DigestBuilder digest = new DigestBuilder(stats ? "stats-capture" : "index-capture");
+    digest.add("default-column-scope");
     digest.add(effective.defaultColumnScope().name());
+    digest.add("max-default-columns");
     digest.add(effective.maxDefaultColumns());
-    effective.columns().stream()
-        .filter(column -> stats ? column.captureStats() : column.captureIndex())
-        .sorted(Comparator.comparing(ReconcileCapturePolicy.Column::selector))
-        .forEach(column -> digest.add(column.selector()));
-    effective.outputs().stream()
-        .filter(
-            output ->
-                stats
-                    ? output != ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX
-                    : output == ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)
-        .sorted()
-        .forEach(output -> digest.add(output.name()));
-    effective.properties().entrySet().stream()
-        .sorted(Map.Entry.comparingByKey())
-        .forEach(
-            entry -> {
-              digest.add(entry.getKey());
-              digest.add(entry.getValue());
-            });
+
+    List<String> selectors =
+        effective.columns().stream()
+            .filter(column -> stats ? column.captureStats() : column.captureIndex())
+            .sorted(Comparator.comparing(ReconcileCapturePolicy.Column::selector))
+            .map(ReconcileCapturePolicy.Column::selector)
+            .toList();
+    digest.add("selectors");
+    digest.add(selectors.size());
+    selectors.forEach(digest::add);
+
+    List<String> outputs =
+        effective.outputs().stream()
+            .filter(
+                output ->
+                    stats
+                        ? output != ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX
+                        : output == ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)
+            .sorted()
+            .map(Enum::name)
+            .toList();
+    digest.add("outputs");
+    digest.add(outputs.size());
+    outputs.forEach(digest::add);
+
+    List<Map.Entry<String, String>> properties =
+        effective.properties().entrySet().stream().sorted(Map.Entry.comparingByKey()).toList();
+    digest.add("properties");
+    digest.add(properties.size());
+    properties.forEach(
+        entry -> {
+          digest.add(entry.getKey());
+          digest.add(entry.getValue());
+        });
     return digest.finish();
   }
 
@@ -250,59 +267,6 @@ public final class FileArtifactReuse {
             .setFile(file)
             .build();
     return stampStats(record, sourceFingerprint, statsSignature, List.of());
-  }
-
-  public static boolean legacyCompatibleIcebergStats(
-      TargetStatsRecord record, ReconcileFileExecutionPlan plan) {
-    if (record == null
-        || !record.hasFile()
-        || hasDeleteContext(plan)
-        || !plan.contentIdentity().startsWith("iceberg-data-v1:")
-        || !plan.filePath().equals(record.getFile().getFilePath())
-        || plan.fileSizeInBytes() != record.getFile().getSizeBytes()) {
-      return false;
-    }
-    IcebergContentIdentity identity = parseIcebergContentIdentity(plan.contentIdentity());
-    if (identity.recordCount() != record.getFile().getRowCount()) {
-      return false;
-    }
-    return identity.sequenceNumber() == null
-        ? !record.getFile().hasSequenceNumber()
-        : record.getFile().hasSequenceNumber()
-            && identity.sequenceNumber() == record.getFile().getSequenceNumber();
-  }
-
-  public static boolean legacyCompatibleDeltaStats(
-      TargetStatsRecord record, ReconcileFileExecutionPlan plan, String historicalContentIdentity) {
-    Long physicalRowCount = deltaContentRowCount(plan.contentIdentity());
-    return record != null
-        && record.hasFile()
-        && !hasDeleteContext(plan)
-        && plan.contentIdentity().startsWith("delta-add-v1:")
-        && plan.contentIdentity().equals(historicalContentIdentity)
-        && plan.filePath().equals(record.getFile().getFilePath())
-        && plan.fileSizeInBytes() == record.getFile().getSizeBytes()
-        && physicalRowCount != null
-        && physicalRowCount == record.getFile().getRowCount();
-  }
-
-  private static boolean hasDeleteContext(ReconcileFileExecutionPlan plan) {
-    return plan.deletionVector() != null || !plan.icebergDeleteFiles().isEmpty();
-  }
-
-  private static Long deltaContentRowCount(String encoded) {
-    if (encoded == null || !encoded.startsWith("delta-add-v1:")) {
-      return null;
-    }
-    String[] parts = encoded.substring("delta-add-v1:".length()).split(":", -1);
-    if (parts.length != 4) {
-      return null;
-    }
-    try {
-      return Math.max(0L, Long.parseLong(parts[3]));
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
   }
 
   private static IcebergContentIdentity parseIcebergContentIdentity(String encoded) {

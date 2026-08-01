@@ -414,7 +414,18 @@ public final class DummyConnector implements FloecatConnector {
   private record DummyFile(String path, long rowCount, long sizeBytes) {
     private SnapshotFileEntry toSnapshotFile() {
       return new SnapshotFileEntry(
-          path, "PARQUET", sizeBytes, rowCount, FileContent.FC_DATA, "", 0, List.of(), null);
+          path,
+          "PARQUET",
+          sizeBytes,
+          rowCount,
+          FileContent.FC_DATA,
+          "",
+          0,
+          List.of(),
+          null,
+          null,
+          List.of(),
+          "dummy-file-v1:" + path + ":" + rowCount + ":" + sizeBytes);
     }
   }
 
