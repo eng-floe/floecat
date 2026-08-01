@@ -141,11 +141,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     var L = LogHelper.start(LOG, "CreateNamespace");
 
     // A child namespace is a published child like any other and carries the parent's fence — and an
-    // implicitly created chain carries one per level. A retryable guard break is therefore
-    // ordinary;
-    // see TableServiceImpl#createTable for why the retry has to run on a worker.
+    // implicitly created chain carries one per level, so a retryable guard break is ordinary here.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var princ = principal.get();
                   var accountId = princ.getAccountId();
@@ -374,7 +372,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
     // A reparent publishes into the destination parent and carries its fence; see createNamespace.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var princ = principal.get();
                   var corr = princ.getCorrelationId();
@@ -517,10 +515,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     final String failureCorrelationId = correlationId();
 
     // Recursive delete performs a large amount of blocking storage I/O and can raise
-    // AbortRetryableException; runWithRetryOnWorker keeps the retry re-subscription off the Vert.x
-    // event loop, where that blocking work would fail with "current thread cannot be blocked".
+    // AbortRetryableException. Both are fine on the ordinary retry: run() subscribes on the Mutiny
+    // default executor, and a retry re-subscribes through that same operator, so no attempt — first
+    // or delayed — ever runs the body on the Vert.x event loop.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                     () -> {
                       var princ = principal.get();
                       var correlationId = princ.getCorrelationId();

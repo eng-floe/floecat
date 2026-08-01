@@ -264,15 +264,12 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       DeleteStorageAuthorityRequest request) {
     // Retried, like every other delete that goes through MutationOps.deleteWithPreconditions: a
     // lost
-    // pointer CAS on a resource that still exists is reported as retryable, and under plain run()
-    // that escapes to the caller as ABORTED while skipping the secret removal below. Safe to re-run
-    // — the delete is idempotent once the pointer is gone, and so is the secret delete.
-    //
-    // On a worker, because the body blocks on both the pointer store and the secret store, and a
-    // plain retry re-subscribes on the event loop where blocking work fails outright: see
-    // TableServiceImpl#deleteTable.
+    // pointer CAS on a resource that still exists is reported as retryable, and unretried that
+    // escapes to the caller as ABORTED while skipping the secret removal below. Safe to re-run —
+    // the
+    // delete is idempotent once the pointer is gone, and so is the secret delete.
     return mapFailures(
-        runWithRetryOnWorker(
+        runWithRetry(
             () -> {
               PrincipalContext principal = principalProvider.get();
               authz.require(principal, "connector.manage");

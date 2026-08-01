@@ -385,14 +385,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
     // Both paths below run the account's whole teardown — every catalog, namespace, table, view,
     // snapshot prefix and connector — as blocking storage I/O, and a lost delete CAS now raises a
-    // retryable abort rather than reporting a silent success. runWithRetryOnWorker keeps the
-    // retry's
-    // re-subscription off the Vert.x event loop, where that blocking work fails outright with
-    // "current thread cannot be blocked" — and failing there is not a benign lost retry: cleanup
-    // runs after the account pointer is already gone, so whatever it did not reach is orphaned with
-    // nothing left to enumerate it.
+    // retryable abort rather than reporting a silent success, so the body can run more than once.
+    // run() subscribes on the Mutiny default executor and the retry re-subscribes through it, so no
+    // attempt lands on the Vert.x event loop. That matters more here than elsewhere: cleanup runs
+    // after the account pointer is already gone, so an attempt that dies mid-way leaves whatever it
+    // did not reach orphaned, with nothing left to enumerate it.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   final var pc = principal.get();
                   final var corr = pc.getCorrelationId();

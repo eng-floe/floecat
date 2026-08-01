@@ -151,9 +151,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
     var L = LogHelper.start(LOG, "CreateView");
 
     // Carries the namespace fence, so a retryable guard break is ordinary here; see
-    // TableServiceImpl#createTable for why the retry has to run on a worker.
+    // TableServiceImpl#createTable.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var pc = principal.get();
                   var corr = pc.getCorrelationId();
@@ -342,7 +342,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     // A reparent publishes into the destination namespace and carries its fence; see createView.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var pctx = principal.get();
                   var corr = pctx.getCorrelationId();
@@ -471,7 +471,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     // Retryable on a lost pointer CAS, and the body blocks on storage: see deleteTable.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();

@@ -155,11 +155,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     // Publishing a child carries the namespace fence, so BatchGuardFailedException — retryable by
     // design — is now an ordinary outcome here: any concurrent write to the parent namespace, a
-    // rename included, breaks the guard. The body blocks on storage, and a plain retry
-    // re-subscribes
-    // on the Vert.x event loop where that fails outright, so the retry belongs on a worker.
+    // rename included, breaks the guard. The retry is the plain one; run() already subscribes on
+    // the
+    // Mutiny default executor, so a re-subscribed attempt blocks on a worker like the first.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var pc = principal.get();
                   var accountId = pc.getAccountId();
@@ -357,7 +357,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     // A reparent publishes into the destination namespace and carries its fence; see createTable.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var pctx = principal.get();
                   var corr = pctx.getCorrelationId();
@@ -493,13 +493,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest request) {
     var L = LogHelper.start(LOG, "DeleteTable");
 
-    // A lost pointer CAS on a table that still exists is retryable now, and this body does blocking
-    // storage I/O — the pinned delete and the purge of the table's snapshots, stats and root.
-    // runWithRetryOnWorker keeps the delayed re-subscription off the event loop, where blocking
-    // work
-    // fails outright.
+    // A lost pointer CAS on a table that still exists is retryable now, so this body — the pinned
+    // delete and the purge of the table's snapshots, stats and root, all blocking — can run more
+    // than once. run() subscribes on the Mutiny default executor and the retry re-subscribes
+    // through
+    // it, so every attempt is on a worker.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();

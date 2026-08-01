@@ -328,10 +328,9 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest request) {
     var L = LogHelper.start(LOG, "DeleteCatalog");
 
-    // Retryable on a lost pointer CAS, and the body blocks on storage: see
-    // TableServiceImpl#deleteTable.
+    // Retryable on a lost pointer CAS: see TableServiceImpl#deleteTable.
     return mapFailures(
-            runWithRetryOnWorker(
+            runWithRetry(
                 () -> {
                   var principalContext = principal.get();
                   var correlationId = principalContext.getCorrelationId();
