@@ -357,7 +357,7 @@ public class RecursiveResourceDropper {
           namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
       return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
     }
-    if (!isDescendant(live.get(), rootPath)) {
+    if (!isDescendant(live.get(), scanned.getCatalogId(), rootPath)) {
       throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
     }
     return Optional.of(new DescendantPin(meta.getPointerVersion(), live.get()));
@@ -1148,7 +1148,20 @@ public class RecursiveResourceDropper {
         .build();
   }
 
-  private static boolean isDescendant(Namespace namespace, java.util.List<String> rootPath) {
+  /**
+   * Whether {@code namespace} is inside the subtree being dropped: under {@code rootPath}, and in
+   * the same catalog.
+   *
+   * <p>A path alone does not identify a namespace. Two catalogs can hold the same path, and a
+   * reparent may move a namespace across catalogs without changing it — so a membership test on
+   * segments alone would let a namespace that had left the catalog entirely still look like a
+   * descendant, and the drop would destroy it, and everything under it, where it now lives.
+   */
+  private static boolean isDescendant(
+      Namespace namespace, ResourceId rootCatalogId, java.util.List<String> rootPath) {
+    if (!namespace.getCatalogId().getId().equals(rootCatalogId.getId())) {
+      return false;
+    }
     var parents = namespace.getParentsList();
     return parents.size() >= rootPath.size()
         && parents.subList(0, rootPath.size()).equals(rootPath);

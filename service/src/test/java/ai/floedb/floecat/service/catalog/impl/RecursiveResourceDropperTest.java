@@ -179,9 +179,14 @@ class RecursiveResourceDropperTest {
    * is how it reads a namespace's relations: a page at a time, never as a list.
    */
   private void stubTableNamePointers(String namespaceId, List<Pointer> rows) {
+    stubTableNamePointers("cat", namespaceId, rows);
+  }
+
+  /** Same, for a namespace read under some other catalog than the one being dropped. */
+  private void stubTableNamePointers(String catalogId, String namespaceId, List<Pointer> rows) {
     doAnswer(feed(rows))
         .when(tableRepo)
-        .forEachNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+        .forEachNamePointer(eq("acct"), eq(catalogId), eq(namespaceId), any());
   }
 
   /**
@@ -435,6 +440,78 @@ class RecursiveResourceDropperTest {
     verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRoots, never()).purgeRoot(any());
+  }
+
+  /**
+   * A path does not identify a namespace: two catalogs can hold the same one. A reparent that moved
+   * this namespace into another catalog left its path untouched, so a membership test on segments
+   * alone would still call it a descendant — and the drop would destroy it, and its tables, in the
+   * catalog it now belongs to.
+   */
+  @Test
+  void guardedDropRefusesADescendantNamespaceThatMovedToAnotherCatalog() {
+    var movedId = namespaceId("ns-child");
+    var otherCatalog =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("cat-other")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    stubNamespaceRefsUnder(
+        List.of("ns"),
+        List.of(new TopologyGraph.NamespaceRef(movedId, "child", CATALOG, List.of("ns", "child"))));
+    when(namespaceRepo.metaForSafe(eq(movedId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v2", 5L));
+    // Same path as when it was scanned — only the catalog changed.
+    when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v2")))
+        .thenReturn(
+            Optional.of(
+                Namespace.newBuilder()
+                    .setResourceId(movedId)
+                    .setCatalogId(otherCatalog)
+                    .addParents("ns")
+                    .setDisplayName("child")
+                    .build()));
+
+    // A table living in it, in the catalog it moved to. Membership is checked before a namespace's
+    // contents are touched, so this is what a catalog-blind test would destroy.
+    var movedTableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-moved")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String movedTableBlob = "blob://acct/tables/tbl-moved/v1";
+    stubTableNamePointers(
+        "cat-other",
+        "ns-child",
+        List.of(
+            Pointer.newBuilder()
+                .setKey(Keys.tablePointerByName("acct", "cat-other", "ns-child", "orders"))
+                .setVersion(1L)
+                .setBlobUri(movedTableBlob)
+                .setResourceId(movedTableId)
+                .setDisplayName("orders")
+                .build()));
+    when(tableRepo.metaForSafe(eq(movedTableId))).thenReturn(meta(movedTableBlob, 4L));
+    when(tableRepo.getByBlobUri(eq(movedTableBlob)))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(movedTableId)
+                    .setCatalogId(otherCatalog)
+                    .setNamespaceId(movedId)
+                    .setDisplayName("orders")
+                    .build()));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    // Nothing inside the namespace that left was touched.
+    verify(tableRepo, never()).deleteWithPrecondition(eq(movedTableId), anyLong(), any());
+    verify(namespaceRepo, never()).delete(any(), any());
+    verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
   }
 
   /**
