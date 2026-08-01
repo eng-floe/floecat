@@ -769,6 +769,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * INTERNAL, which tells the caller nothing and looks like a service defect. Recovery exists — a
    * recursive delete of an ancestor, or account teardown, reaches this namespace through its
    * by-path row and drops it and its contents — so the error names it.
+   *
+   * <p>FAILED_PRECONDITION, and its own message. Reporting it as a conflict made it ABORTED, the
+   * code this service uses for genuine contention, so a client with an ordinary retry policy would
+   * loop on a state that no retry can change — and it borrowed NAMESPACE_NOT_EMPTY, which says the
+   * namespace holds tables or children when the truth is that nobody can tell what it holds. The
+   * message also names the id as an id, rather than passing one off as a display path.
    */
   private RuntimeException namespaceBlobUnreadable(
       ResourceId namespaceId, String correlationId, RuntimeException cause) {
@@ -777,10 +783,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         "namespace_delete_blob_unreadable namespace_id=%s: recoverable by recursive delete of an"
             + " ancestor or by account teardown",
         namespaceId.getId());
-    return GrpcErrors.conflict(
+    return GrpcErrors.preconditionFailed(
         correlationId,
-        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-        Map.of("display_name", namespaceId.getId()));
+        GeneratedErrorMessages.MessageKey.NAMESPACE_BLOB_UNREADABLE,
+        Map.of("id", namespaceId.getId()));
   }
 
   /**

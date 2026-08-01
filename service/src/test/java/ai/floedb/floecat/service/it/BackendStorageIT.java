@@ -573,7 +573,10 @@ class BackendStorageIT {
         new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
         "application/x-protobuf");
 
-    // Refused, and not as an internal error: the caller learns which namespace is the problem.
+    // Refused, and refused in a shape the caller can act on: FAILED_PRECONDITION, which this
+    // service
+    // does not use for contention, so a client retry policy will not loop on a state no retry can
+    // change. Not INTERNAL (a service defect), and not ABORTED (retry and it will work).
     var refused =
         assertThrows(
             StatusRuntimeException.class,
@@ -582,7 +585,11 @@ class BackendStorageIT {
                     DeleteNamespaceRequest.newBuilder()
                         .setNamespaceId(child.getResourceId())
                         .build()));
-    assertNotEquals(Status.Code.INTERNAL, refused.getStatus().getCode());
+    assertEquals(Status.Code.FAILED_PRECONDITION, refused.getStatus().getCode());
+    // And it says what is actually wrong rather than borrowing "contains tables, views…".
+    assertTrue(
+        refused.getStatus().getDescription().contains("metadata cannot be read"),
+        () -> "unexpected message: " + refused.getStatus().getDescription());
     assertTrue(ptr.get(childById).isPresent(), "and nothing was removed");
 
     // The documented recovery works: the parent's recursive delete reaches it by its by-path row.
