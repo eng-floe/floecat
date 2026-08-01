@@ -136,6 +136,16 @@ public class ViewRepository {
         Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), action);
   }
 
+  /** The same rows, stopped at the first hit; see {@code TableRepository#anyNamePointer}. */
+  public boolean anyNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Predicate<Pointer> test) {
+    return repo.anyRefByPrefix(
+        Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), test);
+  }
+
   /**
    * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.

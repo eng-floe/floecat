@@ -146,6 +146,19 @@ public class TableRepository {
   }
 
   /**
+   * The same rows, stopped at the first one {@code test} accepts. For probes that only need to know
+   * whether such a row exists, so the scan ends on a return rather than on a thrown exception.
+   */
+  public boolean anyNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Predicate<Pointer> test) {
+    return repo.anyRefByPrefix(
+        Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), test);
+  }
+
+  /**
    * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers that predate
    * Pointer.resource_id / display_name.

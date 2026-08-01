@@ -406,8 +406,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * <p>{@code action} may throw; the exception propagates and abandons the scan.
    */
   public void forEachRefByPrefix(String prefix, java.util.function.Consumer<Pointer> action) {
-    observeRepository(
-        "for_each_ref_by_prefix",
+    anyRefByPrefix(
+        prefix,
+        pointer -> {
+          action.accept(pointer);
+          return false;
+        });
+  }
+
+  /**
+   * The same scan, stopping at the first pointer {@code test} accepts, and reporting whether one
+   * did.
+   *
+   * <p>For probes — "does this prefix hold a row satisfying X" — where the answer is usually found
+   * in the first page and draining the rest is waste. Stopping is a return value rather than an
+   * exception thrown through the scan: an exception is how this method reports a real fault, and
+   * {@link #observeRepository} records one as a failed span and an error metric. A probe that
+   * succeeds is not an error, and the common case here is the successful one.
+   */
+  public boolean anyRefByPrefix(String prefix, java.util.function.Predicate<Pointer> test) {
+    return observeRepository(
+        "any_ref_by_prefix",
         () -> {
           var seenTokens = new HashSet<String>();
           String token = "";
@@ -415,7 +434,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             var next = new StringBuilder();
             for (var pointer :
                 pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
-              action.accept(pointer);
+              if (test.test(pointer)) {
+                return true;
+              }
             }
             token = next.toString();
             if (!token.isBlank() && !seenTokens.add(token)) {
@@ -423,7 +444,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
                   "pointer scan did not advance; repeated page token: " + token);
             }
           } while (!token.isBlank());
-          return null;
+          return false;
         });
   }
 

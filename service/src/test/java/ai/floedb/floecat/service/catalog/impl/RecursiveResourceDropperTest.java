@@ -217,12 +217,6 @@ class RecursiveResourceDropperTest {
         .forEachRefUnder(eq("acct"), eq("cat"), eq(parentPath), any(), any());
   }
 
-  private void stubViewNamePointers(String namespaceId, List<Pointer> rows) {
-    doAnswer(feed(rows))
-        .when(viewRepo)
-        .forEachNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
-  }
-
   private static Answer<Void> feed(List<Pointer> rows) {
     return invocation -> {
       Consumer<Pointer> consumer = invocation.getArgument(3);
@@ -232,11 +226,40 @@ class RecursiveResourceDropperTest {
   }
 
   /**
+   * Feeds {@code rows} to a probe that stops at its first hit, the way the real scan does: each row
+   * is tested in order and the walk ends as soon as one is accepted.
+   */
+  private void stubAnyTableNamePointer(String namespaceId, List<Pointer> rows) {
+    doAnswer(testUntilHit(rows))
+        .when(tableRepo)
+        .anyNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+  }
+
+  private void stubAnyViewNamePointer(String namespaceId, List<Pointer> rows) {
+    doAnswer(testUntilHit(rows))
+        .when(viewRepo)
+        .anyNamePointer(eq("acct"), eq("cat"), eq(namespaceId), any());
+  }
+
+  private static Answer<Boolean> testUntilHit(List<Pointer> rows) {
+    return invocation -> {
+      java.util.function.Predicate<Pointer> test = invocation.getArgument(3);
+      for (var row : rows) {
+        if (test.test(row)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  }
+
+  /**
    * The emptiness gate asks this before reconciling anything, so the ordinary "namespace holds
    * tables" rejection costs one row scan and one pointer read instead of a read per relation.
    */
   @Test
   void hasResolvableRelationAnswersAtTheFirstLiveRelation() {
+    stubAnyTableNamePointer("ns", List.of(TABLE_NAME_POINTER));
     String canonical = Keys.tablePointerById("acct", "tbl");
     when(pointerStore.get(eq(canonical)))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(canonical).setVersion(1L).build()));
@@ -244,7 +267,10 @@ class RecursiveResourceDropperTest {
     assertTrue(dropper.hasResolvableRelation(root));
     // Stopped at the first row: the views were never listed, and no second canonical read happened.
     verify(pointerStore).get(eq(canonical));
+    verify(viewRepo, never()).anyNamePointer(anyString(), anyString(), anyString(), any());
+    // And the scan ended by answering, not by throwing through the observed enumeration.
     verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
+    verify(tableRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
   }
 
   /**
@@ -308,8 +334,9 @@ class RecursiveResourceDropperTest {
   /** Rows whose relation is gone, or that name nothing at all, are what the sweep is for. */
   @Test
   void hasResolvableRelationIsFalseWhenNothingResolves() {
+    stubAnyTableNamePointer("ns", List.of(TABLE_NAME_POINTER));
     when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
-    stubViewNamePointers(
+    stubAnyViewNamePointer(
         "ns",
         List.of(
             Pointer.newBuilder()

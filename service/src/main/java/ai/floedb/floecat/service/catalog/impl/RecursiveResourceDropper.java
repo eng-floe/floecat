@@ -706,47 +706,25 @@ public class RecursiveResourceDropper {
    * anything live has nothing to gain from it — and paying for it turned the common "not empty"
    * rejection into a full row scan plus a point read per relation. Here the first live relation
    * ends the walk, which for a namespace that holds tables is one page and one read.
+   *
+   * <p>Ending it is a return value, not a thrown exception: the enumeration is observed, and a scan
+   * abandoned by throwing marks its span failed and counts a repository error — on the successful
+   * answer, which is also the common one.
    */
   public boolean hasResolvableRelation(Namespace namespace) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     String accountId = namespaceId.getAccountId();
-    var found = new boolean[1];
-    // Streamed, and abandoned at the first hit: a namespace with a live table costs one page and
-    // one
-    // pointer read rather than a scan of every relation it holds.
-    try {
-      tableRepo.forEachNamePointer(
-          accountId,
-          catalogId.getId(),
-          namespaceId.getId(),
-          namePointer -> {
-            if (resolves(namePointer, accountId, ResourceKind.RK_TABLE)) {
-              found[0] = true;
-              throw new StopScan();
-            }
-          });
-      viewRepo.forEachNamePointer(
-          accountId,
-          catalogId.getId(),
-          namespaceId.getId(),
-          namePointer -> {
-            if (resolves(namePointer, accountId, ResourceKind.RK_VIEW)) {
-              found[0] = true;
-              throw new StopScan();
-            }
-          });
-    } catch (StopScan stopped) {
-      // Answered; the rest of the prefix does not matter.
-    }
-    return found[0];
-  }
-
-  /** Ends a streamed scan early. Never escapes {@link #hasResolvableRelation}. */
-  private static final class StopScan extends RuntimeException {
-    private StopScan() {
-      super(null, null, false, false);
-    }
+    return tableRepo.anyNamePointer(
+            accountId,
+            catalogId.getId(),
+            namespaceId.getId(),
+            namePointer -> resolves(namePointer, accountId, ResourceKind.RK_TABLE))
+        || viewRepo.anyNamePointer(
+            accountId,
+            catalogId.getId(),
+            namespaceId.getId(),
+            namePointer -> resolves(namePointer, accountId, ResourceKind.RK_VIEW));
   }
 
   /** Whether a by-name row names a relation whose canonical pointer still exists. */
