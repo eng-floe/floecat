@@ -783,8 +783,8 @@ public final class Keys {
   }
 
   /**
-   * The same prefix without the snapshot component: every target-stats blob a table owns, across all
-   * of its snapshots. For table teardown, which must reach them all — they live outside {@code
+   * The same prefix without the snapshot component: every target-stats blob a table owns, across
+   * all of its snapshots. For table teardown, which must reach them all — they live outside {@code
    * /tables/{t}/snapshots/} and would otherwise outlive the table as durable orphans.
    */
   public static String snapshotTargetStatsBlobPrefix(String accountId, String tableId) {

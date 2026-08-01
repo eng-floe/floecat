@@ -162,17 +162,29 @@ public class RecursiveResourceDropper {
    * pointer is gone, where exhausting the heap orphans whatever the sweep had not reached,
    * permanently.
    *
-   * <p>No collection is needed. Key order puts a namespace immediately before its own descendants
-   * and all of those before any namespace outside it, so a row that is not a descendant of the one
-   * on top of the stack proves that one's subtree is complete: pop it, drop it, repeat. The stack
-   * therefore holds an ancestor chain, never a subtree, and each row is read once.
+   * <p>No collection is needed, but the test for "this one's subtree is finished" has to be about
+   * key ranges rather than about descent. A by-path key ends at its last segment with no trailing
+   * delimiter, so a namespace's descendants are <em>not</em> the only rows that follow it: {@code
+   * db/orders}, {@code db/orders-2024} and {@code db/orders/archive} sort in that order, because
+   * the separator {@code /} (0x2F) sorts after the {@code -} that {@code Keys.encode} leaves
+   * literal. Popping {@code db/orders} when the sibling arrives would drop it while its child is
+   * still to come — and for a guarded recursive delete that is fatal rather than untidy: the
+   * emptiness gate then fails on the surviving child, deterministically, on that attempt and on
+   * every retry.
+   *
+   * <p>So a namespace stays open until a key arrives that does not begin with its key at all. Every
+   * descendant's key begins with {@code key + "/"}, keys sharing a prefix are contiguous, and the
+   * stack is LIFO — so when one is finally popped, everything beneath it has already been dropped.
+   * A name that merely extends another ({@code orders-2024} over {@code orders}) rides on top of it
+   * and is dropped first, which is harmless. The stack holds one entry per key that is a prefix of
+   * the next, bounded by key length rather than by the size of the subtree.
    */
   private void forEachNamespaceDeepestFirst(
       String accountId,
       ResourceId catalogId,
       List<String> rootPath,
       java.util.function.Consumer<TopologyGraph.NamespaceRef> drop) {
-    var openAncestors = new java.util.ArrayDeque<TopologyGraph.NamespaceRef>();
+    var open = new java.util.ArrayDeque<OpenNamespace>();
     namespaceRepo.forEachRefUnder(
         accountId,
         catalogId.getId(),
@@ -182,16 +194,22 @@ public class RecursiveResourceDropper {
           if (!isDescendantPath(ref.pathSegments(), rootPath)) {
             return;
           }
-          while (!openAncestors.isEmpty()
-              && !isDescendantPath(ref.pathSegments(), openAncestors.peek().pathSegments())) {
-            drop.accept(openAncestors.pop());
+          String key =
+              Keys.namespacePointerByPath(accountId, catalogId.getId(), ref.pathSegments());
+          while (!open.isEmpty() && !key.startsWith(open.peek().key())) {
+            drop.accept(open.pop().ref());
           }
-          openAncestors.push(ref);
+          open.push(new OpenNamespace(key, ref));
         });
-    while (!openAncestors.isEmpty()) {
-      drop.accept(openAncestors.pop());
+    while (!open.isEmpty()) {
+      drop.accept(open.pop().ref());
     }
   }
+
+  /**
+   * A namespace the walk has seen but cannot drop yet, with the key whose range holds its subtree.
+   */
+  private record OpenNamespace(String key, TopologyGraph.NamespaceRef ref) {}
 
   /**
    * Removes a table after its pointer has already been deleted through a public mutation.

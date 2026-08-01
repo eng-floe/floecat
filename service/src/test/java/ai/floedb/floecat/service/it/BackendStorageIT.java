@@ -595,6 +595,74 @@ class BackendStorageIT {
   }
 
   /**
+   * Deepest-first has to survive a sibling whose name extends another's. A by-path key ends at its
+   * last segment, so {@code orders} < {@code orders-2024} < {@code orders/archive} in the order the
+   * store scans — the sibling lands between a namespace and its own child. A subtree walk that
+   * reads that as "orders is finished" deletes it while its child is still there, and the emptiness
+   * gate then refuses the root on that attempt and on every retry, leaving a partial teardown that
+   * no retry can finish.
+   *
+   * <p>Against the real store, so the ordering under test is the store's and not a fixture's.
+   */
+  @Test
+  void recursiveDeleteHandlesASiblingSortingBetweenANamespaceAndItsChild() {
+    var cat = TestSupport.createCatalog(catalog, "cat_sibsort_" + clock.millis(), "sibling sort");
+    var catId = cat.getResourceId();
+    var root = TestSupport.createNamespace(namespace, catId, "db", List.of(), "root");
+
+    var orders = TestSupport.createNamespace(namespace, catId, "orders", List.of("db"), "orders");
+    var archive =
+        TestSupport.createNamespace(
+            namespace, catId, "archive", List.of("db", "orders"), "under orders");
+    var sibling =
+        TestSupport.createNamespace(
+            namespace, catId, "orders-2024", List.of("db"), "sorts between the two");
+
+    // The premise, from the keys themselves rather than by assertion of intent.
+    String ordersKey =
+        Keys.namespacePointerByPath(catId.getAccountId(), catId.getId(), List.of("db", "orders"));
+    String siblingKey =
+        Keys.namespacePointerByPath(
+            catId.getAccountId(), catId.getId(), List.of("db", "orders-2024"));
+    String archiveKey =
+        Keys.namespacePointerByPath(
+            catId.getAccountId(), catId.getId(), List.of("db", "orders", "archive"));
+    assertTrue(
+        ordersKey.compareTo(siblingKey) < 0 && siblingKey.compareTo(archiveKey) < 0,
+        "the sibling must sort between the namespace and its child for this test to mean anything");
+
+    // A table in the deepest namespace, so a half-finished teardown would be visible as an orphan.
+    TestSupport.createTable(
+        table,
+        catId,
+        archive.getResourceId(),
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(root.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    for (var gone :
+        List.of(
+            root.getResourceId(),
+            orders.getResourceId(),
+            archive.getResourceId(),
+            sibling.getResourceId())) {
+      assertTrue(
+          ptr.get(Keys.namespacePointerById(gone.getAccountId(), gone.getId())).isEmpty(),
+          "namespace " + gone.getId() + " must be gone");
+    }
+    assertTrue(ptr.get(ordersKey).isEmpty());
+    assertTrue(ptr.get(siblingKey).isEmpty());
+    assertTrue(ptr.get(archiveKey).isEmpty());
+  }
+
+  /**
    * The namespace version of the same hazard, and worse: descendants are dropped deepest-first, so
    * failing on an unparseable namespace blob would abort after everything below it was already
    * destroyed, leaving the tree half torn down.

@@ -812,6 +812,49 @@ class RecursiveResourceDropperTest {
     verify(namespaceRepo).delete(eq(siblingId), any());
   }
 
+  /**
+   * A by-path key ends at its last segment with no trailing delimiter, so a sibling whose name
+   * extends another's lands <em>between</em> that namespace and its own children: {@code orders} <
+   * {@code orders-2024} < {@code orders/archive}, because {@code /} (0x2F) sorts after the {@code
+   * -} that {@code Keys.encode} leaves literal. A walk that treats "not a descendant of the open
+   * one" as "that one is finished" drops {@code orders} while {@code orders/archive} is still to
+   * come.
+   *
+   * <p>The feed order here is the store's own: the refs are sorted by the very key the scan sorts
+   * by, so this cannot drift from what a real prefix scan returns.
+   */
+  @Test
+  void teardownDropsAChildBeforeItsParentEvenWithASiblingSortingBetweenThem() {
+    var ordersId = namespaceId("ns-orders");
+    var archiveId = namespaceId("ns-archive");
+    var siblingId = namespaceId("ns-orders-2024");
+    var refs =
+        new java.util.ArrayList<>(
+            List.of(
+                new TopologyGraph.NamespaceRef(ordersId, "orders", CATALOG, List.of("orders")),
+                new TopologyGraph.NamespaceRef(
+                    archiveId, "archive", CATALOG, List.of("orders", "archive")),
+                new TopologyGraph.NamespaceRef(
+                    siblingId, "orders-2024", CATALOG, List.of("orders-2024"))));
+    refs.sort(
+        java.util.Comparator.comparing(
+            r -> Keys.namespacePointerByPath("acct", "cat", r.pathSegments())));
+    assertEquals(
+        List.of(ordersId, siblingId, archiveId),
+        refs.stream().map(TopologyGraph.NamespaceRef::id).toList(),
+        "the sibling really does sort between the namespace and its child");
+
+    stubNamespaceRefsUnder(List.of(), refs);
+    when(namespaceRepo.delete(any(), any())).thenReturn(true);
+
+    var summary = dropper.dropCatalogNamespaces("acct", CATALOG);
+
+    assertEquals(3, summary.namespacesDeleted);
+    var inOrder = org.mockito.Mockito.inOrder(namespaceRepo);
+    inOrder.verify(namespaceRepo).delete(eq(archiveId), any());
+    inOrder.verify(namespaceRepo).delete(eq(ordersId), any());
+  }
+
   private static ResourceId namespaceId(String id) {
     return ResourceId.newBuilder()
         .setAccountId("acct")
