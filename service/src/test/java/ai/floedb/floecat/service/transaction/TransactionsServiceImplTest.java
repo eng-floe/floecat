@@ -719,11 +719,32 @@ class TransactionsServiceImplTest {
   }
 
   /**
+   * A create writes three index rows — canonical pointer, by-name pointer, relation claim — and
+   * retires none, so charging it the rename cost charged two ops it can never spend. Nineteen
+   * creates in one namespace are exactly what apply commits (19 * 5 + 2 + 1 = 98); the old estimate
+   * made that 136 and rejected everything past 13.
+   */
+  @Test
+  void prepareChargesACreateOnlyForTheRowsItWrites() throws Exception {
+    assertEquals(TransactionState.TS_PREPARED, prepareTablePayloadIntents(19, 1).getState());
+
+    // Twenty is the first that genuinely cannot fit: apply would emit 102 against the store's 100.
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () -> prepareTablePayloadIntents(20, 1));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
+  }
+
+  /**
    * Apply emits one namespace fence per namespace, however many intents publish into it, so the
    * estimate charges it the same way. Charging it per intent rejected transactions that fit
    * comfortably — twelve creates in one namespace estimated 108 against a real 63.
    *
-   * <p>Thirteen intents are accepted in one namespace and rejected across seven, on the same intent
+   * <p>Nineteen intents are accepted in one namespace and rejected across seven, on the same intent
    * count: proof the fence is counted per distinct namespace rather than once for the transaction
    * (which would accept both) or once per intent (which would reject both).
    */
@@ -731,13 +752,13 @@ class TransactionsServiceImplTest {
   void prepareChargesTheNamespaceFenceOncePerNamespace() throws Exception {
     assertEquals(
         TransactionState.TS_PREPARED,
-        prepareTablePayloadIntents(13, 1).getState(),
-        "13 creates sharing one namespace cost 7*13 + 2 + 1 = 94 ops");
+        prepareTablePayloadIntents(19, 1).getState(),
+        "19 creates sharing one namespace cost 5*19 + 2 + 1 = 98 ops");
 
     var tooLarge =
         assertThrows(
             java.lang.reflect.InvocationTargetException.class,
-            () -> prepareTablePayloadIntents(13, 7));
+            () -> prepareTablePayloadIntents(19, 7));
     assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
     assertTrue(
         tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),

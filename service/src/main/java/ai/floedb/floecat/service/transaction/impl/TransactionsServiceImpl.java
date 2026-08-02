@@ -116,11 +116,16 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // The intent's own pointer write: one CasUpsert, CasDelete, or check on the target.
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 1;
 
-  // A table intent's own pointer writes: canonical pointer, new by-name pointer, new relation
-  // claim,
-  // plus the old by-name and old claim deletes a rename or reparent adds. The namespace fence is
-  // counted separately below, because intents sharing a namespace share one.
-  private static final int APPLY_OPS_PER_TABLE_INTENT = 5;
+  // A table create's own pointer writes: canonical pointer, by-name pointer, relation claim. A
+  // create has no old index rows to retire, so charging it the rename cost cost it two ops it can
+  // never spend — with the fence on top that is 9 against a real 7, and the ceiling for creates in
+  // one namespace fell from 19 (what apply actually fits) to 13.
+  private static final int APPLY_OPS_PER_TABLE_CREATE_INTENT = 3;
+
+  // An update's: the same three, plus the old by-name and old claim deletes if it renames or
+  // reparents. Charged to every update, because telling a rename from an in-place edit needs the
+  // table's current blob, and prepare must not read storage to decide a budget.
+  private static final int APPLY_OPS_PER_TABLE_UPDATE_INTENT = 5;
 
   // A table delete carries no fence — it publishes nothing — and writes only the canonical delete
   // plus its two owned index deletes.
@@ -1764,7 +1769,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, planned.blobUri())) {
         return APPLY_OPS_PER_TABLE_DELETE_INTENT;
       }
-      return APPLY_OPS_PER_TABLE_INTENT + namespaceFenceOps(change, fencedNamespaces);
+      // No pointer at the target yet means a create: apply writes the three index rows and has no
+      // old ones to delete (TransactionIntentApplierSupport#planTableIntentOps).
+      int ownOps =
+          planned.expectedVersion() > 0
+              ? APPLY_OPS_PER_TABLE_UPDATE_INTENT
+              : APPLY_OPS_PER_TABLE_CREATE_INTENT;
+      return ownOps + namespaceFenceOps(change, fencedNamespaces);
     }
     if (isConnectorByIdPointer(pointerKey)) {
       return APPLY_OPS_PER_CONNECTOR_INTENT;
