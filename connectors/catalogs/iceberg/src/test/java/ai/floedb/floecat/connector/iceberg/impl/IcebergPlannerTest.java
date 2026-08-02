@@ -75,6 +75,52 @@ class IcebergPlannerTest {
     }
   }
 
+  /**
+   * Zero is Iceberg's initial schema id, so a table that never evolved its schema pins its
+   * snapshots to schema 0. Treating that as "no schema declared" resolved the table's CURRENT
+   * schema instead, and the planner's schema is what ships as SnapshotFilePlan.executionSchemaJson
+   * — so after an ADD COLUMN a time-travel scan of the old snapshot would execute against a schema
+   * describing a column its data files do not have.
+   */
+  @Test
+  void plannerResolvesTheSnapshotsOwnSchemaWhenItsIdIsZero() {
+    Schema original = new Schema(0, Types.NestedField.optional(1, "id", Types.LongType.get()));
+    Schema evolved =
+        new Schema(
+            1,
+            Types.NestedField.optional(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(2, "added_later", Types.StringType.get()));
+    Snapshot pinnedToSchemaZero =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> 0;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshot" -> pinnedToSchemaZero;
+                      case "schema" -> evolved; // the CURRENT schema, not this snapshot's
+                      case "schemas" -> Map.of(0, original, 1, evolved);
+                      case "specs" -> Map.of();
+                      case "spec" -> null;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    try (IcebergPlanner planner = new IcebergPlanner(table, 7L, Set.of(), Set.of(), null, false)) {
+      assertThat(planner.schema().schemaId()).isEqualTo(0);
+      assertThat(planner.columnNamesByKey()).containsEntry(1, "id").doesNotContainKey(2);
+    }
+  }
+
   @Test
   void canonicalizeDecodedBoundConvertsTimeMicrosToLocalTime() {
     Object canonical =

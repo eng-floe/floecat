@@ -37,7 +37,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -89,10 +88,13 @@ final class IcebergPlanner implements Planner<Integer> {
             : Collections.unmodifiableSet(new LinkedHashSet<>(plannedFilePaths));
 
     Snapshot snap = table.snapshot(snapshotId);
-    Integer snapSchemaId = snap != null ? snap.schemaId() : null;
-    int schemaId =
-        snapSchemaId != null && snapSchemaId > 0 ? snapSchemaId : table.schema().schemaId();
-    this.schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    // Which schema a snapshot has is decided in one place, IcebergConnector#schemaForSnapshot, and
+    // this planner must not disagree with it: the schema it resolves is serialized as
+    // SnapshotFilePlan.executionSchemaJson, so a scan of this snapshot runs against it. Testing the
+    // id with `> 0` treated 0 — Iceberg's valid initial schema id — as absent and silently
+    // substituted the table's CURRENT schema, which after an ADD COLUMN describes columns the
+    // snapshot's data files do not contain.
+    this.schema = snap == null ? table.schema() : IcebergConnector.schemaForSnapshot(table, snap);
     this.specsById = table.specs();
     this.defaultSpec = table.spec();
 
