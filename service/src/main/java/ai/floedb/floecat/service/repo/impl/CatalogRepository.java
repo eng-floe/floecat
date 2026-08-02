@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -88,6 +89,38 @@ public class CatalogRepository {
 
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  }
+
+  /**
+   * Deletes whatever pointer rows are still under the account's catalog root, and reports how many.
+   *
+   * <p>Teardown only. Deleting a catalog whose blob cannot be read removes the canonical pointer
+   * but not the by-name row, because the name lives in the blob — so an account sweep has to clear
+   * the residue itself or leave an index row naming a catalog that is gone.
+   */
+  public int deleteResidualRows(String accountId) {
+    return repo.deleteByPrefix(Keys.catalogRootPrefix(accountId));
+  }
+
+  /**
+   * The account's catalog ids, streamed a page at a time from canonical pointer rows.
+   *
+   * <p>Identity only, and deliberately so: {@link #list} parses every catalog blob, so one
+   * unreadable blob fails the whole enumeration. Teardown cannot survive that — it runs after the
+   * account pointer is gone, so the exception is not retryable and every attempt fails identically,
+   * stranding every catalog behind the unreadable one. The by-id key carries the id, which is all a
+   * recursive drop needs.
+   */
+  public void forEachId(String accountId, java.util.function.Consumer<ResourceId> action) {
+    repo.forEachRefByPrefix(
+        Keys.catalogPointerByIdPrefix(accountId),
+        pointer ->
+            action.accept(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(Keys.extractLastSegment(pointer.getKey()))
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .build()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {

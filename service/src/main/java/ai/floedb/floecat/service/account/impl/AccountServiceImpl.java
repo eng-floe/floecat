@@ -31,7 +31,6 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
-import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -56,13 +55,10 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiFunction;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -451,8 +447,15 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     try {
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
+      // Deleting a resource whose blob cannot be read removes its canonical pointer but not the
+      // by-name row, because the name it indexes lives in that blob. The account is going away
+      // whole, so clear the residue here rather than leave index rows naming resources that are
+      // gone. Both roots hold only connector/catalog rows; namespaces, tables and views live under
+      // their own account-level prefixes and are torn down by the recursive drop.
+      summary.residualIndexRowsDeleted =
+          connectorRepo.deleteResidualRows(accountKey) + catalogRepo.deleteResidualRows(accountKey);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d residual_index_rows=%d",
           summary.accountId,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
@@ -460,36 +463,40 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           summary.namespacesDeleted,
           summary.tablesDeleted,
           summary.viewsDeleted,
-          summary.snapshotPrefixesDeleted);
+          summary.snapshotPrefixesDeleted,
+          summary.residualIndexRowsDeleted);
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
     }
   }
 
+  // Both sweeps are driven from pointer rows rather than from the blob-parsing list() calls, for
+  // the same reason the namespace walk is (see cleanupCatalog): this runs after the account pointer
+  // is gone, a CorruptionException is not an AbortRetryableException so nothing retries it, and the
+  // retry the client does issue lands back here and fails on the same unreadable blob. One
+  // truncated connector or catalog blob would therefore orphan every connector, catalog, namespace,
+  // table, view and snapshot prefix behind it, permanently. Identity is all either sweep needs, and
+  // the repositories' delete already tolerates an unreadable blob.
   private void cleanupConnectors(String accountId, AccountCleanupSummary summary) {
-    for (var connector :
-        listAllPages((token, next) -> connectorRepo.list(accountId, 200, token, next))) {
-      var connectorId = connector.getResourceId();
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_connector account_id=%s connector_id=%s",
-          accountId, connectorId.getId());
-      connectorRepo.delete(connectorId);
-      credentialResolver.delete(accountId, connectorId.getId());
-      summary.connectorsDeleted++;
-      summary.credentialsDeleted++;
-    }
+    connectorRepo.forEachId(
+        accountId,
+        connectorId -> {
+          CLEANUP_LOG.infof(
+              "account_delete_cleanup_connector account_id=%s connector_id=%s",
+              accountId, connectorId.getId());
+          connectorRepo.delete(connectorId);
+          credentialResolver.delete(accountId, connectorId.getId());
+          summary.connectorsDeleted++;
+          summary.credentialsDeleted++;
+        });
   }
 
   private void cleanupCatalogs(String accountId, AccountCleanupSummary summary) {
-    for (var catalog :
-        listAllPages((token, next) -> catalogRepo.list(accountId, 200, token, next))) {
-      cleanupCatalog(catalog, summary);
-    }
+    catalogRepo.forEachId(accountId, catalogId -> cleanupCatalog(catalogId, summary));
   }
 
-  private void cleanupCatalog(Catalog catalog, AccountCleanupSummary summary) {
-    var catalogId = catalog.getResourceId();
+  private void cleanupCatalog(ResourceId catalogId, AccountCleanupSummary summary) {
     CLEANUP_LOG.infof(
         "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
         catalogId.getAccountId(), catalogId.getId());
@@ -508,23 +515,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     summary.catalogsDeleted++;
   }
 
-  private <T> List<T> listAllPages(BiFunction<String, StringBuilder, List<T>> pageLoader) {
-    var items = new ArrayList<T>();
-    var seenTokens = new HashSet<String>();
-    String token = "";
-    while (true) {
-      var next = new StringBuilder();
-      items.addAll(pageLoader.apply(token, next));
-      token = next.toString();
-      if (token.isBlank()) {
-        return items;
-      }
-      if (!seenTokens.add(token)) {
-        throw new IllegalStateException("stagnant page token during account cleanup: " + token);
-      }
-    }
-  }
-
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int connectorsDeleted;
@@ -534,6 +524,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     private int tablesDeleted;
     private int viewsDeleted;
     private int snapshotPrefixesDeleted;
+    private int residualIndexRowsDeleted;
 
     private AccountCleanupSummary(String accountId) {
       this.accountId = accountId;

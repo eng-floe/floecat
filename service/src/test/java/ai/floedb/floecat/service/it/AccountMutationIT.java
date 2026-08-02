@@ -653,6 +653,60 @@ class AccountMutationIT {
     assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
   }
 
+  @Test
+  void deleteAccountCleansUpDespiteACorruptCatalogBlob() throws Exception {
+    // Same argument one level up: teardown enumerated catalogs by parsing every catalog blob, so a
+    // single unreadable one aborted the sweep after the account pointer was already gone. Nothing
+    // retries a CorruptionException, and the client's retry lands on the same unparseable blob, so
+    // every catalog behind it — with its namespaces, tables, views and roots — was orphaned for
+    // good.
+    var broken = TestSupport.createCatalog(catalog, accountPrefix + "broken_cat", "");
+    var intact = TestSupport.createCatalog(catalog, accountPrefix + "intact_cat", "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, intact.getResourceId(), "db", List.of(), "intact db");
+    TestSupport.createTable(
+        table,
+        intact.getResourceId(),
+        ns.getResourceId(),
+        accountPrefix + "kept_table",
+        "s3://bucket/",
+        SchemaParser.toJson(SIMPLE_SCHEMA),
+        "table");
+
+    String brokenById = Keys.catalogPointerById(seedAccountId, broken.getResourceId().getId());
+    blobs.put(
+        ptr.get(brokenById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    // Both catalogs go, and so does everything under the one the sweep would never have reached.
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.catalogPointerByIdPrefix(seedAccountId)));
+    assertEquals(
+        0,
+        namespaceRepository
+            .listIdsFromPointers(seedAccountId, intact.getResourceId().getId())
+            .size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, intact.getResourceId().getId(), ns.getResourceId().getId()));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+  }
+
   private ResourceId seedAccountResourceId() {
     return ResourceId.newBuilder()
         .setAccountId(seedAccountId)

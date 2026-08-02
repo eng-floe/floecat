@@ -545,6 +545,19 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository("count_by_prefix", () -> pointerStore.countByPrefix(prefix));
   }
 
+  /**
+   * Removes every pointer row under {@code prefix}, whatever it names, and reports how many went.
+   *
+   * <p>For teardown of a whole subtree only. A per-resource delete cannot always leave the index
+   * clean: when the resource's blob is unreadable, the delete has no way to learn which secondary
+   * keys that blob named, so it removes the canonical pointer and leaves the by-name rows behind.
+   * Those rows name something that no longer exists and no per-resource path will ever revisit
+   * them. A caller destroying everything under the prefix can say so directly.
+   */
+  public int deleteByPrefix(String prefix) {
+    return observeRepository("delete_by_prefix", () -> pointerStore.deleteByPrefix(prefix));
+  }
+
   protected static String sha256B64(byte[] data) {
     try {
       var messageDigest = MessageDigest.getInstance("SHA-256");
