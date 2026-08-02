@@ -804,6 +804,12 @@ public class RecursiveResourceDropper {
    * trusts the reclaim either — the emptiness gate re-counts these rows and is the authority on
    * whether the namespace may go.
    *
+   * <p>Both owners are read through {@link #ownerIdOf}: the claim is matched against this row by
+   * the relation each names, and a row predating {@code Pointer.resource_id} names it only in the
+   * blob URI. Comparing refs alone left a legacy claim behind — and the sweep reaches a claim only
+   * through the by-name row it shares, so once that row is released nothing can ever clear it, and
+   * the name stays blocked for both CreateTable and CreateView.
+   *
    * <p>A row that names no relation at all is handled by {@link #reclaimUnresolvableName}, which
    * cannot assert an absent owner because there is no owner to name.
    */
@@ -836,7 +842,7 @@ public class RecursiveResourceDropper {
             accountId, namespace.getCatalogId().getId(), namespaceId.getId(), displayName);
     pointerStore
         .get(claimKey)
-        .filter(claim -> ownerId.equals(claim.getResourceId().getId()))
+        .filter(claim -> ownerId.equals(ownerIdOf(claim)))
         .ifPresent(claim -> ops.add(new PointerStore.CasDelete(claimKey, claim.getVersion())));
 
     ops.addAll(subtreePin.ops());

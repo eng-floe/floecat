@@ -358,6 +358,38 @@ class RecursiveResourceDropperTest {
     verify(viewRepo, never()).forEachNamePointer(anyString(), anyString(), anyString(), any());
   }
 
+  /**
+   * The claim goes with the by-name row it shares only if the two name the same relation, and a
+   * claim predating {@code Pointer.resource_id} names its owner in the blob URI. Comparing the ref
+   * alone left such a claim behind, and once its by-name row is gone nothing enumerates claims —
+   * the sweep reaches them only through that row — so the name it reserves is blocked for both
+   * CreateTable and CreateView with nothing left that can release it.
+   */
+  @Test
+  void reclaimReleasesALegacyClaimNamingTheSameRelationAsTheRowItSharesWith() {
+    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl")))).thenReturn(Optional.empty());
+    String claimKey = Keys.relationPointerByName("acct", "cat", "ns", "orders");
+    when(pointerStore.get(eq(claimKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(claimKey)
+                    .setVersion(5L)
+                    // No resource_id — only the blob URI, which names the same table.
+                    .setBlobUri(TABLE_BLOB)
+                    .build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    assertEquals(1, dropper.reclaimStrandedRelationNames(root, Set.of(ResourceKind.RK_TABLE)));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    assertTrue(
+        batch.getValue().contains(new PointerStore.CasDelete(claimKey, 5L)),
+        "the claim the released row shares must go with it, at the version read");
+  }
+
   /** Rows whose relation is gone, or that name nothing at all, are what the sweep is for. */
   @Test
   void hasResolvableRelationIsFalseWhenNothingResolves() {
