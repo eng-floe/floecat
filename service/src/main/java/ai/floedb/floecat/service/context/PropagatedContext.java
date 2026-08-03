@@ -25,6 +25,7 @@ import io.vertx.core.Vertx;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.jboss.logging.MDC;
 
@@ -63,13 +64,23 @@ import org.jboss.logging.MDC;
  */
 public final class PropagatedContext {
 
+  // The request's cancellation signal, carried here so it follows work across a thread hop the same
+  // way OTel/MDC do. Auto-admitted store reads (MetadataIoAdmissionInterceptor) read it to abort an
+  // admission wait when the request cancels, even on a fan-out worker off the request thread.
+  private static final ThreadLocal<BooleanSupplier> REQUEST_CANCELLATION = new ThreadLocal<>();
+
   private final Context otel;
   private final io.grpc.Context grpc;
   private final ResolvedCallContext call; // null off any request (e.g. unit tests, startup)
   private final Map<String, Object> sourceMdc;
+  private final BooleanSupplier cancellation; // null off any cancellable request
 
   private PropagatedContext(
-      Context otel, io.grpc.Context grpc, ResolvedCallContext call, Map<String, Object> sourceMdc) {
+      Context otel,
+      io.grpc.Context grpc,
+      ResolvedCallContext call,
+      Map<String, Object> sourceMdc,
+      BooleanSupplier cancellation) {
     this.otel = otel;
     this.grpc = grpc;
     this.call = call;
@@ -80,6 +91,7 @@ public final class PropagatedContext {
     // too and can leave nulls, and Map.copyOf would turn that into an NPE on the request thread,
     // failing the whole request over a logging concern (ContextSnapshot guards the same way).
     this.sourceMdc = Collections.unmodifiableMap(new HashMap<>(sourceMdc));
+    this.cancellation = cancellation;
   }
 
   /** Snapshot the calling thread's ambient context. Call on the request/driver thread. */
@@ -97,7 +109,39 @@ public final class PropagatedContext {
         // and a body captured off-request carries an empty context instead of a foreign one.
         io.grpc.Context.current(),
         ResolvedCallContexts.currentOrNull(),
-        snapshotMdc());
+        snapshotMdc(),
+        REQUEST_CANCELLATION.get());
+  }
+
+  /**
+   * Bind {@code cancelled} as the current thread's request cancellation signal until the returned
+   * scope is closed. {@link #capture()} carries it to worker threads, so a store read auto-admitted
+   * off the request thread can still abort its admission wait when the request cancels. Bind at the
+   * request/stream boundary and close it (try-with-resources) when production ends.
+   */
+  public static CancellationScope bindCancellation(BooleanSupplier cancelled) {
+    BooleanSupplier prior = REQUEST_CANCELLATION.get();
+    REQUEST_CANCELLATION.set(cancelled);
+    return () -> restoreCancellation(prior);
+  }
+
+  /** The calling thread's request cancellation signal, or {@code null} when none is bound. */
+  public static BooleanSupplier currentCancellation() {
+    return REQUEST_CANCELLATION.get();
+  }
+
+  private static void restoreCancellation(BooleanSupplier prior) {
+    if (prior == null) {
+      REQUEST_CANCELLATION.remove();
+    } else {
+      REQUEST_CANCELLATION.set(prior);
+    }
+  }
+
+  /** A thread-bound cancellation binding; closing it restores the prior signal. Never throws. */
+  public interface CancellationScope extends AutoCloseable {
+    @Override
+    void close();
   }
 
   /**
@@ -112,6 +156,7 @@ public final class PropagatedContext {
       io.grpc.Context priorGrpc = null;
       Map<String, Object> priorMdc = null;
       boolean attached = false;
+      BooleanSupplier priorCancellation = REQUEST_CANCELLATION.get();
       try {
         // Install the captured gRPC context for the body's duration, replacing whatever the worker
         // carries, so the readers that consult only its keys see this request. Inside the try: an
@@ -121,6 +166,9 @@ public final class PropagatedContext {
         attached = true;
         priorMdc = snapshotMdc();
         replaceMdc(sourceMdc);
+        // What an auto-admitted read on this worker polls to abort its admission wait when the
+        // request cancels.
+        restoreCancellation(cancellation);
         if (call == null) {
           // Captured off-request: isolate the body from any foreign request the worker still
           // carries
@@ -136,15 +184,20 @@ public final class PropagatedContext {
               return body.get();
             });
       } finally {
-        // Nested so the detach runs even if the MDC restore throws: otherwise this request's gRPC
-        // context stays attached to a pooled worker and every later task on it reads our identity.
+        // Nested so each restore runs even if an earlier one throws: otherwise this request's
+        // gRPC context or cancellation signal stays on a pooled worker and every later task on it
+        // reads our identity.
         try {
           if (priorMdc != null) {
             replaceMdc(priorMdc);
           }
         } finally {
-          if (attached) {
-            grpc.detach(priorGrpc);
+          try {
+            restoreCancellation(priorCancellation);
+          } finally {
+            if (attached) {
+              grpc.detach(priorGrpc);
+            }
           }
         }
       }

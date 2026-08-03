@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
@@ -81,16 +82,19 @@ public class NamespaceRepository {
         expectedPointerVersion);
   }
 
+  @BoundMetadataIo
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {
     return repo.getByKey(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
   }
 
+  @BoundMetadataIo
   public List<Namespace> list(
       String accountId,
       String catalogId,
@@ -102,6 +106,7 @@ public class NamespaceRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  @BoundMetadataIo
   public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.countByPrefix(prefix);
@@ -112,11 +117,13 @@ public class NamespaceRepository {
    * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
    * instead of after the whole over-fetched batch.
    */
+  @BoundMetadataIo
   public String listTokenAfter(String accountId, String catalogId, List<String> fullPath) {
     return pointerStore.pageTokenAfterKey(
         Keys.namespacePointerByPath(accountId, catalogId, fullPath));
   }
 
+  @BoundMetadataIo
   public List<ResourceId> listIds(String accountId, String catalogId) {
     // empty parent path -> all namespaces in catalog
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
@@ -133,6 +140,7 @@ public class NamespaceRepository {
    * Scans the by-path pointer prefix for a catalog and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.
    */
+  @BoundMetadataIo
   public List<NamespaceRef> listRefs(String accountId, String catalogId) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
     var pointers = repo.listRefsByPrefix(prefix);
@@ -145,6 +153,7 @@ public class NamespaceRepository {
   }
 
   /** Reads exact by-path namespace pointers and returns refs without fetching blobs from S3. */
+  @BoundMetadataIo
   public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
@@ -221,11 +230,13 @@ public class NamespaceRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  @BoundMetadataIo
   public Optional<Namespace> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  @BoundMetadataIo
   public Optional<Namespace> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
   }

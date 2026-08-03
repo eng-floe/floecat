@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -77,15 +78,18 @@ public class TableRepository {
         expectedPointerVersion);
   }
 
+  @BoundMetadataIo
   public Optional<Table> getById(ResourceId tableResourceId) {
     return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public Optional<Table> getByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
     return repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName));
   }
 
+  @BoundMetadataIo
   public List<Table> list(
       String accountId,
       String catalogId,
@@ -97,6 +101,7 @@ public class TableRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  @BoundMetadataIo
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
@@ -106,6 +111,7 @@ public class TableRepository {
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers that predate
    * Pointer.resource_id / display_name.
    */
+  @BoundMetadataIo
   public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
     String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
     var pointers = repo.listRefsByPrefix(prefix);
@@ -134,6 +140,7 @@ public class TableRepository {
   }
 
   /** Reads exact by-name table pointers and returns refs without fetching blobs from S3. */
+  @BoundMetadataIo
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {
     if (names == null || names.isEmpty()) {
@@ -186,11 +193,13 @@ public class TableRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  @BoundMetadataIo
   public Optional<Table> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  @BoundMetadataIo
   public Optional<Table> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
   }

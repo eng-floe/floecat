@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -73,19 +74,23 @@ public class CatalogRepository {
         expectedPointerVersion);
   }
 
+  @BoundMetadataIo
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
     return repo.getByKey(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public Optional<Catalog> getByName(String accountId, String displayName) {
     return repo.get(Keys.catalogPointerByName(accountId, displayName));
   }
 
+  @BoundMetadataIo
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  @BoundMetadataIo
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
   }
@@ -112,15 +117,18 @@ public class CatalogRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  @BoundMetadataIo
   public Optional<Catalog> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  @BoundMetadataIo
   public Optional<Catalog> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
   }
 
+  @BoundMetadataIo
   public List<ResourceId> listIds(String accountId) {
     String prefix = Keys.catalogPointerByNamePrefix(accountId);
     List<Catalog> catalogs = repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());

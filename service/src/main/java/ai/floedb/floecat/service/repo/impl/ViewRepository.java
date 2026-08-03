@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -76,15 +77,18 @@ public class ViewRepository {
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
   }
 
+  @BoundMetadataIo
   public Optional<View> getById(ResourceId viewResourceId) {
     return repo.getByKey(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public Optional<View> getByName(
       String accountId, String catalogId, String namespaceId, String viewName) {
     return repo.get(Keys.viewPointerByName(accountId, catalogId, namespaceId, viewName));
   }
 
+  @BoundMetadataIo
   public List<View> list(
       String accountId,
       String catalogId,
@@ -96,6 +100,7 @@ public class ViewRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  @BoundMetadataIo
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
@@ -104,6 +109,7 @@ public class ViewRepository {
    * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.
    */
+  @BoundMetadataIo
   public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
     String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
     var pointers = repo.listRefsByPrefix(prefix);
@@ -115,6 +121,7 @@ public class ViewRepository {
   }
 
   /** Reads exact by-name view pointers and returns refs without fetching blobs from S3. */
+  @BoundMetadataIo
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {
     if (names == null || names.isEmpty()) {
@@ -151,11 +158,13 @@ public class ViewRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  @BoundMetadataIo
   public Optional<View> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  @BoundMetadataIo
   public Optional<View> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
   }
