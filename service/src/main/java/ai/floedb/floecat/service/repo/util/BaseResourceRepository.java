@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -174,7 +175,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     String blobUri = requireBlobReference(pointer, key);
     Optional<T> loaded =
         blobCacheable()
-            ? blobCache.get(blobUri, this::loadAndParseBlob)
+            ? ReusableArtifactBundleUris.isBundleUri(blobUri)
+                ? blobCache.getProjection(
+                    blobUri, key, ignored -> loadAndParseReferencedBlob(key, blobUri))
+                : blobCache.get(blobUri, ignored -> loadAndParseReferencedBlob(key, blobUri))
             : loadAndParseReferencedBlob(key, blobUri);
     if (loaded.isPresent()) {
       return loaded;

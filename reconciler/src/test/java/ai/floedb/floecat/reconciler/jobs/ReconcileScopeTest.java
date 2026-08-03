@@ -91,6 +91,34 @@ class ReconcileScopeTest {
                 32));
   }
 
+  @Test
+  void semanticEqualityIncludesNestedCapturePolicy() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope left = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    ReconcileScope same =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+                Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileScope different =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("#2", true, true)),
+                Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+
+    assertTrue(left.semanticallyEquals(same));
+    assertFalse(left.semanticallyEquals(different));
+  }
+
   private static ReconcileScope.ScopedCaptureRequest scopedCaptureRequest(
       String tableId, long snapshotId, String targetSpec, List<String> columnSelectors) {
     return new ReconcileScope.ScopedCaptureRequest(

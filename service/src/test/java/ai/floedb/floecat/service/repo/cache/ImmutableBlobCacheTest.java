@@ -55,6 +55,50 @@ class ImmutableBlobCacheTest {
   }
 
   @Test
+  void pointerProjectionsOfOneBlobAreCachedSeparately() {
+    var cache = cache();
+    AtomicInteger loads = new AtomicInteger();
+
+    assertEquals(
+        "one",
+        cache
+            .getProjection(
+                "s3://t/shared.pb",
+                "/pointers/one",
+                uri -> {
+                  loads.incrementAndGet();
+                  return Optional.of(StringValue.of("one"));
+                })
+            .orElseThrow()
+            .getValue());
+    assertEquals(
+        "two",
+        cache
+            .getProjection(
+                "s3://t/shared.pb",
+                "/pointers/two",
+                uri -> {
+                  loads.incrementAndGet();
+                  return Optional.of(StringValue.of("two"));
+                })
+            .orElseThrow()
+            .getValue());
+    assertEquals(
+        "one",
+        cache
+            .<StringValue>getProjection(
+                "s3://t/shared.pb",
+                "/pointers/one",
+                uri -> {
+                  throw new AssertionError("projection should have been cached");
+                })
+            .orElseThrow()
+            .getValue());
+
+    assertEquals(2, loads.get());
+  }
+
+  @Test
   void absenceIsNeverCached() {
     var cache = cache();
     AtomicInteger loads = new AtomicInteger();

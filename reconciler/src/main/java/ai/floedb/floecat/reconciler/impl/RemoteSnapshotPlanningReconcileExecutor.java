@@ -672,6 +672,19 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (uri.isBlank()) {
       return Optional.empty();
     }
+    String declaredBytes =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
+    String declaredSha256 =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.SHA256, "").trim();
+    if (declaredBytes.isBlank() || declaredSha256.isBlank()) {
+      return Optional.empty();
+    }
+    long expectedBytes;
+    try {
+      expectedBytes = Long.parseLong(declaredBytes);
+    } catch (NumberFormatException e) {
+      return Optional.empty();
+    }
     byte[] bytes;
     try {
       bytes = blobStore.get(uri);
@@ -681,13 +694,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (bytes == null) {
       return Optional.empty();
     }
-    String declaredBytes =
-        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
-    String declaredSha256 =
-        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.SHA256, "").trim();
-    if (declaredBytes.isBlank()
-        || Long.parseLong(declaredBytes) != bytes.length
-        || declaredSha256.isBlank()
+    if (expectedBytes != bytes.length
         || !MessageDigest.isEqual(
             declaredSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
             Base64.getEncoder()
@@ -1042,7 +1049,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
-  private static ReconcileScope effectiveFileGroupScope(
+  public static ReconcileScope effectiveFileGroupScope(
       ReconcileScope baseScope, ReconcileFileGroupTask fileGroupTask) {
     if (baseScope == null || !baseScope.hasCaptureRequestFilter() || fileGroupTask == null) {
       return baseScope == null ? ReconcileScope.empty() : baseScope;

@@ -200,13 +200,15 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void planningRegeneratesWhenExplicitParentReuseManifestObjectIsUnavailable() {
-    assertPlanningRegeneratesWhenManifestReadIsUnavailable(false);
-    assertPlanningRegeneratesWhenManifestReadIsUnavailable(true);
+  void planningRegeneratesWhenExplicitParentReuseManifestIsUnavailableOrIncomplete() {
+    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NULL_BLOB);
+    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NOT_FOUND);
+    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.MISSING_METADATA);
+    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NON_NUMERIC_BYTES);
   }
 
-  private static void assertPlanningRegeneratesWhenManifestReadIsUnavailable(
-      boolean throwsNotFound) {
+  private static void assertPlanningRegeneratesWhenManifestIsUnavailable(
+      ManifestUnavailableMode unavailableMode) {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -242,19 +244,21 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     .setParentSnapshotId(9001L)
                     .build()));
     String uri = "/reuse/missing-9001.pb";
-    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(9001L)
-                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
-                    .putSummary(SnapshotReuseManifestMetadata.BYTES, "123")
-                    .putSummary(SnapshotReuseManifestMetadata.SHA256, "missing")
-                    .build()));
-    if (throwsNotFound) {
+    Snapshot.Builder parent =
+        Snapshot.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(9001L)
+            .putSummary(SnapshotReuseManifestMetadata.URI, uri);
+    if (unavailableMode != ManifestUnavailableMode.MISSING_METADATA) {
+      parent.putSummary(
+          SnapshotReuseManifestMetadata.BYTES,
+          unavailableMode == ManifestUnavailableMode.NON_NUMERIC_BYTES ? "not-a-number" : "123");
+      parent.putSummary(SnapshotReuseManifestMetadata.SHA256, "missing");
+    }
+    when(backend.fetchSnapshot(any(), any(), eq(9001L))).thenReturn(Optional.of(parent.build()));
+    if (unavailableMode == ManifestUnavailableMode.NOT_FOUND) {
       when(blobStore.get(uri)).thenThrow(new StorageNotFoundException("missing"));
-    } else {
+    } else if (unavailableMode == ManifestUnavailableMode.NULL_BLOB) {
       when(blobStore.get(uri)).thenReturn(null);
     }
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
@@ -279,6 +283,13 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                                     && !plan.sourceFingerprint().isBlank()
                                     && !plan.statsCaptureSignature().isBlank())),
             any());
+  }
+
+  private enum ManifestUnavailableMode {
+    NULL_BLOB,
+    NOT_FOUND,
+    MISSING_METADATA,
+    NON_NUMERIC_BYTES
   }
 
   @Test

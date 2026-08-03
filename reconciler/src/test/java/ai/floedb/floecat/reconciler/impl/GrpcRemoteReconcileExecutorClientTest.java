@@ -1120,6 +1120,69 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void explicitIndexArtifactCoverageUsesNormalizedSelectorIdentity() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("customer_id", "id", "#1"))));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
+  }
+
+  @Test
+  void explicitIndexArtifactCoveragePreservesExactLogicalSelector() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("customer_id", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(
+                indexArtifact(
+                    "s3://bucket/file.parquet", List.of("customer_id", "physical_id", "#1"))));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
+  }
+
+  @Test
+  void explicitIndexArtifactCoverageDoesNotDropNamedRequirements() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(
+                new ReconcileCapturePolicy.Column("#1", false, true),
+                new ReconcileCapturePolicy.Column("customer_email", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("#1"))));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result));
+  }
+
+  @Test
   void submitFileGroupSuccessRejectsDefaultIndexArtifactExceedingFirstNLimit() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ReconcileCapturePolicy policy =

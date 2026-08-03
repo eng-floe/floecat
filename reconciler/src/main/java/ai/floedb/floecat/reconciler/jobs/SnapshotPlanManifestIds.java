@@ -43,20 +43,20 @@ public final class SnapshotPlanManifestIds {
 
   public static String manifestBlobUri(
       String accountId, String jobId, List<ReconcileFileGroupTask> fileGroups) {
+    return manifestBlobPrefix(accountId, jobId)
+        + "snapshot-plan-"
+        + manifestHash(fileGroups)
+        + ".json";
+  }
+
+  public static String manifestBlobPrefix(String accountId, String jobId) {
     String acct = blankToEmpty(accountId);
     String job = blankToEmpty(jobId);
     if (acct.isBlank() || job.isBlank()) {
       throw new IllegalArgumentException(
           "accountId and jobId are required for snapshot plan manifests");
     }
-    return "/accounts/"
-        + acct
-        + "/reconcile/jobs/"
-        + job
-        + "/snapshot-plan/"
-        + "snapshot-plan-"
-        + manifestHash(fileGroups)
-        + ".json";
+    return "/accounts/" + acct + "/reconcile/jobs/" + job + "/snapshot-plan/";
   }
 
   private static byte[] fileGroupDigest(ReconcileFileGroupTask group) {

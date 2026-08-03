@@ -161,6 +161,15 @@ public final class ReconcileCapturePolicy {
     return columns.isEmpty() && outputs.isEmpty();
   }
 
+  public boolean semanticallyEquals(ReconcileCapturePolicy other) {
+    return other != null
+        && columns.equals(other.columns)
+        && outputs.equals(other.outputs)
+        && defaultColumnScope == other.defaultColumnScope
+        && maxDefaultColumns == other.maxDefaultColumns
+        && properties.equals(other.properties);
+  }
+
   public boolean requestsStats() {
     return outputs.contains(Output.TABLE_STATS)
         || outputs.contains(Output.FILE_STATS)

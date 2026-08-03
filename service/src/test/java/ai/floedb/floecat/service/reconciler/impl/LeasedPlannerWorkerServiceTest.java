@@ -38,11 +38,13 @@ import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
@@ -99,6 +101,156 @@ class LeasedPlannerWorkerServiceTest {
               }
               return new ReconcileJobStore.BulkEnqueueResult(items);
             });
+  }
+
+  @Test
+  void referencedSnapshotPlanMustMatchOwningTableBeforeAdoption() {
+    ReconcileFileGroupTask wrongTableGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-2", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String uri = SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", List.of(wrongTableGroup));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            uri,
+            1,
+            1,
+            "",
+            0);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), wrongTableGroup))));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("different table or snapshot"));
+  }
+
+  @Test
+  void referencedSnapshotPlanUriMustStayWithinLeasedJobPrefix() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlanUri(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    "/accounts/other/reconcile/jobs/job-1/snapshot-plan/snapshot-plan-x.json"));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("outside the leased account"));
+  }
+
+  @Test
+  void referencedSnapshotPlanMustBelongToOwningPlanJob() {
+    ReconcileFileGroupTask group =
+        referencedGroup(
+            "other-job",
+            "group-1",
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("group identity"));
+  }
+
+  @Test
+  void referencedSnapshotPlanRejectsPartiallyOverlappingFileGroups() {
+    String first = "s3://bucket/data/file-1.parquet";
+    String second = "s3://bucket/data/file-2.parquet";
+    ReconcileFileGroupTask groupOne =
+        referencedGroup("job-1", "group-1", List.of(first), List.of(first));
+    ReconcileFileGroupTask groupTwo =
+        referencedGroup("job-1", "group-2", List.of(first, second), List.of(first, second));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(groupOne, groupTwo), 3);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(
+                        new PlannedFileGroupJob(ReconcileScope.empty(), groupOne),
+                        new PlannedFileGroupJob(ReconcileScope.empty(), groupTwo))));
+
+    assertTrue(error.getStatus().getDescription().contains("duplicate file paths"));
+  }
+
+  @Test
+  void referencedSnapshotPlanExecutionFilesMustMatchDeclaredFiles() {
+    ReconcileFileGroupTask group =
+        referencedGroup(
+            "job-1",
+            "group-1",
+            List.of("s3://bucket/data/declared.parquet"),
+            List.of("s3://bucket/data/executed.parquet"));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("do not match"));
+  }
+
+  @Test
+  void referencedSnapshotPlanRequiresExactSourceFileCount() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        referencedGroup("job-1", "group-1", List.of(file), List.of(file));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 0);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("source file count"));
+  }
+
+  @Test
+  void referencedSnapshotPlanAcceptsBoundSelfContainedGroups() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        referencedGroup("job-1", "group-1", List.of(file), List.of(file));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    LeasedPlannerWorkerService.validateReferencedPlan(
+        snapshotLease(ReconcileScope.empty(), snapshotTask),
+        snapshotTask,
+        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
   }
 
   @Test
@@ -1680,6 +1832,45 @@ class LeasedPlannerWorkerServiceTest {
         snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-1");
+  }
+
+  private static ReconcileSnapshotTask referencedSnapshotTask(
+      List<ReconcileFileGroupTask> groups, int sourceFileCount) {
+    return ReconcileSnapshotTask.of(
+        "table-1",
+        55L,
+        "db",
+        "events",
+        List.of(),
+        true,
+        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+        SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", groups),
+        groups.size(),
+        sourceFileCount,
+        "",
+        0);
+  }
+
+  private static ReconcileFileGroupTask referencedGroup(
+      String planId, String groupId, List<String> filePaths, List<String> executionFilePaths) {
+    return ReconcileFileGroupTask.of(
+        planId,
+        groupId,
+        "table-1",
+        55L,
+        filePaths.size(),
+        "",
+        0,
+        filePaths,
+        List.of(),
+        List.of(),
+        "{}",
+        executionFilePaths.stream()
+            .map(
+                filePath ->
+                    ReconcileFileExecutionPlan.of(
+                        filePath, 1L, "{}", null, "parquet", 0, List.of(), "identity"))
+            .toList());
   }
 
   private void stagePlanSnapshotChunk(

@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
@@ -776,7 +777,7 @@ public class IndexArtifactRepository {
       if (!ReusableArtifactBundleUris.matchesPayload(uri, bytes)) {
         throw new IllegalStateException("reusable artifact bundle digest mismatch: " + uri);
       }
-      return Optional.of(ReusableArtifactBundlePayload.parseFrom(bytes));
+      return Optional.of(ReusableArtifactBundles.parse(bytes));
     } catch (StorageNotFoundException e) {
       return Optional.empty();
     } catch (InvalidProtocolBufferException e) {
