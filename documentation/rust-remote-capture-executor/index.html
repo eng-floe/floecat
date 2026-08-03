@@ -2321,8 +2321,10 @@ already cleared the lease as part of successful completion.</p>
 <li>every referenced stats object, sidecar, and index wrapper is committed before the success RPC</li>
 <li>every index wrapper uses the leased <code>stats_object_prefix</code> plus the required
   <code>index-artifacts/&lt;target-hash&gt;/&lt;payload-hash&gt;.pb</code> suffix</li>
-<li>every index wrapper records its concrete comma-separated selector set in the
+<li>every index wrapper records its concrete selector set as a JSON string array in the shared
   <code>indexed_columns</code> property</li>
+<li>every reusable index metadata entry repeats that wrapper's sorted, distinct selector set in
+  <code>realized_index_selectors</code>; entries with an empty set cannot be selected for reuse</li>
 <li><code>realized_stats_selectors</code> is the sorted, distinct selector set represented by the file group's
   column-stat aggregates; omit it when column-stats output was not requested</li>
 <li>report every equivalent selector known to the worker, such as both an Iceberg <code>#&lt;field-id&gt;</code> and
