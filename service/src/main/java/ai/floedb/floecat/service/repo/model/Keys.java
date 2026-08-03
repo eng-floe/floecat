@@ -42,6 +42,8 @@ public final class Keys {
   public static final String INDEX_ARTIFACT_DIRECT_GENERATION = "direct";
   public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
   public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
+  public static final String REUSABLE_ARTIFACT_INDEX_OBJECT_BLOB_DIRECTORY =
+      "reusable-artifact-index/runs/";
   public static final String SEG_INDEX_CAPTURE_MANIFESTS =
       SEG_INDEX_ARTIFACTS + INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY;
   public static final String SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER =
@@ -476,6 +478,11 @@ public final class Keys {
     return tableBlobPrefix(accountId, tableId) + "snapshots/";
   }
 
+  public static String tableReusableArtifactIndexObjectBlobPrefix(
+      String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + REUSABLE_ARTIFACT_INDEX_OBJECT_BLOB_DIRECTORY;
+  }
+
   public static String tableConstraintsBlobPrefix(String accountId, String tableId) {
     return tableBlobPrefix(accountId, tableId) + "constraints/";
   }
@@ -667,6 +674,13 @@ public final class Keys {
       String accountId, String tableId, long snapshotId, String generationId) {
     return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
         + "lifecycle";
+  }
+
+  /** The capture manifest whose immutable run index is this generation's shared file map. */
+  public static String snapshotGenerationArtifactMapPointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "artifact-map";
   }
 
   public static String snapshotTargetStatsGenerationPublicationIntentPointer(
@@ -1396,20 +1410,6 @@ public final class Keys {
         + ".pb";
   }
 
-  public static String reconcileSnapshotCaptureManifestUri(
-      String accountId, String parentJobId, String jobId, String leaseEpoch) {
-    String tid = req("account_id", accountId);
-    String pid = req("parent_job_id", parentJobId);
-    String jid = req("job_id", jobId);
-    String epoch = req("lease_epoch", leaseEpoch);
-    return reconcileJobBlobPrefix(tid, jid)
-        + "result-payloads/v1/snapshot-plans/"
-        + encode(pid)
-        + "/executions/"
-        + sha256Hex(epoch)
-        + ".capture-manifest.pb";
-  }
-
   private static String sha256Hex(String value) {
     try {
       return HexFormat.of()
@@ -1672,6 +1672,36 @@ public final class Keys {
     }
     return new GenerationKey(
         snapshotId, percentDecode(manifestUri.substring(generationStart, generationEnd)));
+  }
+
+  /** Recovers a generation identity from a generation-owned target-stats blob URI. */
+  public static GenerationKey generationFromTargetStatsBlobUri(String blobUri) {
+    if (blobUri == null) {
+      return null;
+    }
+    String marker = "/target-stats/";
+    int markerAt = blobUri.indexOf(marker);
+    if (markerAt < 0) {
+      return null;
+    }
+    int snapshotStart = markerAt + marker.length();
+    int snapshotEnd = blobUri.indexOf("/generations/", snapshotStart);
+    if (snapshotEnd < 0) {
+      return null;
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(blobUri.substring(snapshotStart, snapshotEnd));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int generationStart = snapshotEnd + "/generations/".length();
+    int generationEnd = blobUri.indexOf('/', generationStart);
+    if (generationEnd <= generationStart) {
+      return null;
+    }
+    return new GenerationKey(
+        snapshotId, percentDecode(blobUri.substring(generationStart, generationEnd)));
   }
 
   /** One stats generation's identity within a table, as encoded in its pointer keys. */
