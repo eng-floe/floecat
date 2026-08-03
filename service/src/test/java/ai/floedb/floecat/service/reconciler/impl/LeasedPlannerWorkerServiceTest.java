@@ -254,15 +254,21 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   @Test
-  void referencedSnapshotPlanAcceptsGroupsWithoutExecutionDetails() {
+  void referencedSnapshotPlanRejectsGroupsWithoutExecutionDetails() {
     String file = "s3://bucket/data/file-1.parquet";
     ReconcileFileGroupTask group = referencedGroup("job-1", "group-1", List.of(file), List.of());
     ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
 
-    LeasedPlannerWorkerService.validateReferencedPlan(
-        snapshotLease(ReconcileScope.empty(), snapshotTask),
-        snapshotTask,
-        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("do not match"));
   }
 
   @Test

@@ -727,9 +727,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
           invalidReferencedPlan("snapshot plan contains duplicate file execution plans");
         }
       }
-      if (!executionPlans.isEmpty()
-          && (executionPlans.size() != groupFilePaths.size()
-              || !executionFilePaths.equals(groupFilePaths))) {
+      if (executionPlans.size() != groupFilePaths.size()
+          || !executionFilePaths.equals(groupFilePaths)) {
         invalidReferencedPlan(
             "snapshot plan file execution plans do not match the declared file paths");
       }
