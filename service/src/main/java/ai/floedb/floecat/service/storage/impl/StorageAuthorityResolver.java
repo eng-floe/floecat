@@ -39,7 +39,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
@@ -62,11 +61,22 @@ public class StorageAuthorityResolver {
   private static final Duration ASSUME_ROLE_CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
   private static final int ASSUME_ROLE_MAX_ATTEMPTS = 3;
   private static final long ASSUME_ROLE_RETRY_BASE_MILLIS = 50L;
+  private static final int DEFAULT_ASSUME_ROLE_CACHE_MAX_ENTRIES = 1024;
 
-  private final ConcurrentHashMap<AssumeRoleCacheKey, CompletableFuture<ResolvedStorageCredentials>>
-      assumeRoleCache = new ConcurrentHashMap<>();
+  private final Object assumeRoleCacheLock = new Object();
+  private final LinkedHashMap<AssumeRoleCacheKey, CompletableFuture<ResolvedStorageCredentials>>
+      assumeRoleCache = new LinkedHashMap<>(16, 0.75f, true);
+  private final int assumeRoleCacheMaxEntries;
 
   @Inject SecretsManager secretsManager;
+
+  public StorageAuthorityResolver() {
+    this(DEFAULT_ASSUME_ROLE_CACHE_MAX_ENTRIES);
+  }
+
+  StorageAuthorityResolver(int assumeRoleCacheMaxEntries) {
+    this.assumeRoleCacheMaxEntries = Math.max(1, assumeRoleCacheMaxEntries);
+  }
 
   ResolveStorageAuthorityResponse buildResponse(
       StorageAuthority authority,
@@ -246,7 +256,7 @@ public class StorageAuthorityResolver {
   private ResolvedStorageCredentials cachedAssumeRole(
       AssumeRoleCacheKey key, Supplier<ResolvedStorageCredentials> loader) {
     for (; ; ) {
-      CompletableFuture<ResolvedStorageCredentials> existing = assumeRoleCache.get(key);
+      CompletableFuture<ResolvedStorageCredentials> existing = cachedAssumeRoleFuture(key);
       if (existing != null) {
         try {
           ResolvedStorageCredentials credentials = existing.join();
@@ -254,32 +264,119 @@ public class StorageAuthorityResolver {
             return credentials;
           }
         } catch (CompletionException error) {
-          assumeRoleCache.remove(key, existing);
+          removeCachedAssumeRole(key, existing);
           throw propagate(error.getCause());
         }
-        assumeRoleCache.remove(key, existing);
+        removeCachedAssumeRole(key, existing);
         continue;
       }
 
       CompletableFuture<ResolvedStorageCredentials> created = new CompletableFuture<>();
-      existing = assumeRoleCache.putIfAbsent(key, created);
-      if (existing != null) {
+      AssumeRoleCacheReservation reservation = reserveAssumeRoleCache(key, created);
+      if (reservation.existing() != null) {
+        continue;
+      }
+      if (!reservation.inserted()) {
+        awaitAssumeRoleCacheCapacity();
         continue;
       }
       try {
         ResolvedStorageCredentials credentials = loader.get();
         created.complete(credentials);
         if (!isFreshForCache(credentials)) {
-          assumeRoleCache.remove(key, created);
+          removeCachedAssumeRole(key, created);
+        } else {
+          trimAssumeRoleCache();
         }
         return credentials;
       } catch (Throwable error) {
         created.completeExceptionally(error);
-        assumeRoleCache.remove(key, created);
+        removeCachedAssumeRole(key, created);
         throw propagate(error);
       }
     }
   }
+
+  private CompletableFuture<ResolvedStorageCredentials> cachedAssumeRoleFuture(
+      AssumeRoleCacheKey key) {
+    synchronized (assumeRoleCacheLock) {
+      return assumeRoleCache.get(key);
+    }
+  }
+
+  private AssumeRoleCacheReservation reserveAssumeRoleCache(
+      AssumeRoleCacheKey key, CompletableFuture<ResolvedStorageCredentials> created) {
+    synchronized (assumeRoleCacheLock) {
+      CompletableFuture<ResolvedStorageCredentials> existing = assumeRoleCache.get(key);
+      if (existing != null) {
+        return new AssumeRoleCacheReservation(existing, false);
+      }
+      trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries - 1);
+      if (assumeRoleCache.size() >= assumeRoleCacheMaxEntries) {
+        return new AssumeRoleCacheReservation(null, false);
+      }
+      assumeRoleCache.put(key, created);
+      return new AssumeRoleCacheReservation(null, true);
+    }
+  }
+
+  private void awaitAssumeRoleCacheCapacity() {
+    synchronized (assumeRoleCacheLock) {
+      trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries - 1);
+      if (assumeRoleCache.size() < assumeRoleCacheMaxEntries) {
+        return;
+      }
+      try {
+        assumeRoleCacheLock.wait();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(
+            "interrupted while waiting for AssumeRole cache capacity", e);
+      }
+    }
+  }
+
+  private void removeCachedAssumeRole(
+      AssumeRoleCacheKey key, CompletableFuture<ResolvedStorageCredentials> expected) {
+    synchronized (assumeRoleCacheLock) {
+      assumeRoleCache.remove(key, expected);
+      assumeRoleCacheLock.notifyAll();
+    }
+  }
+
+  private void trimAssumeRoleCache() {
+    synchronized (assumeRoleCacheLock) {
+      trimAssumeRoleCacheLocked();
+      // A completed entry can now be evicted by a capacity waiter even when this trim did not need
+      // to remove it at the normal maximum size.
+      assumeRoleCacheLock.notifyAll();
+    }
+  }
+
+  private void trimAssumeRoleCacheLocked() {
+    trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries);
+  }
+
+  private void trimAssumeRoleCacheLocked(int targetSize) {
+    if (assumeRoleCache.size() <= targetSize) {
+      return;
+    }
+    var iterator = assumeRoleCache.entrySet().iterator();
+    while (assumeRoleCache.size() > targetSize && iterator.hasNext()) {
+      if (iterator.next().getValue().isDone()) {
+        iterator.remove();
+      }
+    }
+  }
+
+  int assumeRoleCacheSize() {
+    synchronized (assumeRoleCacheLock) {
+      return assumeRoleCache.size();
+    }
+  }
+
+  private record AssumeRoleCacheReservation(
+      CompletableFuture<ResolvedStorageCredentials> existing, boolean inserted) {}
 
   private static boolean isFreshForCache(ResolvedStorageCredentials credentials) {
     return credentials != null

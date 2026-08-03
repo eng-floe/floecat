@@ -77,8 +77,17 @@ class StatsRepositoryTargetStorageTest {
 
   @Test
   void baseGenerationOverlayServesInheritedAndDeltaTargets() {
-    StatsRepository repository =
-        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    AtomicInteger largestPageRequest = new AtomicInteger();
+    PointerStore pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(new InMemoryPointerStore()) {
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            largestPageRequest.accumulateAndGet(limit, Math::max);
+            return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
     long baseSnapshotId = 97L;
     long snapshotId = 98L;
     String basePath = "s3://bucket/base.parquet";
@@ -129,8 +138,34 @@ class StatsRepositoryTargetStorageTest {
                 .listTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 10, "")
                 .records())
         .hasSize(2);
+    largestPageRequest.set(0);
+    StatsStore.StatsStorePage firstPage =
+        repository.listTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 1, "");
+    StatsStore.StatsStorePage secondPage =
+        repository.listTargetStats(
+            TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 1, firstPage.nextPageToken());
+    assertThat(firstPage.records()).hasSize(1);
+    assertThat(secondPage.records()).hasSize(1);
+    assertThat(secondPage.nextPageToken()).isEmpty();
+    assertThat(
+            java.util.stream.Stream.concat(
+                    firstPage.records().stream(), secondPage.records().stream())
+                .map(record -> record.getTarget().getFile().getFilePath()))
+        .containsExactlyInAnyOrder(basePath, deltaPath);
+    assertThat(largestPageRequest.get()).isEqualTo(2);
     assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE)))
         .isEqualTo(2);
+  }
+
+  @Test
+  void baseGenerationRegistrationRejectsAnUnavailableStatsGeneration() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    assertThatThrownBy(
+            () -> repository.registerBaseStatsGeneration(TABLE_ID, 98L, "append", 97L, "base"))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("frozen stats generation is unavailable");
   }
 
   @Test
@@ -252,6 +287,31 @@ class StatsRepositoryTargetStorageTest {
         .get()
         .extracting(TargetStatsRecord::getSnapshotId)
         .isEqualTo(snapshotId);
+  }
+
+  @Test
+  void inheritedBundleStatsRequireTheLiveBundleBeforePointerPublication() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    byte[] digest = new byte[32];
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), 98L, "base")
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+
+    assertThatThrownBy(
+            () ->
+                repository.registerInheritedStatsReferencesInGeneration(
+                    TABLE_ID,
+                    99L,
+                    "full-rescan-append",
+                    List.of(
+                        new StatsStore.PrewrittenTargetStatsReference(
+                            "file:s3://bucket/file.parquet", bundleUri, 123L, digest))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("inherited target stats bundle is missing");
   }
 
   @Test
@@ -2032,6 +2092,33 @@ class StatsRepositoryTargetStorageTest {
     assertThat(blobStore.get(baseManifest))
         .as("the append child keeps its immutable base generation reachable")
         .isNotNull();
+
+    String childReplacement = "append-replacement";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, childSnapshotId, childReplacement, List.of(), List.of());
+    StatsStore.StatsGenerationPredecessor childReplacementPredecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, childSnapshotId, childReplacement, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, childSnapshotId, childReplacement, List.of(), childReplacementPredecessor, null);
+
+    repository.deleteUnreferencedGenerations(
+        TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L);
+    assertThat(
+            pointerStore.get(
+                Keys.snapshotTargetStatsGenerationBasePointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), childSnapshotId, childGeneration)))
+        .as("reclaiming the child removes its inbound base edge")
+        .isEmpty();
+    assertThat(blobStore.get(baseManifest))
+        .as("the discovery snapshot conservatively retains the base for this pass")
+        .isNotNull();
+
+    repository.deleteUnreferencedGenerations(
+        TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L);
+    assertThat(blobStore.get(baseManifest))
+        .as("the next pass reclaims the ancestor after the stale edge is gone")
+        .isNull();
   }
 
   @Test
