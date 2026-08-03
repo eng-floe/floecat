@@ -19,20 +19,21 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
 /**
  * Process-local publication epochs for pointer-less, table-scoped blobs.
  *
- * <p>A publisher holds its table entry while making a new manifest-page or shared-sidecar reference
- * visible, then advances the entry epoch. CAS GC may build a re-mark incrementally, but it can act
- * on that proof only while holding the same entry and only when the epoch is unchanged. This closes
- * the re-reference-between-remark-and-delete race without retaining a lock across GC deadline
- * continuations. Entries are reference counted and removed as soon as no publication or retained GC
- * proof uses them, so memory is bounded by concurrent work rather than table cardinality. A
- * retained proof keeps its exact table entry alive across deadline continuations; unrelated tables
- * never cause false invalidations.
+ * <p>Publishers hold a shared table entry while making new manifest-page or shared-sidecar
+ * references visible, then advance the entry epoch. CAS GC may build a re-mark incrementally, but
+ * it can act on that proof only while holding the entry exclusively and only when the epoch is
+ * unchanged. This closes the re-reference-between-remark-and-delete race without serializing
+ * concurrent publishers or retaining a lock across GC deadline continuations. Entries are reference
+ * counted and removed as soon as no publication or retained GC proof uses them, so memory is
+ * bounded by concurrent work rather than table cardinality. A retained proof keeps its exact table
+ * entry alive across deadline continuations; unrelated tables never cause false invalidations.
  *
  * <p>The guard is intentionally process-local, matching CAS GC's existing single-node safety
  * contract: every service process that can publish table references must disable CAS GC unless all
@@ -46,11 +47,11 @@ public class TableBlobReachabilityGuard {
   public Proof beginProof(String accountId, String tableId) {
     TableKey key = new TableKey(accountId, tableId);
     Entry entry = acquire(key);
-    entry.lock.lock();
+    entry.lock.readLock().lock();
     try {
-      return new Proof(this, key, entry, entry.epoch);
+      return new Proof(this, key, entry, entry.epoch.get());
     } finally {
-      entry.lock.unlock();
+      entry.lock.readLock().unlock();
     }
   }
 
@@ -62,12 +63,12 @@ public class TableBlobReachabilityGuard {
   public <T> T publishing(String accountId, String tableId, Supplier<T> publication) {
     TableKey key = new TableKey(accountId, tableId);
     Entry entry = acquire(key);
-    entry.lock.lock();
+    entry.lock.readLock().lock();
     try {
       return publication.get();
     } finally {
-      entry.epoch++;
-      entry.lock.unlock();
+      entry.epoch.incrementAndGet();
+      entry.lock.readLock().unlock();
       release(key, entry);
     }
   }
@@ -80,11 +81,11 @@ public class TableBlobReachabilityGuard {
   public <T> T exclusive(String accountId, String tableId, Supplier<T> action) {
     TableKey key = new TableKey(accountId, tableId);
     Entry entry = acquire(key);
-    entry.lock.lock();
+    entry.lock.writeLock().lock();
     try {
       return action.get();
     } finally {
-      entry.lock.unlock();
+      entry.lock.writeLock().unlock();
       release(key, entry);
     }
   }
@@ -101,14 +102,14 @@ public class TableBlobReachabilityGuard {
       if (proof.closed) {
         throw new IllegalArgumentException("an active proof from this guard is required");
       }
-      proof.entry.lock.lock();
+      proof.entry.lock.writeLock().lock();
       try {
-        if (proof.entry.epoch != proof.expectedEpoch) {
+        if (proof.entry.epoch.get() != proof.expectedEpoch) {
           return GuardedResult.changedResult();
         }
         return GuardedResult.unchangedResult(deletion.get());
       } finally {
-        proof.entry.lock.unlock();
+        proof.entry.lock.writeLock().unlock();
       }
     }
   }
@@ -142,8 +143,8 @@ public class TableBlobReachabilityGuard {
   private record TableKey(String accountId, String tableId) {}
 
   private static final class Entry {
-    private final ReentrantLock lock = new ReentrantLock();
-    private long epoch;
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+    private final AtomicLong epoch = new AtomicLong();
     private int references;
   }
 
