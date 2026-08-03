@@ -2363,6 +2363,8 @@ already cleared the lease as part of successful completion.</p>
   <code>floedb.reconcile.index-signature-v1</code> properties matching its execution plan</li>
 <li>every index wrapper records its concrete comma-separated selector set in the
   <code>indexed_columns</code> property</li>
+<li>every reusable index metadata entry repeats that wrapper's sorted, distinct selector set in
+  <code>realized_index_selectors</code>; entries with an empty set cannot be selected for reuse</li>
 <li><code>realized_stats_selectors</code> is the sorted, distinct selector set represented by the file group's
   column-stat aggregates; omit it when column-stats output was not requested</li>
 <li>report every equivalent selector known to the worker, such as both an Iceberg <code>#&lt;field-id&gt;</code> and
