@@ -81,4 +81,12 @@ public interface BlobStore {
   }
 
   Page list(String prefix, int limit, String pageToken);
+
+  /**
+   * Lists immediate child prefixes below {@code prefix} without enumerating every object below each
+   * child. Object-store implementations should use their native delimiter support.
+   */
+  default Page listPrefixes(String prefix, int limit, String pageToken) {
+    throw new UnsupportedOperationException("common-prefix listing is not supported");
+  }
 }

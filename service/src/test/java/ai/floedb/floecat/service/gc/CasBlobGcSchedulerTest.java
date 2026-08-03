@@ -36,6 +36,7 @@ import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class CasBlobGcSchedulerTest {
@@ -110,6 +111,34 @@ class CasBlobGcSchedulerTest {
         .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
   }
 
+  @Test
+  void retainedContinuationRotatesAfterTheConfiguredBurst() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    StickyContinuationGc gc = new StickyContinuationGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    System.setProperty("floecat.gc.cas.max-continuation-ticks", "2");
+    try {
+      scheduler.tick();
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+      System.clearProperty("floecat.gc.cas.max-continuation-ticks");
+    }
+
+    assertEquals(List.of("acct-a", "acct-a", "acct-b"), gc.accountIds);
+    assertEquals(1, gc.abandoned);
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -133,6 +162,33 @@ class CasBlobGcSchedulerTest {
         return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
       }
       return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
+    }
+  }
+
+  private static final class StickyContinuationGc extends CasBlobGc {
+    private final List<String> accountIds = new ArrayList<>();
+    private boolean continuing;
+    private int abandoned;
+
+    @Override
+    public Result runForAccount(String accountId, long deadlineMs) {
+      accountIds.add(accountId);
+      if ("acct-a".equals(accountId)) {
+        continuing = true;
+        return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);
+      }
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, false);
+    }
+
+    @Override
+    Optional<String> continuationAccountId() {
+      return continuing ? Optional.of("acct-a") : Optional.empty();
+    }
+
+    @Override
+    synchronized void abandonContinuation() {
+      continuing = false;
+      abandoned++;
     }
   }
 }

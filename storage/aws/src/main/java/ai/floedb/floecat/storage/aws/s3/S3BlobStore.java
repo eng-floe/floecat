@@ -270,6 +270,30 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public BlobStore.Page listPrefixes(String prefix, int limit, String pageToken) {
+    final String p = normalize(prefix);
+    final int lim = Math.max(1, limit);
+    try {
+      ListObjectsV2Request.Builder builder =
+          ListObjectsV2Request.builder().bucket(bucket).prefix(p).delimiter("/").maxKeys(lim);
+      if (pageToken != null && !pageToken.isBlank()) {
+        builder.continuationToken(pageToken);
+      }
+      ListObjectsV2Response response = s3.call(c -> c.listObjectsV2(builder.build()));
+      List<String> prefixes =
+          response.commonPrefixes().stream().map(value -> value.prefix()).toList();
+      String next = response.isTruncated() ? response.nextContinuationToken() : "";
+      return new PageImpl(prefixes, next);
+    } catch (S3Exception e) {
+      throw mapAndWrap("LIST", p, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("LIST", p, e);
+    }
+  }
+
+  @Override
   public boolean delete(String key) {
     final String k = normalize(key);
     try {
