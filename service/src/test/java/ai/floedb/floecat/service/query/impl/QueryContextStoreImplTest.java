@@ -17,7 +17,11 @@
 package ai.floedb.floecat.service.query.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -25,6 +29,13 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.types.Hashing;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -154,17 +165,77 @@ class QueryContextStoreImplTest {
   void referencedUrisUnionCommittedContextsAndResolvingPins() {
     store.put(active("q1", null, pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
     // A committed context AND an in-flight resolution are both roots simultaneously.
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t2/resolving.pb"));
+    store.registerResolvingPinBlobs("corr-1", table("t2"), List.of("s3://t2/resolving.pb"));
 
     assertThat(store.referencedPinBlobUris())
         .containsExactlyInAnyOrder("s3://t1/table.pb", "s3://t1/snap-7.pb", "s3://t2/resolving.pb");
   }
 
   @Test
+  void resolvingPinValidatesItsRootAndManifestChainBeforeRegistration() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), blobs);
+    ResourceId tableId = table("t1");
+    SnapshotManifestPage page = SnapshotManifestPage.newBuilder().build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    TableRoot root =
+        TableRoot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotManifestRef(BlobRef.newBuilder().setUri(pageUri))
+            .build();
+    String rootUri =
+        Keys.tableRootBlobUri(
+            tableId.getAccountId(), tableId.getId(), Hashing.sha256Hex(root.toByteArray()));
+    blobs.put(rootUri, root.toByteArray(), "application/x-protobuf");
+
+    store.registerResolvingPinBlobs("q-live", tableId, List.of(rootUri));
+    blobs.delete(pageUri);
+
+    assertThatThrownBy(
+            () -> store.registerResolvingPinBlobs("q-dangling", tableId, List.of(rootUri)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("manifest page missing");
+    assertThat(store.referencedPinBlobUris()).containsExactly(rootUri);
+  }
+
+  @Test
+  void resolvingPinRejectsARootScopedToAnotherTable() {
+    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    String otherRoot = Keys.tableRootBlobUri("acct", "other", "root-sha");
+
+    assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", table("t1"), List.of(otherRoot)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("different table");
+    assertThat(store.referencedPinBlobUris()).isEmpty();
+  }
+
+  @Test
+  void resolvingPinRejectsAFrozenGenerationDeletedBeforePublication() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository stats = new StatsRepository(pointers, blobs);
+    ResourceId tableId = table("t1");
+    stats.publishStatsGeneration(tableId, 7L, "generation", List.of());
+    String manifest =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), 7L, "generation");
+    blobs.delete(manifest);
+    store.statsRepository = stats;
+
+    assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", tableId, List.of(manifest)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("generation is unavailable");
+    assertThat(store.referencedPinBlobUris()).isEmpty();
+  }
+
+  @Test
   void resolvingPinsAccumulatePerCorrelationIdAndAreReferenced() {
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t1/a.pb"));
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t1/b.pb")); // accumulates
-    store.registerResolvingPinBlobs("corr-2", List.of("s3://t2/c.pb")); // separate id
+    store.registerResolvingPinBlobs("corr-1", table("t1"), List.of("s3://t1/a.pb"));
+    store.registerResolvingPinBlobs("corr-1", table("t1"), List.of("s3://t1/b.pb")); // accumulates
+    store.registerResolvingPinBlobs("corr-2", table("t2"), List.of("s3://t2/c.pb")); // separate id
 
     assertThat(store.referencedPinBlobUris())
         .containsExactlyInAnyOrder("s3://t1/a.pb", "s3://t1/b.pb", "s3://t2/c.pb");
@@ -172,8 +243,9 @@ class QueryContextStoreImplTest {
 
   @Test
   void releasingResolvingPinsOnlyDropsThisRegistration() {
-    store.registerResolvingPinBlobs("q1", List.of("s3://t1/a.pb", "s3://t1/shared.pb"));
-    store.registerResolvingPinBlobs("q1", List.of("s3://t1/shared.pb"));
+    store.registerResolvingPinBlobs(
+        "q1", table("t1"), List.of("s3://t1/a.pb", "s3://t1/shared.pb"));
+    store.registerResolvingPinBlobs("q1", table("t1"), List.of("s3://t1/shared.pb"));
 
     store.releaseResolvingPinBlobs("q1", List.of("s3://t1/a.pb", "s3://t1/shared.pb"));
 
@@ -188,7 +260,8 @@ class QueryContextStoreImplTest {
   void committingAContextDropsItsResolvingPinRegistration() {
     // Resolve pins (register), then commit a context containing them: the transient registration is
     // released because the committed context now roots those blobs.
-    store.registerResolvingPinBlobs("q1", List.of("s3://t1/table.pb", "s3://t1/snap-7.pb"));
+    store.registerResolvingPinBlobs(
+        "q1", table("t1"), List.of("s3://t1/table.pb", "s3://t1/snap-7.pb"));
     assertThat(store.referencedPinBlobUris())
         .containsExactlyInAnyOrder("s3://t1/table.pb", "s3://t1/snap-7.pb");
 
@@ -211,7 +284,8 @@ class QueryContextStoreImplTest {
     // the committed context still carries the original BeginQuery correlation id. Releasing by the
     // query id — not the stored principal's correlation id — is what actually drops the transient
     // registration on commit instead of leaving it to linger until the fail-safe grace expires.
-    store.registerResolvingPinBlobs("q1", List.of("s3://t1/table.pb", "s3://t1/snap-7.pb"));
+    store.registerResolvingPinBlobs(
+        "q1", table("t1"), List.of("s3://t1/table.pb", "s3://t1/snap-7.pb"));
 
     store.replace(
         active("q1", "begin-query-corr", pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
@@ -227,7 +301,8 @@ class QueryContextStoreImplTest {
     // A resolution registered three blobs; a commit roots two of them. The third (not yet committed
     // — e.g. a later streaming chunk) must stay protected. URI-precise, so it also does not disturb
     // a different query.
-    store.registerResolvingPinBlobs("q1", List.of("s3://a.pb", "s3://b.pb", "s3://c.pb"));
+    store.registerResolvingPinBlobs(
+        "q1", table("t1"), List.of("s3://a.pb", "s3://b.pb", "s3://c.pb"));
 
     store.put(active("q1", "corr-1", pinBytes("s3://a.pb", "s3://b.pb")));
 
@@ -240,8 +315,10 @@ class QueryContextStoreImplTest {
     // Two concurrent queries pin the same physical blob: A has committed, B is still resolving. A's
     // commit must not strip the shared blob from B's resolving registration — otherwise A ending
     // before B commits would leave the blob rooted by neither.
-    store.registerResolvingPinBlobs("qA", List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
-    store.registerResolvingPinBlobs("qB", List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
+    store.registerResolvingPinBlobs(
+        "qA", table("t1"), List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
+    store.registerResolvingPinBlobs(
+        "qB", table("t1"), List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
 
     store.put(active("qA", "corr-A", pinBytes("s3://shared/table.pb", "s3://shared/snap.pb")));
 
@@ -256,7 +333,7 @@ class QueryContextStoreImplTest {
   void resolvingPinsExpireAndArePrunedFromTheRootSet() {
     // A non-positive grace makes the registration already expired, so the next read prunes it.
     store.resolvingPinGraceMs = -1L;
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t1/stale.pb"));
+    store.registerResolvingPinBlobs("corr-1", table("t1"), List.of("s3://t1/stale.pb"));
 
     assertThat(store.referencedPinBlobUris()).isEmpty();
   }
@@ -269,7 +346,7 @@ class QueryContextStoreImplTest {
     store.clock = clk;
     store.resolvingPinGraceMs = 60_000L;
 
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t1/x.pb"));
+    store.registerResolvingPinBlobs("corr-1", table("t1"), List.of("s3://t1/x.pb"));
     clk.advance(Duration.ofMillis(59_000L));
     assertThat(store.referencedPinBlobUris()).containsExactly("s3://t1/x.pb");
 
@@ -286,12 +363,12 @@ class QueryContextStoreImplTest {
     store.resolvingPinGraceMs = 60_000L;
     store.maxSize = 2L;
 
-    store.registerResolvingPinBlobs("q-dead-1", List.of("s3://t1/a.pb"));
-    store.registerResolvingPinBlobs("q-dead-2", List.of("s3://t2/b.pb"));
+    store.registerResolvingPinBlobs("q-dead-1", table("t1"), List.of("s3://t1/a.pb"));
+    store.registerResolvingPinBlobs("q-dead-2", table("t2"), List.of("s3://t2/b.pb"));
     clk.advance(Duration.ofMillis(61_000L)); // both entries are now past the grace
 
     // The map is at the maxSize threshold, so this registration prunes the expired entries.
-    store.registerResolvingPinBlobs("q-live", List.of("s3://t3/c.pb"));
+    store.registerResolvingPinBlobs("q-live", table("t3"), List.of("s3://t3/c.pb"));
 
     assertThat(store.resolvingPinEntryCount()).isEqualTo(1);
   }
@@ -380,10 +457,10 @@ class QueryContextStoreImplTest {
 
   @Test
   void registerIgnoresBlankAndNullUris() {
-    store.registerResolvingPinBlobs("corr-1", java.util.Arrays.asList("", null));
+    store.registerResolvingPinBlobs("corr-1", table("t1"), java.util.Arrays.asList("", null));
     assertThat(store.referencedPinBlobUris()).isEmpty();
 
-    store.registerResolvingPinBlobs("corr-1", List.of("s3://t1/x.pb"));
+    store.registerResolvingPinBlobs("corr-1", table("t1"), List.of("s3://t1/x.pb"));
     assertThat(store.referencedPinBlobUris()).containsExactly("s3://t1/x.pb");
   }
 
@@ -476,7 +553,7 @@ class QueryContextStoreImplTest {
     // CasBlobGc could delete it mid-use. The rejected registration is left to the incumbent's own
     // commit or the fail-safe grace instead.
     store.put(active("q", null, pinBytes("s3://t/table.pb", "s3://t/committed.pb")));
-    store.registerResolvingPinBlobs("q", List.of("s3://t/resolving.pb"));
+    store.registerResolvingPinBlobs("q", table("t"), List.of("s3://t/resolving.pb"));
     assertThat(store.referencedPinBlobUris()).contains("s3://t/resolving.pb");
 
     QueryContext newcomer = active("q", null, pinBytes("s3://t/table.pb", "s3://t/resolving.pb"));

@@ -100,6 +100,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q1"),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
   }
@@ -117,6 +118,7 @@ public class QueryInputResolverTest {
             org.mockito.Mockito.verify(store)
                 .registerResolvingPinBlobs(
                     org.mockito.ArgumentMatchers.eq("q1"),
+                    org.mockito.ArgumentMatchers.eq(first),
                     org.mockito.ArgumentMatchers.argThat(
                         uris -> uris.contains("s3://ROOTED_FIRST/table.pb")));
             observedBeforeLaterPlan[0] = true;
@@ -291,6 +293,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-reuse"),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris ->
                     uris.contains("s3://T2/pinned-table.pb")

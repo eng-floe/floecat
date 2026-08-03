@@ -990,7 +990,7 @@ class CasBlobGcTest {
       blobs.put(pinnedBlob, "pinned".getBytes(StandardCharsets.UTF_8), "text/plain");
 
       // Stage 1: resolving — the pin is constructed but not yet committed into a context.
-      store.registerResolvingPinBlobs("q-gc", java.util.List.of(pinnedBlob));
+      store.registerResolvingPinBlobs("q-gc", tableRid(), java.util.List.of(pinnedBlob));
       gc.runForAccount(ACCOUNT_ID);
       assertTrue(blobs.head(pinnedBlob).isPresent(), "resolving root must protect the blob");
 
@@ -1764,6 +1764,60 @@ class CasBlobGcTest {
         blobs.head(statsBlob).isPresent(),
         "a live side-resource blob must survive a transient mark-scan miss via the flush re-mark");
     assertEquals(0, result.blobsRescued(), "no rescue fires here: the re-mark alone must save it");
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void flushRestartsItsRemarkWhenARootPublicationOverlapsIt() {
+    seedCurrentTable();
+    var page =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestPage.newBuilder()
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder().setSnapshotId(7L))
+            .build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, ai.floedb.floecat.types.Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    String rootPointer = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
+    String rootUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "published-mid-remark");
+    var root =
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotManifestRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(pageUri))
+            .build();
+    java.util.concurrent.atomic.AtomicInteger rootReads =
+        new java.util.concurrent.atomic.AtomicInteger();
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            java.util.Optional<Pointer> observed = super.get(key);
+            if (rootPointer.equals(key) && rootReads.getAndIncrement() == 1) {
+              gc.reachabilityGuard.publishing(
+                  ACCOUNT_ID,
+                  TABLE_ID,
+                  () -> {
+                    blobs.put(rootUri, root.toByteArray(), "application/x-protobuf");
+                    pointers.compareAndSet(
+                        rootPointer,
+                        0L,
+                        PointerReferences.blobPointer(
+                            rootPointer, rootUri, 1L, root.toByteArray().length));
+                    return null;
+                  });
+            }
+            return observed;
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        rootReads.get() >= 3,
+        "the publication epoch change must invalidate and restart the first re-mark");
+    assertTrue(blobs.head(pageUri).isPresent(), "the newly published root protects its page");
     assertFalse(result.poisoned());
   }
 

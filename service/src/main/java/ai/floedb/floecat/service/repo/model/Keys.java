@@ -38,6 +38,7 @@ public final class Keys {
   public static final String SEG_STORAGE_AUTHORITY = "/storage-authority/";
   public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
+  public static final String SEG_INDEX_SIDECARS = "/index-sidecars/";
   public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
   public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
   public static final String SEG_INDEX_CAPTURE_MANIFESTS =
@@ -532,6 +533,11 @@ public final class Keys {
   }
 
   /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
+  public static String snapshotManifestBlobPrefix(String accountId, String tableId) {
+    return tableRootBlobPrefix(accountId, tableId) + "manifest/";
+  }
+
+  /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
   public static String snapshotManifestBlobUri(String accountId, String tableId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
@@ -827,7 +833,7 @@ public final class Keys {
   }
 
   public static String tableIndexSidecarBlobPrefix(String accountId, String tableId) {
-    return tableBlobPrefix(accountId, tableId) + "index-sidecars/";
+    return tableBlobPrefix(accountId, tableId) + SEG_INDEX_SIDECARS.substring(1);
   }
 
   public static String snapshotCompatDirectoryPointer(

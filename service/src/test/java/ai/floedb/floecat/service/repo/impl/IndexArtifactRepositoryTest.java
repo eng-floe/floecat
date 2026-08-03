@@ -129,6 +129,55 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void bundledIndexReferenceRejectsAnOwnedSidecarDeletedBeforePublication() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            targetStorageId,
+            Hashing.sha256Hex(new byte[] {1, 2, 3}));
+    IndexArtifactRecord record =
+        indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String workerPrefix = "/worker-output/index-artifacts/";
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    "full-rescan-bundled",
+                    workerPrefix,
+                    List.of(
+                        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                            targetStorageId, bundleUri, bundle.length, digest))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("shared index sidecar is missing");
+
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "full-rescan-bundled")))
+        .isZero();
+  }
+
+  @Test
   void bundledIndexReadRejectsPayloadThatDoesNotMatchContentAddress() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
@@ -170,7 +219,47 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
-  void prewrittenReferencesUseOptimisticPointerBatchesWithoutReads() {
+  void bundledIndexPublicationRejectsABundleDeletedAfterItWasCached() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository =
+        new IndexArtifactRepository(
+            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    long snapshotId = 716L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    IndexArtifactRecord record = indexRecord(snapshotId, "s3://bucket/file.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String workerPrefix = "/worker-output/index-artifacts/";
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    var reference =
+        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+            targetStorageId, bundleUri, bundle.length, digest);
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID, snapshotId, "generation-one", workerPrefix, List.of(reference));
+    blobs.delete(bundleUri);
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+                    TABLE_ID, snapshotId, "generation-two", workerPrefix, List.of(reference)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("bundle is missing");
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "generation-two")))
+        .isZero();
+  }
+
+  @Test
+  void prewrittenReferencesUseOptimisticPointerBatchesWithoutPointerReads() {
     InMemoryPointerStore delegate = new InMemoryPointerStore();
     AtomicInteger batchCalls = new AtomicInteger();
     AtomicInteger getCalls = new AtomicInteger();
@@ -188,7 +277,7 @@ class IndexArtifactRepositoryTest {
             return super.get(key);
           }
         };
-    BlobStore blobs = mock(BlobStore.class);
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
     long snapshotId = 715L;
     String generationId = "full-rescan-parent";
@@ -196,13 +285,16 @@ class IndexArtifactRepositoryTest {
     List<IndexArtifactRepository.PrewrittenIndexArtifactReference> references = new ArrayList<>();
     for (int index = 1; index <= 205; index++) {
       String targetStorageId = "file:s3://bucket/file-" + index + ".parquet";
-      byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("payload-" + index));
+      byte[] payload =
+          indexRecord(snapshotId, "s3://bucket/file-" + index + ".parquet").toByteArray();
+      byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(payload));
       String blobUri =
           workerPrefix
               + Hashing.sha256Hex(targetStorageId)
               + "/"
               + HexFormat.of().formatHex(digest)
               + ".pb";
+      blobs.put(blobUri, payload, "application/x-protobuf");
       references.add(
           new IndexArtifactRepository.PrewrittenIndexArtifactReference(
               targetStorageId, blobUri, index, digest));
@@ -218,7 +310,6 @@ class IndexArtifactRepositoryTest {
                 Keys.snapshotIndexArtifactGenerationPrefix(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
         .isEqualTo(205);
-    verifyNoInteractions(blobs);
   }
 
   @Test
@@ -379,6 +470,85 @@ class IndexArtifactRepositoryTest {
             pointers.countByPrefix(
                 Keys.snapshotIndexArtifactGenerationPrefix(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "direct")))
+        .isZero();
+  }
+
+  @Test
+  void directWriteRejectsAnOwnedSidecarDeletedBeforePublication() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    byte[] content = new byte[] {1, 2, 3};
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            720L,
+            "file:s3://bucket/file.parquet",
+            Hashing.sha256Hex(content));
+    IndexArtifactRecord record =
+        indexRecord(720L, "s3://bucket/file.parquet").toBuilder().setArtifactUri(sidecar).build();
+
+    assertThatThrownBy(() -> repository.putIndexArtifact(record))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("shared index sidecar is missing");
+
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), 720L, "direct")))
+        .isZero();
+  }
+
+  @Test
+  void directWriteChecksOwnedSidecarWithoutRewritingIt() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    byte[] content = new byte[] {4, 5, 6};
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            721L,
+            "file:s3://bucket/file.parquet",
+            Hashing.sha256Hex(content));
+    blobs.put(sidecar, content, "application/octet-stream");
+    String before = blobs.head(sidecar).orElseThrow().getVersionId();
+    IndexArtifactRecord record =
+        indexRecord(721L, "s3://bucket/file.parquet").toBuilder().setArtifactUri(sidecar).build();
+
+    repository.putIndexArtifact(record);
+
+    assertThat(blobs.head(sidecar).orElseThrow().getVersionId()).isEqualTo(before);
+    assertThat(repository.getIndexArtifact(TABLE_ID, 721L, record.getTarget())).contains(record);
+  }
+
+  @Test
+  void directWriteRejectsASidecarOwnedByAnotherTable() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    byte[] content = new byte[] {7, 8, 9};
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            "other-table",
+            722L,
+            "file:s3://bucket/file.parquet",
+            Hashing.sha256Hex(content));
+    blobs.put(sidecar, content, "application/octet-stream");
+    IndexArtifactRecord record =
+        indexRecord(722L, "s3://bucket/file.parquet").toBuilder().setArtifactUri(sidecar).build();
+
+    assertThatThrownBy(() -> repository.putIndexArtifact(record))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("sidecar owned by another table");
+
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), 722L, "direct")))
         .isZero();
   }
 

@@ -463,7 +463,7 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public void registerResolvingPinBlobs(
-        String correlationId, java.util.Collection<String> blobUris) {
+        String correlationId, ResourceId tableId, java.util.Collection<String> blobUris) {
       // no-op: this fake does not model GC roots
     }
 

@@ -36,8 +36,10 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -311,6 +313,56 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
       return Optional.empty();
     }
     return loadManifestPage(ref.getUri());
+  }
+
+  /**
+   * Verifies that every page a root is about to publish exists in live storage. The commit and CAS
+   * GC coordinate through {@code TableBlobReachabilityGuard}, so a successful validation cannot be
+   * invalidated by an ownerless-blob delete before the root pointer becomes visible.
+   */
+  public void requireManifestChainLive(ResourceId tableId, BlobRef head) {
+    String requiredPrefix =
+        Keys.snapshotManifestBlobPrefix(tableId.getAccountId(), tableId.getId());
+    BlobRef cursor = head;
+    Set<String> visited = new HashSet<>();
+    while (cursor != null && !cursor.getUri().isBlank()) {
+      String uri = cursor.getUri();
+      if (!uri.startsWith(requiredPrefix)) {
+        throw new BaseResourceRepository.CorruptionException(
+            "manifest page is outside table scope: " + uri);
+      }
+      if (!visited.add(uri)) {
+        throw new BaseResourceRepository.CorruptionException("manifest page cycle at " + uri);
+      }
+      SnapshotManifestPage page =
+          getManifestPageLive(cursor)
+              .orElseThrow(
+                  () ->
+                      new BaseResourceRepository.CorruptionException(
+                          "manifest page missing: " + uri));
+      cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
+    }
+  }
+
+  /**
+   * Verifies only a chain head. Production root mutations create any new prefix pages while the
+   * table publication guard is held and link them to the still-current chain, so walking the entire
+   * immutable history again would add O(snapshot history) remote reads to every commit.
+   */
+  public void requireManifestHeadLive(ResourceId tableId, BlobRef head) {
+    if (head == null || head.getUri().isBlank()) {
+      return;
+    }
+    String uri = head.getUri();
+    String requiredPrefix =
+        Keys.snapshotManifestBlobPrefix(tableId.getAccountId(), tableId.getId());
+    if (!uri.startsWith(requiredPrefix)) {
+      throw new BaseResourceRepository.CorruptionException(
+          "manifest page is outside table scope: " + uri);
+    }
+    if (getManifestPageLive(head).isEmpty()) {
+      throw new BaseResourceRepository.CorruptionException("manifest page missing: " + uri);
+    }
   }
 
   private Optional<SnapshotManifestPage> loadManifestPage(String uri) {

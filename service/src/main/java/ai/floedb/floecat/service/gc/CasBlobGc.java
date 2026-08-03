@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -76,9 +77,11 @@ import org.jboss.logging.Logger;
  * rescued individually, and lexicographic listing puts some of them before any blob whose rescue
  * could reveal the stale set — so their deletion is DEFERRED, and the flush independently re-proves
  * liveness per owning table against the settled store (root-chain re-walk plus constraints/stats
- * pointer re-scan) before deleting. Superseded-but-pinned blobs are outside the recheck's reach
- * (their owner pointer has moved on) and remain guarded by pin roots and walk-failure poisoning
- * alone.
+ * pointer re-scan) before deleting. The re-mark retains an exact table publication epoch, and the
+ * epoch check plus version-targeted deletes run under the same table entry used by root, shared
+ * sidecar, and resolving-pin publishers. A publication before the proof is included by the fresh
+ * re-mark; one during or after it invalidates the proof and forces a complete restart. This closes
+ * the late-publication window for ownerless manifest pages and shared sidecars.
  *
  * <p><b>Versioned-bucket operations note.</b> This sweep only ever deletes the CURRENT version it
  * age-checked; it never visits noncurrent versions. With the always-PUT write path, an oscillating
@@ -101,6 +104,7 @@ public class CasBlobGc {
   @Inject QueryContextStore queryContextStore;
   @Inject TableRootRepository tableRootRepo;
   @Inject StatsRepository statsRepository;
+  @Inject TableBlobReachabilityGuard reachabilityGuard = TableBlobReachabilityGuard.shared();
 
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
@@ -116,6 +120,8 @@ public class CasBlobGc {
     private int deleteIndex;
     private int verifyIndex;
     private int deleted;
+    private TableBlobReachabilityGuard.Proof remarkProof;
+    private StatsRepository.GenerationGcContinuation generationRefresh;
     private boolean remarkComplete;
     private boolean verificationRemarkComplete;
 
@@ -124,6 +130,7 @@ public class CasBlobGc {
       this.prefix = prefix;
       this.candidates = List.copyOf(candidates);
       this.prefixPending = prefixPending;
+      this.generationRefresh = new StatsRepository.GenerationGcContinuation();
     }
 
     private void close() {
@@ -132,6 +139,9 @@ public class CasBlobGc {
       }
       if (verificationProbe != null) {
         verificationProbe.close();
+      }
+      if (remarkProof != null) {
+        remarkProof.close();
       }
     }
   }
@@ -385,13 +395,6 @@ public class CasBlobGc {
     if (continuation != null && !presentAccountIds.contains(continuation.accountId)) {
       LOG.infof(
           "cas gc abandoning local mark epoch for deleted account %s", continuation.accountId);
-      clearContinuation();
-    }
-  }
-
-  synchronized void abandonContinuation() {
-    if (continuation != null) {
-      LOG.infof("cas gc abandoning bounded continuation for account %s", continuation.accountId);
       clearContinuation();
     }
   }
@@ -713,29 +716,42 @@ public class CasBlobGc {
               .setId(tableId)
               .setKind(ResourceKind.RK_TABLE)
               .build();
-      StatsRepository.GenerationGcResult generationGc =
-          statsRepository.deleteUnreferencedGenerations(
-              rid,
-              manifestUri -> {
-                if (pass.tableWalkFailures[0] > 0) {
-                  return true; // poisoned: an incomplete walk means protection is unknowable
-                }
-                String normalized = normalizeKey(manifestUri);
-                if (tableReferenced.mightContain(normalized)) {
-                  return true;
-                }
-                rootLivePinChains(
-                    tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
-                return pass.tableWalkFailures[0] > 0 || tableReferenced.mightContain(normalized);
-              },
-              nowMs,
-              minAgeMs,
-              remainingGenerationBlobDeletes,
-              deadlineMs,
-              pass.generationGcContinuation);
+      // Keep the potentially wide identity scan outside the publication lock. Once complete, the
+      // bounded delete slice below is serialized with resolving-pin publication: delete-first
+      // makes pin validation fail closed, while pin-first makes the protection predicate keep the
+      // generation and every shared sidecar its wrappers reference.
+      if (!statsRepository.discoverGenerationKeys(rid, deadlineMs, pass.generationGcContinuation)) {
+        checkDeadline();
+        throw DeadlineReached.INSTANCE;
+      }
       for (Keys.GenerationKey generation : pass.generationGcContinuation.generations()) {
         pass.addGenerationKey(generation);
       }
+      int generationDeleteBudget = remainingGenerationBlobDeletes;
+      StatsRepository.GenerationGcResult generationGc =
+          reachabilityGuard.exclusive(
+              rid,
+              () ->
+                  statsRepository.deleteUnreferencedGenerations(
+                      rid,
+                      manifestUri -> {
+                        if (pass.tableWalkFailures[0] > 0) {
+                          return true; // an incomplete walk makes protection unknowable
+                        }
+                        String normalized = normalizeKey(manifestUri);
+                        if (tableReferenced.mightContain(normalized)) {
+                          return true;
+                        }
+                        rootLivePinChains(
+                            tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
+                        return pass.tableWalkFailures[0] > 0
+                            || tableReferenced.mightContain(normalized);
+                      },
+                      nowMs,
+                      minAgeMs,
+                      generationDeleteBudget,
+                      deadlineMs,
+                      pass.generationGcContinuation));
       remainingGenerationBlobDeletes =
           Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
       pass.blobsDeleted += generationGc.blobsDeleted();
@@ -1053,39 +1069,75 @@ public class CasBlobGc {
       long referenceCapacity,
       double referenceFalsePositiveRate) {
     DeferredPageState state = continuation.deferredPage;
-    rootLivePinChains(referenced, walkedPinRoots, walkFailures);
-    if (walkFailures[0] > 0) {
-      return new DeleteResult(0, 0, 0, true);
-    }
-    if (state.fresh == null) {
-      state.fresh =
-          newReferenceIndex(
-              referenceCapacity,
-              referenceFalsePositiveRate,
-              ThreadLocalRandom.current().nextLong());
-    }
-    if (!state.remarkComplete) {
-      if (!remarkTable(accountId, tableId, state.fresh, pageSize)) {
-        walkFailures[0]++;
+    while (true) {
+      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+      if (walkFailures[0] > 0) {
         return new DeleteResult(0, 0, 0, true);
       }
-      state.remarkComplete = true;
-    }
-    while (state.deleteIndex < state.candidates.size()) {
-      checkDeadline();
-      DeferredCandidate candidate = state.candidates.get(state.deleteIndex);
-      String normalized = normalizeKey(candidate.key());
-      if (!referenced.mightContain(normalized) && !state.fresh.mightContain(normalized)) {
-        if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
-          if (walkFailures[0] > 0) {
-            return new DeleteResult(0, state.deleted, 0, true);
-          }
-        } else if (blobStore.delete(candidate.key(), candidate.versionId())) {
-          state.deleted++;
-          state.deletedKeys.add(normalized);
-        }
+      if (state.fresh == null) {
+        state.remarkProof = reachabilityGuard.beginProof(accountId, tableId);
+        state.fresh =
+            newReferenceIndex(
+                referenceCapacity,
+                referenceFalsePositiveRate,
+                ThreadLocalRandom.current().nextLong());
       }
-      state.deleteIndex++;
+      if (state.generationRefresh != null) {
+        var tableResourceId =
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build();
+        if (!statsRepository.discoverGenerationKeys(
+            tableResourceId, activeDeadlineMs, state.generationRefresh)) {
+          checkDeadline();
+          throw DeadlineReached.INSTANCE;
+        }
+        for (Keys.GenerationKey generation : state.generationRefresh.generations()) {
+          continuation.addGenerationKey(generation);
+        }
+        state.generationRefresh = null;
+      }
+      if (!state.remarkComplete) {
+        if (!remarkTable(accountId, tableId, state.fresh, pageSize)) {
+          walkFailures[0]++;
+          return new DeleteResult(0, 0, 0, true);
+        }
+        state.remarkComplete = true;
+      }
+      var guarded =
+          reachabilityGuard.deleteIfUnchanged(
+              state.remarkProof,
+              () -> {
+                while (state.deleteIndex < state.candidates.size()) {
+                  checkDeadline();
+                  DeferredCandidate candidate = state.candidates.get(state.deleteIndex);
+                  String normalized = normalizeKey(candidate.key());
+                  if (!referenced.mightContain(normalized)
+                      && !state.fresh.mightContain(normalized)) {
+                    if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
+                      if (walkFailures[0] > 0) {
+                        return false;
+                      }
+                    } else if (blobStore.delete(candidate.key(), candidate.versionId())) {
+                      state.deleted++;
+                      state.deletedKeys.add(normalized);
+                    }
+                  }
+                  state.deleteIndex++;
+                }
+                return true;
+              });
+      if (guarded.changed()) {
+        resetDeferredRemark(tableId, state);
+        checkDeadline();
+        continue;
+      }
+      if (!Boolean.TRUE.equals(guarded.value())) {
+        return new DeleteResult(0, state.deleted, 0, true);
+      }
+      break;
     }
     // Exact, bounded candidate-page verification. Re-mark the table once for the whole bounded
     // page, retaining only matches from deletedKeys. The Bloom filters only decide keeps; they
@@ -1116,6 +1168,20 @@ public class CasBlobGc {
     }
     observeReferenceIndex(continuation, state.fresh);
     return new DeleteResult(0, state.deleted, 0, false);
+  }
+
+  private void resetDeferredRemark(String tableId, DeferredPageState state) {
+    if (state.fresh != null) {
+      state.fresh.close();
+    }
+    if (state.remarkProof != null) {
+      state.remarkProof.close();
+    }
+    state.remarkProof = null;
+    state.fresh = null;
+    state.remarkComplete = false;
+    state.generationRefresh = new StatsRepository.GenerationGcContinuation();
+    clearRemarkContinuationState(tableId, state.prefix);
   }
 
   private void clearRemarkContinuationState(String tableId, String prefix) {
@@ -1816,11 +1882,10 @@ public class CasBlobGc {
    * root's manifest pages and chain blobs are then absent from the sweep-time referenced set and
    * from the current-root re-mark, yet must survive. Pin publication is read-only (no re-PUT), so
    * the version fence cannot catch it either. Re-reading the (node-local, cheap) pin set here and
-   * expanding any newly-pinned root's chain narrows the exposure to the microseconds between this
-   * read and the delete — the same residual the owner recheck accepts. A pin-chain walk failure
-   * makes reachability unprovable, so it too returns "keep" (and the caller aborts). Fully closing
-   * the window needs atomic pin/GC coordination (see the node-local-pin constraint in the class
-   * header).
+   * expanding any newly-pinned root's chain protects owner-derived candidates that do not use the
+   * deferred table proof. Deferred manifest-page and shared-sidecar deletes additionally serialize
+   * with resolving-pin publication through {@link TableBlobReachabilityGuard}. A pin-chain walk
+   * failure makes reachability unprovable, so it too returns "keep" (and the caller aborts).
    */
   private boolean keepForLatePin(
       String normalizedKey,
