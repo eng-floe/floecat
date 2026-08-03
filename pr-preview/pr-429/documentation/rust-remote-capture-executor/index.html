@@ -2353,15 +2353,18 @@ already cleared the lease as part of successful completion.</p>
   planned data files, while file-stats descriptor counts include auxiliary delete targets</li>
 <li>every planned file requested for page-index capture gets a matching artifact</li>
 <li>artifact metadata matches the target file identity</li>
-<li>every generated sidecar and the artifact bundle are committed before the success RPC</li>
+<li>every referenced stats object, generated sidecar, index wrapper, and artifact bundle is
+  committed before the success RPC</li>
+<li>every index wrapper uses the leased <code>stats_object_prefix</code> plus the required
+  <code>index-artifacts/&lt;target-hash&gt;/&lt;payload-hash&gt;.pb</code> suffix</li>
 <li>the artifact bundle uses the leased <code>stats_object_prefix</code> and the required
   <code>reuse-bundles/&lt;payload-sha256&gt;.pb</code> suffix</li>
 <li>each <code>TargetStatsRecord</code> carries <code>floedb.reconcile.source-fingerprint-v1</code>,
   <code>floedb.reconcile.stats-signature-v1</code>, and
-  <code>floedb.reconcile.realized-stats-selectors-v1</code> properties matching its execution plan</li>
+  <code>floedb.reconcile.realized-stats-selectors-v2</code> properties matching its execution plan</li>
 <li>each <code>IndexArtifactRecord</code> carries <code>floedb.reconcile.source-fingerprint-v1</code> and
   <code>floedb.reconcile.index-signature-v1</code> properties matching its execution plan</li>
-<li>every index wrapper records its concrete comma-separated selector set in the
+<li>every index wrapper records its concrete selector set as a JSON string array in the shared
   <code>indexed_columns</code> property</li>
 <li>every reusable index metadata entry repeats that wrapper's sorted, distinct selector set in
   <code>realized_index_selectors</code>; entries with an empty set cannot be selected for reuse</li>
