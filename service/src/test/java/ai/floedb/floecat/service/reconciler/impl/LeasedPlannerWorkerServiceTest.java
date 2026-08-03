@@ -254,6 +254,18 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   @Test
+  void referencedSnapshotPlanAcceptsGroupsWithoutExecutionDetails() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group = referencedGroup("job-1", "group-1", List.of(file), List.of());
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    LeasedPlannerWorkerService.validateReferencedPlan(
+        snapshotLease(ReconcileScope.empty(), snapshotTask),
+        snapshotTask,
+        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+  }
+
+  @Test
   void persistPlanTableSnapshotChunkDefersIndexPredecessorPinUntilSnapshotLease() {
     ReconcileScope scope =
         ReconcileScope.of(
