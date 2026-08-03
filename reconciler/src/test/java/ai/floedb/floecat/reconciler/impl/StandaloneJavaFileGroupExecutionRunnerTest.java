@@ -191,6 +191,46 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
   }
 
   @Test
+  void executeStampsCapturedFileStatsFromTheImmutableFilePlan() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String path = "s3://bucket/path/file.parquet";
+    TargetStatsRecord fileStats = fileStats(path);
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(fileStats), List.of());
+              return CaptureEngineResult.empty();
+            });
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "source-fingerprint",
+                "index-source-fingerprint",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                List.of());
+    List<TargetStatsRecord> published = new ArrayList<>();
+
+    runner.execute(payloadWithPlan(payload(), plan), () -> false, published::add);
+
+    assertThat(published).hasSize(1);
+    assertThat(
+            published
+                .getFirst()
+                .getPropertiesOrThrow(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY))
+        .isEqualTo("source-fingerprint");
+    assertThat(
+            published.getFirst().getPropertiesOrThrow(FileArtifactReuse.STATS_SIGNATURE_PROPERTY))
+        .isEqualTo("stats-signature");
+  }
+
+  @Test
   void executeStagesIndexesOnlyForFilesInTheLeasedGroup() {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);

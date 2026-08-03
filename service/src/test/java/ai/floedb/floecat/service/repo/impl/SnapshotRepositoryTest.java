@@ -671,6 +671,36 @@ class SnapshotRepositoryTest {
     assertEquals(Timestamps.fromMillis(ingestedMs), first.getUpdatedAt());
   }
 
+  @Test
+  void recordReuseManifestPreservesSnapshotAndIsIdempotent() {
+    var tableRid = newSeededTable();
+    Snapshot original =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .putSummary("existing", "value")
+            .build();
+    snapshotRepo.create(original);
+
+    byte[] digest = new byte[32];
+    snapshotRepo.recordReuseManifest(
+        tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb");
+    Snapshot updated = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+    snapshotRepo.recordReuseManifest(
+        tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb");
+    Snapshot replayed = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+
+    assertEquals("value", updated.getSummaryOrThrow("existing"));
+    assertEquals("/reuse/manifest.pb", updated.getReuseManifestRef().getUri());
+    assertEquals(123L, updated.getReuseManifestRef().getPayloadBytes());
+    assertArrayEquals(digest, updated.getReuseManifestRef().getPayloadSha256().toByteArray());
+    assertEquals(
+        "/stats/generation.pb", updated.getReuseManifestRef().getStatsGenerationManifestUri());
+    assertEquals(updated, replayed);
+    assertEquals(updated, snapshotRepo.getById(tableRid, 42L).orElseThrow());
+  }
+
   private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {
     var roots = new TableRootRepository(ptr, blobs);
     var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);

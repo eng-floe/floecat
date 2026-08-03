@@ -756,7 +756,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private static Snapshot normalizeSnapshotForComparison(Snapshot snapshot) {
-    return snapshot.toBuilder().clearIngestedAt().build();
+    return snapshot.toBuilder().clearIngestedAt().clearReuseManifestRef().build();
   }
 
   private static byte[] canonicalFingerprint(SnapshotSpec spec) {

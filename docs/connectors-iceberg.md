@@ -37,6 +37,10 @@ specializing discovery and catalog wiring.
   When invoked with incremental `SnapshotEnumerationOptions`, the connector walks back from the
   current snapshot through the parent chain and stops once it reaches a snapshot already known to
   Floecat, returning only the newly discovered lineage.
+- `planSnapshotFiles(...)` – Produces immutable data-file membership, attached position/equality
+  delete files, execution schema, and physical content identities from Iceberg manifest metadata.
+- `capturePlannedFileGroup(...)` – Captures the missing stats and page-index outputs for an
+  immutable planned subset of the snapshot's data files.
 - `captureSnapshotTargetStats(...)` – Captures table/column/file stats for one snapshot (optionally
   selector-scoped), using the configured `StatsEngine` and NDV providers.
 
@@ -55,6 +59,11 @@ specializing discovery and catalog wiring.
 - **Metadata capture** – `IcebergConnector` carries only canonical snapshot fields, including the
   snapshot metadata location as first-class state. It does not embed serialized Iceberg metadata
   protobuf payloads in snapshot state.
+- **Reuse identity** – Iceberg data-file and delete-file content identities are derived from file
+  sequence number and record count. They are computed from manifest metadata without reading data
+  files, delete files, stored stats, or page-index sidecars. File paths, sizes, formats, partition
+  context, and delete-file relationships are incorporated separately into the reconciler's source
+  fingerprints.
 - **Constraint mapping** – Snapshot constraints currently emit only metadata that is reliably
   exposed by core Iceberg tables:
   - `CT_PRIMARY_KEY` from Iceberg `identifier-field-ids` (advisory, emitted as not-enforced).
@@ -80,10 +89,12 @@ ConnectorFactory.create(cfg)
   → listNamespaces/listTables/describe
   → enumerateSnapshots
       → For each snapshot load Table metadata lineage
+  → planSnapshotFiles
+      → Build TableScan → immutable data/delete-file plan and content identities
+  → capturePlannedFileGroup
+      → read only the planned data/delete files needed for missing stats/index outputs
   → captureSnapshotTargetStats
       → StatsEngine pulls Parquet stats (table/column + per-file), NDV provider merges sketches
-      → plan
-      → Build TableScan, collect FileScanTask -> ScanBundle
 ```
 Resources (RESTCatalog, GlueClient) are closed when the connector is closed.
 

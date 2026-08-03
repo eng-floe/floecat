@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -2007,6 +2008,10 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 .setSnapshotId(snapshotId)
                 .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
                 .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
+                .setReuseManifestRef(
+                    SnapshotReuseManifestRef.newBuilder()
+                        .setUri("s3://bucket/reuse/snapshot-201.pb")
+                        .build())
                 .build());
       }
 

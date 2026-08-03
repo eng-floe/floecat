@@ -30,6 +30,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -48,10 +49,10 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
@@ -63,7 +64,44 @@ import org.mockito.ArgumentCaptor;
 class RemoteSnapshotPlanningReconcileExecutorTest {
 
   @Test
-  void planningLoadsReuseManifestFromExplicitParentSnapshot() throws Exception {
+  void reuseManifestIdentityRequiresAccountAndConnector() {
+    SnapshotCaptureManifest valid =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
+            .setTableId("table-1")
+            .setSnapshotId(9001L)
+            .setReusableArtifactBundlesComplete(true)
+            .build();
+
+    ReconcileFailureException accountFailure =
+        assertThrows(
+            ReconcileFailureException.class,
+        () ->
+            RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                tableId().toBuilder().setAccountId("other-acct").build(),
+                9001L,
+                "connector-1",
+                valid,
+                "/reuse.pb"));
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        accountFailure.retryDisposition());
+    ReconcileFailureException connectorFailure =
+        assertThrows(
+            ReconcileFailureException.class,
+        () ->
+            RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                tableId(), 9001L, "other-connector", valid, "/reuse.pb"));
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        connectorFailure.retryDisposition());
+  }
+
+  @Test
+  void planningLoadsReuseManifestFromLatestReconciledSnapshotWithNonMonotonicIds()
+      throws Exception {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -90,40 +128,32 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             Optional.of(
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(9001L)
-                    .build()));
+    long reuseBasisSnapshotId = 7L;
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
             .setTableId("table-1")
-            .setSnapshotId(9001L)
+            .setSnapshotId(reuseBasisSnapshotId)
             .setReusableArtifactBundlesComplete(true)
             .build()
             .toByteArray();
-    String uri = "/reuse/9001.pb";
-    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+    String uri = "/reuse/7.pb";
+    byte[] manifestSha256 =
+        java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()
                     .setTableId(tableId())
-                    .setSnapshotId(9001L)
-                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
-                    .putSummary(
-                        SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
-                    .putSummary(
-                        SnapshotReuseManifestMetadata.SHA256,
-                        Base64.getEncoder()
-                            .encodeToString(
-                                java.security.MessageDigest.getInstance("SHA-256")
-                                    .digest(manifestBytes)))
+                    .setSnapshotId(reuseBasisSnapshotId)
+                    .setReuseManifestRef(
+                        SnapshotReuseManifestRef.newBuilder()
+                            .setUri(uri)
+                            .setPayloadBytes(manifestBytes.length)
+                            .setPayloadSha256(ByteString.copyFrom(manifestSha256))
+                            .setStatsGenerationManifestUri("/stats/generation.pb"))
                     .build()));
     when(blobStore.get(uri)).thenReturn(manifestBytes);
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
@@ -139,7 +169,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void planningFailsTerminalWhenReuseManifestIntegrityIsInvalid() {
+  void planningFailsTerminalWhenLatestReuseManifestIntegrityIsInvalid() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -166,34 +196,29 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             Optional.of(
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(9001L)
-                    .build()));
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
             .setTableId("table-1")
             .setSnapshotId(9001L)
+            .setReusableArtifactBundlesComplete(true)
             .build()
             .toByteArray();
     String uri = "/reuse/corrupt-9001.pb";
-    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+    when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()
                     .setTableId(tableId())
                     .setSnapshotId(9001L)
-                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
-                    .putSummary(
-                        SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
-                    .putSummary(
-                        SnapshotReuseManifestMetadata.SHA256,
-                        Base64.getEncoder().encodeToString(new byte[32]))
+                    .setReuseManifestRef(
+                        SnapshotReuseManifestRef.newBuilder()
+                            .setUri(uri)
+                            .setPayloadBytes(manifestBytes.length)
+                            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                            .setStatsGenerationManifestUri("/stats/generation.pb"))
                     .build()));
     when(blobStore.get(uri)).thenReturn(manifestBytes);
 
@@ -217,40 +242,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void reuseManifestIdentityRequiresMatchingAccountAndConnector() {
-    SnapshotCaptureManifest wrongAccount =
-        SnapshotCaptureManifest.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId("other-account")
-            .setConnectorId("connector-1")
-            .setTableId("table-1")
-            .setSnapshotId(9001L)
-            .build();
-    ReconcileFailureException accountFailure =
-        assertThrows(
-            ReconcileFailureException.class,
-            () ->
-                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
-                    tableId(), 9001L, "connector-1", wrongAccount, "/reuse/account.pb"));
-    assertEquals(
-        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
-        accountFailure.retryDisposition());
-
-    SnapshotCaptureManifest wrongConnector =
-        wrongAccount.toBuilder().setAccountId("acct").setConnectorId("other-connector").build();
-    ReconcileFailureException connectorFailure =
-        assertThrows(
-            ReconcileFailureException.class,
-            () ->
-                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
-                    tableId(), 9001L, "connector-1", wrongConnector, "/reuse/connector.pb"));
-    assertEquals(
-        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
-        connectorFailure.retryDisposition());
-  }
-
-  @Test
-  void planningRegeneratesWhenExplicitParentHasNoReuseManifest() {
+  void planningRegeneratesWhenNoReconciledSnapshotHasReusableArtifacts() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -277,17 +269,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             Optional.of(
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(9001L)
-                    .build()));
-    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
-        .thenReturn(
-            Optional.of(Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L).build()));
+    when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
+        .thenReturn(Optional.empty());
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     assertTrue(
@@ -302,24 +285,25 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             any(),
             argThat(
                 fileGroupJobs ->
-                    fileGroupJobs.stream()
-                        .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
-                        .allMatch(
-                            plan ->
-                                plan.reusableArtifactBundleSelections().isEmpty()
-                                    && !plan.sourceFingerprint().isBlank()
-                                    && !plan.statsCaptureSignature().isBlank())),
+                    !fileGroupJobs.isEmpty()
+                        && fileGroupJobs.stream()
+                            .allMatch(job -> !job.fileGroupTask().fileExecutionPlans().isEmpty())
+                        && fileGroupJobs.stream()
+                            .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
+                            .allMatch(
+                                plan ->
+                                    plan.reusableArtifactBundleSelections().isEmpty()
+                                        && !plan.sourceFingerprint().isBlank()
+                                        && !plan.statsCaptureSignature().isBlank())),
             any());
     verify(backend, never()).existingSnapshotIds(any(), any());
     verify(blobStore, never()).get(any());
   }
 
   @Test
-  void planningRegeneratesWhenExplicitParentReuseManifestIsUnavailableOrIncomplete() {
+  void planningRegeneratesWhenLatestReuseManifestObjectIsUnavailable() {
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NULL_BLOB);
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NOT_FOUND);
-    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.MISSING_METADATA);
-    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NON_NUMERIC_BYTES);
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.UNMARKED_MANIFEST);
   }
 
@@ -351,47 +335,38 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             Optional.of(
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
+    String uri = "/reuse/missing-9001.pb";
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
+            .setTableId("table-1")
+            .setSnapshotId(9001L)
+            .build()
+            .toByteArray();
+    boolean unmarked = unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST;
+    when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()
                     .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(9001L)
+                    .setSnapshotId(9001L)
+                    .setReuseManifestRef(
+                        SnapshotReuseManifestRef.newBuilder()
+                            .setUri(uri)
+                            .setPayloadBytes(unmarked ? manifestBytes.length : 123L)
+                            .setPayloadSha256(
+                                ByteString.copyFrom(
+                                    unmarked ? sha256(manifestBytes) : new byte[32]))
+                            .setStatsGenerationManifestUri("/stats/generation.pb"))
                     .build()));
-    String uri = "/reuse/missing-9001.pb";
-    Snapshot.Builder parent =
-        Snapshot.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(9001L)
-            .putSummary(SnapshotReuseManifestMetadata.URI, uri);
-    if (unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST) {
-      byte[] manifestBytes =
-          SnapshotCaptureManifest.newBuilder()
-              .setFormatVersion(1)
-              .setAccountId("acct")
-              .setConnectorId("connector-1")
-              .setTableId("table-1")
-              .setSnapshotId(9001L)
-              .build()
-              .toByteArray();
-      parent
-          .putSummary(SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
-          .putSummary(
-              SnapshotReuseManifestMetadata.SHA256,
-              Base64.getEncoder().encodeToString(sha256(manifestBytes)));
-      when(blobStore.get(uri)).thenReturn(manifestBytes);
-    } else if (unavailableMode != ManifestUnavailableMode.MISSING_METADATA) {
-      parent.putSummary(
-          SnapshotReuseManifestMetadata.BYTES,
-          unavailableMode == ManifestUnavailableMode.NON_NUMERIC_BYTES ? "not-a-number" : "123");
-      parent.putSummary(SnapshotReuseManifestMetadata.SHA256, "missing");
-    }
-    when(backend.fetchSnapshot(any(), any(), eq(9001L))).thenReturn(Optional.of(parent.build()));
     if (unavailableMode == ManifestUnavailableMode.NOT_FOUND) {
       when(blobStore.get(uri)).thenThrow(new StorageNotFoundException("missing"));
     } else if (unavailableMode == ManifestUnavailableMode.NULL_BLOB) {
       when(blobStore.get(uri)).thenReturn(null);
+    } else if (unmarked) {
+      when(blobStore.get(uri)).thenReturn(manifestBytes);
     }
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
@@ -420,8 +395,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   private enum ManifestUnavailableMode {
     NULL_BLOB,
     NOT_FOUND,
-    MISSING_METADATA,
-    NON_NUMERIC_BYTES,
     UNMARKED_MANIFEST
   }
 

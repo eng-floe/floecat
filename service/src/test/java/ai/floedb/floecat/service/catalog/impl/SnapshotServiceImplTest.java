@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
@@ -46,6 +47,7 @@ import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -431,7 +433,45 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void updateSnapshot_allowsDeltaVersionZero() {
+  void createSnapshotTreatsSystemReuseManifestAsOutsideSourceIdentity() {
+    var tableId = tableId("snapshot-create-reuse");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    var existing =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(123L)
+            .setUpstreamCreatedAt(com.google.protobuf.Timestamp.getDefaultInstance())
+            .setSchemaJson("{}")
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("/durable/reuse.pb")
+                    .setPayloadBytes(12L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("/stats/generation.pb"))
+            .build();
+    when(svc.snapshotRepo.getById(tableId, 123L)).thenReturn(Optional.of(existing));
+    when(svc.snapshotRepo.metaForSafe(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
+
+    var response =
+        svc.createSnapshot(
+                CreateSnapshotRequest.newBuilder()
+                    .setSpec(
+                        SnapshotSpec.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshotId(123L)
+                            .setSchemaJson("{}"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(existing, response.getSnapshot());
+    verify(svc.snapshotRepo, never()).create(any(Snapshot.class));
+    verify(svc.currentSnapshotPointerService).maybeAdvance(tableId, existing, "corr");
+  }
+
+  @Test
+  void updateSnapshot_allowsDeltaVersionZeroAndPreservesSystemReuseManifest() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -467,6 +507,13 @@ class SnapshotServiceImplTest {
             .setTableId(tableId)
             .setSnapshotId(0L)
             .setSchemaJson("{\"type\":\"struct\"}")
+            .putSummary("source", "old")
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("/durable/reuse.pb")
+                    .setPayloadBytes(12L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("/stats/generation.pb"))
             .build();
     when(svc.snapshotRepo.metaFor(eq(tableId), eq(0L)))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
@@ -482,11 +529,15 @@ class SnapshotServiceImplTest {
                     .setTableId(tableId)
                     .setSnapshotId(0L)
                     .setUpstreamCreatedAt(existing.getUpstreamCreatedAt())
-                    .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}"))
-            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+                    .putSummary("source", "new"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("summary"))
             .build();
 
     assertDoesNotThrow(() -> svc.updateSnapshot(req).await().indefinitely());
+    ArgumentCaptor<Snapshot> updated = ArgumentCaptor.forClass(Snapshot.class);
+    verify(svc.snapshotRepo).update(updated.capture(), eq(7L));
+    assertEquals("new", updated.getValue().getSummaryOrThrow("source"));
+    assertEquals(existing.getReuseManifestRef(), updated.getValue().getReuseManifestRef());
   }
 
   @Test

@@ -38,6 +38,17 @@ message Snapshot {
   map<string,string> summary = 10;
   int32 schema_id = 11;
   optional string metadata_location = 12;
+  SnapshotReuseManifestRef reuse_manifest_ref = 13;
+}
+
+// System-owned reference to the compact artifact-reuse manifest produced when this snapshot's
+// capture is finalized. SnapshotSpec intentionally has no corresponding field: catalog clients may
+// update source metadata and summary without replacing Floecat's reuse state.
+message SnapshotReuseManifestRef {
+  string uri = 1;
+  uint64 payload_bytes = 2;
+  bytes payload_sha256 = 3;
+  string stats_generation_manifest_uri = 4;
 }
 
 message CurrentSnapshotPointer {

@@ -178,6 +178,12 @@ public class TableRootSynthesizer {
     if (snapshot.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
     }
+    if (snapshot.hasReuseManifestRef()
+        && !snapshot.getReuseManifestRef().getStatsGenerationManifestUri().isBlank()) {
+      entry.setReuseStatsGenerationRef(
+          BlobRef.newBuilder()
+              .setUri(snapshot.getReuseManifestRef().getStatsGenerationManifestUri()));
+    }
     stats
         .activeStatsGeneration(tableId, snapshot.getSnapshotId())
         .ifPresent(uri -> entry.setStatsGenerationRef(BlobRef.newBuilder().setUri(uri)));

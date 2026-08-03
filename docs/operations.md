@@ -136,14 +136,16 @@ Worker gRPC auth boundary:
   token attached by the worker client itself.
 - In OIDC mode, that bearer token comes from the configured reconciler worker service principal.
 - Internal user-context fanout still uses propagated request metadata where appropriate, but that
-  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.
+  is separate from reconcile worker control-plane authentication.
 
 In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
 APIs, while executor-plane nodes primarily run child `PLAN_TABLE`, `PLAN_VIEW`, `PLAN_SNAPSHOT`,
-and `EXEC_FILE_GROUP` work. `CaptureNow` uses the same plan-plus-child execution path. File-group workers submit results through
+`EXEC_FILE_GROUP`, and `FINALIZE_SNAPSHOT_CAPTURE` work. `CaptureNow` uses the same plan-plus-child
+execution path. File-group workers submit one immutable artifact-bundle descriptor through
 `CommitLeasedFileGroupResult`, which requires `result_id` so the control plane can enforce replay
-safety across worker retries. Success idempotently protects the referenced objects before completing
-the child job; these are ordered operations rather than one atomic storage transaction.
+safety across worker retries. Success durably completes the child job, then protects the bundle,
+stages its stats/index target mappings without reading the bundle, and writes the prepared marker.
+The RPC reports acceptance after staging completes; exact replay resumes incomplete staging.
 
 For `floecat.kv=dynamodb`, the durable reconcile hot paths now use native queue-oriented storage
 layouts rather than broad generic prefix scans:

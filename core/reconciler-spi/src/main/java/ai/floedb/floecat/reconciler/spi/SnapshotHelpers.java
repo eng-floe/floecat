@@ -24,8 +24,8 @@ public final class SnapshotHelpers {
     if (a == null || b == null) {
       return a == b;
     }
-    Snapshot normalizedA = a.toBuilder().clearIngestedAt().build();
-    Snapshot normalizedB = b.toBuilder().clearIngestedAt().build();
+    Snapshot normalizedA = a.toBuilder().clearIngestedAt().clearReuseManifestRef().build();
+    Snapshot normalizedB = b.toBuilder().clearIngestedAt().clearReuseManifestRef().build();
     return normalizedA.equals(normalizedB);
   }
 }

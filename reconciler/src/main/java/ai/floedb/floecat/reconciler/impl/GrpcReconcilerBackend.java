@@ -97,6 +97,7 @@ import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -462,6 +463,33 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       throw e;
     }
+  }
+
+  @Override
+  public Optional<Snapshot> latestReconciledSnapshotForReuse(
+      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
+    Snapshot latest = null;
+    String token = "";
+    do {
+      var response =
+          snapshot(ctx)
+              .listSnapshots(
+                  ListSnapshotsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
+                      .build());
+      for (Snapshot candidate : response.getSnapshotsList()) {
+        if (candidate.getSnapshotId() == excludedSnapshotId || !candidate.hasReuseManifestRef()) {
+          continue;
+        }
+        if (latest == null
+            || Timestamps.compare(candidate.getIngestedAt(), latest.getIngestedAt()) > 0) {
+          latest = candidate;
+        }
+      }
+      token = response.hasPage() ? response.getPage().getNextPageToken() : "";
+    } while (!token.isBlank());
+    return Optional.ofNullable(latest);
   }
 
   @Override

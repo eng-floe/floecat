@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -30,9 +31,11 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -209,6 +212,49 @@ public class SnapshotRepository {
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  /** Records the system-owned finalized reuse manifest without replacing concurrent updates. */
+  public void recordReuseManifest(
+      ResourceId tableId,
+      long snapshotId,
+      String uri,
+      long bytes,
+      byte[] sha256,
+      String statsGenerationManifestUri) {
+    if (uri == null
+        || uri.isBlank()
+        || bytes <= 0L
+        || sha256 == null
+        || sha256.length != 32
+        || statsGenerationManifestUri == null
+        || statsGenerationManifestUri.isBlank()) {
+      throw new IllegalArgumentException("complete reuse manifest metadata is required");
+    }
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      MutationMeta meta = repo.pointerMetaForSafe(key);
+      Snapshot current =
+          repo.getByKey(key)
+              .orElseThrow(() -> new IllegalStateException("snapshot not found: " + snapshotId));
+      Snapshot next =
+          current.toBuilder()
+              .setReuseManifestRef(
+                  SnapshotReuseManifestRef.newBuilder()
+                      .setUri(uri)
+                      .setPayloadBytes(bytes)
+                      .setPayloadSha256(ByteString.copyFrom(sha256))
+                      .setStatsGenerationManifestUri(statsGenerationManifestUri))
+              .build();
+      if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
+        return;
+      }
+      if (attempt < 7) {
+        backoffCurrentPointerAdvance(attempt);
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
   }
 
   /**

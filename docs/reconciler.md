@@ -20,12 +20,13 @@ The current job model is split by responsibility:
   parent job payload, records explicit file-group coverage metadata, and enqueues
   `EXEC_FILE_GROUP` plus `FINALIZE_SNAPSHOT_CAPTURE` children.
 - **`EXEC_FILE_GROUP`**: child execution job. Reads the planned source parquet files through
-  `FloecatConnector`, captures file-target stats, generates parquet sidecar index artifacts,
-  persists per-file execution results, and does not commit snapshot-wide aggregate outputs.
+  `FloecatConnector` when required, reuses compatible finalized artifacts selected by the snapshot
+  planner, captures missing file-target stats, generates missing parquet sidecar index artifacts,
+  and publishes one immutable artifact bundle for the group.
 - **`FINALIZE_SNAPSHOT_CAPTURE`**: child finalization job. Validates the persisted snapshot
   coverage, waits for all planned `EXEC_FILE_GROUP` children to finish with persisted success
-  results, and publishes the immutable capture manifest containing file-target and snapshot-wide
-  aggregate outputs. Explicit-empty snapshots publish a zero-group manifest.
+  results, and publishes the immutable capture manifest containing reusable bundle references and
+  snapshot-wide aggregate outputs. Explicit-empty snapshots publish a zero-group manifest.
 
 ## Architecture & Responsibilities
 - **`ReconcileJobStore`**: interface abstracting job persistence and leasing. In service runtime,
@@ -58,9 +59,9 @@ The current job model is split by responsibility:
   - `RemoteSnapshotPlanningReconcileExecutor` handles `PLAN_SNAPSHOT`.
   - `RemoteFileGroupReconcileExecutor` handles `EXEC_FILE_GROUP`.
   - `RemoteSnapshotFinalizeReconcileExecutor` handles file-group
-    `FINALIZE_SNAPSHOT_CAPTURE` jobs, including explicit-empty coverage.
-  - `SnapshotFinalizeReconcileExecutor` handles direct-stats finalization and remains the local
-    fallback for explicit-empty coverage.
+    `FINALIZE_SNAPSHOT_CAPTURE` jobs with non-empty file-group plans.
+  - `SnapshotFinalizeReconcileExecutor` handles direct-stats finalization and explicit-empty
+    file-group plans.
 - **`GrpcClients`**: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).
 - **`FloecatConnector`**: remains the only component allowed to touch upstream catalogs, table
@@ -94,9 +95,9 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   and the reconcile executor control plane. `CAPTURE_ONLY` routes capture planning through the
   same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata
   reconciliation and capture within the same planner/executor job tree. Remote file-group workers
-  submit file-target stats and staged index artifacts back through
-  `CommitLeasedFileGroupResult`, and the service protects those result objects and stages their
-  generation-scoped pointer mappings before `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide
+  publish one group artifact bundle and submit its descriptor and target mappings through
+  `CommitLeasedFileGroupResult`. The service protects the bundle and stages generation-scoped
+  pointers without reading its payload before `FINALIZE_SNAPSHOT_CAPTURE` writes snapshot-wide
   aggregate stats.
 - **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
   `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
@@ -106,6 +107,16 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **File-group execution**:
   - `EXEC_FILE_GROUP` resolves the parent snapshot plan, captures file-target stats, and records
     per-file execution results on the child job payload.
+  - Each file execution plan carries connector-provided physical `content_identity`, source
+    fingerprints, stats/index capture signatures, auxiliary-target fingerprints, and any selected
+    reusable bundle records. Empty physical content identity disables cross-snapshot reuse for that
+    file.
+  - Snapshot planning reads the compact capture manifest from the most recently reconciled snapshot
+    with finalized reusable artifacts, ordered by durable `ingested_at` rather than snapshot id or
+    source parentage. It does not read reusable bundle payloads, source files, or page-index
+    sidecars.
+    The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
+    rebinds selected records to the destination snapshot, and captures only missing outputs.
   - The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
     groups publish one target for each planned data file, each distinct attached Iceberg
     position/equality delete file, and each attached on-disk Delta deletion vector (`u` or `p`).
@@ -114,39 +125,45 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     table/column aggregate rollups.
   - An Iceberg delete file can apply to data files in multiple groups. Repeated group-level
     references are duplicate execution work, not additional logical files; snapshot publication
-    verifies matching descriptor payload sizes and SHA-256 values and retains one target without
-    reading or hashing delete-file content. File-group descriptors retain their group-level counts;
-    the snapshot manifest reports the deduplicated unique-target count.
+    verifies equivalent source fingerprints and stats signatures, selects one canonical bundle
+    mapping, and retains one target without reading or hashing delete-file content. File-group
+    descriptors retain their group-level counts; the snapshot manifest reports the deduplicated
+    unique-target count.
   - Snapshot-wide aggregate outputs are intentionally deferred to
     `FINALIZE_SNAPSHOT_CAPTURE`, which acts as the barrier for complete snapshot capture.
-  - Sidecar generation and artifact registration happen per source parquet file.
-  - Service-side result submission persists only file-target stats from file-group workers;
-    aggregate table/column outputs are rejected from file-group completion and recomputed once at
-    snapshot finalization time.
+  - Newly generated sidecars are written per source parquet file. Reused index records retain the
+    existing `artifact_uri`, and the worker does not read or rewrite their sidecar bytes.
+  - File stats and index wrappers are serialized into one `ReusableArtifactBundlePayload` per group
+    beneath the leased `stats_object_prefix`. `FileGroupResultPayload` carries target mappings to
+    that shared object plus a lightweight compatibility index. Aggregate table/column outputs are
+    recomputed once at snapshot finalization time from group partials.
   - `CommitLeasedFileGroupResult` requires `result_id` and a canonical
-    `artifact_references_sha256` over its stats and index descriptors. The service first durably
-    accepts the immutable result and completes the child job, then idempotently protects its
-    worker-written objects, stages bounded generation-scoped pointer batches without reading their
-    payloads, and writes a metadata-only prepared marker. An exact retry resumes any incomplete
-    staging.
+    `artifact_references_sha256` over the expanded stats and index target mappings. Success carries
+    the shared bundle descriptor and the stats/index target IDs stored in that bundle. The service
+    first durably accepts the immutable result and completes the child job, then idempotently
+    protects the bundle, stages bounded generation-scoped pointer batches without reading it, and
+    writes a metadata-only prepared marker. An exact retry resumes any incomplete staging.
     `FINALIZE_SNAPSHOT_CAPTURE` requires the digest-bound prepared marker for every file group,
     stages only snapshot-wide aggregate pointers, and activates the prepared stats and index
-    generations. It performs one small pointer lookup per file group and does not read result
-    payloads, read worker objects, or enumerate per-file pointers. Successful finalization clears
-    protection metadata; abandoned unpublished full-rescan generations are deleted after terminal
-    failure or cancellation.
+    generations. The finalization submission service performs one small pointer lookup per file
+    group and does not read result payloads, artifact bundles, source files, sidecars, or per-file
+    pointers. Successful finalization clears protection metadata; abandoned unpublished full-rescan
+    generations are deleted after terminal failure or cancellation.
   - Snapshot planning limits each file group to 128 files by default. The ceiling is configurable
     with `floecat.reconciler.snapshot-plan.max-files-per-group`; values are clamped to at least one.
     The service rejects submitted plans containing a group above its configured ceiling and
     enforces membership and counts against the resulting immutable planned group. Raising the
     setting increases the descriptor count, pointer-metadata work, request size, and resident
     metadata for one file-group commit.
-  - The finalizer still reads and verifies file-group payloads and worker-written stats objects to
-    calculate snapshot-wide aggregates. It derives exact file-stats coverage from the immutable
-    data-file execution plans and their attached delete artifacts. Only the duplicate service-side
-    reads were removed.
-    Finalize submission can race with pointer staging and must retry the exact same result when a
-    prepared marker is not yet present.
+  - The finalizer reads and verifies each bounded `FileGroupResultPayload`, derives exact file-stats
+    coverage from the immutable data-file execution plans and their attached delete artifacts, and
+    merges the embedded aggregate partials. It validates reusable bundle references and carries one
+    normalized reference per file group into `SnapshotCaptureManifest` without reading bundle
+    payloads. Finalize submission can race with pointer staging and must retry the exact same result
+    when a prepared marker is not yet present.
+  - Successful publication stores the capture-manifest descriptor in the snapshot's system-owned
+    `reuse_manifest_ref` and heads the reusable stats generation from the table root. Garbage
+    collection treats both references as live publication state.
   - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,
     `file_groups_failed`, `files_total`, `files_completed`, and `files_failed`.
 - **Index artifacts**:
@@ -154,10 +171,8 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     `IndexArtifactRecord`.
   - The actual sidecar URI remains worker-controlled. Floecat never copies, moves, or treats the
     sidecar named by `artifact_uri` as Floecat-owned cleanup state.
-  - The serialized protobuf wrapper is Floecat-owned lease output. Remote workers must publish it
-    beneath the leased file-group `stats_object_prefix` at
-    `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. The service stages only a
-    pointer to that fenced wrapper.
+  - The serialized `IndexArtifactRecord` wrapper is stored in the file group's reusable artifact
+    bundle. The service stages the file-index target ID against that shared bundle object.
   - service-side lookup/list/read is exposed by `TableIndexService`.
 - **Capture-engine SPI contract**:
   - `CaptureEngine.capture` accepts a `CaptureFileResultConsumer`. Engines emit file-scoped stats
@@ -166,8 +181,8 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     outputs, but it must not contain file stats or page-index rows. It also reports the sorted,
     distinct concrete selectors represented by its column-stat aggregates so finalization can
     preserve resolved default columns and name/field-ID aliases.
-  - Engine capabilities use `PROGRESSIVE_FILE_OUTPUTS`. Implementations compiled against the old
-    `capture(request)` or `COMPLETE_FILE_GROUP_OUTPUTS` API must be updated.
+  - Capture engines advertise `PROGRESSIVE_FILE_OUTPUTS` and implement the progressive
+    `capture(request, consumer)` contract.
   - `ReconcilerBackend.indexCaptureComplete` is a snapshot-level completeness proof. Backend
     implementations must not replace it with one remote artifact lookup per source file.
 - **External capture policy**:
@@ -204,7 +219,7 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   - lease coordination owns runtime worker-ownership state separately (`lease`, `lease-expiry`,
     lane lease, snapshot lease)
   - payload blobs are canonical task artifacts referenced from canonical rows (snapshot plans,
-    file-group results, direct stats, per-file-group stats)
+    file-group results, direct stats, and reusable file-group artifact bundles)
   - projection/root-summary state mirrors canonical parent rollups for eventual-consistent
     observability (root-job list summaries and tree/list aggregate counters)
 - **Stats-only enqueue coalescing**: active stats-only `CAPTURE_ONLY` root jobs use a normalized
@@ -279,20 +294,23 @@ Connector StartCapture / CaptureNow
           → create or update the destination view
       → if PLAN_SNAPSHOT:
           → ask FloecatConnector for planned parquet file membership
+          → read the predecessor capture manifest and select compatible bundle records
           → persist grouped file plan on parent job payload
           → enqueue EXEC_FILE_GROUP children
           → enqueue FINALIZE_SNAPSHOT_CAPTURE child
       → if EXEC_FILE_GROUP:
           → resolve parent PLAN_SNAPSHOT payload
           → instantiate FloecatConnector
-          → capture file-target stats for planned files
-          → generate parquet sidecar index artifacts
-          → persist per-file execution results and artifact registrations
+          → read each selected reusable bundle once
+          → capture missing file-target stats and page indexes
+          → publish one group bundle and bounded result payload
+          → commit the result descriptor and bundle target mappings
       → if FINALIZE_SNAPSHOT_CAPTURE:
           → validate explicit planned coverage metadata
           → wait for all planned EXEC_FILE_GROUP children to succeed with persisted results
-          → verify exact file-target coverage in the stats store
-          → roll up snapshot-wide aggregate outputs
+          → read and verify each bounded group result payload
+          → roll up snapshot-wide aggregate outputs and publish the capture manifest
+          → activate prepared stats/index generations and snapshot reuse metadata
       → markSucceeded or markFailed
 ```
 
@@ -329,9 +347,8 @@ perform a post-completion final lease confirmation after that RPC has durably co
   - `floecat.reconciler.executor.remote-snapshot-finalize.enabled`
   - `floecat.reconciler.executor.snapshot-finalize.enabled`
   - File-group snapshots, including explicit-empty snapshots, use the descriptor-driven
-    `RemoteSnapshotFinalizeReconcileExecutor`; direct-stats snapshots use the service-local
-    `SnapshotFinalizeReconcileExecutor`. The local executor retains explicit-empty support as a
-    fallback.
+    `RemoteSnapshotFinalizeReconcileExecutor` when they contain file groups. Direct-stats snapshots
+    and explicit-empty file-group snapshots use `SnapshotFinalizeReconcileExecutor`.
 - Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
   references must remain stable for `GetReconcileJob`).
 - Extend `FloecatConnector` to add richer snapshot planning or file execution behavior. Query scan

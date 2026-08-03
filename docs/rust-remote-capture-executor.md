@@ -1,43 +1,29 @@
 # Rust Remote Capture Executor
 
 ## Overview
-This page describes how to replace the current Java `EXEC_FILE_GROUP` worker with a Rust remote
-worker that speaks Floecat's leased reconcile protocol directly.
+This page describes a Rust remote `EXEC_FILE_GROUP` worker that speaks Floecat's leased reconcile
+protocol directly.
 
-> [!WARNING]
-> This protocol revision is breaking. `SubmitLeasedFileGroupExecutionResult` and its chunked
-> result flow were removed and replaced by `CommitLeasedFileGroupResult`, which commits
-> executor-written immutable artifact descriptors. Old workers receive `UNIMPLEMENTED` from a new
-> control plane, and new workers cannot submit results to an old control plane. Mixed-version
-> worker/control-plane deployments are unsupported: drain leased work, stop the old worker fleet,
-> deploy the control plane and matching workers as one coordinated cutover, then resume leasing.
+Generate Rust protobuf bindings from `core/proto` and deploy the worker with the matching control
+plane. The control plane validates conditionally required fields, bundle metadata, immutable plan
+identity, realized selector coverage, and artifact digests.
 
-The current protocol also adds content-state, realized-stats-selector, and
-realized-index-selector fields. These protobuf additions are wire-compatible, but some values are
-conditionally required by the control plane. Regenerate Rust protobuf bindings from `core/proto`
-and deploy matching workers with the control plane. An old file-group worker can continue to
-submit stats-only results, but without `FileGroupResultPayload.realized_stats_selectors` the
-control plane cannot record the concrete name/field-ID aliases or resolved default columns that
-were materialized. That can cause a later request for equivalent coverage to be captured again.
-An old worker also cannot complete default page-index capture because it cannot populate
-`FileGroupResultPayload.realized_index_selectors`.
-
-The file-group result contract also requires file stats for auxiliary delete artifacts recorded in
-`file_execution_plans`: Iceberg position/equality delete files and on-disk Delta deletion vectors.
-The protobuf fields are not new, but treating them as required stats coverage is a semantic contract
-change. A worker that publishes only the paths in `file_paths` can commit an incomplete result that
-is later rejected by snapshot finalization.
+File-group results include file stats for all requested data files and for auxiliary delete
+artifacts recorded in `file_execution_plans`: Iceberg position/equality delete files and on-disk
+Delta deletion vectors. Page indexes remain data-file outputs only.
 
 The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:
 
 1. Leases eligible reconcile jobs from the control plane.
 2. Fetches the standalone file-group execution payload for each leased job.
-3. Reads parquet files and computes stats and parquet page-index sidecars.
-4. Submits success or failure back through the control plane.
+3. Loads selected reusable artifact bundles and reads source parquet only for outputs that are not
+   reusable.
+4. Computes missing stats and parquet page-index sidecars.
+5. Publishes one immutable artifact bundle and submits success or failure to the control plane.
 
-If you only need file-group capture replacement, you do not need to replace the Java planner
-workers. `PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_VIEW`, and `PLAN_SNAPSHOT` can remain in the
-existing JVM control plane or executor fleet.
+File-group execution is independently deployable. `PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_VIEW`, and
+`PLAN_SNAPSHOT` can run in the JVM control plane or executor fleet while Rust workers lease
+`EXEC_FILE_GROUP` jobs.
 
 Query-driven stats-only work does not carry a request-origin marker. Content-state coverage decides
 whether execution is required. For genuinely missing coverage, the JVM snapshot planner attempts
@@ -49,8 +35,8 @@ If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the lease
 planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
 snapshot finalizer must likewise populate the realized-selector fields described below.
 
-## What You Are Replacing
-The current JVM path for file-group execution is:
+## Execution Architecture
+The leased file-group execution path is:
 
 - `RemoteReconcileExecutorPoller` leases `EXEC_FILE_GROUP` jobs.
 - `RemoteFileGroupReconcileExecutor` fetches `LeasedFileGroupExecution`.
@@ -58,8 +44,8 @@ The current JVM path for file-group execution is:
 - `CommitLeasedFileGroupResult` durably accepts the immutable result and completes the job, then
   stages its stats and index-artifact pointer metadata and writes a prepared marker.
 
-A Rust worker replaces the execution portion of that flow. It should behave like an external
-implementation of the current worker contract, not like a new public API.
+A Rust worker implements the execution portion of that flow as an external implementation of the
+worker contract.
 
 ## Required Protocol Surface
 At minimum, the Rust worker must implement these `ReconcileExecutorControl` RPCs from
@@ -164,15 +150,19 @@ During execution:
 - `source_connector`
 - `source_namespace`
 - `source_table`
+- `storage_location`
 - `table_id`
 - `snapshot_id`
 - `plan_id`
 - `group_id`
 - `file_paths`
+- `result_payload_uri`
+- `stats_object_prefix`
 - `execution_schema_json`
 - `file_execution_plans`
 - `capture_policy`
-- `stats_object_prefix`
+- `index_predecessor`
+- `predecessor_index_artifacts`
 
 For a Rust worker, `source_connector` is important because it carries the resolved upstream
 connector definition and auth material needed to read source files.
@@ -182,18 +172,51 @@ default column scope, maximum default-column count, and opaque `properties` map 
 to the worker. Engines may interpret property keys they own and should preserve unknown keys when
 passing the policy between worker components.
 
+`result_payload_uri` is the server-allocated destination for `FileGroupResultPayload`, and
+`stats_object_prefix` fences the bundle objects published by this execution. When page indexes are
+requested, echo the pinned `index_predecessor` through the result descriptor. The predecessor
+artifact list contains active index-wrapper metadata; it does not require reading the sidecars
+named by those wrappers.
+
 `file_paths` contains the data files assigned to the group. `file_execution_plans` carries the
-per-data-file format metadata and any attached delete artifacts:
+per-data-file format metadata, reuse identity, and any attached delete artifacts:
 
 - `iceberg_delete_files` contains Iceberg position/equality delete files. One delete file may be
-  attached to multiple data files and therefore may occur in more than one file group.
+  attached to multiple data files and therefore may occur in more than one file group. Each delete
+  file carries its own `content_identity`.
 - `deletion_vector` contains the Delta deletion vector attached to that data file. Storage types
   `u` and `p` are on-disk vectors; use the exact `path_or_inline_dv` value as the file-stat target
   path. Storage type `i` is inline and is not currently supported by the JVM capture path.
+- `content_identity` is connector-planned immutable physical identity. An empty value forbids
+  cross-snapshot reuse for that data file.
+- `source_fingerprint` and `auxiliary_stats_fingerprints` bind stats to the complete source context,
+  including schema, partitions, delete files, and deletion vectors.
+- `index_source_fingerprint` binds page-index reuse to the physical data file.
+- `stats_capture_signature` and `index_capture_signature` bind artifacts to the requested capture
+  policy.
+- `reusable_artifact_bundle_selections` identifies the stats and index records that can be loaded
+  from previously finalized group bundles.
 
 The data-file paths remain the unit of execution progress and `ReconcileFileResult` reporting.
 Attached delete artifacts add stats objects, but do not add successful-file results and do not get
 page-index artifacts.
+
+## Reuse Execution
+
+Bundle selections are authoritative inputs from snapshot planning. Deduplicate selections by
+`artifact.payload_uri`, fetch each selected object once for the file group, verify its byte length
+and SHA-256, parse `ReusableArtifactBundlePayload` format version 1, and index its records by file
+path.
+
+For every selected record, validate the target path, source fingerprint, and capture signature
+against its `FileExecutionPlan`. Rebind valid records to the leased destination table and snapshot.
+Stats and page indexes are selected independently, so a file may reuse either output while the
+worker computes the other. Reused page indexes retain their `artifact_uri`; the worker does not
+read or rewrite the sidecar bytes.
+
+If a required output has no bundle selection, execute the corresponding source-file capture. The
+reuse path reads the compact protobuf bundle, not the source parquet data or the page-index
+sidecar.
 
 ## Result Contract
 `CommitLeasedFileGroupResult` has two outcomes:
@@ -203,48 +226,52 @@ page-index artifacts.
 
 Both require `result_id`.
 
-The worker uploads immutable stats and index-artifact wrapper objects, then sends their compact
-descriptors with `success`. Floecat durably accepts the immutable result and makes the file-group
-job terminal, then idempotently protects the referenced objects, stages their generation-scoped
-pointer mappings without reading them, and writes a digest-bound prepared marker. Completion and
-pointer staging are ordered, not one atomic storage transaction. The
-`artifact_uri` inside an index wrapper may name external storage; Floecat does not read, copy, or
-clean up that sidecar.
+The worker serializes all file-stat records and index-artifact wrappers for the group into one
+`ReusableArtifactBundlePayload` with `format_version = 1`. Publish it at:
 
-The sidecar and its wrapper have separate placement rules:
+```text
+<stats_object_prefix>reuse-bundles/<payload_sha256_hex>.pb
+```
 
-- The worker may choose the actual sidecar URI recorded in `IndexArtifactRecord.artifact_uri`.
-- The serialized `IndexArtifactRecord` wrapper must be written below
-  `<stats_object_prefix>index-artifacts/`.
-- Its wrapper URI must be
-  `<stats_object_prefix>index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`, using
-  lowercase hexadecimal SHA-256 values.
+The bundle's `StatsObjectDescriptor` uses `target_storage_id = reuse-bundle:<group_id>` and records
+the exact payload URI, byte length, and binary SHA-256. A `ReusableArtifactBundleReference` combines
+that descriptor with manifest-resident compatibility metadata for every bundled stats and index
+record.
 
-The fenced wrapper prefix prevents one lease from registering another worker's metadata. It does
-not move, copy, or constrain the referenced sidecar.
+The worker also publishes `FileGroupResultPayload` at the leased `result_payload_uri`. Its
+`file_stats` and `index_artifacts` entries are target mappings: each entry has its target storage ID
+and the shared bundle URI, size, and digest. The payload includes the complete
+`reusable_artifact_bundle` reference, per-file results, aggregate partials, realized selectors, and
+the pinned index predecessor when page indexes are requested.
+
+The actual page-index sidecar URI remains worker-controlled through
+`IndexArtifactRecord.artifact_uri`. Commit newly generated sidecars before publishing the bundle.
+For a reused index record, retain the existing sidecar URI and publish no sidecar bytes. Floecat
+does not copy, move, or read sidecars during group commit or snapshot finalization.
 
 Success carries:
 
 - `result_id`
 - `result_descriptor`
-- `file_stats`
-- `index_artifacts`
+- `artifact_bundle`
 
-Each `StatsObjectDescriptor` carries the immutable object's target storage ID, payload URI, byte
-length, and SHA-256. File-stats and index descriptors for the same source file may share a target
-path, but stats and index target storage IDs use different formats. A file-stats target is
-`file-<sha256>` where the digest is SHA-256 over the byte `F`, byte `0x1f`, and the UTF-8 bytes of
-the trimmed file path. A file index target is `file:<source-file-path>`. Their payload URIs identify
-the distinct protected objects.
+`FileGroupArtifactBundleDescriptor.artifact` is the bundle descriptor. Its
+`file_stats_target_storage_ids` and `index_artifact_target_storage_ids` fields enumerate the target
+mappings carried by that bundle. A file-stats target is `file-<sha256>` where the digest is SHA-256
+over the byte `F`, byte `0x1f`, and the UTF-8 bytes of the trimmed file path. A file-index target is
+`file:<source-file-path>`.
+
+Floecat durably accepts the result and makes the file-group job terminal, then idempotently
+protects the bundle, stages all generation-scoped target mappings without reading the bundle, and
+writes a digest-bound prepared marker. Completion and pointer staging are ordered operations.
 
 Failure carries:
 
 - `result_id`
 - `message`
 
-The service enforces top-level idempotency on `job_id + result_id` and also keeps per-item
-idempotency for stats and artifact writes. This gives you safe replay semantics if the worker loses
-the gRPC response and retries the same submission.
+The service enforces idempotency on `job_id + result_id` and on the staged target mappings. This
+provides safe replay when the worker loses the gRPC response and retries the same submission.
 
 ## Result ID Rules
 Scope the `result_id` to a single **execution attempt** by including the `lease_epoch`. Within one
@@ -261,18 +288,18 @@ Required shape:
 Both the Java file-group executor and the remote executor follow this shape.
 
 Do not reuse one `result_id` for different payloads. The control plane rejects replay with the same
-`result_id` if the immutable result descriptor or either artifact-descriptor list changes. Two
-different lease attempts must not share a `result_id`, because the later attempt would conflict with
-the durable result accepted for the earlier attempt. Including the `lease_epoch` guarantees that.
+`result_id` if the immutable result descriptor or artifact-bundle mapping changes. Two different
+lease attempts must not share a `result_id`, because the later attempt would conflict with the
+durable result accepted for the earlier attempt. Including the `lease_epoch` guarantees that.
 
 ## Idempotency and Retry Semantics
 The worker should assume the following:
 
 - `CommitLeasedFileGroupResult` is safe to retry only if the same `result_id` and the
-  same descriptor and descriptor lists are reused.
+  same result descriptor and artifact-bundle descriptor are reused.
 - success and failure are different outcomes and must not share a `result_id`.
-- a successful commit does not mark the file-group job terminal until pointer staging and the
-  prepared marker are complete.
+- the durable result makes the file-group job terminal before pointer staging; `accepted=true` is
+  returned only after staging and the prepared marker are complete.
 - a retry of the exact success submission is required after a timeout, retryable error, or uncertain
   outcome, even when the job is already terminal. This is a replay of the accepted result, not a
   second logical completion.
@@ -308,18 +335,19 @@ handled completion RPC is durably accepted by the control plane. After that poin
 not send another `RenewReconcileLease` as a final confirmation step, because the service may have
 already cleared the lease as part of successful completion.
 
-## What the Rust Worker Must Produce
-The service expects the same logical outputs the Java runner currently produces:
+## Worker Outputs
+The service requires:
 
-- one directly uploaded protobuf blob per requested `TargetStatsRecord`
-- worker-chosen parquet sidecars plus one fenced, hash-addressed `IndexArtifactRecord` wrapper per
-  sidecar
-- a bounded `FileGroupResultPayload` containing compact file-stats and index-wrapper descriptors
+- one `ReusableArtifactBundlePayload` containing the group's file stats and index wrappers
+- worker-chosen parquet sidecars for newly generated page indexes
+- a bounded `FileGroupResultPayload` containing target mappings and compatibility metadata for the
+  artifact bundle
 - the concrete column selectors represented by the published column-stat aggregates, repeated in
   `FileGroupResultPayload.realized_stats_selectors`
 - the concrete index selectors present in the published wrappers, repeated in
   `FileGroupResultPayload.realized_index_selectors`
-- a `ReconcileFileGroupResultDescriptor` sent in the success RPC
+- a `ReconcileFileGroupResultDescriptor` and `FileGroupArtifactBundleDescriptor` sent in the
+  success RPC
 
 The worker is responsible for ensuring:
 
@@ -334,9 +362,17 @@ The worker is responsible for ensuring:
   planned data files, while file-stats descriptor counts include auxiliary delete targets
 - every planned file requested for page-index capture gets a matching artifact
 - artifact metadata matches the target file identity
-- every referenced stats object, sidecar, and index wrapper is committed before the success RPC
+- every referenced stats object, generated sidecar, index wrapper, and artifact bundle is
+  committed before the success RPC
 - every index wrapper uses the leased `stats_object_prefix` plus the required
   `index-artifacts/<target-hash>/<payload-hash>.pb` suffix
+- the artifact bundle uses the leased `stats_object_prefix` and the required
+  `reuse-bundles/<payload-sha256>.pb` suffix
+- each `TargetStatsRecord` carries `floedb.reconcile.source-fingerprint-v1`,
+  `floedb.reconcile.stats-signature-v1`, and
+  `floedb.reconcile.realized-stats-selectors-v2` properties matching its execution plan
+- each `IndexArtifactRecord` carries `floedb.reconcile.source-fingerprint-v1` and
+  `floedb.reconcile.index-signature-v1` properties matching its execution plan
 - every index wrapper records its concrete selector set as a JSON string array in the shared
   `indexed_columns` property
 - every reusable index metadata entry repeats that wrapper's sorted, distinct selector set in
@@ -351,18 +387,21 @@ The worker is responsible for ensuring:
   list; report equivalent aliases in addition so later requests can reuse the same artifacts
 - default index selection resolves to a non-empty selector set for non-empty snapshots, uses the
   same set for every file in the group, and does not exceed `max_default_columns` for `FIRST_N`
-- every stats descriptor identifies its target storage ID and the object size and SHA-256
+- the reusable bundle reference contains exactly one compatibility entry for each bundled target
+- the commit's artifact-bundle target ID lists exactly match the target mappings in
+  `FileGroupResultPayload`
 - the result descriptor's `artifact_references_sha256` is the canonical digest of its file-stats
   and index-artifact descriptor sets
-- the result manifest size and SHA-256 match the uploaded payload
+- the result descriptor's payload size and SHA-256 match the uploaded `FileGroupResultPayload`
 
 `CommitLeasedFileGroupResult` durably accepts the immutable result before staging its bounded
 pointers and metadata-only prepared marker. Snapshot finalization waits for that marker. If the RPC
-outcome is uncertain or retryable, submit the exact same result ID, descriptor, and descriptor lists
-again; exact replay resumes staging without allowing a rejected lease to mutate generation pointers
-and without re-reading the worker objects.
+outcome is uncertain or retryable, submit the exact same result ID, result descriptor, and
+artifact-bundle descriptor again. Exact replay resumes staging without reading the bundle.
 
-Compute `artifact_references_sha256` by feeding the following canonical bytes to SHA-256:
+Compute `artifact_references_sha256` over expanded target mappings. For each file-stats and index
+target ID in `FileGroupArtifactBundleDescriptor`, copy the shared bundle artifact descriptor and
+replace `target_storage_id` with that target ID. Feed those descriptors to SHA-256 as follows:
 
 1. Encode the file-stats group, then the index-artifact group.
 2. For each group, write its one-byte kind (`1` for file stats or `2` for index artifacts), followed
@@ -395,24 +434,24 @@ deployment.
 ## Snapshot Finalizer Implications
 
 The snapshot finalizer reads and SHA-verifies each bounded file-group result payload. It validates
-the referenced stats and index descriptors but does not download their immutable objects. Its
-worker-side workload is therefore proportional to planned-file, descriptor, and partial-aggregate
-counts rather than to the referenced objects' byte volume. For each successful group it derives the
-exact expected stats-target set from the immutable `file_execution_plans`: successful data files,
-attached Iceberg delete files, and attached on-disk Delta deletion vectors. Missing or extra targets
-are invalid.
+the artifact-bundle reference and target mappings but does not read the bundle payload, source
+parquet files, or page-index sidecars. Its worker-side workload is therefore proportional to
+planned-file, mapping, compatibility-metadata, and partial-aggregate counts. For each successful
+group it derives the exact expected stats-target set from the immutable `file_execution_plans`:
+successful data files, attached Iceberg delete files, and attached on-disk Delta deletion vectors.
+Missing or extra targets are invalid.
 
 An Iceberg delete file may be referenced by data files in different groups. Repeated references to
-that target are execution overhead rather than additional logical files: a finalizer should verify
-that repeated descriptors identify identical stats content and retain one snapshot-level target.
-This comparison uses the descriptor's existing target ID, payload size, and payload SHA-256; it does
-not require reading or hashing the delete-file content.
+that target are execution overhead rather than additional logical files. The finalizer verifies
+equivalent reusable stats metadata, selects one canonical bundle mapping for the snapshot-level
+target, and retains that target's compatibility metadata on its owning bundle. It does not read or
+hash delete-file content.
 
 The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
-its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
-It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
-Data-file source/success counts do not include auxiliary delete artifacts; file-stats record counts
-do include their group-level descriptors.
+its `artifact_references_sha256`, and one normalized `reusable_artifact_bundles` entry per file
+group. It carries file-group descriptors, bundle compatibility indexes, snapshot-wide aggregate
+descriptors, and counts. Data-file source/success counts do not include auxiliary delete artifacts;
+file-stats record counts include their group-level target mappings.
 
 For column-stats capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the
@@ -439,20 +478,15 @@ policies, default column scope, maximum default-column count, and the complete o
 map. The control plane rejects policy drift during finalization.
 
 `SubmitLeasedSnapshotFinalizeResult` reads the manifest once and performs one metadata-pointer
-lookup per file group. It does not read file-group payloads or per-file objects. If any accepted
-file group has not written its digest-bound prepared marker, the service returns a retryable error.
-The finalizer must retry the exact same finalization result; it must not regenerate a different
-result ID or manifest for that retry.
+lookup per file group. It does not read file-group payloads, artifact bundles, source files, or
+sidecars. If any accepted file group has not written its digest-bound prepared marker, the service
+returns a retryable error. The finalizer must retry the exact same finalization result and manifest.
 
 During successful publication, the control plane commits the stats-generation root and the index
 generation's active and capture-manifest pointers in one atomic pointer batch. Readers therefore
 cannot observe a finalized snapshot with only one generation activated. This publication fence is
 internal to the control plane and requires no additional RPC or sequencing step from the external
 finalizer.
-
-The digest field is required and has no legacy fallback. Existing in-flight or persisted
-file-group results without it must be drained or replanned before a finalizer using this contract
-can complete them.
 
 ## Minimal Architecture
 A practical Rust implementation usually has these pieces:
@@ -467,26 +501,25 @@ A practical Rust implementation usually has these pieces:
 Keep the protobuf adapter isolated from the parquet engine. That makes it easier to test retry and
 idempotency behavior separately from file scanning logic.
 
-## Recommended Integration Strategy
+## Recommended Deployment Strategy
 Start small:
 
 1. Implement a Rust worker that only leases `RJK_EXEC_FILE_GROUP`.
 2. Initially support `requestsStats=false` / `capturePageIndex=false` no-op file groups correctly.
 3. Add stats capture.
 4. Add parquet page-index artifact generation.
-5. Run the Rust worker alongside the existing JVM planner workers.
+5. Run the Rust worker with the JVM planner workers.
 6. Disable `floecat.reconciler.executor.remote-file-group.enabled` on JVM executor nodes once the
    Rust worker is ready to own all file-group jobs.
 
-This keeps the planner/control-plane behavior stable while you replace only the parquet execution
-layer.
+This assigns parquet execution to Rust while retaining the planner and control-plane services.
 
 ## Non-Goals
 This worker does not need to:
 
 - implement public catalog CRUD APIs
-- replace `ReconcileControl`
-- replace planner workers unless you want full non-JVM reconcile
+- implement `ReconcileControl`
+- implement planner workers unless the deployment also moves planning out of the JVM
 - embed into the Quarkus service process
 
 ## Troubleshooting

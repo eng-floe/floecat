@@ -45,7 +45,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -465,7 +464,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         new ArrayList<>();
     if (!lease.fullRescan) {
       Optional<HistoricalArtifacts> manifestArtifacts =
-          loadPredecessorReuseManifest(context, tableId, task.snapshotId(), lease.connectorId);
+          loadLatestReconciledReuseManifest(context, tableId, task.snapshotId(), lease.connectorId);
       manifestArtifacts.ifPresent(artifacts -> historicalBundles.addAll(artifacts.bundles()));
     }
     List<ReconcileFileGroupTask> enriched =
@@ -660,30 +659,18 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private Optional<HistoricalArtifacts> loadReuseManifest(
-      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
+      ResourceId tableId, Snapshot snapshot, String expectedConnectorId) {
     if (blobStore == null) {
       return Optional.empty();
     }
-    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
-    if (snapshot == null) {
+    long snapshotId = snapshot.getSnapshotId();
+    if (!snapshot.hasReuseManifestRef()) {
       return Optional.empty();
     }
-    String uri = snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.URI, "").trim();
+    var manifestRef = snapshot.getReuseManifestRef();
+    String uri = manifestRef.getUri().trim();
     if (uri.isBlank()) {
-      return Optional.empty();
-    }
-    String declaredBytes =
-        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
-    String declaredSha256 =
-        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.SHA256, "").trim();
-    if (declaredBytes.isBlank() || declaredSha256.isBlank()) {
-      return Optional.empty();
-    }
-    long expectedBytes;
-    try {
-      expectedBytes = Long.parseLong(declaredBytes);
-    } catch (NumberFormatException e) {
-      return Optional.empty();
+      throw new IllegalStateException("snapshot reuse manifest URI is missing: " + snapshotId);
     }
     byte[] bytes;
     try {
@@ -694,12 +681,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (bytes == null) {
       return Optional.empty();
     }
-    if (expectedBytes != bytes.length
-        || !MessageDigest.isEqual(
-            declaredSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
-            Base64.getEncoder()
-                .encodeToString(sha256(bytes))
-                .getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+    if (manifestRef.getPayloadBytes() <= 0L
+        || manifestRef.getPayloadBytes() != bytes.length
+        || manifestRef.getPayloadSha256().size() != 32
+        || manifestRef.getStatsGenerationManifestUri().isBlank()
+        || !MessageDigest.isEqual(manifestRef.getPayloadSha256().toByteArray(), sha256(bytes))) {
       throw invalidReuseManifest("snapshot reuse manifest metadata mismatch: " + uri, null);
     }
     try {
@@ -738,13 +724,23 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     }
   }
 
-  private Optional<HistoricalArtifacts> loadPredecessorReuseManifest(
-      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
-    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
-    if (snapshot == null || !snapshot.hasParentSnapshotId()) {
+  private Optional<HistoricalArtifacts> loadLatestReconciledReuseManifest(
+      ReconcileContext context,
+      ResourceId tableId,
+      long targetSnapshotId,
+      String expectedConnectorId) {
+    Snapshot basis =
+        backend.latestReconciledSnapshotForReuse(context, tableId, targetSnapshotId).orElse(null);
+    if (basis == null) {
+      LOG.infof(
+          "No reconciled snapshot reuse basis found tableId=%s targetSnapshotId=%d",
+          tableId.getId(), targetSnapshotId);
       return Optional.empty();
     }
-    return loadReuseManifest(context, tableId, snapshot.getParentSnapshotId(), expectedConnectorId);
+    LOG.infof(
+        "Selected reconciled snapshot reuse basis tableId=%s targetSnapshotId=%d basisSnapshotId=%d",
+        tableId.getId(), targetSnapshotId, basis.getSnapshotId());
+    return loadReuseManifest(tableId, basis, expectedConnectorId);
   }
 
   private static byte[] sha256(byte[] bytes) {
@@ -898,11 +894,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       List<String> filePaths =
           groupFiles.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList();
       List<ReconcileFileExecutionPlan> executionPlans =
-          executionSchemaJson == null || executionSchemaJson.isBlank()
-              ? List.of()
-              : groupFiles.stream()
-                  .map(RemoteSnapshotPlanningReconcileExecutor::executionPlan)
-                  .toList();
+          groupFiles.stream().map(RemoteSnapshotPlanningReconcileExecutor::executionPlan).toList();
       groups.add(
           ReconcileFileGroupTask.of(
               planId,

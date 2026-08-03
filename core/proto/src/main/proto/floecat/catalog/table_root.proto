@@ -99,6 +99,9 @@ message SnapshotManifestEntry {
    * cold on every ingest).
    */
   string schema_fingerprint = 6;
+
+  /** Stats generation whose compact bundles back this snapshot's artifact-reuse manifest. */
+  BlobRef reuse_stats_generation_ref = 7;
 }
 
 /**

@@ -392,7 +392,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
       TargetStatsRecord record,
       Map<String, ReconcileFileExecutionPlan> plansByPath,
       List<String> realizedSelectors) {
-    String filePath = record.hasFile() ? record.getFile().getFilePath() : "";
+    String filePath = statsFilePath(record);
     ReconcileFileExecutionPlan owner = plansByPath.get(filePath);
     String fingerprint = owner == null ? "" : owner.sourceFingerprint();
     if (owner == null) {

@@ -400,6 +400,9 @@ public final class TableRootMutations {
     if (!incoming.hasConstraintsRef() && existing.hasConstraintsRef()) {
       merged.setConstraintsRef(existing.getConstraintsRef());
     }
+    if (!incoming.hasReuseStatsGenerationRef() && existing.hasReuseStatsGenerationRef()) {
+      merged.setReuseStatsGenerationRef(existing.getReuseStatsGenerationRef());
+    }
     // upstream_created_at is the currency/AS_OF sort key: an in-place rewrite whose candidate omits
     // it must not silently re-sort the snapshot to "oldest". Preserve it like the other aux fields.
     if (!incoming.hasUpstreamCreatedAt() && existing.hasUpstreamCreatedAt()) {

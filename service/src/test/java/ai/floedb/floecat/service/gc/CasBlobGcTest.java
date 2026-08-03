@@ -775,6 +775,37 @@ class CasBlobGcTest {
   }
 
   @Test
+  void aReuseGenerationSurvivesAfterTheActiveStatsGenerationMovesOn() {
+    seedCurrentTable();
+
+    String reuseManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen");
+    blobs.put(reuseManifest, "reuse".getBytes(StandardCharsets.UTF_8), "text/plain");
+    String activeManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "active-gen");
+    blobs.put(activeManifest, "active".getBytes(StandardCharsets.UTF_8), "text/plain");
+    String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
+    putPointer(
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen", targetId),
+        Keys.snapshotTargetStatsBlobUri(
+            ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen", targetId, "sha-rec"));
+    putPointer(
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen"),
+        "PUBLISHED");
+    putPointer(Keys.snapshotTargetStatsManifestPointer(ACCOUNT_ID, TABLE_ID, 7L), activeManifest);
+
+    String snapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snap");
+    blobs.put(snapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
+    commitRoot(7L, snapBlob, "v7", activeManifest, reuseManifest);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(reuseManifest).isPresent(),
+        "the root's reuse generation remains live after another stats generation becomes active");
+  }
+
+  @Test
   void aPinTakenMidSweepProtectsItsRootsGenerations() {
     // A pin registered after the sweep started protects its root's WHOLE chain — including the
     // generation manifests its entries reference — not just the pin's own blob URIs. The pinned
@@ -1013,6 +1044,15 @@ class CasBlobGcTest {
 
   private void commitRoot(
       long snapshotId, String snapBlobUri, String snapVersion, String genManifestUri) {
+    commitRoot(snapshotId, snapBlobUri, snapVersion, genManifestUri, null);
+  }
+
+  private void commitRoot(
+      long snapshotId,
+      String snapBlobUri,
+      String snapVersion,
+      String genManifestUri,
+      String reuseGenManifestUri) {
     var tableId = tableRid();
     var entry =
         ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
@@ -1024,6 +1064,10 @@ class CasBlobGcTest {
     if (genManifestUri != null) {
       entry.setStatsGenerationRef(
           ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(genManifestUri));
+    }
+    if (reuseGenManifestUri != null) {
+      entry.setReuseStatsGenerationRef(
+          ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(reuseGenManifestUri));
     }
     var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
     committer.commit(
