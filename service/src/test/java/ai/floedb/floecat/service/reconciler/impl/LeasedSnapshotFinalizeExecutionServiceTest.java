@@ -211,20 +211,18 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   void successActivatesPreparedFileStatsWithoutReadingOrRepeatingTheirObjects() {
     String childJobId = "file-group-job";
     String childLeaseEpoch = "child-lease";
+    String filePath = "s3://bucket/data/file-1.parquet";
     String statsPrefix =
         Keys.reconcileFileGroupStatsObjectPrefix(
             ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch);
-    String targetStorageId = "file-" + "1".repeat(64);
+    String targetStorageId =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(filePath));
     byte[] statsSha256 = sha256(new byte[] {1, 2, 3});
-    String statsUri =
-        statsPrefix
-            + sha256Hex(targetStorageId)
-            + "/"
-            + HexFormat.of().formatHex(statsSha256)
-            + ".pb";
-    StatsObjectDescriptor statsObject =
+    String statsUri = statsPrefix + "reuse-bundles/bundle.pb";
+    StatsObjectDescriptor bundleArtifact =
         StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId(targetStorageId)
+            .setTargetStorageId("reuse-bundle:group-1")
             .setPayloadUri(statsUri)
             .setPayloadBytes(3)
             .setPayloadSha256(ByteString.copyFrom(statsSha256))
@@ -266,6 +264,14 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setLeaseEpoch(LEASE_EPOCH)
             .setResultId("result-1")
             .addFileGroups(fileGroup)
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(bundleArtifact)
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                            .setFilePath(filePath)
+                            .setSourceFingerprint("source-fingerprint")
+                            .setStatsCaptureSignature("stats-signature")))
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
             .build();

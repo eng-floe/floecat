@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -28,8 +27,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
-import ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactReference;
-import ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactReference;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -194,8 +191,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       List<TargetStatsRecord> partials = new ArrayList<>();
       List<StatsObjectDescriptor> fileStats = new ArrayList<>();
       List<StatsObjectDescriptor> indexArtifacts = new ArrayList<>();
-      List<ReusableStatsArtifactReference> reusableFileStats = new ArrayList<>();
-      List<ReusableIndexArtifactReference> reusableIndexArtifacts = new ArrayList<>();
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> reuseBundles =
           new ArrayList<>();
       Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
@@ -226,8 +221,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         partials.addAll(artifacts.partialAggregates());
         fileStats.addAll(artifacts.fileStats());
         indexArtifacts.addAll(artifacts.indexArtifacts());
-        reusableFileStats.addAll(artifacts.reusableFileStats());
-        reusableIndexArtifacts.addAll(artifacts.reusableIndexArtifacts());
         if (artifacts.reusableArtifactBundle() != null) {
           reuseBundles.add(artifacts.reusableArtifactBundle());
         }
@@ -261,43 +254,26 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
       }
-      List<StatsObjectDescriptor> uniqueFileStats = deduplicateSnapshotFileStats(fileStats);
-      List<ReusableStatsArtifactReference> uniqueReusableFileStats =
-          deduplicateReusableFileStatsReferences(reusableFileStats);
+      DeduplicatedSnapshotArtifacts deduplicated =
+          deduplicateSnapshotArtifacts(fileStats, reuseBundles);
+      List<StatsObjectDescriptor> uniqueFileStats = deduplicated.fileStats();
+      reuseBundles = deduplicated.reuseBundles();
       String resultId = resultId(lease, "success");
       RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
-          reuseBundles.isEmpty()
-              ? workerClient.prepareSnapshotFinalizeSuccess(
-                  remoteLease,
-                  resultId,
-                  input.statsObjectPrefix(),
-                  input.captureManifestUri(),
-                  input.sourceFileCount(),
-                  descriptors,
-                  uniqueFileStats,
-                  uniqueReusableFileStats,
-                  finalStats,
-                  indexArtifacts,
-                  reusableIndexArtifacts,
-                  List.copyOf(realizedStatsSelectors),
-                  List.copyOf(realizedIndexSelectors),
-                  input.indexPredecessor())
-              : workerClient.prepareSnapshotFinalizeSuccess(
-                  remoteLease,
-                  resultId,
-                  input.statsObjectPrefix(),
-                  input.captureManifestUri(),
-                  input.sourceFileCount(),
-                  descriptors,
-                  uniqueFileStats,
-                  uniqueReusableFileStats,
-                  finalStats,
-                  indexArtifacts,
-                  reusableIndexArtifacts,
-                  reuseBundles,
-                  List.copyOf(realizedStatsSelectors),
-                  List.copyOf(realizedIndexSelectors),
-                  input.indexPredecessor());
+          workerClient.prepareSnapshotFinalizeSuccess(
+              remoteLease,
+              resultId,
+              input.statsObjectPrefix(),
+              input.captureManifestUri(),
+              input.sourceFileCount(),
+              descriptors,
+              uniqueFileStats,
+              finalStats,
+              indexArtifacts,
+              reuseBundles,
+              List.copyOf(realizedStatsSelectors),
+              List.copyOf(realizedIndexSelectors),
+              input.indexPredecessor());
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
       }
@@ -440,18 +416,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || descriptor.indexArtifactCount() != payload.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot file-group result payload count mismatch");
     }
-    boolean compactReferences =
-        payload.getReusableFileStatsCount() > 0 || payload.getReusableIndexArtifactsCount() > 0;
-    if ((compactReferences
-            && (payload.getReusableFileStatsCount() != payload.getFileStatsCount()
-                || payload.getReusableIndexArtifactsCount() != payload.getIndexArtifactsCount()))
-        || (!compactReferences
-            && (payload.getPublishedFileStatsRecordsCount() != payload.getFileStatsCount()
-                || payload.getPublishedIndexArtifactRecordsCount()
-                    != payload.getIndexArtifactsCount()))) {
-      throw new IllegalArgumentException(
-          "snapshot file-group reusable artifact record count mismatch");
-    }
     List<String> realizedIndexSelectors =
         payload.getRealizedIndexSelectorsList().stream()
             .filter(selector -> selector != null && !selector.isBlank())
@@ -539,58 +503,39 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     if (!statsTargets.equals(expectedStatsTargets)) {
       throw new IllegalArgumentException("snapshot file-group stats do not cover successful files");
     }
-    List<ReusableStatsArtifactReference> reusableStatsReferences =
-        compactReferences
-            ? payload.getReusableFileStatsList()
-            : legacyStatsReferences(payload.getPublishedFileStatsRecordsList(), fileStatsObjects);
-    List<ReusableIndexArtifactReference> reusableIndexReferences =
-        compactReferences
-            ? payload.getReusableIndexArtifactsList()
-            : legacyIndexReferences(
-                payload.getPublishedIndexArtifactRecordsList(), payload.getIndexArtifactsList());
     ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference reuseBundle =
         payload.hasReusableArtifactBundle() ? payload.getReusableArtifactBundle() : null;
-    if (reuseBundle != null
-        && (!reuseBundle.hasArtifact()
-            || reuseBundle.getArtifact().getPayloadUri().isBlank()
-            || reuseBundle.getArtifact().getPayloadBytes() <= 0
-            || reuseBundle.getArtifact().getPayloadSha256().size() != 32
-            || !reuseBundle
-                .getArtifact()
-                .getPayloadUri()
-                .startsWith(descriptor.statsObjectPrefix()))) {
+    if (reuseBundle == null
+        || !reuseBundle.hasArtifact()
+        || reuseBundle.getArtifact().getPayloadUri().isBlank()
+        || reuseBundle.getArtifact().getPayloadBytes() <= 0
+        || reuseBundle.getArtifact().getPayloadSha256().size() != 32
+        || !reuseBundle.getArtifact().getPayloadUri().startsWith(descriptor.statsObjectPrefix())) {
       throw new IllegalArgumentException("snapshot file-group reuse bundle metadata mismatch");
     }
-    Set<String> reusableStatsTargets = new HashSet<>();
-    for (ReusableStatsArtifactReference reference : reusableStatsReferences) {
-      if (!reference.hasArtifact()
-          || reference.getFilePath().isBlank()
-          || !validObjectDescriptor(reference.getArtifact(), descriptor.statsObjectPrefix())
-          || !reusableStatsTargets.add(reference.getArtifact().getTargetStorageId())) {
-        throw new IllegalArgumentException("snapshot file-group reusable stats metadata mismatch");
-      }
-    }
-    if (!reusableStatsTargets.equals(statsTargets)) {
-      throw new IllegalArgumentException(
-          "snapshot file-group reusable stats do not match published references");
-    }
-    Set<String> reusableIndexTargets = new HashSet<>();
-    for (ReusableIndexArtifactReference reference : reusableIndexReferences) {
-      String target = reference.hasArtifact() ? reference.getArtifact().getTargetStorageId() : "";
-      if (reference.getFilePath().isBlank()
-          || !validObjectDescriptor(reference.getArtifact(), descriptor.statsObjectPrefix())
-          || target.isBlank()
-          || !reusableIndexTargets.add(target)) {
-        throw new IllegalArgumentException("snapshot file-group reusable index metadata mismatch");
-      }
-    }
-    Set<String> publishedIndexTargets =
-        payload.getIndexArtifactsList().stream()
-            .map(StatsObjectDescriptor::getTargetStorageId)
+    Set<String> reusableStatsFiles =
+        reuseBundle.getFileStatsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+            .filter(path -> path != null && !path.isBlank())
             .collect(java.util.stream.Collectors.toSet());
-    if (!reusableIndexTargets.equals(publishedIndexTargets)) {
+    Set<String> expectedReusableStatsFiles =
+        statsRequested ? expectedFileStatsPaths(plannedGroup, successfulFiles) : Set.of();
+    if (reuseBundle.getFileStatsCount() != fileStatsObjects.size()
+        || reusableStatsFiles.size() != reuseBundle.getFileStatsCount()
+        || !reusableStatsFiles.equals(expectedReusableStatsFiles)) {
       throw new IllegalArgumentException(
-          "snapshot file-group reusable indexes do not match published references");
+          "snapshot file-group reuse bundle stats do not match published references");
+    }
+    Set<String> reusableIndexFiles =
+        reuseBundle.getIndexArtifactsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata::getFilePath)
+            .filter(path -> path != null && !path.isBlank())
+            .collect(java.util.stream.Collectors.toSet());
+    if (reuseBundle.getIndexArtifactsCount() != payload.getIndexArtifactsCount()
+        || reusableIndexFiles.size() != reuseBundle.getIndexArtifactsCount()
+        || !reusableIndexFiles.equals(indexFiles)) {
+      throw new IllegalArgumentException(
+          "snapshot file-group reuse bundle indexes do not match published references");
     }
     validatePartialAggregates(
         input,
@@ -602,8 +547,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         payload.getPartialAggregateRecordsList(),
         fileStatsObjects,
         payload.getIndexArtifactsList(),
-        reusableStatsReferences,
-        reusableIndexReferences,
         reuseBundle,
         realizedStatsSelectors,
         realizedIndexSelectors);
@@ -632,6 +575,29 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
             expected.add(
                 StatsTargetIdentity.storageId(
                     StatsTargetIdentity.fileTarget(deleteFile.filePath())));
+          }
+        }
+      }
+    }
+    return Set.copyOf(expected);
+  }
+
+  private static Set<String> expectedFileStatsPaths(
+      ReconcileFileGroupTask plannedGroup, Set<String> successfulFiles) {
+    Set<String> successful = successfulFiles == null ? Set.of() : Set.copyOf(successfulFiles);
+    Set<String> expected = new HashSet<>(successful);
+    if (plannedGroup != null) {
+      for (var executionPlan : plannedGroup.fileExecutionPlans()) {
+        if (!successful.contains(executionPlan.filePath())) {
+          continue;
+        }
+        var deletionVector = executionPlan.deletionVector();
+        if (deletionVector != null && deletionVector.onDisk()) {
+          expected.add(deletionVector.pathOrInlineDv());
+        }
+        for (var deleteFile : executionPlan.icebergDeleteFiles()) {
+          if (deleteFile != null && !deleteFile.filePath().isBlank()) {
+            expected.add(deleteFile.filePath());
           }
         }
       }
@@ -668,107 +634,143 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     return List.copyOf(byTarget.values());
   }
 
-  static List<TargetStatsRecord> deduplicateReusableFileStats(List<TargetStatsRecord> records) {
-    if (records == null || records.isEmpty()) {
-      return List.of();
+  static DeduplicatedSnapshotArtifacts deduplicateSnapshotArtifacts(
+      List<StatsObjectDescriptor> descriptors,
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> bundles) {
+    if (descriptors == null || descriptors.isEmpty()) {
+      return new DeduplicatedSnapshotArtifacts(
+          List.of(), bundles == null ? List.of() : List.copyOf(bundles));
     }
-    Map<String, TargetStatsRecord> byTarget = new java.util.TreeMap<>();
-    for (TargetStatsRecord record : records) {
-      if (record == null || !record.hasTarget()) {
-        throw new IllegalArgumentException("invalid reusable file stats record");
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> references =
+        bundles == null ? List.of() : List.copyOf(bundles);
+    Map<String, Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata>>
+        metadataByPayload = new HashMap<>();
+    for (var bundle : references) {
+      if (bundle == null
+          || !bundle.hasArtifact()
+          || bundle.getArtifact().getPayloadUri().isBlank()) {
+        throw new IllegalArgumentException("invalid snapshot reusable artifact bundle");
       }
-      String target = StatsTargetIdentity.storageId(record.getTarget());
-      TargetStatsRecord existing = byTarget.putIfAbsent(target, record);
-      if (existing != null
-          && !MessageDigest.isEqual(existing.toByteArray(), record.toByteArray())) {
-        throw new IllegalArgumentException("conflicting reusable file stats for target " + target);
+      Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata> byTarget =
+          metadataByPayload.computeIfAbsent(
+              bundle.getArtifact().getPayloadUri(), ignored -> new HashMap<>());
+      Set<String> bundleTargets = new HashSet<>();
+      for (var metadata : bundle.getFileStatsList()) {
+        if (metadata.getFilePath().isBlank()) {
+          throw new IllegalArgumentException("invalid snapshot reusable stats metadata");
+        }
+        String target =
+            StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(metadata.getFilePath()));
+        if (!bundleTargets.add(target)) {
+          throw new IllegalArgumentException(
+              "duplicate reusable stats metadata for target " + target);
+        }
+        var existing = byTarget.putIfAbsent(target, metadata);
+        if (existing != null && !equivalentReusableStatsMetadata(existing, metadata)) {
+          throw new IllegalArgumentException(
+              "conflicting reusable stats metadata for target " + target);
+        }
       }
     }
-    return List.copyOf(byTarget.values());
+
+    Map<String, StatsObjectDescriptor> byTarget = new java.util.TreeMap<>();
+    for (StatsObjectDescriptor descriptor : descriptors) {
+      if (descriptor == null || descriptor.getTargetStorageId().isBlank()) {
+        throw new IllegalArgumentException("invalid snapshot file stats descriptor");
+      }
+      StatsObjectDescriptor existing =
+          byTarget.putIfAbsent(descriptor.getTargetStorageId(), descriptor);
+      if (existing == null) {
+        continue;
+      }
+      boolean samePayload =
+          existing.getPayloadBytes() == descriptor.getPayloadBytes()
+              && MessageDigest.isEqual(
+                  existing.getPayloadSha256().toByteArray(),
+                  descriptor.getPayloadSha256().toByteArray());
+      if (!samePayload) {
+        var existingMetadata =
+            metadataByPayload
+                .getOrDefault(existing.getPayloadUri(), Map.of())
+                .get(descriptor.getTargetStorageId());
+        var candidateMetadata =
+            metadataByPayload
+                .getOrDefault(descriptor.getPayloadUri(), Map.of())
+                .get(descriptor.getTargetStorageId());
+        if (!equivalentReusableStatsMetadata(existingMetadata, candidateMetadata)) {
+          throw new IllegalArgumentException(
+              "conflicting snapshot file stats for target " + descriptor.getTargetStorageId());
+        }
+      }
+      if (descriptor.getPayloadUri().compareTo(existing.getPayloadUri()) < 0) {
+        byTarget.put(descriptor.getTargetStorageId(), descriptor);
+      }
+    }
+
+    Map<String, Integer> ownerByTarget = new HashMap<>();
+    for (var entry : byTarget.entrySet()) {
+      String target = entry.getKey();
+      String payloadUri = entry.getValue().getPayloadUri();
+      int owner = -1;
+      String ownerId = null;
+      for (int index = 0; index < references.size(); index++) {
+        var bundle = references.get(index);
+        if (!payloadUri.equals(bundle.getArtifact().getPayloadUri())) {
+          continue;
+        }
+        boolean containsTarget =
+            bundle.getFileStatsList().stream()
+                .anyMatch(
+                    metadata ->
+                        target.equals(
+                            StatsTargetIdentity.storageId(
+                                StatsTargetIdentity.fileTarget(metadata.getFilePath()))));
+        if (!containsTarget) {
+          continue;
+        }
+        String candidateId = bundle.getArtifact().getTargetStorageId();
+        if (owner < 0 || candidateId.compareTo(ownerId) < 0) {
+          owner = index;
+          ownerId = candidateId;
+        }
+      }
+      if (owner < 0) {
+        throw new IllegalArgumentException(
+            "snapshot reusable bundle metadata is missing target " + target);
+      }
+      ownerByTarget.put(target, owner);
+    }
+
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> normalized =
+        new ArrayList<>(references.size());
+    for (int index = 0; index < references.size(); index++) {
+      var bundle = references.get(index);
+      var builder = bundle.toBuilder().clearFileStats();
+      for (var metadata : bundle.getFileStatsList()) {
+        String target =
+            StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(metadata.getFilePath()));
+        if (ownerByTarget.getOrDefault(target, -1) == index) {
+          builder.addFileStats(metadata);
+        }
+      }
+      normalized.add(builder.build());
+    }
+    return new DeduplicatedSnapshotArtifacts(
+        List.copyOf(byTarget.values()), List.copyOf(normalized));
   }
 
-  static List<ReusableStatsArtifactReference> deduplicateReusableFileStatsReferences(
-      List<ReusableStatsArtifactReference> references) {
-    if (references == null || references.isEmpty()) {
-      return List.of();
-    }
-    Map<String, ReusableStatsArtifactReference> byTarget = new java.util.TreeMap<>();
-    for (ReusableStatsArtifactReference reference : references) {
-      if (reference == null || !reference.hasArtifact()) {
-        throw new IllegalArgumentException("invalid reusable file stats reference");
-      }
-      String target = reference.getArtifact().getTargetStorageId();
-      ReusableStatsArtifactReference existing = byTarget.putIfAbsent(target, reference);
-      if (existing != null
-          && !MessageDigest.isEqual(existing.toByteArray(), reference.toByteArray())) {
-        throw new IllegalArgumentException("conflicting reusable file stats for target " + target);
-      }
-    }
-    return List.copyOf(byTarget.values());
-  }
-
-  private static List<ReusableStatsArtifactReference> legacyStatsReferences(
-      List<TargetStatsRecord> records, List<StatsObjectDescriptor> descriptors) {
-    Map<String, StatsObjectDescriptor> byTarget =
-        descriptors.stream()
-            .collect(
-                java.util.stream.Collectors.toMap(
-                    StatsObjectDescriptor::getTargetStorageId, descriptor -> descriptor));
-    List<ReusableStatsArtifactReference> references = new ArrayList<>();
-    for (TargetStatsRecord record : records) {
-      String target = record.hasTarget() ? StatsTargetIdentity.storageId(record.getTarget()) : "";
-      StatsObjectDescriptor descriptor = byTarget.get(target);
-      if (descriptor == null || !record.getTarget().hasFile()) {
-        throw new IllegalArgumentException("legacy reusable stats record has no object descriptor");
-      }
-      String selectors =
-          record.getPropertiesOrDefault(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "");
-      references.add(
-          ReusableStatsArtifactReference.newBuilder()
-              .setFilePath(record.getTarget().getFile().getFilePath())
-              .setArtifact(descriptor)
-              .setSourceFingerprint(
-                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
-              .setStatsCaptureSignature(
-                  record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
-              .addAllRealizedStatsSelectors(
-                  java.util.Arrays.stream(selectors.split(","))
-                      .map(String::trim)
-                      .filter(value -> !value.isBlank())
-                      .toList())
-              .build());
-    }
-    return List.copyOf(references);
-  }
-
-  private static List<ReusableIndexArtifactReference> legacyIndexReferences(
-      List<IndexArtifactRecord> records, List<StatsObjectDescriptor> descriptors) {
-    Map<String, StatsObjectDescriptor> byTarget =
-        descriptors.stream()
-            .collect(
-                java.util.stream.Collectors.toMap(
-                    StatsObjectDescriptor::getTargetStorageId, descriptor -> descriptor));
-    List<ReusableIndexArtifactReference> references = new ArrayList<>();
-    for (IndexArtifactRecord record : records) {
-      String filePath =
-          record.hasTarget() && record.getTarget().hasFile()
-              ? record.getTarget().getFile().getFilePath()
-              : "";
-      StatsObjectDescriptor descriptor = byTarget.get("file:" + filePath);
-      if (descriptor == null || filePath.isBlank()) {
-        throw new IllegalArgumentException("legacy reusable index record has no object descriptor");
-      }
-      references.add(
-          ReusableIndexArtifactReference.newBuilder()
-              .setFilePath(filePath)
-              .setArtifact(descriptor)
-              .setSourceFingerprint(
-                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
-              .setIndexCaptureSignature(
-                  record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, ""))
-              .build());
-    }
-    return List.copyOf(references);
+  private static boolean equivalentReusableStatsMetadata(
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata first,
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata second) {
+    return first != null
+        && second != null
+        && !first.getSourceFingerprint().isBlank()
+        && !first.getStatsCaptureSignature().isBlank()
+        && first.getFilePath().equals(second.getFilePath())
+        && first.getSourceFingerprint().equals(second.getSourceFingerprint())
+        && first.getStatsCaptureSignature().equals(second.getStatsCaptureSignature())
+        && Set.copyOf(first.getRealizedStatsSelectorsList())
+            .equals(Set.copyOf(second.getRealizedStatsSelectorsList()));
   }
 
   static void validateIndexArtifactCoverage(
@@ -918,12 +920,14 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     }
   }
 
+  record DeduplicatedSnapshotArtifacts(
+      List<StatsObjectDescriptor> fileStats,
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> reuseBundles) {}
+
   private record ValidatedFileGroupArtifacts(
       List<TargetStatsRecord> partialAggregates,
       List<StatsObjectDescriptor> fileStats,
       List<StatsObjectDescriptor> indexArtifacts,
-      List<ReusableStatsArtifactReference> reusableFileStats,
-      List<ReusableIndexArtifactReference> reusableIndexArtifacts,
       ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference reusableArtifactBundle,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors) {}

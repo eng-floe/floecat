@@ -19,7 +19,6 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -29,12 +28,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
-import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -64,70 +59,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotPlanningReconcileExecutorTest {
-
-  @Test
-  void derivesCompactReferenceFromLegacyEmbeddedStatsRecord() {
-    TargetStatsRecord record =
-        TargetStatsRecord.newBuilder()
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setFile(FileStatsTarget.newBuilder().setFilePath("s3://bucket/file.parquet")))
-            .setFile(
-                FileTargetStats.newBuilder()
-                    .setFilePath("s3://bucket/file.parquet")
-                    .setFileFormat("PARQUET")
-                    .setRowCount(1))
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
-            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "signature")
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1,#2")
-            .build();
-
-    var reference = RemoteSnapshotPlanningReconcileExecutor.legacyStatsReference("/stats/", record);
-
-    assertEquals("s3://bucket/file.parquet", reference.filePath());
-    assertTrue(reference.payloadUri().startsWith("/stats/"));
-    assertTrue(reference.payloadUri().endsWith(".pb"));
-    assertEquals("source", reference.sourceFingerprint());
-    assertEquals("signature", reference.statsCaptureSignature());
-    assertEquals(List.of("#1", "#2"), reference.realizedStatsSelectors());
-    assertEquals(
-        TargetStatsRecords.canonicalize(record).toByteArray().length, reference.payloadBytes());
-  }
-
-  @Test
-  void publishesLegacyEmbeddedStatsAsDurableReferencedArtifact() {
-    TargetStatsRecord record =
-        TargetStatsRecord.newBuilder()
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setFile(FileStatsTarget.newBuilder().setFilePath("s3://bucket/file.parquet")))
-            .setFile(
-                FileTargetStats.newBuilder()
-                    .setFilePath("s3://bucket/file.parquet")
-                    .setFileFormat("PARQUET")
-                    .setRowCount(1))
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
-            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "signature")
-            .build();
-    BlobStore blobStore = mock(BlobStore.class);
-    var executor =
-        new RemoteSnapshotPlanningReconcileExecutor(
-            mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class),
-            mock(RemotePlannerWorkerClient.class),
-            ignored -> Optional.empty(),
-            2,
-            true);
-    executor.blobStore = blobStore;
-    var reference = RemoteSnapshotPlanningReconcileExecutor.legacyStatsReference("/stats/", record);
-
-    executor.publishLegacyArtifacts("/stats/", List.of(record), List.of());
-
-    verify(blobStore)
-        .put(
-            eq(reference.payloadUri()),
-            aryEq(TargetStatsRecords.canonicalize(record).toByteArray()),
-            eq("application/x-protobuf"));
-  }
 
   @Test
   void planningLoadsReuseManifestFromExplicitParentSnapshot() throws Exception {
@@ -259,17 +190,9 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
                         .allMatch(
                             plan ->
-                                plan.reusableFileStats()
-                                        .equals(TargetStatsRecord.getDefaultInstance())
-                                    && plan.reusableAuxiliaryStats().isEmpty()
-                                    && plan.reusableIndexArtifact()
-                                        .equals(
-                                            ai.floedb.floecat.catalog.rpc.IndexArtifactRecord
-                                                .getDefaultInstance())
-                                    && plan.reusableFileStatsReference() == null
-                                    && plan.reusableAuxiliaryStatsReferences().isEmpty()
-                                    && plan.reusableIndexArtifactReference() == null
-                                    && plan.reusableArtifactBundleSelections().isEmpty())),
+                                plan.reusableArtifactBundleSelections().isEmpty()
+                                    && !plan.sourceFingerprint().isBlank()
+                                    && !plan.statsCaptureSignature().isBlank())),
             any());
     verify(backend, never()).existingSnapshotIds(any(), any());
     verify(blobStore, never()).get(any());
@@ -941,7 +864,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
 
   private static ReconcileFileExecutionPlan executionPlan(String name) {
     return ReconcileFileExecutionPlan.of(
-        "s3://bucket/" + name + ".parquet", 10L, "", null, "PARQUET", 0, List.of());
+        "s3://bucket/" + name + ".parquet", 10L, "", null, "PARQUET", 0, List.of(), "");
   }
 
   private static ReconcileFileGroupTask fileGroup(

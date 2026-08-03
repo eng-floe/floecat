@@ -10,16 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
-import ai.floedb.floecat.catalog.rpc.FileTargetStats;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
-import ai.floedb.floecat.catalog.rpc.IndexTarget;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import java.util.List;
@@ -28,90 +18,6 @@ import org.junit.jupiter.api.Test;
 
 class RemoteFileArtifactReusePlannerTest {
   private static final String PATH = "s3://bucket/file.parquet";
-  private static final ResourceId TABLE =
-      ResourceId.newBuilder()
-          .setAccountId("acct")
-          .setKind(ResourceKind.RK_TABLE)
-          .setId("table")
-          .build();
-
-  @Test
-  void bindsCompatibleStatsAndIndexIntoTheRemoteExecutionPlan() {
-    ReconcileFileExecutionPlan plan =
-        ReconcileFileExecutionPlan.of(
-            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "iceberg-data-v1:7:10");
-    ReconcileCapturePolicy policy =
-        ReconcileCapturePolicy.of(
-            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
-            Set.of(
-                ReconcileCapturePolicy.Output.FILE_STATS,
-                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
-    String sourceFingerprint = FileArtifactReuse.sourceFingerprint(plan, "{}");
-    String indexSourceFingerprint = FileArtifactReuse.indexSourceFingerprint(plan);
-    String statsSignature = FileArtifactReuse.statsCaptureSignature(policy);
-    String indexSignature = FileArtifactReuse.indexCaptureSignature(policy);
-    TargetStatsRecord stats =
-        stats(41L, 10L).toBuilder()
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, sourceFingerprint)
-            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, statsSignature)
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1")
-            .build();
-    IndexArtifactRecord index =
-        IndexArtifactRecord.newBuilder()
-            .setTableId(TABLE)
-            .setSnapshotId(41L)
-            .setTarget(
-                IndexTarget.newBuilder().setFile(IndexFileTarget.newBuilder().setFilePath(PATH)))
-            .setState(IndexArtifactState.IAS_READY)
-            .setArtifactUri("s3://bucket/index.parquet")
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, indexSourceFingerprint)
-            .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, indexSignature)
-            .putProperties("indexed_columns", "#1")
-            .build();
-
-    ReconcileFileExecutionPlan enriched =
-        RemoteFileArtifactReusePlanner.enrich(
-                TABLE,
-                42L,
-                "{}",
-                List.of(plan),
-                policy,
-                false,
-                List.of(stats),
-                List.of(index),
-                (snapshotId, path) -> "")
-            .getFirst();
-
-    assertEquals(42L, enriched.reusableFileStats().getSnapshotId());
-    assertEquals(42L, enriched.reusableIndexArtifact().getSnapshotId());
-    assertFalse(enriched.sourceFingerprint().isBlank());
-    assertFalse(enriched.indexSourceFingerprint().isBlank());
-  }
-
-  @Test
-  void retainsLegacyDeltaFallbackInTheRemotePlanner() {
-    String identity = "delta-add-v1:42:::10";
-    ReconcileFileExecutionPlan plan =
-        ReconcileFileExecutionPlan.of(PATH, 123L, "{}", null, "PARQUET", 0, List.of(), identity);
-    ReconcileCapturePolicy policy =
-        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
-
-    ReconcileFileExecutionPlan enriched =
-        RemoteFileArtifactReusePlanner.enrich(
-                TABLE,
-                42L,
-                "{}",
-                List.of(plan),
-                policy,
-                false,
-                List.of(stats(41L, 10L)),
-                List.of(),
-                (snapshotId, path) -> identity)
-            .getFirst();
-
-    assertEquals(42L, enriched.reusableFileStats().getSnapshotId());
-    assertEquals(10L, enriched.reusableFileStats().getFile().getRowCount());
-  }
 
   @Test
   void selectsOneGroupBundleWithoutMaterializingArtifactRecords() {
@@ -145,7 +51,8 @@ class RemoteFileArtifactReusePlannerTest {
                 ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
                     .setFilePath(PATH)
                     .setSourceFingerprint(indexFingerprint)
-                    .setIndexCaptureSignature(FileArtifactReuse.indexCaptureSignature(policy)))
+                    .setIndexCaptureSignature(FileArtifactReuse.indexCaptureSignature(policy, "{}"))
+                    .addRealizedIndexSelectors("#1"))
             .build();
 
     ReconcileFileExecutionPlan enriched =
@@ -160,22 +67,61 @@ class RemoteFileArtifactReusePlannerTest {
         List.of(PATH), enriched.reusableArtifactBundleSelections().getFirst().statsFilePaths());
     assertEquals(
         List.of(PATH), enriched.reusableArtifactBundleSelections().getFirst().indexFilePaths());
-    assertEquals(TargetStatsRecord.getDefaultInstance(), enriched.reusableFileStats());
-    assertEquals(IndexArtifactRecord.getDefaultInstance(), enriched.reusableIndexArtifact());
   }
 
-  private static TargetStatsRecord stats(long snapshotId, long rows) {
-    return TargetStatsRecord.newBuilder()
-        .setTableId(TABLE)
-        .setSnapshotId(snapshotId)
-        .setTarget(StatsTarget.newBuilder().setFile(FileStatsTarget.newBuilder().setFilePath(PATH)))
-        .setFile(
-            FileTargetStats.newBuilder()
-                .setTableId(TABLE)
-                .setSnapshotId(snapshotId)
+  @Test
+  void rejectsBundleIndexThatDoesNotCoverExplicitSelectors() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "iceberg-data-v1:7:10");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#2", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    var bundle = indexBundle(plan, policy, "{}", "#1");
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesIndexArtifact());
+  }
+
+  @Test
+  void rejectsDefaultBundleIndexWhenExecutionSchemaChanges() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "iceberg-data-v1:7:10");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    var bundle = indexBundle(plan, policy, "schema-a", "#1");
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "schema-b", List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesIndexArtifact());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference indexBundle(
+      ReconcileFileExecutionPlan plan,
+      ReconcileCapturePolicy policy,
+      String executionSchemaJson,
+      String realizedSelector) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setPayloadUri("s3://bucket/reuse-bundle.pb"))
+        .addIndexArtifacts(
+            ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
                 .setFilePath(PATH)
-                .setRowCount(rows)
-                .setSizeBytes(123L))
+                .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(plan))
+                .setIndexCaptureSignature(
+                    FileArtifactReuse.indexCaptureSignature(policy, executionSchemaJson))
+                .addRealizedIndexSelectors(realizedSelector))
         .build();
   }
 }

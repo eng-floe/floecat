@@ -297,20 +297,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String resultId,
       ReconcileFileGroupResultDescriptor descriptor,
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts) {
-    return persistSuccess(
-        principalContext, jobId, leaseEpoch, resultId, descriptor, fileStats, indexArtifacts, null);
-  }
-
-  public boolean persistSuccess(
-      PrincipalContext principalContext,
-      String jobId,
-      String leaseEpoch,
-      String resultId,
-      ReconcileFileGroupResultDescriptor descriptor,
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts,
       FileGroupArtifactBundleDescriptor artifactBundle) {
     String corr = principalContext.getCorrelationId();
     String requiredResultId = requireResultId(resultId);
@@ -329,8 +315,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               leaseEpoch,
               existing.fileGroupTask,
               descriptor,
-              fileStats,
-              indexArtifacts,
               artifactBundle,
               publishesFileStats(existing.scope.capturePolicy()));
       stageArtifactReferences(staged);
@@ -348,8 +332,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             lease.leaseEpoch,
             plannedTask,
             validated,
-            fileStats,
-            indexArtifacts,
             artifactBundle,
             publishesFileStats(lease.scope.capturePolicy()));
     boolean accepted =
@@ -451,12 +433,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       ReconcileFileGroupTask plannedTask,
       ReconcileFileGroupResultDescriptor descriptor,
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts,
       FileGroupArtifactBundleDescriptor artifactBundle,
       boolean publishFileStats) {
-    ArtifactMappings mappings =
-        artifactMappings(fileStats, indexArtifacts, artifactBundle, descriptor);
+    ArtifactMappings mappings = artifactMappings(artifactBundle, descriptor);
     List<StatsObjectDescriptor> requiredFileStats = mappings.fileStats();
     List<StatsObjectDescriptor> requiredIndexArtifacts = mappings.indexArtifacts();
     if (descriptor.fileStatsRecordCount() != requiredFileStats.size()
@@ -588,19 +567,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       List<StatsObjectDescriptor> fileStats, List<StatsObjectDescriptor> indexArtifacts) {}
 
   private static ArtifactMappings artifactMappings(
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts,
       FileGroupArtifactBundleDescriptor artifactBundle,
       ReconcileFileGroupResultDescriptor descriptor) {
-    List<StatsObjectDescriptor> legacyFileStats = fileStats == null ? List.of() : fileStats;
-    List<StatsObjectDescriptor> legacyIndexArtifacts =
-        indexArtifacts == null ? List.of() : indexArtifacts;
     if (artifactBundle == null || !artifactBundle.hasArtifact()) {
-      return new ArtifactMappings(legacyFileStats, legacyIndexArtifacts);
-    }
-    if (!legacyFileStats.isEmpty() || !legacyIndexArtifacts.isEmpty()) {
-      throw new IllegalArgumentException(
-          "file-group commit must use either a compact artifact bundle or legacy mappings");
+      throw new IllegalArgumentException("file-group artifact bundle is required");
     }
     StatsObjectDescriptor artifact = artifactBundle.getArtifact();
     if (artifact.getPayloadUri().isBlank()

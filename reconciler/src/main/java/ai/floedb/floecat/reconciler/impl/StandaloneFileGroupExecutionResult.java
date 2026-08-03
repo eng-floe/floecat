@@ -17,7 +17,6 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
-import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
 
@@ -25,7 +24,6 @@ public record StandaloneFileGroupExecutionResult(
     String resultId,
     List<TargetStatsRecord> partialAggregateRecords,
     List<TargetStatsRecord> publishedFileStatsRecords,
-    List<StatsObjectDescriptor> fileStats,
     List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
     List<String> realizedStatsSelectors) {
   public StandaloneFileGroupExecutionResult {
@@ -34,7 +32,6 @@ public record StandaloneFileGroupExecutionResult(
         partialAggregateRecords == null ? List.of() : List.copyOf(partialAggregateRecords);
     publishedFileStatsRecords =
         publishedFileStatsRecords == null ? List.of() : List.copyOf(publishedFileStatsRecords);
-    fileStats = fileStats == null ? List.of() : List.copyOf(fileStats);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
     realizedStatsSelectors =
@@ -44,28 +41,18 @@ public record StandaloneFileGroupExecutionResult(
   public StandaloneFileGroupExecutionResult(
       String resultId,
       List<TargetStatsRecord> partialAggregateRecords,
-      List<StatsObjectDescriptor> fileStats,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    this(resultId, partialAggregateRecords, List.of(), fileStats, stagedIndexArtifacts, List.of());
-  }
-
-  public StandaloneFileGroupExecutionResult(
-      String resultId,
-      List<TargetStatsRecord> partialAggregateRecords,
       List<TargetStatsRecord> publishedFileStatsRecords,
-      List<StatsObjectDescriptor> fileStats,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
     this(
         resultId,
         partialAggregateRecords,
         publishedFileStatsRecords,
-        fileStats,
         stagedIndexArtifacts,
         List.of());
   }
 
   public static StandaloneFileGroupExecutionResult empty(String resultId) {
     return new StandaloneFileGroupExecutionResult(
-        resultId, List.of(), List.of(), List.of(), List.of(), List.of());
+        resultId, List.of(), List.of(), List.of(), List.of());
   }
 }

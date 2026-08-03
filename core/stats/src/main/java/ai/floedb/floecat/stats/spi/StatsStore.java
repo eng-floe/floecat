@@ -29,7 +29,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Predicate;
 
 /**
  * Internal SPI for authoritative stats persistence.
@@ -148,21 +147,6 @@ public interface StatsStore {
   /** Returns the target stats record for the exact table/snapshot/target key, if present. */
   Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target);
-
-  /** Returns any compatible file-stats wrapper keyed by immutable artifact identity. */
-  default Optional<TargetStatsRecord> getReusableTargetStats(
-      ResourceId tableId,
-      StatsTarget target,
-      String sourceFingerprint,
-      String statsCaptureSignature) {
-    return Optional.empty();
-  }
-
-  /** Metadata-only migration lookup for records written before artifact identities were stamped. */
-  default Optional<TargetStatsRecord> findHistoricalTargetStats(
-      ResourceId tableId, StatsTarget target, Predicate<TargetStatsRecord> compatibility) {
-    return Optional.empty();
-  }
 
   /**
    * Batch read of specific targets for a snapshot.

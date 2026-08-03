@@ -307,6 +307,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             null);
 
     assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
@@ -346,6 +347,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         List.of(),
         List.of(),
         List.of(),
+        List.of(),
         null);
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
@@ -376,6 +378,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "/stats/",
             "/manifest.pb",
             0,
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -417,6 +420,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             List.of("customer_id"),
             List.of("customer_id"),
             null);
@@ -454,6 +458,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                     List.of(
                         fileGroupResultDescriptor(indexPredecessor()),
                         fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
                     List.of(),
                     List.of(),
                     List.of(),
@@ -640,43 +645,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     ArgumentCaptor<SubmitLeasedPlanSnapshotResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanSnapshotResultRequest.class);
     verify(chunkStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
-    SubmitLeasedPlanSnapshotResultRequest chunkRequest = requestCaptor.getValue();
-    assertThat(chunkRequest.hasChunk()).isTrue();
-    assertThat(chunkRequest.getChunk().getChunkIndex()).isZero();
-    assertThat(chunkRequest.getChunk().getFileGroupJobsCount()).isEqualTo(1);
-    assertThat(chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask().getGroupId())
-        .isEqualTo("group-1");
-    var protoTask = chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask();
-    assertThat(protoTask.getExecutionSchemaJson()).contains("schema-id");
-    assertThat(protoTask.getFileExecutionPlans(0).getFileFormat()).isEqualTo("PARQUET");
-    assertThat(protoTask.getFileExecutionPlans(0).getContentIdentity())
-        .isEqualTo("iceberg-data-v1:7:10");
-    assertThat(protoTask.getFileExecutionPlans(0).getSourceFingerprint())
-        .isEqualTo("source-fingerprint");
-    assertThat(protoTask.getFileExecutionPlans(0).getIndexSourceFingerprint())
-        .isEqualTo("index-fingerprint");
-    assertThat(protoTask.getFileExecutionPlans(0).getStatsCaptureSignature())
-        .isEqualTo("stats-signature");
-    assertThat(protoTask.getFileExecutionPlans(0).getIndexCaptureSignature())
-        .isEqualTo("index-signature");
-    assertThat(protoTask.getFileExecutionPlans(0).getAuxiliaryStatsFingerprintsMap())
-        .containsEntry("s3://bucket/data/delete-1.parquet", "delete-fingerprint");
-    assertThat(protoTask.getFileExecutionPlans(0).getReusableArtifactBundleSelectionsCount())
-        .isEqualTo(1);
-    assertThat(
-            protoTask
-                .getFileExecutionPlans(0)
-                .getReusableArtifactBundleSelections(0)
-                .getArtifact()
-                .getPayloadUri())
-        .isEqualTo("s3://artifacts/reuse-bundle.pb");
-    assertThat(
-            protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getEqualityFieldIdsList())
-        .containsExactly(7);
-    assertThat(protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getContentIdentity())
-        .isEqualTo("iceberg-delete-v1:8:2");
-
-    verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
+    verify(successStub, never()).submitLeasedPlanSnapshotResult(any());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
     assertThat(success.getSnapshotTask().getTableId()).isEqualTo("table-1");
     assertThat(success.getSnapshotTask().getSnapshotId()).isEqualTo(55L);
@@ -1216,10 +1185,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .setRowCount(3L)
                 .build(),
             null);
-    var descriptor = client.publishFileStats(payload, record);
     var result =
-        new StandaloneFileGroupExecutionResult(
-            "result-1", List.of(), List.of(descriptor), List.of());
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(record), List.of());
 
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
@@ -1235,7 +1202,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         .put(blobUris.capture(), any(byte[].class), eq("application/x-protobuf"));
     assertThat(blobUris.getAllValues()).contains("/result.pb");
     assertThat(blobUris.getAllValues())
-        .anyMatch(uri -> uri.startsWith("/stats/") && uri.endsWith(".pb"));
+        .anyMatch(uri -> uri.startsWith("/stats/reuse-bundles/") && uri.endsWith(".pb"));
   }
 
   @Test
@@ -1265,10 +1232,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .build(),
             null);
     var payload = fileGroupPayload(largeFilePath);
-    var descriptor = client.publishFileStats(payload, record);
     var result =
-        new StandaloneFileGroupExecutionResult(
-            "result-1", List.of(), List.of(record), List.of(descriptor), List.of());
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(record), List.of());
 
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
@@ -1277,8 +1242,6 @@ class GrpcRemoteReconcileExecutorClientTest {
     verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
-    assertThat(success.getFileStatsCount()).isZero();
-    assertThat(success.getIndexArtifactsCount()).isZero();
     assertThat(success.hasArtifactBundle()).isTrue();
     assertThat(success.getArtifactBundle().getFileStatsTargetStorageIdsCount()).isEqualTo(1);
     assertThat(success.getSerializedSize()).isLessThan(4 * 1024);
@@ -1311,6 +1274,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .setArtifactUri(artifactUri)
                 .setArtifactFormat("parquet")
                 .setArtifactFormatVersion(1)
+                .putProperties("indexed_columns", "#1")
                 .build(),
             null,
             "application/x-parquet");
@@ -1329,19 +1293,106 @@ class GrpcRemoteReconcileExecutorClientTest {
     String payloadUri = requestCaptor.getValue().getSuccess().getResultDescriptor().getPayloadUri();
     ArgumentCaptor<String> uriCaptor = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);
-    verify(client.blobStore, times(3))
+    verify(client.blobStore, times(2))
         .put(uriCaptor.capture(), bytesCaptor.capture(), eq("application/x-protobuf"));
     int metadataIndex =
         java.util.stream.IntStream.range(0, uriCaptor.getAllValues().size())
             .filter(
-                index -> uriCaptor.getAllValues().get(index).startsWith("/stats/index-artifacts/"))
+                index -> uriCaptor.getAllValues().get(index).startsWith("/stats/reuse-bundles/"))
             .findFirst()
             .orElseThrow();
-    assertThat(uriCaptor.getAllValues().get(metadataIndex)).startsWith("/stats/index-artifacts/");
+    assertThat(uriCaptor.getAllValues().get(metadataIndex)).startsWith("/stats/reuse-bundles/");
     assertThat(
-            IndexArtifactRecord.parseFrom(bytesCaptor.getAllValues().get(metadataIndex))
+            ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.parseFrom(
+                    bytesCaptor.getAllValues().get(metadataIndex))
+                .getIndexArtifacts(0)
                 .getArtifactUri())
         .isEqualTo(artifactUri);
+    int resultPayloadIndex = uriCaptor.getAllValues().indexOf(payloadUri);
+    assertThat(resultPayloadIndex).isNotNegative();
+    assertThat(
+            FileGroupResultPayload.parseFrom(bytesCaptor.getAllValues().get(resultPayloadIndex))
+                .getReusableArtifactBundle()
+                .getIndexArtifacts(0)
+                .getRealizedIndexSelectorsList())
+        .containsExactly("#1");
+  }
+
+  @Test
+  void submitFileGroupSuccessDoesNotTouchReusedIndexSidecar() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
+    String filePath = "s3://bucket/file.parquet";
+    String artifactUri = "s3://sidecars/reused.parquet";
+    ReconcileCapturePolicy policy = indexCapturePolicy();
+    StandaloneFileGroupExecutionPayload base = indexFileGroupPayload(filePath, policy);
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                filePath, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle:prior",
+                        "/stats/reuse-bundles/prior.pb",
+                        1L,
+                        new byte[32],
+                        List.of(),
+                        List.of(filePath))));
+    StandaloneFileGroupExecutionPayload payload =
+        new StandaloneFileGroupExecutionPayload(
+            base.jobId(),
+            base.leaseEpoch(),
+            base.parentJobId(),
+            base.sourceConnector(),
+            base.sourceNamespace(),
+            base.sourceTable(),
+            base.storageLocation(),
+            base.tableId(),
+            base.snapshotId(),
+            base.planId(),
+            base.groupId(),
+            base.resultPayloadUri(),
+            base.statsObjectPrefix(),
+            base.plannedFilePaths(),
+            base.executionSchemaJson(),
+            List.of(plan),
+            base.capturePolicy(),
+            base.indexPredecessor(),
+            base.predecessorIndexArtifacts());
+    var record =
+        IndexArtifactRecord.newBuilder()
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
+            .setState(IndexArtifactState.IAS_READY)
+            .setArtifactUri(artifactUri)
+            .setContentEtag("prior-etag")
+            .putProperties("indexed_columns", "#1")
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "index-source")
+            .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, "index-signature")
+            .build();
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(new ReconcilerBackend.StagedIndexArtifact(record, null, "")));
+
+    assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
+
+    verify(client.blobStore, never()).head(artifactUri);
+    verify(client.blobStore, never()).put(eq(artifactUri), any(byte[].class), any(String.class));
   }
 
   private static ResourceId connectorId() {

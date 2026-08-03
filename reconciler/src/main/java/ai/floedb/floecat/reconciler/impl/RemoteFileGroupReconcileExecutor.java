@@ -18,7 +18,6 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -124,24 +123,14 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             0,
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
-      List<StatsObjectDescriptor> fileStats = new ArrayList<>();
       List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> publishedFileStats = new ArrayList<>();
-      StandaloneFileGroupExecutionPayload executionPayload = payload;
-      var captured =
-          runner.execute(
-              payload,
-              context.shouldStop(),
-              fileStat -> {
-                publishedFileStats.add(fileStat);
-                fileStats.add(workerClient.publishFileStats(executionPayload, fileStat));
-              });
+      var captured = runner.execute(payload, context.shouldStop(), publishedFileStats::add);
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
               successResultId,
               captured.statsRecords(),
               publishedFileStats,
-              fileStats,
               captured.stagedIndexArtifacts(),
               captured.realizedStatsSelectors());
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
@@ -166,7 +155,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
                   + String.join(", ", missingArtifactFiles));
         }
       }
-      long statsProcessed = fileStats.size();
+      long statsProcessed = publishedFileStats.size();
       return submitTerminalSuccess(
           context,
           lease,

@@ -206,6 +206,49 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void deduplicatesSharedAuxiliaryStatsAcrossDifferentBundlesByIdentityMetadata() {
+    String path = "s3://bucket/delete.parquet";
+    String target =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(path));
+    byte[] firstSha256 = new byte[32];
+    firstSha256[0] = 1;
+    byte[] secondSha256 = new byte[32];
+    secondSha256[0] = 2;
+    StatsObjectDescriptor first = statsDescriptor(target, "/stats/z-bundle.pb", firstSha256);
+    StatsObjectDescriptor second = statsDescriptor(target, "/stats/a-bundle.pb", secondSha256);
+    var metadata =
+        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+            .setFilePath(path)
+            .setSourceFingerprint("source-fingerprint")
+            .setStatsCaptureSignature("stats-signature")
+            .addRealizedStatsSelectors("#1")
+            .build();
+    var firstBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(first.toBuilder().setTargetStorageId("reuse-bundle:z"))
+            .addFileStats(metadata)
+            .build();
+    var secondBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(second.toBuilder().setTargetStorageId("reuse-bundle:a"))
+            .addFileStats(metadata)
+            .build();
+
+    var deduplicated =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+            List.of(first, second), List.of(firstBundle, secondBundle));
+
+    assertEquals(1, deduplicated.fileStats().size());
+    assertEquals("/stats/a-bundle.pb", deduplicated.fileStats().getFirst().getPayloadUri());
+    assertEquals(
+        1,
+        deduplicated.reuseBundles().stream().mapToInt(bundle -> bundle.getFileStatsCount()).sum());
+    assertEquals(0, deduplicated.reuseBundles().getFirst().getFileStatsCount());
+    assertEquals(1, deduplicated.reuseBundles().get(1).getFileStatsCount());
+  }
+
+  @Test
   void acceptsEmptyFileGroupWithoutStatsPartials() {
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -326,7 +369,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
     verify(workerClient, never())
         .prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any(),
+            any());
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
@@ -344,7 +388,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
     when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
 
@@ -377,7 +421,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(false);
 
@@ -413,7 +457,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenThrow(uncertain);
 

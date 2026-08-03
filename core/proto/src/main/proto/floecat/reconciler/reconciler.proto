@@ -1024,9 +1024,8 @@ message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
     FileGroupResultDescriptor result_descriptor = 2;
-    // Legacy per-target mappings retained for captures produced before bundle commits.
-    repeated StatsObjectDescriptor file_stats = 3;
-    repeated StatsObjectDescriptor index_artifacts = 4;
+    reserved 3, 4;
+    reserved "file_stats", "index_artifacts";
     FileGroupArtifactBundleDescriptor artifact_bundle = 5;
   }
 

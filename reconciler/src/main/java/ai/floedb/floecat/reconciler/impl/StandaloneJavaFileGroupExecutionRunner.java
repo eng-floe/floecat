@@ -75,25 +75,26 @@ public class StandaloneJavaFileGroupExecutionRunner {
     Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     Map<String, ReconcileFileExecutionPlan> plansByPath = new LinkedHashMap<>();
     Map<String, LoadedReuseBundle> reuseBundles = loadReuseBundles(payload.fileExecutionPlans());
-    for (ReconcileFileExecutionPlan unresolvedPlan : payload.fileExecutionPlans()) {
-      ReconcileFileExecutionPlan plan =
-          resolveReferences(unresolvedPlan, payload.tableId(), payload.snapshotId(), reuseBundles);
+    for (ReconcileFileExecutionPlan plan : payload.fileExecutionPlans()) {
+      ResolvedReuse resolvedReuse =
+          resolveBundleSelections(plan, payload.tableId(), payload.snapshotId(), reuseBundles);
       plansByPath.put(plan.filePath(), plan);
       if (plan.reusesFileStats()) {
         publishReusableStats(
-            plan.reusableFileStats(), publisher, reusedFileRecords, publishedStatsTargets, stop);
+            resolvedReuse.fileStats(), publisher, reusedFileRecords, publishedStatsTargets, stop);
         addEncodedSelectors(
             realizedStatsSelectors,
-            plan.reusableFileStats()
+            resolvedReuse
+                .fileStats()
                 .getPropertiesOrDefault(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, ""));
       }
-      for (TargetStatsRecord auxiliary : plan.reusableAuxiliaryStats()) {
+      for (TargetStatsRecord auxiliary : resolvedReuse.auxiliaryStats()) {
         publishReusableStats(auxiliary, publisher, reusedFileRecords, publishedStatsTargets, stop);
       }
       if (plan.reusesIndexArtifact()) {
         stagedIndexArtifacts.add(
             new ReconcilerBackend.StagedIndexArtifact(
-                plan.reusableIndexArtifact(), null, "application/x-parquet"));
+                resolvedReuse.indexArtifact(), null, "application/x-parquet"));
       }
     }
     if (!reusedFileRecords.isEmpty()) {
@@ -197,20 +198,17 @@ public class StandaloneJavaFileGroupExecutionRunner {
         List.copyOf(realizedStatsSelectors));
   }
 
-  private ReconcileFileExecutionPlan resolveReferences(
+  private ResolvedReuse resolveBundleSelections(
       ReconcileFileExecutionPlan plan,
       ai.floedb.floecat.common.rpc.ResourceId tableId,
       long snapshotId,
       Map<String, LoadedReuseBundle> bundles) {
-    if (plan.reusableFileStatsReference() == null
-        && plan.reusableAuxiliaryStatsReferences().isEmpty()
-        && plan.reusableIndexArtifactReference() == null
-        && plan.reusableArtifactBundleSelections().isEmpty()) {
-      return plan;
+    if (plan.reusableArtifactBundleSelections().isEmpty()) {
+      return ResolvedReuse.empty();
     }
-    TargetStatsRecord fileStats = plan.reusableFileStats();
-    List<TargetStatsRecord> auxiliary = new ArrayList<>(plan.reusableAuxiliaryStats());
-    IndexArtifactRecord index = plan.reusableIndexArtifact();
+    TargetStatsRecord fileStats = TargetStatsRecord.getDefaultInstance();
+    List<TargetStatsRecord> auxiliary = new ArrayList<>();
+    IndexArtifactRecord index = IndexArtifactRecord.getDefaultInstance();
     for (var selection : plan.reusableArtifactBundleSelections()) {
       var bundle = bundles.get(selection.payloadUri());
       if (bundle == null) {
@@ -226,6 +224,11 @@ public class StandaloneJavaFileGroupExecutionRunner {
             path.equals(plan.filePath())
                 ? plan.sourceFingerprint()
                 : plan.auxiliaryStatsFingerprints().getOrDefault(path, "");
+        if (!FileArtifactReuse.compatibleStats(
+            record, path, fingerprint, plan.statsCaptureSignature())) {
+          throw new IllegalStateException(
+              "Reusable artifact bundle contains incompatible stats for " + path);
+        }
         TargetStatsRecord rebound =
             FileArtifactReuse.bindStatsToSnapshot(
                 record, tableId, snapshotId, fingerprint, plan.statsCaptureSignature());
@@ -240,6 +243,11 @@ public class StandaloneJavaFileGroupExecutionRunner {
         if (record == null) {
           throw new IllegalStateException("Reusable artifact bundle is missing index for " + path);
         }
+        if (!FileArtifactReuse.compatibleIndex(
+            record, path, plan.indexSourceFingerprint(), plan.indexCaptureSignature())) {
+          throw new IllegalStateException(
+              "Reusable artifact bundle contains incompatible index for " + path);
+        }
         index =
             FileArtifactReuse.bindIndexToSnapshot(
                 record,
@@ -249,70 +257,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 plan.indexCaptureSignature());
       }
     }
-    if (plan.reusableFileStatsReference() != null) {
-      try {
-        fileStats =
-            TargetStatsRecord.parseFrom(
-                readReference(
-                    plan.reusableFileStatsReference().payloadUri(),
-                    plan.reusableFileStatsReference().payloadBytes(),
-                    plan.reusableFileStatsReference().payloadSha256()));
-        fileStats =
-            FileArtifactReuse.bindStatsToSnapshot(
-                fileStats,
-                tableId,
-                snapshotId,
-                plan.sourceFingerprint(),
-                plan.statsCaptureSignature());
-      } catch (Exception error) {
-        throw new IllegalStateException("Failed to resolve reusable file stats", error);
-      }
-    }
-    for (var reference : plan.reusableAuxiliaryStatsReferences()) {
-      try {
-        TargetStatsRecord record =
-            TargetStatsRecord.parseFrom(
-                readReference(
-                    reference.payloadUri(), reference.payloadBytes(), reference.payloadSha256()));
-        auxiliary.add(
-            FileArtifactReuse.bindStatsToSnapshot(
-                record,
-                tableId,
-                snapshotId,
-                reference.sourceFingerprint(),
-                reference.statsCaptureSignature()));
-      } catch (Exception error) {
-        throw new IllegalStateException("Failed to resolve reusable auxiliary stats", error);
-      }
-    }
-    if (plan.reusableIndexArtifactReference() != null) {
-      try {
-        index =
-            IndexArtifactRecord.parseFrom(
-                readReference(
-                    plan.reusableIndexArtifactReference().payloadUri(),
-                    plan.reusableIndexArtifactReference().payloadBytes(),
-                    plan.reusableIndexArtifactReference().payloadSha256()));
-        index =
-            FileArtifactReuse.bindIndexToSnapshot(
-                index,
-                tableId,
-                snapshotId,
-                plan.indexSourceFingerprint(),
-                plan.indexCaptureSignature());
-      } catch (Exception error) {
-        throw new IllegalStateException("Failed to resolve reusable index artifact", error);
-      }
-    }
-    return plan.withReuse(
-        plan.sourceFingerprint(),
-        plan.indexSourceFingerprint(),
-        plan.statsCaptureSignature(),
-        plan.indexCaptureSignature(),
-        plan.auxiliaryStatsFingerprints(),
-        fileStats,
-        auxiliary,
-        index);
+    return new ResolvedReuse(fileStats, List.copyOf(auxiliary), index);
   }
 
   private Map<String, LoadedReuseBundle> loadReuseBundles(List<ReconcileFileExecutionPlan> plans) {
@@ -333,11 +278,21 @@ public class StandaloneJavaFileGroupExecutionRunner {
           throw new IllegalStateException("Unsupported reusable artifact bundle version");
         }
         Map<String, TargetStatsRecord> statsByPath = new LinkedHashMap<>();
-        bundle.getFileStatsList().forEach(record -> statsByPath.put(statsFilePath(record), record));
+        for (TargetStatsRecord record : bundle.getFileStatsList()) {
+          String path = statsFilePath(record);
+          if (path.isBlank() || statsByPath.putIfAbsent(path, record) != null) {
+            throw new IllegalStateException(
+                "Reusable artifact bundle contains invalid or duplicate stats target");
+          }
+        }
         Map<String, IndexArtifactRecord> indexesByPath = new LinkedHashMap<>();
-        bundle
-            .getIndexArtifactsList()
-            .forEach(record -> indexesByPath.put(indexFilePath(record), record));
+        for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
+          String path = indexFilePath(record);
+          if (path.isBlank() || indexesByPath.putIfAbsent(path, record) != null) {
+            throw new IllegalStateException(
+                "Reusable artifact bundle contains invalid or duplicate index target");
+          }
+        }
         bundles.put(selection.payloadUri(), new LoadedReuseBundle(statsByPath, indexesByPath));
       } catch (Exception error) {
         throw new IllegalStateException(
@@ -361,6 +316,18 @@ public class StandaloneJavaFileGroupExecutionRunner {
 
   private record LoadedReuseBundle(
       Map<String, TargetStatsRecord> statsByPath, Map<String, IndexArtifactRecord> indexesByPath) {}
+
+  private record ResolvedReuse(
+      TargetStatsRecord fileStats,
+      List<TargetStatsRecord> auxiliaryStats,
+      IndexArtifactRecord indexArtifact) {
+    private static ResolvedReuse empty() {
+      return new ResolvedReuse(
+          TargetStatsRecord.getDefaultInstance(),
+          List.of(),
+          IndexArtifactRecord.getDefaultInstance());
+    }
+  }
 
   private byte[] readReference(String uri, long expectedBytes, byte[] expectedSha256) {
     if (blobStore == null) {

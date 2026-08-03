@@ -39,7 +39,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.List;
@@ -339,13 +338,6 @@ class RemoteFileGroupReconcileExecutorTest {
                 .setRowCount(10L)
                 .build(),
             null);
-    var descriptor =
-        StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId("file:s3://bucket/file.parquet")
-            .setPayloadUri("/stats/file.pb")
-            .setPayloadBytes(1L)
-            .build();
-
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
     when(runner.execute(eq(payload), any(), any()))
         .thenAnswer(
@@ -356,7 +348,6 @@ class RemoteFileGroupReconcileExecutorTest {
               publisher.accept(fileStat);
               return CaptureEngineResult.empty();
             });
-    when(workerClient.publishFileStats(payload, fileStat)).thenReturn(descriptor);
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -374,7 +365,6 @@ class RemoteFileGroupReconcileExecutorTest {
                     "job-1:plan-1:group-1:lease-1:success",
                     List.of(),
                     List.of(fileStat),
-                    List.of(descriptor),
                     List.of())));
   }
 
