@@ -40,6 +40,7 @@ import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
+import io.delta.kernel.utils.FileStatus;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,23 @@ class DeltaConnectorTest {
         ]
       }
       """;
+
+  @Test
+  void deltaChangeCommitReadersAreBoundedAndBalanced() {
+    List<FileStatus> commits =
+        java.util.stream.LongStream.range(0, 1008)
+            .mapToObj(version -> FileStatus.of("commit-" + version))
+            .toList();
+
+    int readers = DeltaConnector.deltaChangeReaderCount(commits.size());
+    List<List<FileStatus>> partitions = DeltaConnector.partitionCommitFiles(commits, readers);
+
+    assertEquals(16, readers);
+    assertEquals(16, partitions.size());
+    assertTrue(partitions.stream().allMatch(partition -> partition.size() == 63));
+    assertEquals(commits, partitions.stream().flatMap(List::stream).toList());
+    assertEquals(1, DeltaConnector.deltaChangeReaderCount(1));
+  }
 
   @Test
   void enumerateSnapshotsHonorsExplicitTargetVersions() {

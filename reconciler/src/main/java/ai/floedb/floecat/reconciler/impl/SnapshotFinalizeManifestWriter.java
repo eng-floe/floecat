@@ -18,33 +18,19 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
-import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.List;
 
-public interface RemoteSnapshotFinalizeWorkerClient {
-  StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(RemoteLeasedJob lease);
+/** Shared manifest construction used by local and remote Java snapshot finalizers. */
+public final class SnapshotFinalizeManifestWriter {
+  private SnapshotFinalizeManifestWriter() {}
 
-  List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(RemoteLeasedJob lease);
-
-  PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease,
-      String resultId,
-      String statsObjectPrefix,
-      String captureManifestUri,
-      int sourceFileCount,
-      List<ReconcileFileGroupResultDescriptor> fileGroups,
-      List<StatsObjectDescriptor> fileStats,
-      List<TargetStatsRecord> finalStats,
-      List<StatsObjectDescriptor> indexArtifacts,
-      List<ReusableArtifactBundleReference> reusableArtifactBundles,
-      List<String> realizedStatsSelectors,
-      List<String> realizedIndexSelectors,
-      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
-
-  PreparedSnapshotFinalizeSuccess prepareAppendOnlySnapshotFinalizeSuccess(
-      RemoteLeasedJob lease,
+  public static RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepare(
+      BlobStore blobStore,
+      ReconcileJobStore.LeasedJob lease,
       String resultId,
       String statsObjectPrefix,
       String captureManifestUri,
@@ -57,13 +43,22 @@ public interface RemoteSnapshotFinalizeWorkerClient {
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor,
-      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase);
-
-  boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease, PreparedSnapshotFinalizeSuccess prepared);
-
-  boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
-
-  record PreparedSnapshotFinalizeSuccess(
-      String resultId, SnapshotCaptureManifestDescriptor manifestDescriptor) {}
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
+    return GrpcRemoteReconcileExecutorClient.prepareSnapshotFinalizeSuccess(
+        blobStore,
+        lease,
+        resultId,
+        statsObjectPrefix,
+        captureManifestUri,
+        sourceFileCount,
+        fileGroups,
+        fileStats,
+        finalStats,
+        indexArtifacts,
+        reusableArtifactBundles,
+        realizedStatsSelectors,
+        realizedIndexSelectors,
+        indexPredecessor,
+        appendOnlyBase);
+  }
 }

@@ -284,6 +284,39 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void snapshotFinalizeInputAcceptsAppendOnlyDeltaGroups() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.getLeasedSnapshotFinalizeInput(any()))
+        .thenReturn(
+            GetLeasedSnapshotFinalizeInputResponse.newBuilder()
+                .setInput(
+                    LeasedSnapshotFinalizeInput.newBuilder()
+                        .setJobId("finalize-job")
+                        .setLeaseEpoch("lease-epoch")
+                        .setParentJobId("snapshot-job")
+                        .setTableId(tableId())
+                        .setSnapshotId(55L)
+                        .setFinalizeMode(LeasedSnapshotFinalizeInput.FinalizeMode.FZM_APPEND_ONLY)
+                        .setFileGroupCount(111)
+                        .setSourceFileCount(14_092)
+                        .setSnapshotPlanUri("/snapshot-plan.json")
+                        .setStatsObjectPrefix("/stats/")
+                        .setCaptureManifestUri("/manifest.pb")
+                        .build())
+                .build());
+
+    StandaloneSnapshotFinalizeExecutionPayload payload =
+        client.getSnapshotFinalizeInput(remoteSnapshotFinalizeLease());
+
+    assertEquals(111, payload.fileGroupCount());
+    assertEquals(14_092, payload.sourceFileCount());
+  }
+
+  @Test
   void submitSnapshotFinalizeSuccessPublishesZeroGroupManifest() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);

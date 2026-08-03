@@ -262,6 +262,37 @@ class SnapshotPlanBlobStoreTest {
   }
 
   @Test
+  void persistPlanRoundTripsAppendOnlyBase() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            0,
+            1,
+            "",
+            0);
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L, "/reuse/base.pb", 123L, "ab".repeat(32), 1, 1, 0, "full-rescan-base-job", "", 1);
+
+    ReconcileSnapshotTask persisted =
+        store.persistPlan("acct", "job-1", snapshotTask, List.of(), base);
+
+    assertEquals(
+        Optional.of(base), store.loadPlan(persisted.fileGroupPlanBlobUri()).appendOnlyBase());
+  }
+
+  @Test
   void persistPlanStoresCompactBundleSelectionsWithoutLegacyFallbacks() {
     SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

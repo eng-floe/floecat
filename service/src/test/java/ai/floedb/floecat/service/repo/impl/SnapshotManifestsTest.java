@@ -213,6 +213,13 @@ class SnapshotManifestsTest {
     return b.build();
   }
 
+  private static SnapshotManifestEntry reusableEntry(long id, long createdMs) {
+    return entry(id, createdMs, true).toBuilder()
+        .setReuseStatsGenerationRef(
+            BlobRef.newBuilder().setUri("s3://t/reuse-stats/" + id + "/gen.pb"))
+        .build();
+  }
+
   @Test
   void latestQueryableCurrentPicksNewestFinalizedAtOrBeforeTheCommittedCurrent() {
     // S1, S2 finalized; S3 is the committed current but not yet finalized.
@@ -241,6 +248,34 @@ class SnapshotManifestsTest {
     var s1 = entry(1, 1_000, false);
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, s1);
     assertTrue(SnapshotManifests.latestQueryableCurrent(roots, head, s1).isEmpty());
+  }
+
+  @Test
+  void latestReusableCurrentSkipsTheUnfinalizedCurrentAndExcludedReplayTarget() {
+    var s4 = entry(4, 4_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(2, 2_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(3, 3_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, s4);
+
+    assertEquals(
+        3L,
+        SnapshotManifests.latestReusableCurrent(roots, head, s4, 4L).orElseThrow().getSnapshotId());
+    assertEquals(
+        2L,
+        SnapshotManifests.latestReusableCurrent(roots, head, s4, 3L).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void latestReusableCurrentRequiresPublishedReuseArtifacts() {
+    var s3 = entry(3, 3_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, entry(2, 2_000, true));
+    head = SnapshotManifests.upsert(roots, TABLE, head, s3);
+
+    assertEquals(
+        1L,
+        SnapshotManifests.latestReusableCurrent(roots, head, s3, 3L).orElseThrow().getSnapshotId());
   }
 
   private static String fingerprint(String schemaJson) {

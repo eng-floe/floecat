@@ -26,13 +26,25 @@ import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
@@ -46,6 +58,13 @@ import software.amazon.awssdk.services.sts.model.Credentials;
 @ApplicationScoped
 public class StorageAuthorityResolver {
   static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
+  private static final Logger LOG = Logger.getLogger(StorageAuthorityResolver.class.getName());
+  private static final Duration ASSUME_ROLE_CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
+  private static final int ASSUME_ROLE_MAX_ATTEMPTS = 3;
+  private static final long ASSUME_ROLE_RETRY_BASE_MILLIS = 50L;
+
+  private final ConcurrentHashMap<AssumeRoleCacheKey, CompletableFuture<ResolvedStorageCredentials>>
+      assumeRoleCache = new ConcurrentHashMap<>();
 
   @Inject SecretsManager secretsManager;
 
@@ -205,12 +224,77 @@ public class StorageAuthorityResolver {
       AuthCredentials authoritySecret,
       List<String> sessionScopeLocations,
       boolean exactObjectScope) {
-    if (authoritySecret != null
-        && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
-      return assumeRoleFromStaticSource(
-          authority, authoritySecret.getAws(), sessionScopeLocations, exactObjectScope);
+    AssumeRoleCacheKey key =
+        AssumeRoleCacheKey.of(
+            authority, authoritySecret, sessionScopeLocations, exactObjectScope);
+    return cachedAssumeRole(
+        key,
+        () -> {
+          if (authoritySecret != null
+              && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
+            return assumeRoleFromStaticSource(
+                authority,
+                authoritySecret.getAws(),
+                sessionScopeLocations,
+                exactObjectScope);
+          }
+          return assumeRoleFromAmbientSource(
+              authority, sessionScopeLocations, exactObjectScope);
+        });
+  }
+
+  private ResolvedStorageCredentials cachedAssumeRole(
+      AssumeRoleCacheKey key, Supplier<ResolvedStorageCredentials> loader) {
+    for (; ; ) {
+      CompletableFuture<ResolvedStorageCredentials> existing = assumeRoleCache.get(key);
+      if (existing != null) {
+        try {
+          ResolvedStorageCredentials credentials = existing.join();
+          if (isFreshForCache(credentials)) {
+            return credentials;
+          }
+        } catch (CompletionException error) {
+          assumeRoleCache.remove(key, existing);
+          throw propagate(error.getCause());
+        }
+        assumeRoleCache.remove(key, existing);
+        continue;
+      }
+
+      CompletableFuture<ResolvedStorageCredentials> created = new CompletableFuture<>();
+      existing = assumeRoleCache.putIfAbsent(key, created);
+      if (existing != null) {
+        continue;
+      }
+      try {
+        ResolvedStorageCredentials credentials = loader.get();
+        created.complete(credentials);
+        if (!isFreshForCache(credentials)) {
+          assumeRoleCache.remove(key, created);
+        }
+        return credentials;
+      } catch (Throwable error) {
+        created.completeExceptionally(error);
+        assumeRoleCache.remove(key, created);
+        throw propagate(error);
+      }
     }
-    return assumeRoleFromAmbientSource(authority, sessionScopeLocations, exactObjectScope);
+  }
+
+  private static boolean isFreshForCache(ResolvedStorageCredentials credentials) {
+    return credentials != null
+        && credentials.expiresAt() != null
+        && Instant.now().plus(ASSUME_ROLE_CACHE_REFRESH_SKEW).isBefore(credentials.expiresAt());
+  }
+
+  private static RuntimeException propagate(Throwable error) {
+    if (error instanceof RuntimeException runtime) {
+      return runtime;
+    }
+    if (error instanceof Error fatal) {
+      throw fatal;
+    }
+    return new RuntimeException(error);
   }
 
   ResolvedStorageCredentials assumeRoleFromStaticSource(
@@ -242,6 +326,34 @@ public class StorageAuthorityResolver {
   }
 
   private ResolvedStorageCredentials assumeRole(
+      StorageAuthority authority,
+      Supplier<AwsCredentialsProvider> providerFactory,
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
+    RuntimeException lastFailure = null;
+    for (int attempt = 1; attempt <= ASSUME_ROLE_MAX_ATTEMPTS; attempt++) {
+      try {
+        return assumeRoleOnce(
+            authority, providerFactory, sessionScopeLocations, exactObjectScope);
+      } catch (RuntimeException error) {
+        if (!retryableAssumeRoleFailure(error) || attempt == ASSUME_ROLE_MAX_ATTEMPTS) {
+          if (retryableAssumeRoleFailure(error)) {
+            throw new CredentialVendingUnavailableException(error);
+          }
+          throw error;
+        }
+        lastFailure = error;
+        LOG.log(
+            Level.WARNING,
+            "Retrying transient STS AssumeRole failure authorityId={0} attempt={1}",
+            new Object[] {authority.getResourceId().getId(), attempt});
+        pauseBeforeAssumeRoleRetry(attempt);
+      }
+    }
+    throw new CredentialVendingUnavailableException(lastFailure);
+  }
+
+  private ResolvedStorageCredentials assumeRoleOnce(
       StorageAuthority authority,
       Supplier<AwsCredentialsProvider> providerFactory,
       List<String> sessionScopeLocations,
@@ -285,12 +397,64 @@ public class StorageAuthorityResolver {
     }
   }
 
+  void pauseBeforeAssumeRoleRetry(int failedAttempt) {
+    long upperBound = ASSUME_ROLE_RETRY_BASE_MILLIS << Math.max(0, failedAttempt - 1);
+    long delayMillis =
+        ThreadLocalRandom.current().nextLong(Math.max(1L, upperBound / 2), upperBound + 1);
+    LockSupport.parkNanos(Duration.ofMillis(delayMillis).toNanos());
+  }
+
+  private static boolean retryableAssumeRoleFailure(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof software.amazon.awssdk.core.exception.SdkClientException) {
+        return true;
+      }
+      if (current instanceof software.amazon.awssdk.services.sts.model.StsException sts
+          && (sts.statusCode() == 429 || sts.statusCode() >= 500)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
     var builder = StsClient.builder().credentialsProvider(provider);
     if (authority.hasRegion() && !authority.getRegion().isBlank()) {
       builder.region(Region.of(authority.getRegion()));
     }
     return builder.build();
+  }
+
+  static final class CredentialVendingUnavailableException extends RuntimeException {
+    CredentialVendingUnavailableException(Throwable cause) {
+      super("Temporary failure vending scoped storage credentials", cause);
+    }
+  }
+
+  private record AssumeRoleCacheKey(
+      String authorityFingerprint,
+      String sourceCredentialFingerprint,
+      List<String> scopes,
+      boolean exactObjectScope) {
+    private static AssumeRoleCacheKey of(
+        StorageAuthority authority,
+        AuthCredentials authoritySecret,
+        List<String> sessionScopeLocations,
+        boolean exactObjectScope) {
+      return new AssumeRoleCacheKey(
+          sha256(authority.toByteArray()),
+          sha256(authoritySecret == null ? new byte[0] : authoritySecret.toByteArray()),
+          List.copyOf(normalizeS3Scopes(sessionScopeLocations)),
+          exactObjectScope);
+    }
+  }
+
+  private static String sha256(byte[] value) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 is unavailable", error);
+    }
   }
 
   static String scopedSessionPolicy(String locationPrefix) {

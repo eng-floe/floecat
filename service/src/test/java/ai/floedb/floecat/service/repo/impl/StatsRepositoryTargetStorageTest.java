@@ -76,6 +76,64 @@ class StatsRepositoryTargetStorageTest {
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
 
   @Test
+  void baseGenerationOverlayServesInheritedAndDeltaTargets() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long baseSnapshotId = 97L;
+    long snapshotId = 98L;
+    String basePath = "s3://bucket/base.parquet";
+    String deltaPath = "s3://bucket/delta.parquet";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        baseSnapshotId,
+        "direct",
+        List.of(),
+        List.of(
+            TargetStatsRecords.fileRecord(
+                TABLE_ID,
+                baseSnapshotId,
+                FileTargetStats.newBuilder().setFilePath(basePath).build())));
+    StatsStore.StatsGenerationPredecessor basePredecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, baseSnapshotId, "direct", false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, baseSnapshotId, "direct", List.of(), basePredecessor, null);
+    repository.registerBaseStatsGeneration(
+        TABLE_ID, snapshotId, "append", baseSnapshotId, "direct");
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "append",
+        List.of(),
+        List.of(
+            TargetStatsRecords.fileRecord(
+                TABLE_ID,
+                snapshotId,
+                FileTargetStats.newBuilder().setFilePath(deltaPath).build())));
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, "append", false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, "append", List.of(), predecessor, null);
+
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(basePath)))
+        .get()
+        .extracting(TargetStatsRecord::getSnapshotId)
+        .isEqualTo(snapshotId);
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(deltaPath)))
+        .isPresent();
+    assertThat(
+            repository
+                .listTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 10, "")
+                .records())
+        .hasSize(2);
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE)))
+        .isEqualTo(2);
+  }
+
+  @Test
   void bundledPrewrittenStatsResolveAllTargetsWithOneBlobRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     AtomicInteger bundleGets = new AtomicInteger();
@@ -147,6 +205,53 @@ class StatsRepositoryTargetStorageTest {
                 TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(secondPath)))
         .contains(second);
     assertThat(bundleGets).hasValue(1);
+  }
+
+  @Test
+  void inheritedBundleStatsAreReboundToTheNewSnapshot() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobs);
+    long baseSnapshotId = 98L;
+    long snapshotId = 99L;
+    String generationId = "full-rescan-append";
+    String path = "s3://bucket/file.parquet";
+    TargetStatsRecord inherited =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID, baseSnapshotId, FileTargetStats.newBuilder().setFilePath(path).build());
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(inherited)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), baseSnapshotId, "base")
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerInheritedStatsReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(
+            new StatsStore.PrewrittenTargetStatsReference(
+                StatsTargetIdentity.storageId(inherited.getTarget()),
+                bundleUri,
+                bundle.length,
+                digest)));
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, inherited.getTarget()))
+        .get()
+        .extracting(TargetStatsRecord::getSnapshotId)
+        .isEqualTo(snapshotId);
   }
 
   @Test
@@ -1877,6 +1982,56 @@ class StatsRepositoryTargetStorageTest {
                 .listTargetStats(TABLE_ID, snapshotId, java.util.Optional.empty(), 10, "")
                 .records())
         .hasSize(1);
+  }
+
+  @Test
+  void generationGcKeepsGenerationReferencedByAppendOverlay() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long baseSnapshotId = 777L;
+    long childSnapshotId = 778L;
+    String baseGeneration = "base";
+    String replacementGeneration = "replacement";
+    String childGeneration = "append";
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, baseSnapshotId, baseGeneration, List.of(), List.of());
+    StatsStore.StatsGenerationPredecessor basePredecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, baseSnapshotId, baseGeneration, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, baseSnapshotId, baseGeneration, List.of(), basePredecessor, null);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, baseSnapshotId, replacementGeneration, List.of(), List.of());
+    StatsStore.StatsGenerationPredecessor replacementPredecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, baseSnapshotId, replacementGeneration, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, baseSnapshotId, replacementGeneration, List.of(), replacementPredecessor, null);
+
+    repository.registerBaseStatsGeneration(
+        TABLE_ID, childSnapshotId, childGeneration, baseSnapshotId, baseGeneration);
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, childSnapshotId, childGeneration, List.of(), List.of());
+    StatsStore.StatsGenerationPredecessor childPredecessor =
+        repository.prepareStatsGenerationForPublication(
+            TABLE_ID, childSnapshotId, childGeneration, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, childSnapshotId, childGeneration, List.of(), childPredecessor, null);
+
+    String baseManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), baseSnapshotId, baseGeneration);
+    int reclaimed =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed).isZero();
+    assertThat(blobStore.get(baseManifest))
+        .as("the append child keeps its immutable base generation reachable")
+        .isNotNull();
   }
 
   @Test

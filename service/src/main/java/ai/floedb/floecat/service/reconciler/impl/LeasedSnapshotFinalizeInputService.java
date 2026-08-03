@@ -54,7 +54,8 @@ public class LeasedSnapshotFinalizeInputService {
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
     DIRECT_STATS,
-    EXPLICIT_EMPTY
+    EXPLICIT_EMPTY,
+    APPEND_ONLY
   }
 
   record DescriptorPage(
@@ -122,7 +123,9 @@ public class LeasedSnapshotFinalizeInputService {
           lease.parentJobId,
           tableId,
           snapshotTask.snapshotId(),
-          FinalizeMode.EXPLICIT_EMPTY,
+          snapshotTask.sourceFileCount() == 0
+              ? FinalizeMode.EXPLICIT_EMPTY
+              : FinalizeMode.APPEND_ONLY,
           lease.fullRescan,
           "",
           0,
@@ -137,13 +140,19 @@ public class LeasedSnapshotFinalizeInputService {
         childStateService.compactChildState(
             lease.accountId, lease.parentJobId, lease.jobId, snapshotTask.fileGroupCount());
     requireReadyForFinalize(childState);
+    long deltaFileCount =
+        childState.completedGroupDescriptors().stream()
+            .mapToLong(ReconcileFileGroupResultDescriptor::succeededFileCount)
+            .sum();
     return new SnapshotFinalizeInput(
         lease.jobId,
         lease.leaseEpoch,
         lease.parentJobId,
         tableId(lease, snapshotTask),
         snapshotTask.snapshotId(),
-        FinalizeMode.FILE_GROUPS_NON_EMPTY,
+        snapshotTask.sourceFileCount() > deltaFileCount
+            ? FinalizeMode.APPEND_ONLY
+            : FinalizeMode.FILE_GROUPS_NON_EMPTY,
         lease.fullRescan,
         "",
         0,

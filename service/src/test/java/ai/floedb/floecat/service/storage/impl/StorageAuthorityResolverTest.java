@@ -221,6 +221,44 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
+  void buildResponseReusesFreshAssumeRoleCredentialsForMatchingScope() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    assumeRoleResolver.secretsManager = new StaticSecretsManager();
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+
+    assumeRoleResolver.buildResponse(
+        authority,
+        "s3://warehouse/orders",
+        java.util.List.of("s3://warehouse/orders"),
+        "acct",
+        true);
+    assumeRoleResolver.buildResponse(
+        authority,
+        "s3://warehouse/orders",
+        java.util.List.of("s3://warehouse/orders"),
+        "acct",
+        true);
+
+    assertEquals(1, resolutions.get());
+  }
+
+  @Test
   void buildResponseAllowsServerSideAssumeRoleWithAmbientSourceCredentials() {
     StorageAuthorityResolver assumeRoleResolver =
         new StorageAuthorityResolver() {
@@ -300,6 +338,53 @@ class StorageAuthorityResolverTest {
     assertEquals(2, clientBuilds.get());
     assertEquals(2, providers.size());
     assertNotSame(providers.get(0), providers.get(1));
+  }
+
+  @Test
+  void ambientAssumeRoleRetriesTransientConnectFailure() {
+    StsClient failedClient = mock(StsClient.class);
+    StsClient refreshedClient = mock(StsClient.class);
+    when(failedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenThrow(SdkClientException.builder().message("Connect timed out").build());
+    when(refreshedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenReturn(
+            AssumeRoleResponse.builder()
+                .credentials(
+                    Credentials.builder()
+                        .accessKeyId("temp-akid")
+                        .secretAccessKey("temp-secret")
+                        .sessionToken("temp-token")
+                        .expiration(Instant.now().plusSeconds(3600))
+                        .build())
+                .build());
+
+    AtomicInteger clientBuilds = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          AwsCredentialsProvider ambientCredentialsProvider() {
+            return mock(AwsCredentialsProvider.class);
+          }
+
+          @Override
+          StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
+            return clientBuilds.getAndIncrement() == 0 ? failedClient : refreshedClient;
+          }
+
+          @Override
+          void pauseBeforeAssumeRoleRetry(int failedAttempt) {}
+        };
+
+    ResolvedStorageCredentials credentials =
+        assumeRoleResolver.assumeRoleFromAmbientSource(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .build(),
+            java.util.List.of("s3://warehouse/orders"),
+            false);
+
+    assertEquals("temp-akid", credentials.accessKeyId());
+    assertEquals(2, clientBuilds.get());
   }
 
   @Test

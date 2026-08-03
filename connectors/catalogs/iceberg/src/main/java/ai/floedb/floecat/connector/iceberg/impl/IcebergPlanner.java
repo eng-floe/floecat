@@ -368,7 +368,7 @@ final class IcebergPlanner implements Planner<Integer> {
     return instant;
   }
 
-  private String partitionJson(PartitionSpec spec, StructLike partition) {
+  static String partitionJson(PartitionSpec spec, StructLike partition) {
     if (spec == null || partition == null || spec.fields().isEmpty()) {
       return "{\"partitionValues\":[]}";
     }

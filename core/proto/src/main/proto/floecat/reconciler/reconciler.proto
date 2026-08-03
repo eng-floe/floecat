@@ -374,6 +374,22 @@ message ReusableArtifactBundleSelection {
   repeated string index_file_paths = 3;
 }
 
+// Immutable predecessor used by the append-only fast path. The referenced manifest is verified
+// before its aggregate records and reusable bundle references are carried into the new snapshot.
+message AppendOnlySnapshotBase {
+  uint32 format_version = 1;
+  uint64 snapshot_id = 2;
+  string manifest_uri = 3;
+  uint64 manifest_bytes = 4;
+  bytes manifest_sha256 = 5;
+  uint32 source_file_count = 6;
+  uint32 file_stats_record_count = 7;
+  uint32 index_artifact_count = 8;
+  string stats_generation_id = 9;
+  string index_generation_id = 10;
+  uint32 chain_depth = 11;
+}
+
 // Immutable result metadata written directly by a file-group executor. Stats and index wrappers
 // may share one group bundle; this bounded payload carries only their compact target mappings.
 message FileGroupResultPayload {
@@ -436,6 +452,7 @@ message SnapshotCaptureManifest {
   // Complete compatibility index for the current snapshot. A false value is not eligible as a
   // reuse source and is replaced by the next complete capture.
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
+  AppendOnlySnapshotBase append_only_base = 28;
   bool reusable_artifact_bundles_complete = 29;
 }
 
@@ -717,6 +734,7 @@ message LeasedSnapshotFinalizeInput {
     FZM_FILE_GROUPS_NON_EMPTY = 1;
     FZM_DIRECT_STATS = 2;
     FZM_EXPLICIT_EMPTY = 3;
+    FZM_APPEND_ONLY = 4;
   }
 
   string job_id = 1;

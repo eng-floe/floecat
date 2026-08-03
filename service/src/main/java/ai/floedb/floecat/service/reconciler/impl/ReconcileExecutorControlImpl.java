@@ -997,6 +997,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                             case EXPLICIT_EMPTY ->
                                 ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput
                                     .FinalizeMode.FZM_EXPLICIT_EMPTY;
+                            case APPEND_ONLY ->
+                                ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput
+                                    .FinalizeMode.FZM_APPEND_ONLY;
                           })
                       .setDirectStatsBlobUri(payload.directStatsBlobUri())
                       .setDirectStatsRecordCount(payload.directStatsRecordCount())

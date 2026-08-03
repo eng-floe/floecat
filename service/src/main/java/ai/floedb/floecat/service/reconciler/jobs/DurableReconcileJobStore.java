@@ -435,7 +435,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         projector(),
         jobIndexStore(),
         indexes(),
-        this::materializeSnapshotPlanFileGroups,
+        this::materializeSnapshotPlan,
         readyQueue()::readyPointerKeys,
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue);
@@ -2047,20 +2047,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private List<ReconcileFileGroupTask> materializeSnapshotPlanFileGroups(
       ReconcileSnapshotTask snapshotTask) {
+    return materializeSnapshotPlan(snapshotTask).fileGroups();
+  }
+
+  private SnapshotPlanBlob materializeSnapshotPlan(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.fileGroupPlanRecorded() && !blank(effective.fileGroupPlanBlobUri())) {
+      return payloads()
+          .requireBlob(
+              effective.fileGroupPlanBlobUri(),
+              SnapshotPlanBlob.class,
+              "snapshot plan payload",
+              "");
+    }
     if (!effective.fileGroups().isEmpty()) {
-      return effective.fileGroups();
+      return snapshotPlanBlob(effective.fileGroups());
     }
-    if (!effective.fileGroupPlanRecorded()
-        || effective.fileGroupCount() <= 0
-        || blank(effective.fileGroupPlanBlobUri())) {
-      return List.of();
-    }
-    return payloads()
-        .requireBlob(
-            effective.fileGroupPlanBlobUri(), SnapshotPlanBlob.class, "snapshot plan payload", "")
-        .fileGroups();
+    return SnapshotPlanBlob.of(List.of());
   }
 
   private List<ReconcileFileGroupTask> validateSnapshotPlanManifest(
@@ -4153,9 +4157,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     List<ReconcileFileGroupTask> expectedGroups = materializeSnapshotPlanFileGroups(snapshotTask);
-    if (expectedGroups.isEmpty()
-        && (snapshotTask.fileGroupCount() != 0 || snapshotTask.sourceFileCount() != 0)) {
-      return false;
+    if (expectedGroups.isEmpty()) {
+      boolean appendOnly =
+          snapshotTask.fileGroupCount() == 0
+              && snapshotTask.sourceFileCount() > 0
+              && hasAppendOnlySnapshotBase(snapshotTask);
+      if (snapshotTask.fileGroupCount() != 0
+          || (snapshotTask.sourceFileCount() != 0 && !appendOnly)) {
+        return false;
+      }
     }
     if (expectedGroups.isEmpty() && snapshotTask.sourceRevision().isBlank()) {
       return false;
@@ -4220,6 +4230,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         parent.jobId,
         "");
     return true;
+  }
+
+  private boolean hasAppendOnlySnapshotBase(ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask == null
+        || blank(snapshotTask.fileGroupPlanBlobUri())
+        || snapshotTask.sourceFileCount() <= 0) {
+      return false;
+    }
+    return payloads()
+        .requireBlob(
+            snapshotTask.fileGroupPlanBlobUri(),
+            SnapshotPlanBlob.class,
+            "snapshot plan payload",
+            "")
+        .appendOnlyBase()
+        .isPresent();
   }
 
   private ReconcileSnapshotTask snapshotTaskFromStored(StoredReconcileJob record) {

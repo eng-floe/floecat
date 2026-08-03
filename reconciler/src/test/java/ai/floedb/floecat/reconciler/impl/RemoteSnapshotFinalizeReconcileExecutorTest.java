@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,6 +45,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -386,8 +388,12 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             null);
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
-    when(snapshotPlanBlobStore.loadFileGroupsByUri("/snapshot-plan.json"))
-        .thenReturn(List.of(group("plan-1", "group-a"), group("plan-1", "group-b")));
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
+        .thenReturn(
+            SnapshotPlanBlobStore.SnapshotPlanBlob.of(
+                List.of(
+                    new PlannedFileGroupJob(ReconcileScope.empty(), group("plan-1", "group-a")),
+                    new PlannedFileGroupJob(ReconcileScope.empty(), group("plan-1", "group-b")))));
     when(workerClient.listSnapshotFileGroupResults(remoteLease))
         .thenReturn(List.of(descriptor("plan-1", "group-a"), descriptor("plan-1", "group-c")));
 
@@ -551,6 +557,196 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN, thrown.retryClass());
   }
 
+  @Test
+  void finalizesZeroDeltaAppendFromBaseManifestWithoutFileGroupResults() throws Exception {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, blobStore, snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob();
+    String manifestUri = "/accounts/acct/tables/table-1/snapshots/54/manifest.pb";
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:snapshot-54-group-0")
+                    .setPayloadUri(
+                        "/accounts/acct/tables/table-1/reuse-bundles/"
+                            + "0000000000000000000000000000000000000000000000000000000000000000.pb")
+                    .setPayloadBytes(100)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/base.parquet")
+                    .setSourceFingerprint("source-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
+            .setParentJobId("snapshot-job")
+            .setTableId("table-1")
+            .setSnapshotId(54L)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .addReusableArtifactBundles(bundle)
+            .build()
+            .toByteArray();
+    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L,
+            manifestUri,
+            manifestBytes.length,
+            java.util.HexFormat.of().formatHex(digest),
+            1,
+            1,
+            0,
+            "full-rescan-snapshot-job",
+            "",
+            1);
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            1,
+            "/snapshot-plan.json",
+            0,
+            "/final-stats.pb",
+            "/capture-manifest.pb",
+            null);
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
+        .thenReturn(SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of(), base));
+    when(blobStore.get(manifestUri)).thenReturn(manifestBytes);
+    when(workerClient.prepareAppendOnlySnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
+            anyList(), anyList(), anyList(), any(), any()))
+        .thenReturn(preparedSnapshotFinalizeSuccess());
+    when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.success());
+    verify(workerClient, never()).listSnapshotFileGroupResults(any());
+    verify(workerClient)
+        .prepareAppendOnlySnapshotFinalizeSuccess(
+            any(),
+            any(),
+            any(),
+            any(),
+            eq(1),
+            eq(List.of()),
+            eq(List.of()),
+            eq(List.of()),
+            eq(List.of()),
+            eq(List.of()),
+            eq(List.of()),
+            eq(List.of()),
+            any(),
+            eq(base));
+  }
+
+  @Test
+  void appendOnlyFinalizeLoadsDeltaGroupDescriptors() throws Exception {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, blobStore, snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob(1, 2);
+    String manifestUri = "/accounts/acct/tables/table-1/snapshots/54/manifest.pb";
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:snapshot-54-group-0")
+                    .setPayloadUri("/reuse-bundle.pb")
+                    .setPayloadBytes(100)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/base.parquet")
+                    .setSourceFingerprint("source-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
+            .setParentJobId("snapshot-job")
+            .setTableId("table-1")
+            .setSnapshotId(54L)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .addReusableArtifactBundles(bundle)
+            .build()
+            .toByteArray();
+    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L,
+            manifestUri,
+            manifestBytes.length,
+            java.util.HexFormat.of().formatHex(digest),
+            1,
+            1,
+            0,
+            "full-rescan-snapshot-job",
+            "",
+            1);
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            2,
+            "/snapshot-plan.json",
+            1,
+            "/final-stats.pb",
+            "/capture-manifest.pb",
+            null);
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
+        .thenReturn(
+            SnapshotPlanBlobStore.SnapshotPlanBlob.of(
+                List.of(
+                    new PlannedFileGroupJob(ReconcileScope.empty(), group("plan-1", "group-a"))),
+                base));
+    when(blobStore.get(manifestUri)).thenReturn(manifestBytes);
+    when(workerClient.listSnapshotFileGroupResults(any()))
+        .thenReturn(List.of(descriptor("plan-1", "group-c")));
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertFalse(result.ok());
+    verify(workerClient).listSnapshotFileGroupResults(any());
+    assertTrue(result.message.contains("unexpected snapshot file-group descriptor"));
+  }
+
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob() {
     return leasedFinalizeJob(2, ReconcileScope.empty());
   }
@@ -597,6 +793,45 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         true,
         ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         scope,
+        ReconcileExecutionPolicy.defaults(),
+        "lease-1",
+        "",
+        "",
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        snapshotTask,
+        ReconcileFileGroupTask.empty(),
+        "snapshot-job");
+  }
+
+  private static ReconcileJobStore.LeasedJob leasedAppendFinalizeJob() {
+    return leasedAppendFinalizeJob(0, 1);
+  }
+
+  private static ReconcileJobStore.LeasedJob leasedAppendFinalizeJob(
+      int fileGroupCount, int sourceFileCount) {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/snapshot-plan.json",
+            fileGroupCount,
+            sourceFileCount,
+            "",
+            0);
+    return new ReconcileJobStore.LeasedJob(
+        "finalize-job",
+        "acct",
+        "connector-1",
+        true,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "lease-1",
         "",

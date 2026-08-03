@@ -522,6 +522,19 @@ public interface FloecatConnector extends Closeable {
     return Optional.empty();
   }
 
+  /**
+   * Plans source file changes between two snapshots without enumerating target snapshot membership.
+   * Connectors should return empty when they cannot prove a complete delta.
+   */
+  default Optional<SnapshotFileDelta> planSnapshotFileDelta(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long baseSnapshotId,
+      long targetSnapshotId) {
+    return Optional.empty();
+  }
+
   record SnapshotEnumerationOptions(
       boolean fullRescan,
       Set<Long> knownSnapshotIds,
@@ -792,6 +805,23 @@ public interface FloecatConnector extends Closeable {
       dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
       deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
       executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    }
+  }
+
+  record SnapshotFileDelta(
+      List<SnapshotFileEntry> addedDataFiles,
+      List<String> removedDataFilePaths,
+      boolean deleteArtifactsChanged,
+      String executionSchemaJson) {
+    public SnapshotFileDelta {
+      addedDataFiles = addedDataFiles == null ? List.of() : List.copyOf(addedDataFiles);
+      removedDataFilePaths =
+          removedDataFilePaths == null ? List.of() : List.copyOf(removedDataFilePaths);
+      executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    }
+
+    public boolean appendOnly() {
+      return removedDataFilePaths.isEmpty() && !deleteArtifactsChanged;
     }
   }
 

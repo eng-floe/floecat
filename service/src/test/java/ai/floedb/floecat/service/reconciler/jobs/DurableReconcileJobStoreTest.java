@@ -28,6 +28,8 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.AppendOnlyBase;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -44,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
@@ -6185,6 +6188,155 @@ class DurableReconcileJobStoreTest {
     assertEquals(1, finalizers.size());
     assertEquals("JS_QUEUED", finalizers.getFirst().state);
     assertEquals(0, finalizers.getFirst().snapshotTask.fileGroupCount());
+  }
+
+  @Test
+  void appendOnlyFinalizerJobPlanPreservesBaseWithDeltaGroups() throws Exception {
+    ReconcileFileGroupTask deltaGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 56L, List.of("s3://bucket/data/delta.parquet"));
+    AppendOnlyBase appendOnlyBase =
+        new AppendOnlyBase(
+            55L,
+            "/accounts/acct-1/tables/table-1/snapshots/55/manifest.pb",
+            123L,
+            "0".repeat(64),
+            5,
+            5,
+            0,
+            "full-rescan-base-job",
+            "",
+            1);
+    String sourcePlanUri = "/accounts/acct-1/reconcile/jobs/snapshot-job/snapshot-plan.json";
+    store.blobStore.put(
+        sourcePlanUri,
+        store.mapper.writeValueAsBytes(
+            SnapshotPlanBlob.of(
+                List.of(
+                    new ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob(
+                        ReconcileScope.empty(), deltaGroup)),
+                appendOnlyBase)),
+        "application/json");
+    ReconcileSnapshotTask appendPlan =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            56L,
+            "db",
+            "orders",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            sourcePlanUri,
+            1,
+            6,
+            "",
+            0);
+
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            appendPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-job",
+            "");
+
+    ReconcileJob finalizer = store.get(ACCOUNT_ID, finalizerJobId).orElseThrow();
+    assertNotEquals(sourcePlanUri, finalizer.snapshotTask.fileGroupPlanBlobUri());
+    SnapshotPlanBlob finalizerPlan =
+        store.mapper.readValue(
+            store.blobStore.get(finalizer.snapshotTask.fileGroupPlanBlobUri()),
+            SnapshotPlanBlob.class);
+    assertEquals(Optional.of(appendOnlyBase), finalizerPlan.appendOnlyBase());
+    assertEquals(List.of(deltaGroup), finalizerPlan.fileGroups());
+  }
+
+  @Test
+  void zeroDeltaAppendSnapshotEnqueuesFinalizer() throws Exception {
+    ReconcileSnapshotTask initialTask =
+        ReconcileSnapshotTask.of("table-1", 56L, "db", "orders", List.of(), true)
+            .withContentState("revision-2", "metadata-2", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            initialTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+
+    String planUri = SnapshotPlanManifestIds.manifestBlobUri(ACCOUNT_ID, snapshotJobId, List.of());
+    AppendOnlyBase appendOnlyBase =
+        new AppendOnlyBase(
+            55L,
+            "/accounts/acct-1/tables/table-1/snapshots/55/manifest.pb",
+            123L,
+            "0".repeat(64),
+            1,
+            1,
+            0,
+            "full-rescan-base-job",
+            "",
+            1);
+    store.blobStore.put(
+        planUri,
+        store.mapper.writeValueAsBytes(SnapshotPlanBlob.of(List.of(), appendOnlyBase)),
+        "application/json");
+    ReconcileSnapshotTask appendPlan =
+        ReconcileSnapshotTask.of(
+                "table-1",
+                56L,
+                "db",
+                "orders",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                planUri,
+                0,
+                1,
+                "",
+                0)
+            .withContentState("revision-2", "metadata-2", List.of());
+    assertTrue(
+        store.adoptSnapshotPlanManifest(
+            snapshotJobId, snapshotLease.leaseEpoch, appendPlan, planUri, false));
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on zero-delta append finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    runProjectionMaintenance();
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_QUEUED", finalizers.getFirst().state);
+    assertEquals(0, finalizers.getFirst().snapshotTask.fileGroupCount());
+    assertEquals(1, finalizers.getFirst().snapshotTask.sourceFileCount());
+    SnapshotPlanBlob finalizerPlan =
+        store.mapper.readValue(
+            store.blobStore.get(finalizers.getFirst().snapshotTask.fileGroupPlanBlobUri()),
+            SnapshotPlanBlob.class);
+    assertEquals(Optional.of(appendOnlyBase), finalizerPlan.appendOnlyBase());
   }
 
   @Test

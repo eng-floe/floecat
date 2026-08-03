@@ -19,8 +19,8 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import java.util.Objects;
 
-record RemoteLeasedJob(ReconcileJobStore.LeasedJob lease) {
-  RemoteLeasedJob {
+public record RemoteLeasedJob(ReconcileJobStore.LeasedJob lease) {
+  public RemoteLeasedJob {
     lease = Objects.requireNonNull(lease, "lease");
   }
 

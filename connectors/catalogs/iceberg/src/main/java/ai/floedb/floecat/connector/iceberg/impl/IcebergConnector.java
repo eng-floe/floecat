@@ -64,6 +64,7 @@ import java.util.Optional;
 import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
@@ -769,6 +770,84 @@ public abstract class IcebergConnector implements FloecatConnector {
           new SnapshotFilePlan(
               List.copyOf(dataFiles), List.of(), SchemaParser.toJson(planner.schema())));
     }
+  }
+
+  @Override
+  public Optional<SnapshotFileDelta> planSnapshotFileDelta(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long baseSnapshotId,
+      long targetSnapshotId) {
+    if (baseSnapshotId < 0 || targetSnapshotId < 0 || baseSnapshotId == targetSnapshotId) {
+      return Optional.empty();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot base = table.snapshot(baseSnapshotId);
+    Snapshot target = table.snapshot(targetSnapshotId);
+    if (base == null || target == null) {
+      return Optional.empty();
+    }
+
+    List<Snapshot> lineage = new ArrayList<>();
+    Snapshot cursor = target;
+    while (cursor != null && cursor.snapshotId() != baseSnapshotId) {
+      lineage.add(cursor);
+      Long parentId = cursor.parentId();
+      cursor = parentId == null ? null : table.snapshot(parentId);
+    }
+    if (cursor == null) {
+      return Optional.empty();
+    }
+
+    LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
+    LinkedHashSet<String> removals = new LinkedHashSet<>();
+    boolean deleteArtifactsChanged = false;
+    for (int i = lineage.size() - 1; i >= 0; i--) {
+      Snapshot change = lineage.get(i);
+      for (DataFile dataFile : change.addedDataFiles(table.io())) {
+        SnapshotFileEntry entry = toSnapshotDataFile(table, dataFile);
+        additions.put(entry.filePath(), entry);
+      }
+      for (DataFile dataFile : change.removedDataFiles(table.io())) {
+        removals.add(dataFile.location().toString());
+      }
+      deleteArtifactsChanged |=
+          hasAny(change.addedDeleteFiles(table.io()))
+              || hasAny(change.removedDeleteFiles(table.io()));
+    }
+
+    return Optional.of(
+        new SnapshotFileDelta(
+            List.copyOf(additions.values()),
+            List.copyOf(removals),
+            deleteArtifactsChanged,
+            SchemaParser.toJson(schemaForSnapshot(table, target))));
+  }
+
+  private static SnapshotFileEntry toSnapshotDataFile(Table table, DataFile dataFile) {
+    PartitionSpec spec = table.specs().getOrDefault(dataFile.specId(), table.spec());
+    Long sequenceNumber = dataFile.fileSequenceNumber();
+    if (sequenceNumber != null && sequenceNumber <= 0L) {
+      sequenceNumber = null;
+    }
+    return new SnapshotFileEntry(
+        dataFile.location().toString(),
+        dataFile.format().name(),
+        dataFile.fileSizeInBytes(),
+        dataFile.recordCount(),
+        FileContent.FC_DATA,
+        IcebergPlanner.partitionJson(spec, dataFile.partition()),
+        spec == null ? 0 : spec.specId(),
+        List.of(),
+        sequenceNumber,
+        null,
+        List.of(),
+        IcebergPlanner.dataContentIdentity(sequenceNumber, dataFile.recordCount()));
+  }
+
+  private static boolean hasAny(Iterable<?> values) {
+    return values != null && values.iterator().hasNext();
   }
 
   private List<TargetStatsRecord> buildTargetStats(

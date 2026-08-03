@@ -76,6 +76,37 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void baseGenerationOverlayServesInheritedAndDeltaIndexes() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long baseSnapshotId = 712L;
+    long snapshotId = 713L;
+    registerArtifact(repository, blobs, baseSnapshotId, "base", "s3://source/base.parquet");
+    repository.activateGeneration(
+        TABLE_ID,
+        baseSnapshotId,
+        "base",
+        captureManifest(baseSnapshotId, 1, 1, "#1").toByteArray());
+    repository.registerBaseIndexGeneration(TABLE_ID, snapshotId, "append", baseSnapshotId, "base");
+    registerArtifact(repository, blobs, snapshotId, "append", "s3://source/delta.parquet");
+    repository.activateGeneration(
+        TABLE_ID, snapshotId, "append", captureManifest(snapshotId, 2, 2, "#1").toByteArray());
+
+    assertThat(
+            repository.getIndexArtifact(
+                TABLE_ID,
+                snapshotId,
+                indexRecord(baseSnapshotId, "s3://source/base.parquet").getTarget()))
+        .get()
+        .extracting(IndexArtifactRecord::getSnapshotId)
+        .isEqualTo(snapshotId);
+    assertThat(repository.listIndexArtifacts(TABLE_ID, snapshotId, 10, "", new StringBuilder()))
+        .hasSize(2);
+    assertThat(repository.countIndexArtifacts(TABLE_ID, snapshotId)).isEqualTo(2);
+  }
+
+  @Test
   void bundledIndexWrappersResolveAllTargetsWithOneBlobRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
@@ -120,6 +151,70 @@ class IndexArtifactRepositoryTest {
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, second.getTarget()))
         .contains(second);
     verify(blobs, times(1)).get(bundleUri);
+  }
+
+  @Test
+  void inheritedBundleIndexWrapperIsReboundToTheNewSnapshot() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long baseSnapshotId = 713L;
+    long snapshotId = 714L;
+    String generationId = "full-rescan-append";
+    IndexArtifactRecord inherited = indexRecord(baseSnapshotId, "s3://bucket/file.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(inherited)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), baseSnapshotId, "base")
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + Hashing.sha256Hex(bundle)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerInheritedIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/file.parquet", bundleUri, bundle.length, digest)));
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        captureManifest(snapshotId, 1, 1, "customer_id").toByteArray());
+
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, inherited.getTarget()))
+        .get()
+        .extracting(IndexArtifactRecord::getSnapshotId)
+        .isEqualTo(snapshotId);
+  }
+
+  @Test
+  void inheritedBundleIndexWrapperRequiresContentAddressedUri() {
+    IndexArtifactRepository repository =
+        new IndexArtifactRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    byte[] digest = new byte[32];
+    String bundleUri =
+        Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId())
+            + "reuse-bundles/not-the-digest.pb";
+
+    assertThatThrownBy(
+            () ->
+                repository.registerInheritedIndexArtifactReferencesInGeneration(
+                    TABLE_ID,
+                    714L,
+                    "full-rescan-append",
+                    List.of(
+                        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                            "file:s3://bucket/file.parquet", bundleUri, 1L, digest))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid prewritten index artifact reference");
   }
 
   @Test
