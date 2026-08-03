@@ -339,6 +339,8 @@ The worker is responsible for ensuring:
   `index-artifacts/<target-hash>/<payload-hash>.pb` suffix
 - every index wrapper records its concrete comma-separated selector set in the
   `indexed_columns` property
+- every reusable index metadata entry repeats that wrapper's sorted, distinct selector set in
+  `realized_index_selectors`; entries with an empty set cannot be selected for reuse
 - `realized_stats_selectors` is the sorted, distinct selector set represented by the file group's
   column-stat aggregates; omit it when column-stats output was not requested
 - report every equivalent selector known to the worker, such as both an Iceberg `#<field-id>` and

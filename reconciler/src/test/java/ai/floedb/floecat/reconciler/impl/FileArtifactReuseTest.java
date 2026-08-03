@@ -124,8 +124,24 @@ class FileArtifactReuseTest {
 
     assertThat(FileArtifactReuse.statsCaptureSignature(statsOnly))
         .isEqualTo(FileArtifactReuse.statsCaptureSignature(statsAndIndex));
-    assertThat(FileArtifactReuse.indexCaptureSignature(statsOnly))
-        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(statsAndIndex));
+    assertThat(FileArtifactReuse.indexCaptureSignature(statsOnly, "schema"))
+        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(statsAndIndex, "schema"));
+  }
+
+  @Test
+  void defaultIndexSignatureIncludesExecutionSchemaButExplicitSelectionDoesNot() {
+    var defaultIndex =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    var explicitIndex =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+
+    assertThat(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-a"))
+        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-b"));
+    assertThat(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-a"))
+        .isEqualTo(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-b"));
   }
 
   @Test

@@ -106,14 +106,16 @@ public final class FileArtifactReuse {
   }
 
   public static String statsCaptureSignature(ReconcileCapturePolicy policy) {
-    return captureSignature(policy, true);
+    return captureSignature(policy, true, "");
   }
 
-  public static String indexCaptureSignature(ReconcileCapturePolicy policy) {
-    return captureSignature(policy, false);
+  public static String indexCaptureSignature(
+      ReconcileCapturePolicy policy, String executionSchemaJson) {
+    return captureSignature(policy, false, executionSchemaJson);
   }
 
-  private static String captureSignature(ReconcileCapturePolicy policy, boolean stats) {
+  private static String captureSignature(
+      ReconcileCapturePolicy policy, boolean stats, String executionSchemaJson) {
     ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
     DigestBuilder digest = new DigestBuilder(stats ? "stats-capture" : "index-capture");
     digest.add("default-column-scope");
@@ -154,6 +156,14 @@ public final class FileArtifactReuse {
           digest.add(entry.getKey());
           digest.add(entry.getValue());
         });
+    if (!stats
+        && effective.requestsIndexes()
+        && effective.selectorsForIndex().isEmpty()
+        && effective.defaultColumnScope()
+            != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY) {
+      digest.add("default-execution-schema");
+      digest.add(executionSchemaJson);
+    }
     return digest.finish();
   }
 

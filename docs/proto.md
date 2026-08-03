@@ -128,7 +128,9 @@ engine release.
   corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later
   requests expressed through an equivalent name, field ID, or narrower default selection. Every
   explicitly requested selector must be reported verbatim; equivalent aliases are additional
-  coverage and are not inferred from selector counts.
+  coverage and are not inferred from selector counts. Reusable index metadata repeats the concrete
+  selectors for each wrapper so planning can prove explicit coverage without reading its bundle;
+  default index capture signatures also bind the execution schema that resolved the selection.
   Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
   but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
   `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat

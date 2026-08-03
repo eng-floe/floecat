@@ -349,6 +349,7 @@ message ReusableIndexArtifactMetadata {
   string file_path = 1;
   string source_fingerprint = 2;
   string index_capture_signature = 3;
+  repeated string realized_index_selectors = 4;
 }
 
 // One durable payload containing all reusable wrappers produced by a file group.
