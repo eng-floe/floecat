@@ -698,6 +698,7 @@ class SnapshotRepositoryTest {
     byte[] digest = new byte[32];
     SnapshotReuseManifestRef reuseManifestRef =
         SnapshotReuseManifestRef.newBuilder()
+            .setFormatVersion(1)
             .setUri("/reuse/manifest.pb")
             .setPayloadBytes(123L)
             .setPayloadSha256(ByteString.copyFrom(digest))
@@ -725,6 +726,7 @@ class SnapshotRepositoryTest {
     var tableRid = newSeededTable();
     SnapshotReuseManifestRef reuseManifestRef =
         SnapshotReuseManifestRef.newBuilder()
+            .setFormatVersion(1)
             .setUri("/reuse/manifest.pb")
             .setPayloadBytes(123L)
             .setPayloadSha256(ByteString.copyFrom(new byte[32]))

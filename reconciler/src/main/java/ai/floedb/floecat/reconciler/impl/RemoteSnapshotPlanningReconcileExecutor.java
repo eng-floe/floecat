@@ -33,7 +33,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
@@ -63,6 +65,8 @@ import org.jboss.logging.Logger;
 public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
   private static final long ESTIMATED_FILE_OVERHEAD_BYTES = 4L * 1024L * 1024L;
+  private static final int MAX_CACHED_REUSE_MANIFESTS = 256;
+  private static final long MAX_CACHED_REUSE_MANIFEST_BYTES = 64L * 1024L * 1024L;
 
   private final ReconcilerBackend backend;
   private final RemotePlannerWorkerClient workerClient;
@@ -70,7 +74,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private final boolean enabled;
   private final boolean workerAuthRequired;
   private final int maxFilesPerGroup;
+  private final int maxAppendOnlyChainDepth;
   @Inject BlobStore blobStore;
+  private final Map<ReuseManifestIdentity, CachedReuseManifest> reuseManifests =
+      new LinkedHashMap<>(16, 0.75f, true);
+  private long cachedReuseManifestBytes;
 
   @Inject
   public RemoteSnapshotPlanningReconcileExecutor(
@@ -82,6 +90,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
               defaultValue = "128")
           int maxFilesPerGroup,
       @ConfigProperty(
+              name = "floecat.reconciler.snapshot-plan.max-append-only-chain-depth",
+              defaultValue = "16")
+          int maxAppendOnlyChainDepth,
+      @ConfigProperty(
               name = "floecat.reconciler.executor.remote-snapshot-planner.enabled",
               defaultValue = "false")
           boolean enabled,
@@ -91,6 +103,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.maxFilesPerGroup = Math.max(1, maxFilesPerGroup);
+    this.maxAppendOnlyChainDepth = Math.max(0, maxAppendOnlyChainDepth);
     this.enabled = enabled;
     this.workerAuthRequired = workerAuthRequired;
   }
@@ -101,7 +114,24 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       int maxFilesPerGroup,
       boolean enabled) {
-    this(backend, workerClient, reconcileWorkerAuthProvider, maxFilesPerGroup, enabled, true);
+    this(backend, workerClient, reconcileWorkerAuthProvider, maxFilesPerGroup, 16, enabled, true);
+  }
+
+  RemoteSnapshotPlanningReconcileExecutor(
+      ReconcilerBackend backend,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      int maxFilesPerGroup,
+      int maxAppendOnlyChainDepth,
+      boolean enabled) {
+    this(
+        backend,
+        workerClient,
+        reconcileWorkerAuthProvider,
+        maxFilesPerGroup,
+        maxAppendOnlyChainDepth,
+        enabled,
+        true);
   }
 
   @Override
@@ -185,13 +215,54 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     try {
       PlannedSnapshotCapture plannedCapture = planSnapshotCapture(lease, payload, task);
       List<ReconcileFileGroupTask> fileGroupTasks = plannedCapture.fileGroupTasks();
+      validateFileExecutionIdentities(fileGroupTasks);
+      long plannedFiles =
+          fileGroupTasks.stream().flatMap(group -> group.fileExecutionPlans().stream()).count();
+      long reusedStatsFiles =
+          fileGroupTasks.stream()
+              .flatMap(group -> group.fileExecutionPlans().stream())
+              .filter(ReconcileFileExecutionPlan::reusesFileStats)
+              .count();
+      long reusedIndexFiles =
+          fileGroupTasks.stream()
+              .flatMap(group -> group.fileExecutionPlans().stream())
+              .filter(ReconcileFileExecutionPlan::reusesIndexArtifact)
+              .count();
+      long reuseBundles =
+          fileGroupTasks.stream()
+              .flatMap(group -> group.fileExecutionPlans().stream())
+              .flatMap(plan -> plan.reusableArtifactBundleSelections().stream())
+              .map(ReusableArtifactBundleSelection::payloadUri)
+              .distinct()
+              .count();
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase = plannedCapture.appendOnlyBase();
+      int inheritedFiles = appendOnlyBase == null ? 0 : appendOnlyBase.sourceFileCount();
+      int inheritedStatsRecords =
+          appendOnlyBase == null ? 0 : appendOnlyBase.fileStatsRecordCount();
+      int inheritedIndexArtifacts =
+          appendOnlyBase == null ? 0 : appendOnlyBase.indexArtifactCount();
+      String reuseMode =
+          appendOnlyBase == null ? "EXPLICIT_FILE_ARTIFACTS" : "PERSISTENT_ARTIFACT_INDEX";
       LOG.infof(
-          "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d completionMode=%s fileGroups=%d",
+          "planned PLAN_SNAPSHOT jobId=%s tableId=%s snapshotId=%d completionMode=%s"
+              + " fileGroups=%d sourceFiles=%d inheritedFiles=%d plannedFiles=%d"
+              + " reuseMode=%s inheritedStatsRecords=%d inheritedIndexArtifacts=%d"
+              + " explicitReusedStatsFiles=%d explicitReusedIndexFiles=%d"
+              + " explicitReuseBundles=%d",
           lease.jobId,
           task.tableId(),
           task.snapshotId(),
           plannedCapture.snapshotTask().completionMode(),
-          fileGroupTasks.size());
+          fileGroupTasks.size(),
+          plannedCapture.snapshotTask().sourceFileCount(),
+          inheritedFiles,
+          plannedFiles,
+          reuseMode,
+          inheritedStatsRecords,
+          inheritedIndexArtifacts,
+          reusedStatsFiles,
+          reusedIndexFiles,
+          reuseBundles);
       List<PlannedFileGroupJob> fileGroupJobs =
           fileGroupTasks.stream()
               .map(
@@ -200,11 +271,20 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                           effectiveFileGroupScope(payload.scope(), group), group))
               .toList();
       context.beforeHandledCompletion().run();
-      if (!workerClient.submitPlanSnapshotSuccess(
-          remoteLease,
-          plannedCapture.snapshotTask(),
-          fileGroupJobs,
-          plannedCapture.directStats())) {
+      boolean submitted =
+          plannedCapture.appendOnlyBase() == null
+              ? workerClient.submitPlanSnapshotSuccess(
+                  remoteLease,
+                  plannedCapture.snapshotTask(),
+                  fileGroupJobs,
+                  plannedCapture.directStats())
+              : workerClient.submitAppendOnlyPlanSnapshotSuccess(
+                  remoteLease,
+                  plannedCapture.snapshotTask(),
+                  fileGroupJobs,
+                  plannedCapture.directStats(),
+                  plannedCapture.appendOnlyBase());
+      if (!submitted) {
         throw plannerSubmissionRejected();
       }
       return ExecutionResult.successHandled(
@@ -420,8 +500,25 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (directSnapshotTask.isPresent()) {
       return directSnapshotTask.get();
     }
-    List<ReconcileFileGroupTask> fileGroupTasks =
-        enrichFileGroupTasks(lease, payload, task, buildFileGroupTasks(lease, task));
+    ReconcileScope appendOnlyScope = effectiveSnapshotScope(payload.scope(), task);
+    HistoricalArtifacts appendOnlyHistorical =
+        (appendOnlyScope.capturePolicy().requestsStats()
+                || appendOnlyScope.capturePolicy().requestsIndexes())
+            ? loadLatestHistoricalArtifactsForAppendOnlyReuse(lease, task)
+            : null;
+    Optional<EnrichedFileGroups> appendOnlyDelta =
+        tryPlanAppendOnlyDelta(lease, payload, task, appendOnlyHistorical);
+    EnrichedFileGroups enriched =
+        appendOnlyDelta.orElseGet(
+            () ->
+                enrichFileGroupTasks(
+                    lease,
+                    payload,
+                    task,
+                    buildFileGroupTasks(lease, task),
+                    loadExplicitParentHistoricalArtifactsForReuse(
+                        lease, task, appendOnlyHistorical)));
+    List<ReconcileFileGroupTask> fileGroupTasks = enriched.groups();
     return PlannedSnapshotCapture.fileGroups(
         ReconcileSnapshotTask.of(
             task.tableId(),
@@ -433,23 +530,24 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "",
             fileGroupTasks.size(),
-            plannedSourceFileCount(fileGroupTasks),
+            enriched.sourceFileCount(),
             "",
             0,
             task.sourceRevision(),
             task.metadataFingerprint(),
             task.requestedCoverage(),
             task.indexPredecessor()),
-        fileGroupTasks);
+        fileGroupTasks,
+        enriched.appendOnlyBase());
   }
 
-  private List<ReconcileFileGroupTask> enrichFileGroupTasks(
+  private Optional<EnrichedFileGroups> tryPlanAppendOnlyDelta(
       ReconcileJobStore.LeasedJob lease,
       StandalonePlanSnapshotPayload payload,
       ReconcileSnapshotTask task,
-      List<ReconcileFileGroupTask> groups) {
-    if (groups.isEmpty()) {
-      return groups;
+      HistoricalArtifacts historical) {
+    if (lease.fullRescan || blobStore == null) {
+      return Optional.empty();
     }
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -461,13 +559,222 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
     ReconcileCapturePolicy capturePolicy =
         scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
-    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> historicalBundles =
-        new ArrayList<>();
-    if (!lease.fullRescan) {
-      Optional<HistoricalArtifacts> manifestArtifacts =
-          loadLatestReconciledReuseManifest(context, tableId, task.snapshotId(), lease.connectorId);
-      manifestArtifacts.ifPresent(artifacts -> historicalBundles.addAll(artifacts.bundles()));
+    if (historical == null
+        || historical.base() == null
+        || (!capturePolicy.requestsStats() && !capturePolicy.requestsIndexes())
+        || !capturePolicyMatches(capturePolicy, historical.manifest().getCapturePolicy())) {
+      return Optional.empty();
     }
+    SnapshotPlanBlobStore.AppendOnlyBase base = historical.base();
+    if (base.chainDepth() >= maxAppendOnlyChainDepth) {
+      LOG.infof(
+          "Append-only delta rejected at checkpoint depth tableId=%s snapshotId=%d"
+              + " baseSnapshotId=%d chainDepth=%d maximumDepth=%d",
+          task.tableId(),
+          task.snapshotId(),
+          base.snapshotId(),
+          base.chainDepth(),
+          maxAppendOnlyChainDepth);
+      return Optional.empty();
+    }
+    if ((capturePolicy.requestsStats() && base.fileStatsRecordCount() < base.sourceFileCount())
+        || (capturePolicy.requestsIndexes()
+            && base.indexArtifactCount() < base.sourceFileCount())) {
+      return Optional.empty();
+    }
+
+    FloecatConnector.SnapshotFileDelta delta;
+    try {
+      delta =
+          backend
+              .fetchSnapshotFileDelta(
+                  context, tableId, historical.snapshot().getSnapshotId(), task.snapshotId())
+              .orElse(null);
+    } catch (RuntimeException error) {
+      LOG.warnf(
+          error,
+          "Append-only delta unavailable; planning a full capture tableId=%s snapshotId=%d"
+              + " baseSnapshotId=%d",
+          task.tableId(),
+          task.snapshotId(),
+          historical.snapshot().getSnapshotId());
+      return Optional.empty();
+    }
+    if (delta == null || !delta.appendOnly()) {
+      return Optional.empty();
+    }
+    String baseSchema = historical.snapshot().getSchemaJson();
+    if (baseSchema.isBlank()
+        || delta.executionSchemaJson().isBlank()
+        || !baseSchema.equals(delta.executionSchemaJson())) {
+      LOG.infof(
+          "Append-only delta rejected for schema change tableId=%s snapshotId=%d baseSnapshotId=%d",
+          task.tableId(), task.snapshotId(), historical.snapshot().getSnapshotId());
+      return Optional.empty();
+    }
+
+    LinkedHashMap<String, FloecatConnector.SnapshotFileEntry> additions = new LinkedHashMap<>();
+    for (FloecatConnector.SnapshotFileEntry file : delta.addedDataFiles()) {
+      if (file == null
+          || file.filePath() == null
+          || file.filePath().isBlank()
+          || !isParquetFile(file)) {
+        return Optional.empty();
+      }
+      additions.putIfAbsent(file.filePath(), file);
+    }
+    if (additions.size() != delta.addedDataFiles().size()) {
+      return Optional.empty();
+    }
+    if (!historical.manifest().getReusableArtifactBundlesComplete()) {
+      return Optional.empty();
+    }
+    List<ReconcileFileGroupTask> rawGroups =
+        partitionFiles(
+            lease.jobId, task, List.copyOf(additions.values()), delta.executionSchemaJson());
+    if (persistentIndexOverlapsPlans(
+        historical.base().reusableArtifactIndex(), rawGroups, capturePolicy)) {
+      LOG.infof(
+          "Append-only delta rejected because additions overlap inherited files tableId=%s"
+              + " snapshotId=%d baseSnapshotId=%d",
+          task.tableId(), task.snapshotId(), historical.snapshot().getSnapshotId());
+      return Optional.empty();
+    }
+    int sourceFileCount;
+    try {
+      sourceFileCount = Math.addExact(historical.base().sourceFileCount(), additions.size());
+    } catch (ArithmeticException e) {
+      return Optional.empty();
+    }
+    List<ReconcileFileGroupTask> groups =
+        rawGroups.stream()
+            .map(
+                group ->
+                    group.withFileExecutionPlans(
+                        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                            group.executionSchemaJson(),
+                            group.fileExecutionPlans(),
+                            capturePolicy,
+                            false,
+                            List.of())))
+            .toList();
+    LOG.infof(
+        "Planned append-only snapshot delta tableId=%s snapshotId=%d baseSnapshotId=%d"
+            + " inheritedFiles=%d deltaFiles=%d deltaGroups=%d",
+        task.tableId(),
+        task.snapshotId(),
+        historical.snapshot().getSnapshotId(),
+        historical.base().sourceFileCount(),
+        additions.size(),
+        groups.size());
+    return Optional.of(new EnrichedFileGroups(groups, sourceFileCount, historical.base()));
+  }
+
+  private boolean persistentIndexOverlapsPlans(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference index,
+      List<ReconcileFileGroupTask> groups,
+      ReconcileCapturePolicy capturePolicy) {
+    ReusableArtifactIndexStore store = new ReusableArtifactIndexStore(blobStore);
+    try {
+      Set<String> statsPaths = new LinkedHashSet<>();
+      Set<String> indexPaths = new LinkedHashSet<>();
+      for (ReconcileFileGroupTask group : groups) {
+        for (ReconcileFileExecutionPlan plan : group.fileExecutionPlans()) {
+          if (capturePolicy.requestsStats()) {
+            statsPaths.add(plan.filePath());
+            statsPaths.addAll(FileArtifactReuse.auxiliaryStatsFingerprints(plan).keySet());
+          }
+          if (capturePolicy.requestsIndexes()) {
+            indexPaths.add(plan.filePath());
+          }
+        }
+      }
+      return !store.lookup(index, statsPaths, indexPaths).isEmpty();
+    } catch (StorageNotFoundException error) {
+      LOG.warnf(error, "Reusable artifact index is unavailable; rejecting append-only reuse");
+      return true;
+    } catch (IllegalArgumentException error) {
+      LOG.warnf(error, "Reusable artifact index is invalid; rejecting append-only reuse");
+      return true;
+    }
+  }
+
+  private static void validateFileExecutionIdentities(List<ReconcileFileGroupTask> groups) {
+    for (ReconcileFileGroupTask group : groups) {
+      for (ReconcileFileExecutionPlan plan : group.fileExecutionPlans()) {
+        if (plan.sourceFingerprint().isBlank()
+            || plan.indexSourceFingerprint().isBlank()
+            || plan.statsCaptureSignature().isBlank()
+            || plan.indexCaptureSignature().isBlank()) {
+          throw new IllegalStateException(
+              "file execution plan is missing immutable artifact identity for " + plan.filePath());
+        }
+      }
+    }
+  }
+
+  private HistoricalArtifacts loadLatestHistoricalArtifactsForAppendOnlyReuse(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
+    if (lease.fullRescan || blobStore == null) {
+      return null;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(task.tableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    return loadLatestReconciledReuseManifest(
+            reconcileContext(lease), tableId, task.snapshotId(), lease.connectorId)
+        .orElse(null);
+  }
+
+  private HistoricalArtifacts loadExplicitParentHistoricalArtifactsForReuse(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask task,
+      HistoricalArtifacts alreadyLoaded) {
+    if (lease.fullRescan || blobStore == null) {
+      return null;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(task.tableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ReconcileContext context = reconcileContext(lease);
+    Snapshot target = backend.fetchSnapshot(context, tableId, task.snapshotId()).orElse(null);
+    if (target == null || !target.hasParentSnapshotId()) {
+      return null;
+    }
+    if (alreadyLoaded != null
+        && alreadyLoaded.snapshot().getSnapshotId() == target.getParentSnapshotId()) {
+      return alreadyLoaded;
+    }
+    Snapshot parent =
+        backend.fetchSnapshot(context, tableId, target.getParentSnapshotId()).orElse(null);
+    if (parent == null) {
+      return null;
+    }
+    return loadReuseManifest(tableId, parent, lease.connectorId).orElse(null);
+  }
+
+  private EnrichedFileGroups enrichFileGroupTasks(
+      ReconcileJobStore.LeasedJob lease,
+      StandalonePlanSnapshotPayload payload,
+      ReconcileSnapshotTask task,
+      List<ReconcileFileGroupTask> groups,
+      HistoricalArtifacts historical) {
+    if (groups.isEmpty()) {
+      return new EnrichedFileGroups(groups, plannedSourceFileCount(groups), null);
+    }
+    ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
+    ReconcileCapturePolicy capturePolicy =
+        scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
+    List<ReconcileFileExecutionPlan> allPlans =
+        groups.stream().flatMap(group -> group.fileExecutionPlans().stream()).toList();
+    HistoricalBundleLookup historicalBundles =
+        HistoricalBundleLookup.of(loadHistoricalBundles(historical, allPlans, capturePolicy));
     List<ReconcileFileGroupTask> enriched =
         groups.stream()
             .map(
@@ -478,11 +785,139 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                             group.fileExecutionPlans(),
                             capturePolicy,
                             lease.fullRescan,
-                            historicalBundles)))
+                            historicalBundles.forPlans(group.fileExecutionPlans(), capturePolicy))))
             .toList();
-    return historicalBundles.isEmpty()
-        ? enriched
-        : regroupByReuseBundleAffinity(enriched, maxFilesPerGroup);
+    List<ReconcileFileGroupTask> regrouped =
+        historical == null ? enriched : regroupByReuseBundleAffinity(enriched, maxFilesPerGroup);
+    return new EnrichedFileGroups(regrouped, plannedSourceFileCount(enriched), null);
+  }
+
+  private List<ReusableArtifactBundleReference> loadHistoricalBundles(
+      HistoricalArtifacts historical,
+      List<ReconcileFileExecutionPlan> plans,
+      ReconcileCapturePolicy capturePolicy) {
+    if (historical == null || !historical.manifest().getReusableArtifactBundlesComplete()) {
+      return List.of();
+    }
+    if (!historical.manifest().hasReusableArtifactIndex()) {
+      throw invalidReuseManifest("reusable artifact index is required", null);
+    }
+    try {
+      Set<String> statsPaths = new LinkedHashSet<>();
+      Set<String> indexPaths = new LinkedHashSet<>();
+      for (ReconcileFileExecutionPlan plan : plans) {
+        if (capturePolicy.requestsStats()) {
+          statsPaths.add(plan.filePath());
+          statsPaths.addAll(FileArtifactReuse.auxiliaryStatsFingerprints(plan).keySet());
+        }
+        if (capturePolicy.requestsIndexes()) {
+          indexPaths.add(plan.filePath());
+        }
+      }
+      return new ReusableArtifactIndexStore(blobStore)
+          .loadBundlesForPaths(
+              historical.manifest().getReusableArtifactIndex(), statsPaths, indexPaths);
+    } catch (StorageNotFoundException error) {
+      LOG.warnf(error, "Reusable artifact index is unavailable; capturing files without reuse");
+      return List.of();
+    } catch (IllegalArgumentException error) {
+      LOG.warnf(error, "Reusable artifact index is invalid; capturing files without reuse");
+      return List.of();
+    }
+  }
+
+  private record HistoricalBundleLookup(
+      Map<String, List<ReusableArtifactBundleReference>> statsByPath,
+      Map<String, List<ReusableArtifactBundleReference>> indexesByPath) {
+    private static HistoricalBundleLookup of(List<ReusableArtifactBundleReference> bundles) {
+      Map<String, List<ReusableArtifactBundleReference>> stats = new LinkedHashMap<>();
+      Map<String, List<ReusableArtifactBundleReference>> indexes = new LinkedHashMap<>();
+      for (ReusableArtifactBundleReference bundle : bundles) {
+        bundle
+            .getFileStatsList()
+            .forEach(
+                metadata ->
+                    stats
+                        .computeIfAbsent(metadata.getFilePath(), ignored -> new ArrayList<>())
+                        .add(bundle));
+        bundle
+            .getIndexArtifactsList()
+            .forEach(
+                metadata ->
+                    indexes
+                        .computeIfAbsent(metadata.getFilePath(), ignored -> new ArrayList<>())
+                        .add(bundle));
+      }
+      return new HistoricalBundleLookup(Map.copyOf(stats), Map.copyOf(indexes));
+    }
+
+    private List<ReusableArtifactBundleReference> forPlans(
+        List<ReconcileFileExecutionPlan> plans, ReconcileCapturePolicy capturePolicy) {
+      Set<ReusableArtifactBundleReference> selected = new LinkedHashSet<>();
+      for (ReconcileFileExecutionPlan plan : plans) {
+        if (capturePolicy.requestsStats()) {
+          selected.addAll(statsByPath.getOrDefault(plan.filePath(), List.of()));
+          for (String path : FileArtifactReuse.auxiliaryStatsFingerprints(plan).keySet()) {
+            selected.addAll(statsByPath.getOrDefault(path, List.of()));
+          }
+        }
+        if (capturePolicy.requestsIndexes()) {
+          selected.addAll(indexesByPath.getOrDefault(plan.filePath(), List.of()));
+        }
+      }
+      return List.copyOf(selected);
+    }
+  }
+
+  static boolean capturePolicyMatches(
+      ReconcileCapturePolicy expected, ai.floedb.floecat.reconciler.rpc.CapturePolicy actual) {
+    Set<ai.floedb.floecat.reconciler.rpc.CaptureOutput> outputs = new HashSet<>();
+    for (ReconcileCapturePolicy.Output output : expected.outputs()) {
+      outputs.add(
+          switch (output) {
+            case TABLE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_TABLE_STATS;
+            case FILE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_FILE_STATS;
+            case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
+            case PARQUET_PAGE_INDEX ->
+                ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+          });
+    }
+    List<String> columns =
+        expected.columns().stream()
+            .map(
+                column ->
+                    column.selector()
+                        + "\u0000"
+                        + column.captureStats()
+                        + "\u0000"
+                        + column.captureIndex())
+            .toList();
+    List<String> actualColumns =
+        actual.getColumnsList().stream()
+            .map(
+                column ->
+                    column.getSelector().trim()
+                        + "\u0000"
+                        + column.getCaptureStats()
+                        + "\u0000"
+                        + column.getCaptureIndex())
+            .toList();
+    var scope =
+        switch (actual.getDefaultColumnScope()) {
+          case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+          case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+          case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+              ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+        };
+    int maxColumns =
+        actual.getMaxDefaultColumns() <= 0
+            ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
+            : actual.getMaxDefaultColumns();
+    return outputs.equals(Set.copyOf(actual.getOutputsList()))
+        && columns.equals(actualColumns)
+        && expected.defaultColumnScope() == scope
+        && expected.maxDefaultColumns() == maxColumns
+        && expected.properties().equals(actual.getPropertiesMap());
   }
 
   static List<ReconcileFileGroupTask> regroupByReuseBundleAffinity(
@@ -511,34 +946,29 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return List.copyOf(groups);
     }
 
-    List<ExecutionPlanBucket> buckets = new ArrayList<>();
-    for (List<ReconcileFileExecutionPlan> bundlePlans : plansByBundle.values()) {
-      int bundleGroupCount = (bundlePlans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
-      List<ExecutionPlanBucket> bundleBuckets = new ArrayList<>(bundleGroupCount);
-      PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
-      for (int index = 0; index < bundleGroupCount; index++) {
-        ExecutionPlanBucket bucket = new ExecutionPlanBucket(buckets.size() + index);
-        bundleBuckets.add(bucket);
-        available.add(bucket);
-      }
-      for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(bundlePlans)) {
-        ExecutionPlanBucket bucket = available.remove();
-        bucket.add(plan);
-        if (bucket.fileCount() < effectiveMaxFiles) {
-          available.add(bucket);
-        }
-      }
-      buckets.addAll(bundleBuckets);
-    }
-
     int minimumGroupCount = (plans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+    List<ExecutionPlanBucket> buckets = new ArrayList<>(minimumGroupCount);
+    PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
     while (buckets.size() < minimumGroupCount) {
       buckets.add(new ExecutionPlanBucket(buckets.size()));
     }
-    PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
-    buckets.stream()
-        .filter(bucket -> bucket.fileCount() < effectiveMaxFiles)
-        .forEach(available::add);
+    available.addAll(buckets);
+    for (List<ReconcileFileExecutionPlan> bundlePlans : plansByBundle.values()) {
+      ExecutionPlanBucket bucket = available.remove();
+      for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(bundlePlans)) {
+        bucket.add(plan);
+        if (bucket.fileCount() == effectiveMaxFiles) {
+          if (available.isEmpty()) {
+            bucket = null;
+            break;
+          }
+          bucket = available.remove();
+        }
+      }
+      if (bucket != null && bucket.fileCount() < effectiveMaxFiles) {
+        available.add(bucket);
+      }
+    }
     for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(unbound)) {
       ExecutionPlanBucket bucket = available.remove();
       bucket.add(plan);
@@ -661,45 +1091,131 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
 
   private Optional<HistoricalArtifacts> loadReuseManifest(
       ResourceId tableId, Snapshot snapshot, String expectedConnectorId) {
-    if (blobStore == null) {
-      throw invalidReuseManifest("snapshot reuse manifest storage is unavailable", null);
+    if (blobStore == null || snapshot == null || !snapshot.hasReuseManifestRef()) {
+      return Optional.empty();
     }
     long snapshotId = snapshot.getSnapshotId();
-    if (!snapshot.hasReuseManifestRef()) {
-      throw invalidReuseManifest(
-          "selected snapshot reuse manifest reference is missing: " + snapshotId, null);
-    }
     var manifestRef = snapshot.getReuseManifestRef();
-    String uri = manifestRef.getUri().trim();
-    if (uri.isBlank()) {
-      throw invalidReuseManifest("snapshot reuse manifest URI is missing: " + snapshotId, null);
+    if (manifestRef.getFormatVersion() != ReusableArtifactManifest.FORMAT_VERSION) {
+      LOG.infof(
+          "Snapshot reuse manifest reference is not current; planning a full capture"
+              + " tableId=%s snapshotId=%d formatVersion=%d",
+          tableId.getId(), snapshotId, manifestRef.getFormatVersion());
+      return Optional.empty();
+    }
+    try {
+      String uri = manifestRef.getUri().trim();
+      if (uri.isBlank()
+          || manifestRef.getPayloadBytes() <= 0L
+          || manifestRef.getPayloadSha256().size() != 32
+          || manifestRef.getStatsGenerationManifestUri().isBlank()) {
+        throw new IllegalArgumentException("snapshot reuse manifest reference is invalid");
+      }
+      SnapshotCaptureManifest manifest =
+          loadCachedReuseManifest(
+              uri, manifestRef.getPayloadBytes(), manifestRef.getPayloadSha256().toByteArray());
+      if (manifest == null) {
+        throw new StorageNotFoundException("snapshot reuse manifest is unavailable: " + uri);
+      }
+      validateReuseManifestIdentity(tableId, snapshotId, expectedConnectorId, manifest, uri);
+      if (manifest.getFormatVersion() != ReusableArtifactManifest.FORMAT_VERSION
+          || !manifest.getReusableArtifactBundlesComplete()
+          || !manifest.hasReusableArtifactIndex()) {
+        throw new IllegalArgumentException("snapshot reuse manifest contract is not current");
+      }
+      ReusableArtifactManifest.validateStructure(manifest);
+      new ReusableArtifactIndexStore(blobStore)
+          .validateLookupReference(manifest.getReusableArtifactIndex());
+      if (manifest.getReusableArtifactIndex().getFileStatsRecordCount()
+              != manifest.getFileStatsRecordCount()
+          || manifest.getReusableArtifactIndex().getIndexArtifactCount()
+              != manifest.getIndexArtifactCount()) {
+        throw new IllegalArgumentException("reusable artifact index count mismatch");
+      }
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase =
+          manifest.getSourceFileCount() > 0
+              ? new SnapshotPlanBlobStore.AppendOnlyBase(
+                  snapshotId,
+                  uri,
+                  manifestRef.getPayloadBytes(),
+                  java.util.HexFormat.of().formatHex(manifestRef.getPayloadSha256().toByteArray()),
+                  manifest.getSourceFileCount(),
+                  manifest.getFileStatsRecordCount(),
+                  manifest.getIndexArtifactCount(),
+                  ReusableArtifactManifest.chainDepth(manifest),
+                  "full-rescan-" + manifest.getParentJobId(),
+                  manifest.getIndexArtifactCount() == 0
+                      ? ""
+                      : "full-rescan-" + manifest.getParentJobId(),
+                  manifest.getReusableArtifactIndex())
+              : null;
+      return Optional.of(new HistoricalArtifacts(snapshot, manifest, appendOnlyBase));
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Snapshot reuse manifest is invalid or unavailable; planning a full capture"
+              + " tableId=%s snapshotId=%d",
+          tableId.getId(),
+          snapshotId);
+      return Optional.empty();
+    }
+  }
+
+  SnapshotCaptureManifest loadCachedReuseManifest(
+      String uri, long expectedBytes, byte[] expectedSha256) {
+    String effectiveUri = uri == null ? "" : uri.trim();
+    byte[] digest = expectedSha256 == null ? new byte[0] : expectedSha256.clone();
+    if (effectiveUri.isBlank() || expectedBytes <= 0L || digest.length != 32) {
+      throw new IllegalStateException("snapshot reuse manifest metadata mismatch: " + effectiveUri);
+    }
+    ReuseManifestIdentity identity =
+        new ReuseManifestIdentity(
+            effectiveUri, expectedBytes, java.util.HexFormat.of().formatHex(digest));
+    synchronized (reuseManifests) {
+      CachedReuseManifest cached = reuseManifests.get(identity);
+      if (cached != null) {
+        return cached.manifest();
+      }
     }
     byte[] bytes;
     try {
-      bytes = blobStore.get(uri);
+      bytes = blobStore.get(effectiveUri);
     } catch (StorageNotFoundException e) {
-      throw unavailableReuseManifest("snapshot reuse manifest is unavailable: " + uri, e);
+      return null;
     }
     if (bytes == null) {
-      throw unavailableReuseManifest("snapshot reuse manifest is unavailable: " + uri, null);
+      return null;
     }
-    if (manifestRef.getPayloadBytes() <= 0L
-        || manifestRef.getPayloadBytes() != bytes.length
-        || manifestRef.getPayloadSha256().size() != 32
-        || manifestRef.getStatsGenerationManifestUri().isBlank()
-        || !MessageDigest.isEqual(manifestRef.getPayloadSha256().toByteArray(), sha256(bytes))) {
-      throw invalidReuseManifest("snapshot reuse manifest metadata mismatch: " + uri, null);
+    if (bytes.length != expectedBytes || !MessageDigest.isEqual(digest, sha256(bytes))) {
+      throw invalidReuseManifest(
+          "snapshot reuse manifest metadata mismatch: " + effectiveUri, null);
     }
+    final SnapshotCaptureManifest loaded;
     try {
-      SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(bytes);
-      validateReuseManifestIdentity(tableId, snapshotId, expectedConnectorId, manifest, uri);
-      if (!manifest.getReusableArtifactBundlesComplete()) {
-        throw invalidReuseManifest("snapshot reuse manifest is incomplete: " + uri, null);
+      loaded = SnapshotCaptureManifest.parseFrom(bytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw invalidReuseManifest("invalid snapshot reuse manifest: " + effectiveUri, e);
+    }
+    synchronized (reuseManifests) {
+      CachedReuseManifest raced = reuseManifests.get(identity);
+      if (raced != null) {
+        return raced.manifest();
       }
-      ReusableArtifactManifest.validate(manifest);
-      return Optional.of(new HistoricalArtifacts(manifest.getReusableArtifactBundlesList()));
-    } catch (com.google.protobuf.InvalidProtocolBufferException | IllegalArgumentException e) {
-      throw invalidReuseManifest("invalid snapshot reuse manifest: " + uri, e);
+      int weight = loaded.getSerializedSize();
+      if (weight > MAX_CACHED_REUSE_MANIFEST_BYTES) {
+        return loaded;
+      }
+      var iterator = reuseManifests.entrySet().iterator();
+      while (iterator.hasNext()
+          && (reuseManifests.size() >= MAX_CACHED_REUSE_MANIFESTS
+              || cachedReuseManifestBytes > MAX_CACHED_REUSE_MANIFEST_BYTES - weight)) {
+        CachedReuseManifest evicted = iterator.next().getValue();
+        cachedReuseManifestBytes -= evicted.weight();
+        iterator.remove();
+      }
+      reuseManifests.put(identity, new CachedReuseManifest(loaded, weight));
+      cachedReuseManifestBytes += weight;
+      return loaded;
     }
   }
 
@@ -708,16 +1224,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         ExecutionResult.FailureKind.INTERNAL,
         ExecutionResult.RetryDisposition.TERMINAL,
         ExecutionResult.RetryClass.NONE,
-        message,
-        cause);
-  }
-
-  private static ReconcileFailureException unavailableReuseManifest(
-      String message, Throwable cause) {
-    return new ReconcileFailureException(
-        ExecutionResult.FailureKind.INTERNAL,
-        ExecutionResult.RetryDisposition.RETRYABLE,
-        ExecutionResult.RetryClass.TRANSIENT_ERROR,
         message,
         cause);
   }
@@ -765,7 +1271,13 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private record HistoricalArtifacts(
-      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> bundles) {}
+      Snapshot snapshot,
+      SnapshotCaptureManifest manifest,
+      SnapshotPlanBlobStore.AppendOnlyBase base) {}
+
+  private record ReuseManifestIdentity(String uri, long bytes, String sha256) {}
+
+  private record CachedReuseManifest(SnapshotCaptureManifest manifest, int weight) {}
 
   private Optional<PlannedSnapshotCapture> tryDirectStatsCapture(
       ReconcileJobStore.LeasedJob lease,
@@ -1205,24 +1717,38 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private record PlannedSnapshotCapture(
       ReconcileSnapshotTask snapshotTask,
       List<ReconcileFileGroupTask> fileGroupTasks,
-      List<TargetStatsRecord> directStats) {
+      List<TargetStatsRecord> directStats,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
     private static PlannedSnapshotCapture direct(ReconcileSnapshotTask snapshotTask) {
-      return new PlannedSnapshotCapture(snapshotTask, List.of(), List.of());
+      return new PlannedSnapshotCapture(snapshotTask, List.of(), List.of(), null);
     }
 
     private static PlannedSnapshotCapture direct(
         ReconcileSnapshotTask snapshotTask, List<TargetStatsRecord> directStats) {
-      return new PlannedSnapshotCapture(snapshotTask, List.of(), directStats);
+      return new PlannedSnapshotCapture(snapshotTask, List.of(), directStats, null);
     }
 
     private static PlannedSnapshotCapture fileGroups(
         ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> fileGroupTasks) {
+      return fileGroups(snapshotTask, fileGroupTasks, null);
+    }
+
+    private static PlannedSnapshotCapture fileGroups(
+        ReconcileSnapshotTask snapshotTask,
+        List<ReconcileFileGroupTask> fileGroupTasks,
+        SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
       return new PlannedSnapshotCapture(
           snapshotTask,
           fileGroupTasks == null ? List.of() : List.copyOf(fileGroupTasks),
-          List.of());
+          List.of(),
+          appendOnlyBase);
     }
   }
+
+  private record EnrichedFileGroups(
+      List<ReconcileFileGroupTask> groups,
+      int sourceFileCount,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {}
 
   private record SnapshotDirectStatsRequest(
       boolean eligible,

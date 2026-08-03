@@ -1566,6 +1566,10 @@ public class CasBlobGc {
             referenced.add(normalizeKey(reuseRefUri));
             rememberTableGeneration(referenced, reuseRefUri);
           }
+          if (entry.hasReuseStatsGenerationRef()
+              && !entry.getReuseStatsGenerationRef().getUri().isBlank()) {
+            referenced.add(normalizeKey(entry.getReuseStatsGenerationRef().getUri()));
+          }
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
           }
