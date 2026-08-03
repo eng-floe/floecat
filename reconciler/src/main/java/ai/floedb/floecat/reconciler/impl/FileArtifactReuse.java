@@ -18,11 +18,15 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
@@ -33,8 +37,12 @@ public final class FileArtifactReuse {
   public static final String SOURCE_FINGERPRINT_PROPERTY = "floedb.reconcile.source-fingerprint-v1";
   public static final String STATS_SIGNATURE_PROPERTY = "floedb.reconcile.stats-signature-v1";
   public static final String INDEX_SIGNATURE_PROPERTY = "floedb.reconcile.index-signature-v1";
+  public static final String INDEXED_COLUMNS_PROPERTY = "indexed_columns";
   public static final String REALIZED_STATS_SELECTORS_PROPERTY =
-      "floedb.reconcile.realized-stats-selectors-v1";
+      "floedb.reconcile.realized-stats-selectors-v2";
+
+  private static final ObjectMapper SELECTOR_LIST_MAPPER = new ObjectMapper();
+  private static final TypeReference<List<String>> SELECTOR_LIST_TYPE = new TypeReference<>() {};
 
   private FileArtifactReuse() {}
 
@@ -156,12 +164,8 @@ public final class FileArtifactReuse {
           digest.add(entry.getKey());
           digest.add(entry.getValue());
         });
-    if (!stats
-        && effective.requestsIndexes()
-        && effective.selectorsForIndex().isEmpty()
-        && effective.defaultColumnScope()
-            != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY) {
-      digest.add("default-execution-schema");
+    if (!stats && effective.requestsIndexes()) {
+      digest.add("execution-schema");
       digest.add(executionSchemaJson);
     }
     return digest.finish();
@@ -196,7 +200,8 @@ public final class FileArtifactReuse {
         && record.getState() == IndexArtifactState.IAS_READY
         && sourceFingerprint.equals(record.getPropertiesMap().get(SOURCE_FINGERPRINT_PROPERTY))
         && indexSignature.equals(record.getPropertiesMap().get(INDEX_SIGNATURE_PROPERTY))
-        && !record.getPropertiesMap().getOrDefault("indexed_columns", "").isBlank();
+        && hasEncodedSelectors(
+            record.getPropertiesMap().getOrDefault(INDEXED_COLUMNS_PROPERTY, ""));
   }
 
   public static TargetStatsRecord bindStatsToSnapshot(
@@ -317,10 +322,50 @@ public final class FileArtifactReuse {
     return record.toBuilder()
         .putProperties(SOURCE_FINGERPRINT_PROPERTY, sourceFingerprint)
         .putProperties(STATS_SIGNATURE_PROPERTY, statsSignature)
-        .putProperties(
-            REALIZED_STATS_SELECTORS_PROPERTY,
-            String.join(",", realizedSelectors == null ? List.of() : realizedSelectors))
+        .putProperties(REALIZED_STATS_SELECTORS_PROPERTY, encodeSelectors(realizedSelectors))
         .build();
+  }
+
+  public static String encodeSelectors(Collection<String> selectors) {
+    try {
+      return SELECTOR_LIST_MAPPER.writeValueAsString(normalizedSelectors(selectors));
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("Failed to encode realized selectors", e);
+    }
+  }
+
+  public static List<String> decodeSelectors(String encoded) {
+    if (encoded == null || encoded.isBlank()) {
+      return List.of();
+    }
+    try {
+      List<String> selectors = SELECTOR_LIST_MAPPER.readValue(encoded, SELECTOR_LIST_TYPE);
+      if (selectors == null) {
+        throw new IllegalArgumentException("Realized selectors must be encoded as a JSON array");
+      }
+      return normalizedSelectors(selectors);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("Failed to decode realized selectors", e);
+    }
+  }
+
+  private static List<String> normalizedSelectors(Collection<String> selectors) {
+    return selectors == null
+        ? List.of()
+        : selectors.stream()
+            .filter(selector -> selector != null && !selector.isBlank())
+            .map(String::trim)
+            .distinct()
+            .sorted()
+            .toList();
+  }
+
+  private static boolean hasEncodedSelectors(String encoded) {
+    try {
+      return !decodeSelectors(encoded).isEmpty();
+    } catch (IllegalArgumentException ignored) {
+      return false;
+    }
   }
 
   public static IndexArtifactRecord stampIndex(

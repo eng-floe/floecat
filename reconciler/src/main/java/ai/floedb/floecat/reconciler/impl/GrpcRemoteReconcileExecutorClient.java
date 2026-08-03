@@ -1691,17 +1691,9 @@ class GrpcRemoteReconcileExecutorClient
 
   private static Set<String> persistedIndexSelectors(
       ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
-    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
-    if (encoded.isBlank()) {
-      return Set.of();
-    }
-    Set<String> selectors = new HashSet<>();
-    for (String token : encoded.split(",")) {
-      if (token != null && !token.isBlank()) {
-        selectors.add(token.trim());
-      }
-    }
-    return Set.copyOf(selectors);
+    return Set.copyOf(
+        FileArtifactReuse.decodeSelectors(
+            record.getPropertiesOrDefault(FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, "")));
   }
 
   private StatsObjectDescriptor publishIndexArtifactObject(

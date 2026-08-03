@@ -1122,7 +1122,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of())));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -1143,7 +1143,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of())));
 
     GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
   }
@@ -1163,11 +1163,30 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "a,b,c")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("a", "b", "c"))));
 
     assertThrows(
         IllegalArgumentException.class,
         () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void indexCoverageTreatsConnectorNativeCommaAsPartOfOneSelector() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            1);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("a,b"))));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
   }
 
   @Test
@@ -1516,7 +1535,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   private static ReconcilerBackend.StagedIndexArtifact indexArtifact(
-      String filePath, String indexedColumns) {
+      String filePath, List<String> indexedColumns) {
     IndexArtifactRecord.Builder record =
         IndexArtifactRecord.newBuilder()
             .setTarget(
@@ -1524,8 +1543,10 @@ class GrpcRemoteReconcileExecutorClientTest {
                     .setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
             .setState(IndexArtifactState.IAS_READY)
             .setArtifactUri(filePath + ".idx");
-    if (indexedColumns != null && !indexedColumns.isBlank()) {
-      record.putProperties("indexed_columns", indexedColumns);
+    if (indexedColumns != null && !indexedColumns.isEmpty()) {
+      record.putProperties(
+          FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+          FileArtifactReuse.encodeSelectors(indexedColumns));
     }
     return new ReconcilerBackend.StagedIndexArtifact(
         record.build(), new byte[] {1}, "application/x-parquet");

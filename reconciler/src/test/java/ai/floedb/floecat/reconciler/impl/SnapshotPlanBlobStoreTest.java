@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -121,7 +122,7 @@ class SnapshotPlanBlobStoreTest {
     String storedJson =
         new String(
             blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
-    assertFalse(!storedJson.contains("fileExecutionPlans"));
+    assertTrue(storedJson.contains("fileExecutionPlans"));
 
     List<PlannedFileGroupJob> roundTripped = store.loadPlanJobs(persistedTask);
     assertEquals(1, roundTripped.size());

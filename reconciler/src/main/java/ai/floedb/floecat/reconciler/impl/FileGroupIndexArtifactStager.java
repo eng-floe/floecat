@@ -158,7 +158,7 @@ public final class FileGroupIndexArtifactStager {
       }
       String indexedColumns = indexedColumnsProperty(filePageEntries);
       if (!indexedColumns.isBlank()) {
-        record.putProperties("indexed_columns", indexedColumns);
+        record.putProperties(FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, indexedColumns);
       }
       artifacts.add(
           new ReconcilerBackend.StagedIndexArtifact(record.build(), sidecar, INDEX_CONTENT_TYPE));
@@ -267,13 +267,12 @@ public final class FileGroupIndexArtifactStager {
     if (pageIndexEntries == null || pageIndexEntries.isEmpty()) {
       return "";
     }
-    return pageIndexEntries.stream()
-        .map(FloecatConnector.ParquetPageIndexEntry::columnName)
-        .filter(name -> name != null && !name.isBlank())
-        .map(String::trim)
-        .distinct()
-        .sorted()
-        .collect(java.util.stream.Collectors.joining(","));
+    List<String> selectors =
+        pageIndexEntries.stream()
+            .map(FloecatConnector.ParquetPageIndexEntry::columnName)
+            .filter(name -> name != null && !name.isBlank())
+            .toList();
+    return selectors.isEmpty() ? "" : FileArtifactReuse.encodeSelectors(selectors);
   }
 
   private static byte[] writeIndexSidecar(

@@ -8,6 +8,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
@@ -129,7 +130,7 @@ class FileArtifactReuseTest {
   }
 
   @Test
-  void defaultIndexSignatureIncludesExecutionSchemaButExplicitSelectionDoesNot() {
+  void indexSignatureIncludesExecutionSchemaForDefaultAndExplicitSelection() {
     var defaultIndex =
         ReconcileCapturePolicy.of(
             List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
@@ -141,7 +142,19 @@ class FileArtifactReuseTest {
     assertThat(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-a"))
         .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(defaultIndex, "schema-b"));
     assertThat(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-a"))
-        .isEqualTo(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-b"));
+        .isNotEqualTo(FileArtifactReuse.indexCaptureSignature(explicitIndex, "schema-b"));
+  }
+
+  @Test
+  void selectorEncodingRoundTripsConnectorNativeNames() {
+    List<String> selectors = List.of("a,b", "nested.path", "quoted\"name", "line\nbreak", "#1");
+
+    String encoded = FileArtifactReuse.encodeSelectors(selectors);
+
+    assertThat(FileArtifactReuse.decodeSelectors(encoded))
+        .containsExactly("#1", "a,b", "line\nbreak", "nested.path", "quoted\"name");
+    assertThatThrownBy(() -> FileArtifactReuse.decodeSelectors("a,b"))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -187,7 +200,9 @@ class FileArtifactReuseTest {
                             .setScalar(
                                 ScalarStats.newBuilder()
                                     .setUpstream(UpstreamStamp.newBuilder().setCommitRef("1")))))
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1")
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
             .build();
 
     TargetStatsRecord rebound =
