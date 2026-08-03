@@ -374,6 +374,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     if (manifest.getSourceFileCount() == 0) {
       return;
     }
+    if (!required.isEmpty() && !realized.containsAll(required)) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not cover explicitly requested index selectors");
+    }
     if (defaultSelection && realized.isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot capture manifest does not report resolved default index selectors");

@@ -1729,21 +1729,27 @@ class GrpcRemoteReconcileExecutorClient
             "index artifact targets do not match the planned file group");
       }
       Set<String> persistedSelectors = persistedIndexSelectors(record);
+      if (!requiredSelectors.isEmpty() && !persistedSelectors.containsAll(requiredSelectors)) {
+        throw new IllegalArgumentException(
+            "index artifact does not cover the explicitly requested selectors");
+      }
       if (defaultSelection && persistedSelectors.isEmpty()) {
         throw new IllegalArgumentException(
             "index artifact does not report its resolved default column coverage");
       }
       if (defaultSelection) {
+        Set<String> persistedSelectorIdentities =
+            FileArtifactReuse.selectorIdentities(persistedSelectors);
         if (resolvedDefaultSelectors == null) {
-          resolvedDefaultSelectors = persistedSelectors;
-        } else if (!resolvedDefaultSelectors.equals(persistedSelectors)) {
+          resolvedDefaultSelectors = persistedSelectorIdentities;
+        } else if (!resolvedDefaultSelectors.equals(persistedSelectorIdentities)) {
           throw new IllegalArgumentException(
               "index artifacts report inconsistent resolved default column coverage");
         }
       }
       if (defaultSelection
           && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
-          && persistedSelectors.size() > policy.maxDefaultColumns()) {
+          && realizedIndexColumnCount(persistedSelectors) > policy.maxDefaultColumns()) {
         throw new IllegalArgumentException(
             "index artifact exceeds the requested default column limit");
       }
@@ -1752,6 +1758,10 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "index capture requires one ready artifact per planned file");
     }
+  }
+
+  private static int realizedIndexColumnCount(Set<String> selectors) {
+    return FileArtifactReuse.selectorIdentities(selectors).size();
   }
 
   private static Set<String> persistedIndexSelectors(

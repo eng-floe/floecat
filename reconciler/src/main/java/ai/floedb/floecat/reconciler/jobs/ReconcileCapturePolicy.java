@@ -89,6 +89,12 @@ public final class ReconcileCapturePolicy {
     this.outputs = outputs == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(outputs));
     this.defaultColumnScope =
         defaultColumnScope == null ? DefaultColumnScope.FIRST_N : defaultColumnScope;
+    if (this.outputs.contains(Output.PARQUET_PAGE_INDEX)
+        && this.defaultColumnScope == DefaultColumnScope.EXPLICIT_ONLY
+        && this.columns.stream().noneMatch(Column::captureIndex)) {
+      throw new IllegalArgumentException(
+          "PARQUET_PAGE_INDEX with EXPLICIT_ONLY requires at least one index selector");
+    }
     this.maxDefaultColumns =
         maxDefaultColumns == null || maxDefaultColumns <= 0
             ? DEFAULT_MAX_COLUMNS

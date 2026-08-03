@@ -234,7 +234,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           }
         }
         if (defaultIndexSelection) {
-          Set<String> groupSelectors = Set.copyOf(artifacts.realizedIndexSelectors());
+          Set<String> groupSelectors =
+              FileArtifactReuse.selectorIdentities(artifacts.realizedIndexSelectors());
           if (resolvedDefaultIndexSelectors == null) {
             resolvedDefaultIndexSelectors = groupSelectors;
           } else if (!resolvedDefaultIndexSelectors.equals(groupSelectors)) {
@@ -434,6 +435,11 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       throw new IllegalArgumentException(
           "snapshot file-group result does not report realized index selectors");
     }
+    if (capturePolicy.requestsIndexes()
+        && !realizedIndexSelectors.containsAll(capturePolicy.selectorsForIndex())) {
+      throw new IllegalArgumentException(
+          "snapshot file-group result does not cover explicitly requested index selectors");
+    }
     if (capturePolicy.requestsIndexes()) {
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor =
           descriptor.indexPredecessor();
@@ -513,6 +519,11 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || !reuseBundle.getArtifact().getPayloadUri().startsWith(descriptor.statsObjectPrefix())) {
       throw new IllegalArgumentException("snapshot file-group reuse bundle metadata mismatch");
     }
+    validateReuseBundleArtifact(
+        reuseBundle,
+        java.util.stream.Stream.concat(
+                fileStatsObjects.stream(), payload.getIndexArtifactsList().stream())
+            .toList());
     Set<String> reusableStatsFiles =
         reuseBundle.getFileStatsList().stream()
             .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
@@ -784,6 +795,23 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     if (!indexesRequested && !indexed.isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot file-group contains unrequested index artifacts");
+    }
+  }
+
+  static void validateReuseBundleArtifact(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference reuseBundle,
+      List<StatsObjectDescriptor> committedDescriptors) {
+    var artifact = reuseBundle.getArtifact();
+    for (StatsObjectDescriptor descriptor :
+        committedDescriptors == null ? List.<StatsObjectDescriptor>of() : committedDescriptors) {
+      if (!artifact.getPayloadUri().equals(descriptor.getPayloadUri())
+          || artifact.getPayloadBytes() != descriptor.getPayloadBytes()
+          || !MessageDigest.isEqual(
+              artifact.getPayloadSha256().toByteArray(),
+              descriptor.getPayloadSha256().toByteArray())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group reuse bundle does not match committed artifact descriptors");
+      }
     }
   }
 

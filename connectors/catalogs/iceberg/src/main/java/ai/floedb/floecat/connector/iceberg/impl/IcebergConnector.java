@@ -463,13 +463,289 @@ public abstract class IcebergConnector implements FloecatConnector {
       }
       realizedStatsSelectors = List.copyOf(aliases);
     }
-    List<ParquetPageIndexEntry> pageIndexEntries =
+    ParquetPageIndexReader.ReadResult pageIndexes =
         captureIndexes
             ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
-                .readEntries(plannedFilePaths)
-            : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
+                .read(plannedFilePaths)
+            : ParquetPageIndexReader.ReadResult.empty();
+    return FileGroupCaptureResult.of(
+        stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
   }
+
+  @Override
+  public Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      long snapshotId,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      throw new IllegalArgumentException("Unknown Iceberg snapshot: " + snapshotId);
+    }
+    Schema schema = schemaForSnapshot(table, snapshot);
+    List<ParquetPageIndexEntry> available = entries == null ? List.of() : entries;
+    Map<Integer, SyntheticPageIndexColumn> syntheticColumns =
+        icebergSyntheticPageIndexColumns(schema);
+    Set<Integer> selectedFieldIds =
+        selectors == null || selectors.isEmpty()
+            ? resolveDefaultPageIndexFieldIds(columnSelectorPolicy, syntheticColumns.keySet())
+            : resolveIncludedFieldIds(schema, selectors, columnSelectorPolicy);
+    if (selectedFieldIds.isEmpty()) {
+      return Optional.of(List.of());
+    }
+    for (int fieldId : selectedFieldIds) {
+      if (!syntheticColumns.containsKey(fieldId)) {
+        throw new IllegalArgumentException(
+            "Iceberg selector has no supported page-index representation: #" + fieldId);
+      }
+    }
+    Map<String, Set<Integer>> matchedByFile = new LinkedHashMap<>();
+    List<ParquetPageIndexEntry> selected = new ArrayList<>();
+    Map<Integer, ParquetPageIndexEntry> templateByFieldId = new LinkedHashMap<>();
+    for (ParquetPageIndexEntry entry : available) {
+      if (entry == null) {
+        continue;
+      }
+      Integer fieldId = entry.parquetFieldId();
+      if (fieldId == null) {
+        for (int selectedFieldId : selectedFieldIds) {
+          if (entry.columnName().equals(schema.findColumnName(selectedFieldId))) {
+            fieldId = selectedFieldId;
+            break;
+          }
+        }
+      }
+      if (fieldId == null || !selectedFieldIds.contains(fieldId)) {
+        continue;
+      }
+      matchedByFile
+          .computeIfAbsent(entry.filePath(), ignored -> new LinkedHashSet<>())
+          .add(fieldId);
+      LinkedHashSet<String> aliases = new LinkedHashSet<>();
+      aliases.add("#" + fieldId);
+      String currentPath = schema.findColumnName(fieldId);
+      if (currentPath != null && !currentPath.isBlank()) {
+        aliases.add(currentPath);
+      }
+      selected.add(entry.withSelectorAliases(aliases));
+      templateByFieldId.putIfAbsent(fieldId, entry);
+    }
+    Map<String, List<ParquetPageIndexEntry>> entriesByFile = new LinkedHashMap<>();
+    if (plannedFilePaths != null) {
+      plannedFilePaths.stream()
+          .filter(path -> path != null && !path.isBlank())
+          .forEach(path -> entriesByFile.put(path, new ArrayList<>()));
+    }
+    for (ParquetPageIndexEntry entry : available) {
+      if (entry != null) {
+        entriesByFile.computeIfAbsent(entry.filePath(), ignored -> new ArrayList<>()).add(entry);
+      }
+    }
+    Map<String, List<ParquetRowGroup>> rowGroupsByFile = new LinkedHashMap<>();
+    if (rowGroups != null) {
+      rowGroups.stream()
+          .filter(rowGroup -> rowGroup != null && !rowGroup.filePath().isBlank())
+          .forEach(
+              rowGroup ->
+                  rowGroupsByFile
+                      .computeIfAbsent(rowGroup.filePath(), ignored -> new ArrayList<>())
+                      .add(rowGroup));
+    }
+    entriesByFile.forEach(
+        (filePath, fileEntries) -> {
+          Set<Integer> matched =
+              matchedByFile.computeIfAbsent(filePath, ignored -> new LinkedHashSet<>());
+          for (int fieldId : selectedFieldIds) {
+            if (matched.contains(fieldId)) {
+              continue;
+            }
+            Types.NestedField field = schema.findField(fieldId);
+            if (field != null && field.initialDefault() != null) {
+              throw new IllegalArgumentException(
+                  "Cannot synthesize Iceberg page-index coverage for field #"
+                      + fieldId
+                      + " with a non-null initial default");
+            }
+            LinkedHashSet<String> aliases = new LinkedHashSet<>();
+            aliases.add("#" + fieldId);
+            String currentPath = schema.findColumnName(fieldId);
+            if (currentPath != null && !currentPath.isBlank()) {
+              aliases.add(currentPath);
+            }
+            selected.addAll(
+                syntheticAllNullPageIndexEntries(
+                    filePath,
+                    fileEntries,
+                    rowGroupsByFile.getOrDefault(filePath, List.of()),
+                    fieldId,
+                    templateByFieldId.get(fieldId),
+                    syntheticColumns.get(fieldId),
+                    aliases));
+            matched.add(fieldId);
+          }
+        });
+    matchedByFile.forEach(
+        (filePath, matched) -> {
+          if (!matched.containsAll(selectedFieldIds)) {
+            throw new IllegalArgumentException(
+                "Iceberg page indexes for " + filePath + " do not cover selectors " + selectors);
+          }
+        });
+    return Optional.of(List.copyOf(selected));
+  }
+
+  private static Set<Integer> resolveDefaultPageIndexFieldIds(
+      ColumnSelectorPolicy columnSelectorPolicy, Set<Integer> availableFieldIds) {
+    List<String> availableSelectors =
+        availableFieldIds.stream().map(fieldId -> "#" + fieldId).toList();
+    return FloecatConnector.resolveIncludedColumns(
+            availableSelectors, Set.of(), columnSelectorPolicy)
+        .stream()
+        .map(selector -> Integer.parseInt(selector.substring(1)))
+        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+  }
+
+  private static List<ParquetPageIndexEntry> syntheticAllNullPageIndexEntries(
+      String filePath,
+      List<ParquetPageIndexEntry> fileEntries,
+      List<ParquetRowGroup> fileRowGroups,
+      int fieldId,
+      ParquetPageIndexEntry template,
+      SyntheticPageIndexColumn syntheticColumn,
+      Set<String> aliases) {
+    Map<Integer, Integer> rowsByGroup = new LinkedHashMap<>();
+    if (fileRowGroups != null) {
+      fileRowGroups.forEach(
+          rowGroup -> rowsByGroup.merge(rowGroup.rowGroup(), rowGroup.rowCount(), Math::max));
+    }
+    for (ParquetPageIndexEntry entry : fileEntries) {
+      long rowGroupEnd = entry.firstRowIndex() + entry.rowCount();
+      rowsByGroup.merge(
+          entry.rowGroup(),
+          rowGroupEnd >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, rowGroupEnd),
+          Math::max);
+    }
+    if (rowsByGroup.isEmpty()) {
+      rowsByGroup.put(0, 0);
+    }
+    String physicalType =
+        template == null ? syntheticColumn.parquetPhysicalType() : template.parquetPhysicalType();
+    String compression = template == null ? "UNCOMPRESSED" : template.parquetCompression();
+    short definitionLevel =
+        template == null ? syntheticColumn.maxDefinitionLevel() : template.parquetMaxDefLevel();
+    Integer precision =
+        template == null ? syntheticColumn.decimalPrecision() : template.decimalPrecision();
+    Integer scale = template == null ? syntheticColumn.decimalScale() : template.decimalScale();
+    Integer bits = template == null ? syntheticColumn.decimalBits() : template.decimalBits();
+    List<ParquetPageIndexEntry> synthetic = new ArrayList<>();
+    rowsByGroup.forEach(
+        (rowGroup, rowCount) ->
+            synthetic.add(
+                new ParquetPageIndexEntry(
+                        filePath,
+                        syntheticColumn.parquetPath(),
+                        rowGroup,
+                        0,
+                        0L,
+                        rowCount,
+                        rowCount,
+                        null,
+                        0,
+                        null,
+                        null,
+                        false,
+                        physicalType,
+                        compression,
+                        definitionLevel,
+                        (short) 0,
+                        precision,
+                        scale,
+                        bits)
+                    .withParquetFieldId(fieldId)
+                    .withSelectorAliases(aliases)));
+    return List.copyOf(synthetic);
+  }
+
+  private static Map<Integer, SyntheticPageIndexColumn> icebergSyntheticPageIndexColumns(
+      Schema schema) {
+    Map<Integer, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
+    for (Types.NestedField field : schema.columns()) {
+      collectIcebergSyntheticPageIndexColumns(field, "", 0, false, columns);
+    }
+    return java.util.Collections.unmodifiableMap(columns);
+  }
+
+  private static void collectIcebergSyntheticPageIndexColumns(
+      Types.NestedField field,
+      String prefix,
+      int inheritedDefinitionLevel,
+      boolean repeated,
+      Map<Integer, SyntheticPageIndexColumn> columns) {
+    String path = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
+    int definitionLevel = inheritedDefinitionLevel + (field.isOptional() ? 1 : 0);
+    Type type = field.type();
+    if (type.isPrimitiveType() && !repeated) {
+      SyntheticPageIndexColumn column =
+          syntheticIcebergPrimitive(path, definitionLevel, type.asPrimitiveType());
+      if (column != null) {
+        columns.put(field.fieldId(), column);
+      }
+    } else if (type.isStructType()) {
+      type.asStructType()
+          .fields()
+          .forEach(
+              child ->
+                  collectIcebergSyntheticPageIndexColumns(
+                      child, path, definitionLevel, repeated, columns));
+    }
+  }
+
+  private static SyntheticPageIndexColumn syntheticIcebergPrimitive(
+      String parquetPath, int definitionLevel, Type.PrimitiveType type) {
+    String physicalType;
+    Integer precision = null;
+    Integer scale = null;
+    Integer bits = null;
+    switch (type.typeId()) {
+      case BOOLEAN -> physicalType = "BOOLEAN";
+      case INTEGER, DATE -> physicalType = "INT32";
+      case LONG, TIME, TIMESTAMP, TIMESTAMP_NANO -> physicalType = "INT64";
+      case FLOAT -> physicalType = "FLOAT";
+      case DOUBLE -> physicalType = "DOUBLE";
+      case STRING -> physicalType = "BINARY";
+      case DECIMAL -> {
+        Types.DecimalType decimal = (Types.DecimalType) type;
+        precision = decimal.precision();
+        scale = decimal.scale();
+        bits = precision <= 9 ? 32 : precision <= 18 ? 64 : precision <= 38 ? 128 : 256;
+        physicalType =
+            precision <= 9 ? "INT32" : precision <= 18 ? "INT64" : "FIXED_LEN_BYTE_ARRAY";
+      }
+      default -> {
+        return null;
+      }
+    }
+    return new SyntheticPageIndexColumn(
+        parquetPath,
+        physicalType,
+        (short) Math.min(Short.MAX_VALUE, definitionLevel),
+        precision,
+        scale,
+        bits);
+  }
+
+  private record SyntheticPageIndexColumn(
+      String parquetPath,
+      String parquetPhysicalType,
+      short maxDefinitionLevel,
+      Integer decimalPrecision,
+      Integer decimalScale,
+      Integer decimalBits) {}
 
   @Override
   public Optional<SnapshotFilePlan> planSnapshotFiles(

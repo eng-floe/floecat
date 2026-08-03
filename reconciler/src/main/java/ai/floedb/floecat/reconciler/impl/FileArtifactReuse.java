@@ -278,6 +278,15 @@ public final class FileArtifactReuse {
     }
   }
 
+  static java.util.Set<String> selectorIdentities(Collection<String> selectors) {
+    List<String> normalized = normalizedSelectors(selectors);
+    java.util.Set<String> fieldIds =
+        normalized.stream()
+            .filter(selector -> selector.startsWith("#"))
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    return fieldIds.isEmpty() ? java.util.Set.copyOf(normalized) : fieldIds;
+  }
+
   private static List<String> normalizedSelectors(Collection<String> selectors) {
     return selectors == null
         ? List.of()

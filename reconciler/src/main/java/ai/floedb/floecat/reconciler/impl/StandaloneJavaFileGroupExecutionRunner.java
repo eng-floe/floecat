@@ -335,6 +335,9 @@ public class StandaloneJavaFileGroupExecutionRunner {
       throw new IllegalStateException("Blob store is unavailable");
     }
     byte[] bytes = blobStore.get(uri);
+    if (bytes == null) {
+      throw new IllegalStateException("Reusable artifact reference is missing: " + uri);
+    }
     if (bytes.length != expectedBytes || !MessageDigest.isEqual(expectedSha256, sha256(bytes))) {
       throw new IllegalStateException("Reusable artifact reference validation failed: " + uri);
     }

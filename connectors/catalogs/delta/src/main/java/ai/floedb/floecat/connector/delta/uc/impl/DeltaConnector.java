@@ -52,11 +52,27 @@ import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
+import io.delta.kernel.types.ArrayType;
+import io.delta.kernel.types.BooleanType;
+import io.delta.kernel.types.ByteType;
+import io.delta.kernel.types.DataType;
+import io.delta.kernel.types.DateType;
+import io.delta.kernel.types.DecimalType;
+import io.delta.kernel.types.DoubleType;
+import io.delta.kernel.types.FloatType;
+import io.delta.kernel.types.IntegerType;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.MapType;
+import io.delta.kernel.types.ShortType;
+import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
+import io.delta.kernel.types.TimestampNTZType;
+import io.delta.kernel.types.TimestampType;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -424,11 +440,373 @@ abstract class DeltaConnector implements FloecatConnector {
                 .sorted()
                 .toList()
             : List.of();
-    List<ParquetPageIndexEntry> pageIndexEntries =
+    ParquetPageIndexReader.ReadResult pageIndexes =
         captureIndexes
-            ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
-            : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
+            ? new ParquetPageIndexReader(parquetInput).read(plannedFilePaths)
+            : ParquetPageIndexReader.ReadResult.empty();
+    return FileGroupCaptureResult.of(
+        stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+  }
+
+  @Override
+  public Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      long snapshotId,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
+    Snapshot snapshot =
+        loadTable(storageLocation(namespaceFq, tableName))
+            .getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      throw new IllegalArgumentException("Unknown Delta snapshot: " + snapshotId);
+    }
+    var schemaDescriptor =
+        new LogicalSchemaMapper()
+            .mapRaw(
+                ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                TableFormat.TF_DELTA,
+                snapshotSchemaJson(snapshot),
+                Set.of());
+    Map<Long, ai.floedb.floecat.query.rpc.SchemaColumn> columnsById = new LinkedHashMap<>();
+    Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByPath = new LinkedHashMap<>();
+    Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> columnsByName =
+        new LinkedHashMap<>();
+    for (var column : schemaDescriptor.getColumnsList()) {
+      if (!column.getLeaf()) {
+        continue;
+      }
+      columnsById.put(column.getId(), column);
+      columnsByPath.put(column.getPhysicalPath(), column);
+      columnsByName.computeIfAbsent(column.getName(), ignored -> new ArrayList<>()).add(column);
+    }
+    Map<String, SyntheticPageIndexColumn> syntheticColumnsByPath =
+        deltaSyntheticPageIndexColumns(snapshot.getSchema());
+    Map<Long, SyntheticPageIndexColumn> syntheticColumnsById = new LinkedHashMap<>();
+    Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByParquetPath =
+        new LinkedHashMap<>();
+    columnsById
+        .values()
+        .forEach(
+            column -> {
+              SyntheticPageIndexColumn synthetic =
+                  syntheticColumnsByPath.get(column.getPhysicalPath());
+              if (synthetic != null) {
+                syntheticColumnsById.put(column.getId(), synthetic);
+                columnsByParquetPath.put(synthetic.parquetPath(), column);
+              }
+            });
+    Map<Integer, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByFormatFieldId =
+        new LinkedHashMap<>();
+    columnsById.values().stream()
+        .filter(column -> column.getFieldId() > 0)
+        .forEach(column -> columnsByFormatFieldId.put(column.getFieldId(), column));
+    List<ParquetPageIndexEntry> availableEntries = entries == null ? List.of() : entries;
+
+    Set<String> effectiveSelectors =
+        selectors == null || selectors.isEmpty()
+            ? FloecatConnector.resolveIncludedColumns(
+                schemaDescriptor.getColumnsList().stream()
+                    .filter(ai.floedb.floecat.query.rpc.SchemaColumn::getLeaf)
+                    .filter(column -> syntheticColumnsById.containsKey(column.getId()))
+                    .map(ai.floedb.floecat.query.rpc.SchemaColumn::getPhysicalPath)
+                    .toList(),
+                Set.of(),
+                columnSelectorPolicy)
+            : selectors;
+    if (effectiveSelectors.isEmpty()) {
+      return Optional.of(List.of());
+    }
+
+    Map<Long, LinkedHashSet<String>> aliasesByColumnId = new LinkedHashMap<>();
+    for (String selector : effectiveSelectors) {
+      String normalized = selector == null ? "" : selector.trim();
+      if (normalized.isBlank()) {
+        continue;
+      }
+      ai.floedb.floecat.query.rpc.SchemaColumn selected;
+      if (normalized.startsWith("#")) {
+        final long columnId;
+        try {
+          columnId = Long.parseLong(normalized.substring(1));
+        } catch (NumberFormatException error) {
+          throw new IllegalArgumentException("Invalid Delta column selector: " + normalized, error);
+        }
+        selected = columnsById.get(columnId);
+      } else {
+        selected = columnsByPath.get(normalized);
+        if (selected == null) {
+          List<ai.floedb.floecat.query.rpc.SchemaColumn> named =
+              columnsByName.getOrDefault(normalized, List.of());
+          selected = named.size() == 1 ? named.getFirst() : null;
+        }
+      }
+      if (selected == null) {
+        throw new IllegalArgumentException("Unknown Delta column selector: " + normalized);
+      }
+      LinkedHashSet<String> aliases =
+          aliasesByColumnId.computeIfAbsent(selected.getId(), ignored -> new LinkedHashSet<>());
+      aliases.add("#" + selected.getId());
+      aliases.add(selected.getPhysicalPath());
+      aliases.add(normalized);
+    }
+
+    Map<String, Set<Long>> matchedByFile = new LinkedHashMap<>();
+    List<ParquetPageIndexEntry> selectedEntries = new ArrayList<>();
+    Map<Long, ParquetPageIndexEntry> templateByColumnId = new LinkedHashMap<>();
+    for (ParquetPageIndexEntry entry : availableEntries) {
+      if (entry == null) {
+        continue;
+      }
+      ai.floedb.floecat.query.rpc.SchemaColumn column =
+          deltaColumnForEntry(entry, columnsByFormatFieldId, columnsByParquetPath);
+      if (column == null || !aliasesByColumnId.containsKey(column.getId())) {
+        continue;
+      }
+      matchedByFile
+          .computeIfAbsent(entry.filePath(), ignored -> new LinkedHashSet<>())
+          .add(column.getId());
+      LinkedHashSet<String> aliases = new LinkedHashSet<>();
+      aliases.addAll(aliasesByColumnId.get(column.getId()));
+      selectedEntries.add(entry.withSelectorAliases(aliases));
+      templateByColumnId.putIfAbsent(column.getId(), entry);
+    }
+    Map<String, List<ParquetPageIndexEntry>> entriesByFile = new LinkedHashMap<>();
+    if (plannedFilePaths != null) {
+      plannedFilePaths.stream()
+          .filter(path -> path != null && !path.isBlank())
+          .forEach(path -> entriesByFile.put(path, new ArrayList<>()));
+    }
+    for (ParquetPageIndexEntry entry : availableEntries) {
+      if (entry != null) {
+        entriesByFile.computeIfAbsent(entry.filePath(), ignored -> new ArrayList<>()).add(entry);
+      }
+    }
+    Map<String, List<ParquetRowGroup>> rowGroupsByFile = new LinkedHashMap<>();
+    if (rowGroups != null) {
+      rowGroups.stream()
+          .filter(rowGroup -> rowGroup != null && !rowGroup.filePath().isBlank())
+          .forEach(
+              rowGroup ->
+                  rowGroupsByFile
+                      .computeIfAbsent(rowGroup.filePath(), ignored -> new ArrayList<>())
+                      .add(rowGroup));
+    }
+    entriesByFile.forEach(
+        (filePath, fileEntries) -> {
+          Set<Long> matched =
+              matchedByFile.computeIfAbsent(filePath, ignored -> new LinkedHashSet<>());
+          for (long columnId : aliasesByColumnId.keySet()) {
+            if (matched.contains(columnId)) {
+              continue;
+            }
+            var column = columnsById.get(columnId);
+            ParquetPageIndexEntry template = templateByColumnId.get(columnId);
+            SyntheticPageIndexColumn syntheticColumn = syntheticColumnsById.get(columnId);
+            if (syntheticColumn == null) {
+              throw new IllegalArgumentException(
+                  "Delta selector has no supported page-index representation: "
+                      + aliasesByColumnId.get(columnId));
+            }
+            selectedEntries.addAll(
+                syntheticAllNullPageIndexEntries(
+                    filePath,
+                    fileEntries,
+                    rowGroupsByFile.getOrDefault(filePath, List.of()),
+                    column,
+                    template,
+                    syntheticColumn,
+                    aliasesByColumnId.get(columnId)));
+            matched.add(columnId);
+          }
+        });
+    matchedByFile.forEach(
+        (filePath, matched) -> {
+          if (!matched.containsAll(aliasesByColumnId.keySet())) {
+            throw new IllegalArgumentException(
+                "Delta page indexes for "
+                    + filePath
+                    + " do not cover selectors "
+                    + effectiveSelectors);
+          }
+        });
+    return Optional.of(List.copyOf(selectedEntries));
+  }
+
+  private static ai.floedb.floecat.query.rpc.SchemaColumn deltaColumnForEntry(
+      ParquetPageIndexEntry entry,
+      Map<Integer, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByFormatFieldId,
+      Map<String, ai.floedb.floecat.query.rpc.SchemaColumn> columnsByParquetPath) {
+    if (entry == null) {
+      return null;
+    }
+    ai.floedb.floecat.query.rpc.SchemaColumn column =
+        entry.parquetFieldId() == null ? null : columnsByFormatFieldId.get(entry.parquetFieldId());
+    return column == null
+        ? columnsByParquetPath.get(canonicalDeltaPagePath(entry.columnName()))
+        : column;
+  }
+
+  private static List<ParquetPageIndexEntry> syntheticAllNullPageIndexEntries(
+      String filePath,
+      List<ParquetPageIndexEntry> fileEntries,
+      List<ParquetRowGroup> fileRowGroups,
+      ai.floedb.floecat.query.rpc.SchemaColumn column,
+      ParquetPageIndexEntry template,
+      SyntheticPageIndexColumn syntheticColumn,
+      Set<String> aliases) {
+    Map<Integer, Integer> rowsByGroup = new LinkedHashMap<>();
+    if (fileRowGroups != null) {
+      fileRowGroups.forEach(
+          rowGroup -> rowsByGroup.merge(rowGroup.rowGroup(), rowGroup.rowCount(), Math::max));
+    }
+    for (ParquetPageIndexEntry entry : fileEntries) {
+      long rowGroupEnd = entry.firstRowIndex() + entry.rowCount();
+      rowsByGroup.merge(
+          entry.rowGroup(),
+          rowGroupEnd >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, rowGroupEnd),
+          Math::max);
+    }
+    if (rowsByGroup.isEmpty()) {
+      rowsByGroup.put(0, 0);
+    }
+    String parquetPhysicalType =
+        template == null ? syntheticColumn.parquetPhysicalType() : template.parquetPhysicalType();
+    String parquetCompression = template == null ? "UNCOMPRESSED" : template.parquetCompression();
+    short maxDefinitionLevel =
+        template == null ? syntheticColumn.maxDefinitionLevel() : template.parquetMaxDefLevel();
+    short maxRepetitionLevel = template == null ? (short) 0 : template.parquetMaxRepLevel();
+    Integer precision =
+        template == null ? syntheticColumn.decimalPrecision() : template.decimalPrecision();
+    Integer scale = template == null ? syntheticColumn.decimalScale() : template.decimalScale();
+    Integer bits = template == null ? syntheticColumn.decimalBits() : template.decimalBits();
+    Integer fieldId = column.getFieldId() > 0 ? column.getFieldId() : null;
+    List<ParquetPageIndexEntry> synthetic = new ArrayList<>();
+    rowsByGroup.forEach(
+        (rowGroup, rowCount) ->
+            synthetic.add(
+                new ParquetPageIndexEntry(
+                        filePath,
+                        syntheticColumn.parquetPath(),
+                        rowGroup,
+                        0,
+                        0L,
+                        rowCount,
+                        rowCount,
+                        null,
+                        0,
+                        null,
+                        null,
+                        false,
+                        parquetPhysicalType,
+                        parquetCompression,
+                        maxDefinitionLevel,
+                        maxRepetitionLevel,
+                        precision,
+                        scale,
+                        bits)
+                    .withParquetFieldId(fieldId)
+                    .withSelectorAliases(aliases)));
+    return List.copyOf(synthetic);
+  }
+
+  private static Map<String, SyntheticPageIndexColumn> deltaSyntheticPageIndexColumns(
+      StructType schema) {
+    Map<String, SyntheticPageIndexColumn> columns = new LinkedHashMap<>();
+    collectDeltaSyntheticPageIndexColumns(schema, "", "", 0, columns);
+    return Map.copyOf(columns);
+  }
+
+  private static void collectDeltaSyntheticPageIndexColumns(
+      StructType schema,
+      String logicalPrefix,
+      String parquetPrefix,
+      int inheritedDefinitionLevel,
+      Map<String, SyntheticPageIndexColumn> columns) {
+    for (StructField field : schema.fields()) {
+      String logicalPath =
+          logicalPrefix.isEmpty() ? field.getName() : logicalPrefix + "." + field.getName();
+      String physicalName = DeltaPlanner.physicalName(field.getMetadata());
+      if (physicalName == null || physicalName.isBlank()) {
+        physicalName = field.getName();
+      }
+      String parquetPath =
+          parquetPrefix.isEmpty() ? physicalName : parquetPrefix + "." + physicalName;
+      int definitionLevel = inheritedDefinitionLevel + (field.isNullable() ? 1 : 0);
+      DataType dataType = field.getDataType();
+      if (dataType instanceof StructType structType) {
+        collectDeltaSyntheticPageIndexColumns(
+            structType, logicalPath, parquetPath, definitionLevel, columns);
+      } else if (!(dataType instanceof ArrayType) && !(dataType instanceof MapType)) {
+        SyntheticPageIndexColumn column =
+            syntheticDeltaPrimitive(parquetPath, definitionLevel, dataType);
+        if (column != null) {
+          columns.put(logicalPath, column);
+        }
+      }
+    }
+  }
+
+  private static SyntheticPageIndexColumn syntheticDeltaPrimitive(
+      String parquetPath, int definitionLevel, DataType dataType) {
+    String physicalType;
+    Integer precision = null;
+    Integer scale = null;
+    Integer bits = null;
+    if (dataType instanceof BooleanType) {
+      physicalType = "BOOLEAN";
+    } else if (dataType instanceof ByteType
+        || dataType instanceof ShortType
+        || dataType instanceof IntegerType
+        || dataType instanceof DateType) {
+      physicalType = "INT32";
+    } else if (dataType instanceof LongType
+        || dataType instanceof TimestampType
+        || dataType instanceof TimestampNTZType) {
+      physicalType = "INT64";
+    } else if (dataType instanceof FloatType) {
+      physicalType = "FLOAT";
+    } else if (dataType instanceof DoubleType) {
+      physicalType = "DOUBLE";
+    } else if (dataType instanceof StringType) {
+      physicalType = "BINARY";
+    } else if (dataType instanceof DecimalType decimal) {
+      precision = decimal.getPrecision();
+      scale = decimal.getScale();
+      bits = precision <= 9 ? 32 : precision <= 18 ? 64 : precision <= 38 ? 128 : 256;
+      physicalType = precision <= 9 ? "INT32" : precision <= 18 ? "INT64" : "FIXED_LEN_BYTE_ARRAY";
+    } else {
+      return null;
+    }
+    return new SyntheticPageIndexColumn(
+        parquetPath,
+        physicalType,
+        (short) Math.min(Short.MAX_VALUE, definitionLevel),
+        precision,
+        scale,
+        bits);
+  }
+
+  private record SyntheticPageIndexColumn(
+      String parquetPath,
+      String parquetPhysicalType,
+      short maxDefinitionLevel,
+      Integer decimalPrecision,
+      Integer decimalScale,
+      Integer decimalBits) {}
+
+  private static String canonicalDeltaPagePath(String parquetPath) {
+    if (parquetPath == null || parquetPath.isBlank()) {
+      return "";
+    }
+    return parquetPath
+        .trim()
+        .replace(".list.element", "[]")
+        .replace(".key_value.key", ".key")
+        .replace(".key_value.value", "{}");
   }
 
   @Override

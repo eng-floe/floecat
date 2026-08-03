@@ -176,7 +176,9 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                   invocation.getArgument(1);
               consumer.accept(
                   List.of(plannedStats, deleteStats),
-                  List.of(pageIndexEntry(plannedFile), pageIndexEntry(associatedDeleteFile)));
+                  List.of(
+                      pageIndexEntry(plannedFile).withSelectorAliases(Set.of("#1", "customer_id")),
+                      pageIndexEntry(associatedDeleteFile)));
               return CaptureEngineResult.empty();
             });
 
@@ -185,6 +187,14 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     assertThat(result.stagedIndexArtifacts())
         .extracting(artifact -> artifact.record().getTarget().getFile().getFilePath())
         .containsExactly(plannedFile);
+    assertThat(
+            FileArtifactReuse.decodeSelectors(
+                result
+                    .stagedIndexArtifacts()
+                    .getFirst()
+                    .record()
+                    .getPropertiesOrDefault(FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, "")))
+        .containsExactly("#1", "customer_id", "id");
   }
 
   @Test
@@ -325,6 +335,35 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("incompatible stats");
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeReportsMissingReusableBundleWithoutNullDereference() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/missing-bundle.pb";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle", bundleUri, 1L, new byte[32], List.of(path), List.of())));
+
+    assertThatThrownBy(
+            () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Failed to load reusable artifact bundle")
+        .hasRootCauseMessage("Reusable artifact reference is missing: " + bundleUri);
     verify(runner.captureEngineRegistry, never()).capture(any(), any());
   }
 

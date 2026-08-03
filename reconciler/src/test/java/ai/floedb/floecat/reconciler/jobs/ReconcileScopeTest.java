@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.jobs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -76,6 +77,18 @@ class ReconcileScopeTest {
     assertTrue(scope.hasCapturePolicy());
     assertEquals(policy.columns(), scope.capturePolicy().columns());
     assertEquals(policy.outputs(), scope.capturePolicy().outputs());
+  }
+
+  @Test
+  void rejectsIndexOutputWithExplicitOnlyAndNoIndexSelectors() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                32));
   }
 
   private static ReconcileScope.ScopedCaptureRequest scopedCaptureRequest(

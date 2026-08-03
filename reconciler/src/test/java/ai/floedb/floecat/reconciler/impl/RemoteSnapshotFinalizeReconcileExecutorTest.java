@@ -82,6 +82,40 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void reuseBundleArtifactMustMatchEveryCommittedDescriptorPayloadField() {
+    byte[] digest = new byte[32];
+    digest[0] = 7;
+    StatsObjectDescriptor artifact =
+        statsDescriptor("reuse-bundle:group-1", "/stats/reuse-bundles/bundle.pb", digest);
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(artifact)
+            .build();
+    StatsObjectDescriptor committed = artifact.toBuilder().setTargetStorageId("file:data").build();
+
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseBundleArtifact(
+                bundle, List.of(committed)));
+
+    byte[] otherDigest = digest.clone();
+    otherDigest[0] = 8;
+    for (StatsObjectDescriptor mismatch :
+        List.of(
+            committed.toBuilder().setPayloadUri("/stats/reuse-bundles/other.pb").build(),
+            committed.toBuilder().setPayloadBytes(committed.getPayloadBytes() + 1).build(),
+            committed.toBuilder().setPayloadSha256(ByteString.copyFrom(otherDigest)).build())) {
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  RemoteSnapshotFinalizeReconcileExecutor.validateReuseBundleArtifact(
+                      bundle, List.of(mismatch)));
+      assertTrue(error.getMessage().contains("does not match committed artifact descriptors"));
+    }
+  }
+
+  @Test
   void expectedFileStatsIncludeDeletesAttachedToSuccessfulDataFiles() {
     String dataPath = "s3://bucket/data.parquet";
     String deletePath = "s3://bucket/delete.parquet";

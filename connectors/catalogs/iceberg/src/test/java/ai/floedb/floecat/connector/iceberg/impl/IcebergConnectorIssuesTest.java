@@ -100,6 +100,150 @@ class IcebergConnectorIssuesTest {
   }
 
   @Test
+  void pageIndexSelectionUsesFooterFieldIdsAcrossColumnRename() {
+    Schema renamedSchema =
+        new Schema(
+            20,
+            List.of(
+                Types.NestedField.optional(1, "new_name", Types.LongType.get()),
+                Types.NestedField.optional(2, "added", Types.LongType.get()),
+                Types.NestedField.builder()
+                    .withId(3)
+                    .withName("defaulted")
+                    .ofType(Types.LongType.get())
+                    .asOptional()
+                    .withInitialDefault(7L)
+                    .build()));
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> 20;
+                      case "snapshotId" -> 123L;
+                      default -> defaultValue(method.getReturnType());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> renamedSchema;
+                      case "schemas" -> Map.of(20, renamedSchema);
+                      case "snapshot" -> snapshot;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    IcebergConnector connector =
+        new IcebergConnector("test", table, "ns", "tbl", false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of("ns");
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of("tbl");
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            return table;
+          }
+        };
+    var oldFileEntry = pageIndexEntry("s3://bucket/old.parquet", "old_name").withParquetFieldId(1);
+    var newFileEntry = pageIndexEntry("s3://bucket/new.parquet", "new_name").withParquetFieldId(1);
+
+    var selected =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                123L,
+                Set.of("#1"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(oldFileEntry, newFileEntry))
+            .orElseThrow();
+
+    assertEquals(
+        List.of("old_name", "new_name"),
+        selected.stream().map(FloecatConnector.ParquetPageIndexEntry::columnName).toList());
+    assertTrue(selected.stream().allMatch(entry -> entry.selectorAliases().contains("#1")));
+
+    var selectedByDefault =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                123L,
+                Set.of(),
+                new FloecatConnector.ColumnSelectorPolicy(
+                    FloecatConnector.DefaultColumnScope.FIRST_N, 1),
+                List.of(oldFileEntry, newFileEntry))
+            .orElseThrow();
+    assertEquals(2, selectedByDefault.size());
+    assertTrue(
+        selectedByDefault.stream()
+            .allMatch(
+                entry ->
+                    entry.selectorAliases().contains("#1")
+                        && entry.selectorAliases().contains("new_name")
+                        && entry.selectorAliases().contains(entry.columnName())));
+
+    var selectedAddedColumn =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                123L,
+                Set.of("#2"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(oldFileEntry, newFileEntry))
+            .orElseThrow();
+    assertEquals(2, selectedAddedColumn.size());
+    assertTrue(
+        selectedAddedColumn.stream()
+            .allMatch(
+                entry ->
+                    entry.columnName().equals("added")
+                        && entry.pageHeaderOffset() == null
+                        && entry.selectorAliases().equals(Set.of("#2", "added"))));
+
+    var noDecodedColumns =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                123L,
+                Set.of("#2"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                Set.of("s3://bucket/unsupported.parquet"),
+                List.of(),
+                List.of(
+                    new FloecatConnector.ParquetRowGroup("s3://bucket/unsupported.parquet", 0, 19)))
+            .orElseThrow();
+    assertEquals(1, noDecodedColumns.size());
+    assertEquals(19, noDecodedColumns.getFirst().rowCount());
+    assertEquals("added", noDecodedColumns.getFirst().columnName());
+
+    IllegalArgumentException initialDefaultError =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                connector.selectPageIndexEntries(
+                    "ns",
+                    "tbl",
+                    123L,
+                    Set.of("#3"),
+                    FloecatConnector.ColumnSelectorPolicy.defaults(),
+                    List.of(oldFileEntry)));
+    assertTrue(initialDefaultError.getMessage().contains("non-null initial default"));
+  }
+
+  @Test
   void rejectsSnapshotWhoseDeclaredSchemaIsMissing() {
     Schema currentSchema =
         new Schema(20, List.of(Types.NestedField.optional(3, "new_col", Types.IntegerType.get())));
@@ -510,6 +654,30 @@ class IcebergConnectorIssuesTest {
                       List.of();
                   default -> defaultValue(method.getReturnType());
                 });
+  }
+
+  private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
+      String filePath, String columnName) {
+    return new FloecatConnector.ParquetPageIndexEntry(
+        filePath,
+        columnName,
+        0,
+        0,
+        0L,
+        1,
+        1,
+        16L,
+        32,
+        null,
+        null,
+        false,
+        "INT64",
+        "ZSTD",
+        (short) 1,
+        (short) 0,
+        null,
+        null,
+        null);
   }
 
   private static Object defaultValue(Class<?> type) {
