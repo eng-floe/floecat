@@ -18,21 +18,59 @@ package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
-/**
- * Shared provider that surfaces table/column stats to metadata consumers.
- *
- * <p>GetUserObjects invokes these callbacks synchronously on its bundle-producer thread so provider
- * implementations may retain caller-thread state. Implementations that perform blocking I/O must
- * enforce their own downstream deadlines; stream cancellation is observed between callbacks but
- * does not interrupt an active provider callback.
- */
+/** Shared provider that surfaces table/column stats to metadata consumers. */
 public interface StatsProvider {
 
   default Optional<TableStatsView> tableStats(ResourceId tableId) {
     return Optional.empty();
+  }
+
+  /**
+   * Resolve table stats for a set of relations at once, warming any provider-side memoization so
+   * later per-relation {@link #tableStats} calls are hits. The default resolves sequentially;
+   * implementations backed by remote reads should override to fetch in parallel. Never throws for a
+   * single table's failure — a missing entry means "not resolved".
+   */
+  default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
+      Collection<ResourceId> tableIds) {
+    return tableStatsBatch(tableIds, () -> false);
+  }
+
+  /**
+   * {@link #tableStatsBatch(Collection)} with a cooperative cancellation signal. Implementations
+   * that fan out remote reads should override this method to interrupt in-flight work promptly.
+   */
+  default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
+      Collection<ResourceId> tableIds, BooleanSupplier cancelled) {
+    Map<ResourceId, Optional<TableStatsView>> out = new LinkedHashMap<>();
+    for (ResourceId tableId : tableIds) {
+      if (cancelled.getAsBoolean()) {
+        throw new CancellationException("table stats batch cancelled");
+      }
+      out.computeIfAbsent(
+          tableId,
+          id -> {
+            // Honor the no-throw contract for a provider that overrides only tableStats(): one
+            // table's failure is a missing entry, not a batch abort that skips every table after
+            // it.
+            try {
+              return tableStats(id);
+            } catch (CancellationException e) {
+              throw e;
+            } catch (RuntimeException e) {
+              return Optional.empty();
+            }
+          });
+    }
+    return out;
   }
 
   default Optional<ColumnStatsView> columnStats(ResourceId tableId, long columnId) {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -29,8 +30,6 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
-import ai.floedb.floecat.query.rpc.ColumnInfo;
-import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.Origin;
@@ -72,7 +71,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
-import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;
@@ -82,10 +80,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Flow.Subscriber;
-import java.util.concurrent.Flow.Subscription;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -238,6 +232,44 @@ class UserObjectBundleServiceTest {
         .containsExactly(
             List.of(QueryInput.newBuilder().setTableId(TABLE_A).build()),
             List.of(QueryInput.newBuilder().setTableId(TABLE_B).build()));
+  }
+
+  @Test
+  void oneRelationBuildFailureErrorsOnlyThatRelation() {
+    // A build failure is isolated to the relation that hit it: TABLE_A's schema read throws, so it
+    // resolves ERROR while TABLE_B still resolves FOUND. An ERROR counts toward neither found nor
+    // not_found, and the stream still completes with an end marker.
+    overlay.failSchemaFor(TABLE_A);
+
+    TableReferenceCandidate a =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    TableReferenceCandidate b =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(a, b)).collect().asList().await().indefinitely();
+
+    assertThat(chunks).hasSize(3);
+    RelationResolution first = chunks.get(1).getResolutions().getItems(0);
+    RelationResolution second = chunks.get(1).getResolutions().getItems(1);
+
+    assertThat(first.getInputIndex()).isZero();
+    assertThat(first.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
+    assertThat(first.getFailure().getCode()).isEqualTo("catalog_bundle.build_failed");
+    assertThat(first.getFailure().getDetailsMap()).containsEntry("resource_id", TABLE_A.getId());
+
+    assertThat(second.getInputIndex()).isEqualTo(1);
+    assertThat(second.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(second.getRelation().getRelationId()).isEqualTo(TABLE_B);
+
+    UserObjectsBundleChunk end = chunks.get(2);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(1);
+    assertThat(end.getEnd().getNotFoundCount()).isZero();
   }
 
   @Test
@@ -766,6 +798,48 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void concurrentSelectPreservesInputOrderAndCountsAcrossChunks() {
+    // Many mixed found/not-found inputs spanning multiple chunks: resolved concurrently, they must
+    // still emit strictly in request order, each input index once, with exact end counts.
+    int total = 40; // > 25 so it spans two chunks
+    List<TableReferenceCandidate> candidates = new ArrayList<>(total);
+    int expectedFound = 0;
+    for (int i = 0; i < total; i++) {
+      if (i % 2 == 0) {
+        candidates.add(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build());
+        expectedFound++;
+      } else {
+        candidates.add(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(
+                    QueryInput.newBuilder()
+                        .setName(NameRef.newBuilder().setCatalog("cat").setName("missing_" + i)))
+                .build());
+      }
+    }
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    List<Integer> emittedIndices =
+        chunks.stream()
+            .filter(UserObjectsBundleChunk::hasResolutions)
+            .flatMap(c -> c.getResolutions().getItemsList().stream())
+            .map(RelationResolution::getInputIndex)
+            .toList();
+    List<Integer> expectedIndices = java.util.stream.IntStream.range(0, total).boxed().toList();
+    assertThat(emittedIndices).isEqualTo(expectedIndices);
+
+    UserObjectsBundleChunk end = chunks.get(chunks.size() - 1);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(total);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(expectedFound);
+    assertThat(end.getEnd().getNotFoundCount()).isEqualTo(total - expectedFound);
+  }
+
+  @Test
   void largeRequestSpansMultipleChunksInOrder() {
     int totalCandidates = 30;
     List<TableReferenceCandidate> candidates = new ArrayList<>(totalCandidates);
@@ -834,8 +908,9 @@ class UserObjectBundleServiceTest {
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, TablePin> currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics) {
+              QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics,
+              java.util.function.BooleanSupplier cancelled) {
             return emptyPinResolution(inputs);
           }
 
@@ -940,6 +1015,7 @@ class UserObjectBundleServiceTest {
     assertThat(items.get(1).getInputIndex()).isEqualTo(1);
     assertThat(items).allMatch(r -> r.getStatus() == ResolutionStatus.RESOLUTION_STATUS_FOUND);
     assertThat(items).allMatch(r -> r.getRelation().getRelationId().equals(TABLE_A));
+    assertThat(overlay.tableSchemaCount(TABLE_A)).isEqualTo(1);
   }
 
   @Test
@@ -1410,6 +1486,27 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void successfulLeadingCandidateDoesNotResolveLaterNameFallback() {
+    // Candidate order is semantic: once the table id succeeds, the later NAME fallback must not
+    // be resolved. In particular, that avoids surfacing an irrelevant name-resolution failure.
+    NameRef unusedFallback =
+        NameRef.newBuilder().setCatalog("cat").setName("unused_fallback").build();
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .addCandidates(QueryInput.newBuilder().setName(unusedFallback))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
+    assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolution.getRelation().getRelationId()).isEqualTo(TABLE_A);
+    assertThat(overlay.resolveNameCount(unusedFallback)).isZero();
+  }
+
+  @Test
   void appliesDefaultCatalogWhenNameMissingCatalog() {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -1813,53 +1910,18 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  @SuppressWarnings("unchecked")
-  void schemaMismatchPathMarksAllColumnsFailed() {
-    List<ColumnInfo> columns =
-        List.of(
-            ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
-            ColumnInfo.newBuilder().setId(12).setName("c2").setOrdinal(2).build());
-    List<SchemaColumn> pruned =
-        List.of(SchemaColumn.newBuilder().setId(11).setName("c1").setOrdinal(1).build());
-    ResourceId relationId = TABLE_A;
-
-    List<ColumnResult> results =
-        service.decorateColumns(
-            columns,
-            pruned,
-            null,
-            Optional.empty(),
-            EngineContext.of("pg", "16.0"),
-            true,
-            relationId);
-
-    assertThat(results).hasSize(2);
-    assertThat(results)
-        .allMatch(
-            c ->
-                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
-                    && c.hasFailure()
-                    && c.getFailure().getCode()
-                        == ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH
-                    && c.getFailure().getDetailsMap().get("relation_id").equals(relationId.getId())
-                    && c.getFailure().getMessage().contains("Column/schema mismatch"));
-  }
-
-  @Test
   void mixedReadyFailedColumnsCommitOnlyReadyColumnIds() {
     List<SchemaColumn> schema =
         List.of(
             SchemaColumn.newBuilder()
                 .setId(101)
                 .setName("c_ready")
-                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(true)
                 .setOrdinal(1)
                 .build(),
             SchemaColumn.newBuilder()
                 .setId(102)
                 .setName("c_failed")
-                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(true)
                 .setOrdinal(2)
                 .build());
@@ -2234,6 +2296,198 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void syntheticEagerBaseBuildFailureDoesNotDecrementRequestedFoundCount() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_WITH_FAILING_BASE")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId baseId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("FAILING_BASE_TABLE")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("failing_base").build();
+    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+    overlay.failSchemaFor(baseId);
+
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            "blob://test/failing-base-view",
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_with_failing_base",
+            "SELECT base_col FROM cat.failing_base",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(baseNameRef),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_with_failing_base").build());
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertThat(resolutions.getItemsCount()).isEqualTo(2);
+    assertThat(resolutions.getItems(0).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolutions.getItems(1).getInputIndex()).isEqualTo(-1);
+    assertThat(resolutions.getItems(1).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
+
+    assertThat(chunks.get(2).getEnd().getResolutionCount()).isEqualTo(1);
+    assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+  }
+
+  @Test
+  void requestedInputAfterAnOverflowingViewSpillsToTheNextChunkInOrder() {
+    assertRequestedInputAfterViewSpillsToNextChunk(30, false);
+  }
+
+  @Test
+  void requestedInputAfterAChunkFillingViewSpillsToTheNextChunkInOrder() {
+    assertRequestedInputAfterViewSpillsToNextChunk(24, false);
+  }
+
+  @Test
+  void failureAfterAChunkFillingViewIsDeferredUntilTheNextPull() {
+    assertRequestedInputAfterViewSpillsToNextChunk(24, true);
+  }
+
+  /** Verify that a requested relation after a view's eager bases retains its input position. */
+  private void assertRequestedInputAfterViewSpillsToNextChunk(
+      int baseCount, boolean trailingCandidateFails) {
+    // Input 0 is a view whose eager base tables fill chunk 1; input 1 is a plain table selected in
+    // the same batch and must be emitted in chunk 2.
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("WIDE_VIEW")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    List<NameRef> baseRefs = new ArrayList<>(baseCount);
+    for (int i = 0; i < baseCount; i++) {
+      ResourceId baseId =
+          ResourceId.newBuilder()
+              .setAccountId("acct")
+              .setId("WB_BASE_" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      NameRef baseRef = NameRef.newBuilder().setCatalog("cat").setName("wb_base_" + i).build();
+      overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseRef);
+      baseRefs.add(baseRef);
+    }
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            "blob://test/wide",
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "wide_view",
+            "SELECT 1",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("c0").setNullable(true).build()),
+            baseRefs,
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("c0"),
+        NameRef.newBuilder().setCatalog("cat").setName("wide_view").build());
+
+    TableReferenceCandidate viewCandidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+    TableReferenceCandidate trailingCandidate =
+        trailingCandidateFails
+            ? TableReferenceCandidate.getDefaultInstance()
+            : TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build();
+
+    if (trailingCandidateFails) {
+      List<UserObjectsBundleChunk> emitted = new ArrayList<>();
+      assertThatThrownBy(
+              () ->
+                  service.stream("cid", ctx, List.of(viewCandidate, trailingCandidate))
+                      .onItem()
+                      .invoke(emitted::add)
+                      .collect()
+                      .asList()
+                      .await()
+                      .indefinitely())
+          .isInstanceOf(RuntimeException.class);
+      assertThat(emitted).hasSize(2);
+      assertThat(emitted.get(1).getResolutions().getItemsCount()).isEqualTo(25);
+      assertThat(emitted.get(1).getResolutions().getItems(0).getInputIndex()).isZero();
+      assertThat(
+              emitted.get(1).getResolutions().getItemsList().stream()
+                  .filter(item -> item.getInputIndex() == -1)
+                  .count())
+          .isEqualTo(24);
+      return;
+    }
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(viewCandidate, trailingCandidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    List<RelationResolution> all =
+        chunks.stream()
+            .filter(UserObjectsBundleChunk::hasResolutions)
+            .flatMap(c -> c.getResolutions().getItemsList().stream())
+            .toList();
+
+    // Every resolution chunk respects the cap.
+    chunks.stream()
+        .filter(UserObjectsBundleChunk::hasResolutions)
+        .forEach(c -> assertThat(c.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+
+    // The view (index 0) comes first, the requested table (index 1) last, with its synthetic bases
+    // (index -1) in between — i.e. the table spilled past the bases but kept its request position.
+    assertThat(all.get(0).getInputIndex()).isEqualTo(0);
+    assertThat(all.get(0).getRelation().getRelationId()).isEqualTo(viewId);
+    RelationResolution last = all.get(all.size() - 1);
+    assertThat(last.getInputIndex()).isEqualTo(1);
+    assertThat(last.getRelation().getRelationId()).isEqualTo(TABLE_A);
+    long bases = all.stream().filter(r -> r.getInputIndex() == -1).count();
+    assertThat(bases).isEqualTo(baseCount);
+
+    // End counts only the two requested inputs.
+    UserObjectsBundleChunk end = chunks.get(chunks.size() - 1);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(2);
+    assertThat(end.getEnd().getNotFoundCount()).isZero();
+  }
+
+  @Test
   void viewAsOfOverrideKeepsAsOfPinForEagerBaseTable() throws Exception {
     ResourceId viewId =
         ResourceId.newBuilder()
@@ -2603,39 +2857,6 @@ class UserObjectBundleServiceTest {
         throw new AssertionError("thread-confined overlay callback left the stream producer");
       }
       callbackCount.incrementAndGet();
-    }
-  }
-
-  /** Requests stream items explicitly so cancellation can race one active iterator step. */
-  private static final class DemandSubscriber implements Subscriber<UserObjectsBundleChunk> {
-    private final CountDownLatch subscribed = new CountDownLatch(1);
-    private volatile Subscription subscription;
-
-    @Override
-    public void onSubscribe(Subscription subscription) {
-      this.subscription = subscription;
-      subscribed.countDown();
-    }
-
-    @Override
-    public void onNext(UserObjectsBundleChunk ignored) {}
-
-    @Override
-    public void onError(Throwable ignored) {}
-
-    @Override
-    public void onComplete() {}
-
-    boolean awaitSubscription() throws InterruptedException {
-      return subscribed.await(1, TimeUnit.SECONDS);
-    }
-
-    void request(long count) {
-      subscription.request(count);
-    }
-
-    void cancel() {
-      subscription.cancel();
     }
   }
 }

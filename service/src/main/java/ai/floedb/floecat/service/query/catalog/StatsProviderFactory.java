@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -39,11 +40,16 @@ import io.smallrye.config.WithDefault;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -58,6 +64,11 @@ public final class StatsProviderFactory {
   private final Duration syncLatencyBudget;
   private final Duration syncMaxLatencyBudget;
   private final boolean syncEnabled;
+  // Bound on concurrent stats warms per chunk. Local per-request bound; total store concurrency is
+  // bounded by the shared executor pool, not this. Read once here via ConfigProvider (not a
+  // @ConfigProperty ctor param) so the new-constructed test call sites keep compiling while prod
+  // still honors config.
+  private final int maxParallelStatsWarms;
 
   @Inject
   public StatsProviderFactory(
@@ -73,6 +84,15 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
+    // Clamp to >=1: a 0/negative value reaches MetadataFanout and throws, which warmChunkStats
+    // swallows -- silently disabling the batch warm path with no startup signal. Match the sibling
+    // caps (max_parallel_relations) and clamp here.
+    this.maxParallelStatsWarms =
+        Math.max(
+            1,
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.catalog.bundle.max_parallel_stats_warms", Integer.class)
+                .orElse(16));
   }
 
   public StatsProviderFactory(
@@ -92,7 +112,8 @@ public final class StatsProviderFactory {
         correlationId,
         false,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms);
   }
 
   public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
@@ -105,7 +126,8 @@ public final class StatsProviderFactory {
         correlationId,
         true,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -113,6 +135,9 @@ public final class StatsProviderFactory {
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
+    // Bound on concurrent stats warms per chunk (chunk cap is 25); virtual threads make this cheap.
+    // Local per-request bound; total store concurrency is bounded by the shared executor pool.
+    private final int maxParallelStatsWarms;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -136,13 +161,15 @@ public final class StatsProviderFactory {
         String correlationId,
         boolean allowUnpinnedLatestSnapshotFallback,
         Duration syncLatencyBudget,
-        boolean syncEnabled) {
+        boolean syncEnabled,
+        int maxParallelStatsWarms) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.snapshotRepository = snapshotRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
+      this.maxParallelStatsWarms = maxParallelStatsWarms;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -170,6 +197,38 @@ public final class StatsProviderFactory {
         return pinnedStats;
       }
       return Optional.empty();
+    }
+
+    @Override
+    public Map<ResourceId, Optional<StatsProvider.TableStatsView>> tableStatsBatch(
+        Collection<ResourceId> tableIds, java.util.function.BooleanSupplier cancelled) {
+      List<ResourceId> ids = tableIds.stream().distinct().toList();
+      Map<ResourceId, Optional<StatsProvider.TableStatsView>> out = new LinkedHashMap<>();
+      // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
+      // (on cheap virtual threads); these reads are thread-safe, and each call populates the shared
+      // tableCache so the subsequent per-relation tableStats() is a hit. A single table's failure
+      // yields empty, never aborts the batch. Note the stats/snapshot repositories carry no
+      // @BoundMetadataIo, so this fan-out's store concurrency is bounded by maxParallelStatsWarms
+      // alone — not by the process-wide metadata-I/O ceiling.
+      List<Optional<StatsProvider.TableStatsView>> results =
+          MetadataFanout.mapOrdered(
+              ids,
+              maxParallelStatsWarms,
+              true,
+              id -> {
+                try {
+                  return tableStats(id);
+                } catch (java.util.concurrent.CancellationException e) {
+                  throw e;
+                } catch (RuntimeException e) {
+                  return Optional.<StatsProvider.TableStatsView>empty();
+                }
+              },
+              cancelled);
+      for (int i = 0; i < ids.size(); i++) {
+        out.put(ids.get(i), results.get(i));
+      }
+      return out;
     }
 
     private Optional<StatsProvider.TableStatsView> latestSnapshotTableStats(ResourceId tableId) {
