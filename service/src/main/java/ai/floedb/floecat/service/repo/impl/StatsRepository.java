@@ -1493,7 +1493,13 @@ public class StatsRepository implements StatsStore {
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
     Pointer created = PointerReferences.blobPointer(manifestPointer, manifestBlobUri, 1L);
-    if (pointerStore.compareAndSet(manifestPointer, 0L, created)) {
+    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    Pointer published =
+        PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_PUBLISHED, 1L);
+    if (pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasUpsert(manifestPointer, 0L, created),
+            new PointerStore.CasUpsert(lifecyclePointer, 0L, published)))) {
       return new ActiveSnapshotStats(
           tableId.getAccountId(),
           tableId.getId(),
