@@ -452,6 +452,21 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void ordinaryStatsWritesPublishTheirActiveGenerationLifecycle() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 7081L;
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12L).build(), null));
+
+    String manifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    assertThat(repository.requirePublishedGenerationLive(TABLE_ID, manifestUri).generationId())
+        .isEqualTo(Keys.generationFromManifestBlobUri(manifestUri).generationId());
+  }
+
+  @Test
   void draftGenerationIsInvisibleUntilPublished() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
