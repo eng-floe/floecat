@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
@@ -1442,9 +1443,19 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setPartitionDataJson(plan.partitionDataJson())
             .setFileFormat(plan.fileFormat())
             .setPartitionSpecId(plan.partitionSpecId())
+            .setContentIdentity(plan.contentIdentity())
+            .setSourceFingerprint(plan.sourceFingerprint())
+            .setIndexSourceFingerprint(plan.indexSourceFingerprint())
+            .setStatsCaptureSignature(plan.statsCaptureSignature())
+            .setIndexCaptureSignature(plan.indexCaptureSignature())
+            .putAllAuxiliaryStatsFingerprints(plan.auxiliaryStatsFingerprints())
             .addAllIcebergDeleteFiles(
                 plan.icebergDeleteFiles().stream()
                     .map(ReconcileExecutorControlImpl::toProtoIcebergDeleteFile)
+                    .toList())
+            .addAllReusableArtifactBundleSelections(
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(ReconcileExecutorControlImpl::toProtoBundleSelection)
                     .toList());
     if (plan.deletionVector() != null) {
       DeltaDeletionVector dv = plan.deletionVector();
@@ -1460,6 +1471,21 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       builder.setDeletionVector(dvBuilder);
     }
     return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection
+      toProtoBundleSelection(ReusableArtifactBundleSelection selection) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId(selection.targetStorageId())
+                .setPayloadUri(selection.payloadUri())
+                .setPayloadBytes(selection.payloadBytes())
+                .setPayloadSha256(
+                    com.google.protobuf.ByteString.copyFrom(selection.payloadSha256())))
+        .addAllStatsFilePaths(selection.statsFilePaths())
+        .addAllIndexFilePaths(selection.indexFilePaths())
+        .build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile toProtoIcebergDeleteFile(
@@ -1478,6 +1504,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             })
         .setPartitionSpecId(deleteFile.partitionSpecId())
         .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .setContentIdentity(deleteFile.contentIdentity())
         .build();
   }
 
@@ -1493,15 +1520,37 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 plan.getDeletionVector().getCardinality())
             : null;
     return ReconcileFileExecutionPlan.of(
-        plan.getFilePath(),
-        plan.getFileSizeInBytes(),
-        plan.getPartitionDataJson(),
-        dv,
-        plan.getFileFormat(),
-        plan.getPartitionSpecId(),
-        plan.getIcebergDeleteFilesList().stream()
-            .map(ReconcileExecutorControlImpl::fromProtoIcebergDeleteFile)
-            .toList());
+            plan.getFilePath(),
+            plan.getFileSizeInBytes(),
+            plan.getPartitionDataJson(),
+            dv,
+            plan.getFileFormat(),
+            plan.getPartitionSpecId(),
+            plan.getIcebergDeleteFilesList().stream()
+                .map(ReconcileExecutorControlImpl::fromProtoIcebergDeleteFile)
+                .toList(),
+            plan.getContentIdentity())
+        .withReuseBundleSelections(
+            plan.getSourceFingerprint(),
+            plan.getIndexSourceFingerprint(),
+            plan.getStatsCaptureSignature(),
+            plan.getIndexCaptureSignature(),
+            plan.getAuxiliaryStatsFingerprintsMap(),
+            plan.getReusableArtifactBundleSelectionsList().stream()
+                .map(ReconcileExecutorControlImpl::fromProtoBundleSelection)
+                .toList());
+  }
+
+  private static ReusableArtifactBundleSelection fromProtoBundleSelection(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection selection) {
+    ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor artifact = selection.getArtifact();
+    return new ReusableArtifactBundleSelection(
+        artifact.getTargetStorageId(),
+        artifact.getPayloadUri(),
+        artifact.getPayloadBytes(),
+        artifact.getPayloadSha256().toByteArray(),
+        selection.getStatsFilePathsList(),
+        selection.getIndexFilePathsList());
   }
 
   private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
@@ -1517,7 +1566,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         deleteFile.getFileSizeInBytes(),
         content,
         deleteFile.getPartitionSpecId(),
-        deleteFile.getEqualityFieldIdsList());
+        deleteFile.getEqualityFieldIdsList(),
+        deleteFile.getContentIdentity());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.CaptureMode toProtoCaptureMode(

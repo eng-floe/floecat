@@ -44,6 +44,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
@@ -77,6 +78,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -577,19 +579,35 @@ class GrpcRemoteReconcileExecutorClientTest {
             "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}",
             List.of(
                 ReconcileFileExecutionPlan.of(
-                    "s3://bucket/data/file-1.parquet",
-                    100L,
-                    "{}",
-                    null,
-                    "PARQUET",
-                    3,
-                    List.of(
-                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
-                            "s3://bucket/data/delete-1.parquet",
-                            10L,
-                            ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY,
-                            3,
-                            List.of(7))))));
+                        "s3://bucket/data/file-1.parquet",
+                        100L,
+                        "{}",
+                        null,
+                        "PARQUET",
+                        3,
+                        List.of(
+                            new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                                "s3://bucket/data/delete-1.parquet",
+                                10L,
+                                ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY,
+                                3,
+                                List.of(7),
+                                "iceberg-delete-v1:8:2")),
+                        "iceberg-data-v1:7:10")
+                    .withReuseBundleSelections(
+                        "source-fingerprint",
+                        "index-fingerprint",
+                        "stats-signature",
+                        "index-signature",
+                        Map.of("s3://bucket/data/delete-1.parquet", "delete-fingerprint"),
+                        List.of(
+                            new ReusableArtifactBundleSelection(
+                                "bundle:abc",
+                                "s3://artifacts/reuse-bundle.pb",
+                                321L,
+                                new byte[32],
+                                List.of("s3://bucket/data/file-1.parquet"),
+                                List.of("s3://bucket/data/file-1.parquet"))))));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -631,9 +649,32 @@ class GrpcRemoteReconcileExecutorClientTest {
     var protoTask = chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask();
     assertThat(protoTask.getExecutionSchemaJson()).contains("schema-id");
     assertThat(protoTask.getFileExecutionPlans(0).getFileFormat()).isEqualTo("PARQUET");
+    assertThat(protoTask.getFileExecutionPlans(0).getContentIdentity())
+        .isEqualTo("iceberg-data-v1:7:10");
+    assertThat(protoTask.getFileExecutionPlans(0).getSourceFingerprint())
+        .isEqualTo("source-fingerprint");
+    assertThat(protoTask.getFileExecutionPlans(0).getIndexSourceFingerprint())
+        .isEqualTo("index-fingerprint");
+    assertThat(protoTask.getFileExecutionPlans(0).getStatsCaptureSignature())
+        .isEqualTo("stats-signature");
+    assertThat(protoTask.getFileExecutionPlans(0).getIndexCaptureSignature())
+        .isEqualTo("index-signature");
+    assertThat(protoTask.getFileExecutionPlans(0).getAuxiliaryStatsFingerprintsMap())
+        .containsEntry("s3://bucket/data/delete-1.parquet", "delete-fingerprint");
+    assertThat(protoTask.getFileExecutionPlans(0).getReusableArtifactBundleSelectionsCount())
+        .isEqualTo(1);
+    assertThat(
+            protoTask
+                .getFileExecutionPlans(0)
+                .getReusableArtifactBundleSelections(0)
+                .getArtifact()
+                .getPayloadUri())
+        .isEqualTo("s3://artifacts/reuse-bundle.pb");
     assertThat(
             protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getEqualityFieldIdsList())
         .containsExactly(7);
+    assertThat(protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getContentIdentity())
+        .isEqualTo("iceberg-delete-v1:8:2");
 
     verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
@@ -1081,7 +1122,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of())));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -1102,7 +1143,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of())));
 
     GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
   }
@@ -1122,11 +1163,30 @@ class GrpcRemoteReconcileExecutorClientTest {
             "result-1",
             List.of(),
             List.of(),
-            List.of(indexArtifact("s3://bucket/file.parquet", "a,b,c")));
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("a", "b", "c"))));
 
     assertThrows(
         IllegalArgumentException.class,
         () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void indexCoverageTreatsConnectorNativeCommaAsPartOfOneSelector() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            1);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("a,b"))));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
   }
 
   @Test
@@ -1475,7 +1535,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   private static ReconcilerBackend.StagedIndexArtifact indexArtifact(
-      String filePath, String indexedColumns) {
+      String filePath, List<String> indexedColumns) {
     IndexArtifactRecord.Builder record =
         IndexArtifactRecord.newBuilder()
             .setTarget(
@@ -1483,8 +1543,10 @@ class GrpcRemoteReconcileExecutorClientTest {
                     .setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
             .setState(IndexArtifactState.IAS_READY)
             .setArtifactUri(filePath + ".idx");
-    if (indexedColumns != null && !indexedColumns.isBlank()) {
-      record.putProperties("indexed_columns", indexedColumns);
+    if (indexedColumns != null && !indexedColumns.isEmpty()) {
+      record.putProperties(
+          FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+          FileArtifactReuse.encodeSelectors(indexedColumns));
     }
     return new ReconcilerBackend.StagedIndexArtifact(
         record.build(), new byte[] {1}, "application/x-parquet");

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,11 +32,13 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -51,12 +54,14 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
 import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
+import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -70,6 +75,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class ReconcileExecutorControlImplTest {
 
@@ -99,6 +105,7 @@ class ReconcileExecutorControlImplTest {
     service.leasedSnapshotFinalizeInputService = mock(LeasedSnapshotFinalizeInputService.class);
     service.leasedSnapshotFinalizeExecutionService =
         mock(LeasedSnapshotFinalizeExecutionService.class);
+    service.leasedPlannerWorkerService = mock(LeasedPlannerWorkerService.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -324,6 +331,82 @@ class ReconcileExecutorControlImplTest {
         response.getJob().getSnapshotTask().getIndexPredecessor().getGenerationId());
     assertEquals(
         7L, response.getJob().getSnapshotTask().getIndexPredecessor().getActivePointerVersion());
+  }
+
+  @Test
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  void submitPlanSnapshotChunkPreservesReusableArtifactContract() {
+    byte[] payloadSha256 = new byte[32];
+    payloadSha256[0] = 1;
+    payloadSha256[31] = 4;
+    var executionPlan =
+        ai.floedb.floecat.reconciler.rpc.FileExecutionPlan.newBuilder()
+            .setFilePath("s3://bucket/data.parquet")
+            .setFileSizeInBytes(100L)
+            .setFileFormat("PARQUET")
+            .setContentIdentity("delta-add-v1:1234::")
+            .setSourceFingerprint("stats-source")
+            .setIndexSourceFingerprint("index-source")
+            .setStatsCaptureSignature("stats-signature")
+            .setIndexCaptureSignature("index-signature")
+            .putAuxiliaryStatsFingerprints("s3://bucket/dv.bin", "dv-fingerprint")
+            .addReusableArtifactBundleSelections(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+                    .setArtifact(
+                        ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("bundle:abc")
+                            .setPayloadUri("s3://artifacts/reuse-bundle.pb")
+                            .setPayloadBytes(321L)
+                            .setPayloadSha256(
+                                com.google.protobuf.ByteString.copyFrom(payloadSha256)))
+                    .addStatsFilePaths("s3://bucket/data.parquet")
+                    .addIndexFilePaths("s3://bucket/data.parquet"))
+            .build();
+    SubmitLeasedPlanSnapshotResultRequest request =
+        SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+            .setJobId("job-1")
+            .setLeaseEpoch("lease-1")
+            .setChunk(
+                SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder()
+                    .addFileGroupJobs(
+                        PlannedFileGroupPlanJob.newBuilder()
+                            .setFileGroupTask(
+                                ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask.newBuilder()
+                                    .setPlanId("plan-1")
+                                    .setGroupId("group-1")
+                                    .setTableId("table-1")
+                                    .setSnapshotId(55L)
+                                    .addFilePaths("s3://bucket/data.parquet")
+                                    .addFileExecutionPlans(executionPlan))))
+            .build();
+    when(service.leasedPlannerWorkerService.persistPlanSnapshotFileGroupChunk(
+            any(), eq("job-1"), eq("lease-1"), any(), any(), any()))
+        .thenReturn(true);
+
+    var response = service.submitLeasedPlanSnapshotResult(request).await().indefinitely();
+
+    assertTrue(response.getAccepted());
+    ArgumentCaptor<List<PlannedFileGroupJob>> jobsCaptor =
+        ArgumentCaptor.forClass((Class) List.class);
+    verify(service.leasedPlannerWorkerService)
+        .persistPlanSnapshotFileGroupChunk(
+            any(), eq("job-1"), eq("lease-1"), any(), any(), jobsCaptor.capture());
+    ReconcileFileExecutionPlan mapped =
+        jobsCaptor.getValue().getFirst().fileGroupTask().fileExecutionPlans().getFirst();
+    assertEquals("delta-add-v1:1234::", mapped.contentIdentity());
+    assertEquals("stats-source", mapped.sourceFingerprint());
+    assertEquals("index-source", mapped.indexSourceFingerprint());
+    assertEquals("stats-signature", mapped.statsCaptureSignature());
+    assertEquals("index-signature", mapped.indexCaptureSignature());
+    assertEquals("dv-fingerprint", mapped.auxiliaryStatsFingerprints().get("s3://bucket/dv.bin"));
+    assertEquals(1, mapped.reusableArtifactBundleSelections().size());
+    var selection = mapped.reusableArtifactBundleSelections().getFirst();
+    assertEquals("bundle:abc", selection.targetStorageId());
+    assertEquals("s3://artifacts/reuse-bundle.pb", selection.payloadUri());
+    assertEquals(321L, selection.payloadBytes());
+    assertArrayEquals(payloadSha256, selection.payloadSha256());
+    assertEquals(List.of("s3://bucket/data.parquet"), selection.statsFilePaths());
+    assertEquals(List.of("s3://bucket/data.parquet"), selection.indexFilePaths());
   }
 
   @Test

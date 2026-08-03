@@ -169,7 +169,9 @@ class LeasedFileGroupExecutionServiceTest {
                             10L,
                             ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
                             3,
-                            List.of())))));
+                            List.of(),
+                            "iceberg-delete-v1:1:1")),
+                    "iceberg-data-v1:1:1")));
 
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID))
@@ -353,7 +355,9 @@ class LeasedFileGroupExecutionServiceTest {
                             10L,
                             ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
                             3,
-                            List.of())))));
+                            List.of(),
+                            "iceberg-delete-v1:1:1")),
+                    "iceberg-data-v1:1:1")));
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,
@@ -430,7 +434,8 @@ class LeasedFileGroupExecutionServiceTest {
                         "p", deletionVectorFile, 4, 16, 2),
                     "PARQUET",
                     0,
-                    List.of())));
+                    List.of(),
+                    "delta-add-v1:1::")));
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,

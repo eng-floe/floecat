@@ -99,7 +99,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
                     10L,
                     ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
                     0,
-                    List.of())));
+                    List.of(),
+                    "iceberg-delete-v1:1:1")),
+            "iceberg-data-v1:1:1");
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan",
@@ -141,7 +143,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             new ReconcileFileExecutionPlan.DeltaDeletionVector("p", deletionVectorPath, 4, 16, 2),
             "PARQUET",
             0,
-            List.of());
+            List.of(),
+            "delta-add-v1:1::");
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan",

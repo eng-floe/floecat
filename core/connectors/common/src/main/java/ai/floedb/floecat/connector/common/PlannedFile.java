@@ -30,4 +30,9 @@ public record PlannedFile<K>(
     Map<K, Object> upperBounds,
     String partitionDataJson,
     int partitionSpecId,
-    Long sequenceNumber) {}
+    Long sequenceNumber,
+    String contentIdentity) {
+  public PlannedFile {
+    contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+  }
+}

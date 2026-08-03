@@ -66,9 +66,6 @@ final class PlannerStatsResultMaterializer {
 
   private static StatsResultStatus resultStatusForHit(
       PlannerTargetStatsLookupResult lookupResult, List<ReturnedStat> returnedStats) {
-    if (lookupResult.stale()) {
-      return StatsResultStatus.STATS_RESULT_HIT_STALE;
-    }
     boolean complete =
         returnedStats.stream()
             .allMatch(s -> s.getStatus() == StatsResultStatus.STATS_RESULT_HIT_COMPLETE);

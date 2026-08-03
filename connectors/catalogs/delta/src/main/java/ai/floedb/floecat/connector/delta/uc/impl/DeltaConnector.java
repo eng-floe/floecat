@@ -528,7 +528,9 @@ abstract class DeltaConnector implements FloecatConnector {
                 deletionVector.getPathOrInlineDv(),
                 deletionVector.getOffset().orElse(null),
                 deletionVector.getSizeInBytes(),
-                deletionVector.getCardinality()));
+                deletionVector.getCardinality()),
+        List.of(),
+        planned.contentIdentity());
   }
 
   protected Table loadTable(String storageLocation) {

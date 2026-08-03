@@ -10,6 +10,9 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import java.util.List;
+import java.util.Map;
+
 public record ReconcileFileExecutionPlan(
     String filePath,
     long fileSizeInBytes,
@@ -17,26 +20,34 @@ public record ReconcileFileExecutionPlan(
     DeltaDeletionVector deletionVector,
     String fileFormat,
     int partitionSpecId,
-    java.util.List<IcebergDeleteFile> icebergDeleteFiles) {
+    List<IcebergDeleteFile> icebergDeleteFiles,
+    String contentIdentity,
+    String sourceFingerprint,
+    String indexSourceFingerprint,
+    String statsCaptureSignature,
+    String indexCaptureSignature,
+    Map<String, String> auxiliaryStatsFingerprints,
+    List<ReusableArtifactBundleSelection> reusableArtifactBundleSelections) {
 
   public ReconcileFileExecutionPlan {
     filePath = filePath == null ? "" : filePath.trim();
     fileSizeInBytes = Math.max(0L, fileSizeInBytes);
     partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
     fileFormat = fileFormat == null ? "" : fileFormat.trim();
-    icebergDeleteFiles =
-        icebergDeleteFiles == null
-            ? java.util.List.of()
-            : java.util.List.copyOf(icebergDeleteFiles);
-  }
-
-  public static ReconcileFileExecutionPlan of(
-      String filePath,
-      long fileSizeInBytes,
-      String partitionDataJson,
-      DeltaDeletionVector deletionVector) {
-    return new ReconcileFileExecutionPlan(
-        filePath, fileSizeInBytes, partitionDataJson, deletionVector, "", 0, java.util.List.of());
+    icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
+    contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+    sourceFingerprint = sourceFingerprint == null ? "" : sourceFingerprint.trim();
+    indexSourceFingerprint = indexSourceFingerprint == null ? "" : indexSourceFingerprint.trim();
+    statsCaptureSignature = statsCaptureSignature == null ? "" : statsCaptureSignature.trim();
+    indexCaptureSignature = indexCaptureSignature == null ? "" : indexCaptureSignature.trim();
+    auxiliaryStatsFingerprints =
+        auxiliaryStatsFingerprints == null ? Map.of() : Map.copyOf(auxiliaryStatsFingerprints);
+    reusableArtifactBundleSelections =
+        reusableArtifactBundleSelections == null
+            ? List.of()
+            : reusableArtifactBundleSelections.stream()
+                .filter(selection -> selection != null && !selection.isEmpty())
+                .toList();
   }
 
   public static ReconcileFileExecutionPlan of(
@@ -46,7 +57,8 @@ public record ReconcileFileExecutionPlan(
       DeltaDeletionVector deletionVector,
       String fileFormat,
       int partitionSpecId,
-      java.util.List<IcebergDeleteFile> icebergDeleteFiles) {
+      java.util.List<IcebergDeleteFile> icebergDeleteFiles,
+      String contentIdentity) {
     return new ReconcileFileExecutionPlan(
         filePath,
         fileSizeInBytes,
@@ -54,7 +66,48 @@ public record ReconcileFileExecutionPlan(
         deletionVector,
         fileFormat,
         partitionSpecId,
-        icebergDeleteFiles);
+        icebergDeleteFiles,
+        contentIdentity,
+        "",
+        "",
+        "",
+        "",
+        Map.of(),
+        List.of());
+  }
+
+  public ReconcileFileExecutionPlan withReuseBundleSelections(
+      String sourceFingerprint,
+      String indexSourceFingerprint,
+      String statsCaptureSignature,
+      String indexCaptureSignature,
+      Map<String, String> auxiliaryStatsFingerprints,
+      List<ReusableArtifactBundleSelection> selections) {
+    return new ReconcileFileExecutionPlan(
+        filePath,
+        fileSizeInBytes,
+        partitionDataJson,
+        deletionVector,
+        fileFormat,
+        partitionSpecId,
+        icebergDeleteFiles,
+        contentIdentity,
+        sourceFingerprint,
+        indexSourceFingerprint,
+        statsCaptureSignature,
+        indexCaptureSignature,
+        auxiliaryStatsFingerprints,
+        selections);
+  }
+
+  public boolean reusesFileStats() {
+    return reusableArtifactBundleSelections.stream()
+        .anyMatch(selection -> selection.statsFilePaths().contains(filePath));
+  }
+
+  public boolean reusesIndexArtifact() {
+    return reusableArtifactBundleSelections.stream()
+        .anyMatch(selection -> selection.indexFilePaths().contains(filePath));
   }
 
   public record DeltaDeletionVector(
@@ -80,13 +133,15 @@ public record ReconcileFileExecutionPlan(
       long fileSizeInBytes,
       IcebergDeleteContent content,
       int partitionSpecId,
-      java.util.List<Integer> equalityFieldIds) {
+      java.util.List<Integer> equalityFieldIds,
+      String contentIdentity) {
     public IcebergDeleteFile {
       filePath = filePath == null ? "" : filePath.trim();
       fileSizeInBytes = Math.max(0L, fileSizeInBytes);
       content = content == null ? IcebergDeleteContent.UNSPECIFIED : content;
       equalityFieldIds =
           equalityFieldIds == null ? java.util.List.of() : java.util.List.copyOf(equalityFieldIds);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
     }
   }
 

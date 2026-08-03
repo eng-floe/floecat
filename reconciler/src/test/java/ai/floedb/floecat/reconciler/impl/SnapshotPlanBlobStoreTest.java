@@ -18,7 +18,9 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -31,10 +33,12 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,7 +94,9 @@ class SnapshotPlanBlobStoreTest {
                             44L,
                             IcebergDeleteContent.EQUALITY,
                             7,
-                            List.of(3, 4))))));
+                            List.of(3, 4),
+                            "iceberg-delete-v1:8:2")),
+                    "iceberg-data-v1:7:10")));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -113,6 +119,10 @@ class SnapshotPlanBlobStoreTest {
         SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", List.of(group)),
         persistedTask.fileGroupPlanBlobUri());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()));
+    String storedJson =
+        new String(
+            blobStore.bytesByUri.get(persistedTask.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
+    assertTrue(storedJson.contains("fileExecutionPlans"));
 
     List<PlannedFileGroupJob> roundTripped = store.loadPlanJobs(persistedTask);
     assertEquals(1, roundTripped.size());
@@ -124,6 +134,8 @@ class SnapshotPlanBlobStoreTest {
         scope.destinationCaptureRequests(), roundTrippedScope.destinationCaptureRequests());
     assertEquals(scope.capturePolicy().columns(), roundTrippedScope.capturePolicy().columns());
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
+    assertEquals(
+        group.fileExecutionPlans(), roundTripped.getFirst().fileGroupTask().fileExecutionPlans());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
     assertEquals(List.of(group), store.loadFileGroupsByUri(persistedTask.fileGroupPlanBlobUri()));
@@ -162,6 +174,186 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(7, persistedTask.sourceFileCount());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.directStatsBlobUri()));
     assertEquals(List.of(record), store.loadDirectStats(persistedTask));
+  }
+
+  @Test
+  void persistPlanStoresCompactBundleSelectionsWithoutLegacyFallbacks() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                "s3://bucket/file.parquet",
+                123L,
+                "",
+                null,
+                "PARQUET",
+                0,
+                List.of(),
+                "test-file-v1:file.parquet")
+            .withReuseBundleSelections(
+                "source-fingerprint",
+                "index-fingerprint",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "bundle:abc",
+                        "s3://artifacts/reuse-bundle.pb",
+                        321L,
+                        new byte[32],
+                        List.of("s3://bucket/file.parquet"),
+                        List.of())));
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/file.parquet"),
+            List.of(),
+            List.of(),
+            "",
+            List.of(plan));
+    ReconcileSnapshotTask task =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+
+    ReconcileSnapshotTask persisted =
+        store.persistPlan(
+            "acct", "job-1", task, List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+
+    String json =
+        new String(
+            blobStore.bytesByUri.get(persisted.fileGroupPlanBlobUri()), StandardCharsets.UTF_8);
+    assertFalse(json.contains("reusableFileStats"));
+    assertFalse(json.contains("reusableFileStatsReference"));
+    assertEquals(
+        plan,
+        store.loadPlanJobs(persisted).getFirst().fileGroupTask().fileExecutionPlans().getFirst());
+  }
+
+  @Test
+  void persistPlanIdentityIncludesFingerprintsAndBundleSelections() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    String filePath = "s3://bucket/file.parquet";
+    byte[] firstBundleSha = new byte[32];
+    byte[] secondBundleSha = new byte[32];
+    secondBundleSha[0] = 1;
+    ReusableArtifactBundleSelection firstBundle =
+        new ReusableArtifactBundleSelection(
+            "bundle:first",
+            "s3://artifacts/first.pb",
+            321L,
+            firstBundleSha,
+            List.of(filePath),
+            List.of(filePath));
+    ReusableArtifactBundleSelection secondBundle =
+        new ReusableArtifactBundleSelection(
+            "bundle:second",
+            "s3://artifacts/second.pb",
+            654L,
+            secondBundleSha,
+            List.of(filePath),
+            List.of());
+    ReconcileFileExecutionPlan base =
+        ReconcileFileExecutionPlan.of(
+                filePath, 123L, "", null, "PARQUET", 0, List.of(), "delta-add-v1:1234::")
+            .withReuseBundleSelections(
+                "source-a",
+                "index-a",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                List.of(firstBundle));
+    ReconcileFileExecutionPlan changedFingerprint =
+        base.withReuseBundleSelections(
+            "source-b",
+            base.indexSourceFingerprint(),
+            base.statsCaptureSignature(),
+            base.indexCaptureSignature(),
+            base.auxiliaryStatsFingerprints(),
+            base.reusableArtifactBundleSelections());
+    ReconcileFileExecutionPlan changedBundle =
+        base.withReuseBundleSelections(
+            base.sourceFingerprint(),
+            base.indexSourceFingerprint(),
+            base.statsCaptureSignature(),
+            base.indexCaptureSignature(),
+            base.auxiliaryStatsFingerprints(),
+            List.of(secondBundle));
+    ReconcileSnapshotTask task =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            1);
+
+    ReconcileSnapshotTask first =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            task,
+            List.of(
+                new PlannedFileGroupJob(ReconcileScope.empty(), fileGroupForPlan(filePath, base))));
+    ReconcileSnapshotTask fingerprintChanged =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            task,
+            List.of(
+                new PlannedFileGroupJob(
+                    ReconcileScope.empty(), fileGroupForPlan(filePath, changedFingerprint))));
+    ReconcileSnapshotTask bundleChanged =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            task,
+            List.of(
+                new PlannedFileGroupJob(
+                    ReconcileScope.empty(), fileGroupForPlan(filePath, changedBundle))));
+
+    assertNotEquals(first.fileGroupPlanBlobUri(), fingerprintChanged.fileGroupPlanBlobUri());
+    assertNotEquals(first.fileGroupPlanBlobUri(), bundleChanged.fileGroupPlanBlobUri());
+    assertEquals(3, blobStore.bytesByUri.size());
+  }
+
+  private static ReconcileFileGroupTask fileGroupForPlan(
+      String filePath, ReconcileFileExecutionPlan plan) {
+    return ReconcileFileGroupTask.of(
+        "plan-1",
+        "group-1",
+        "table-1",
+        55L,
+        1,
+        "",
+        0,
+        List.of(filePath),
+        List.of(),
+        List.of(),
+        "schema",
+        List.of(plan));
   }
 
   private static ai.floedb.floecat.common.rpc.ResourceId tableId() {

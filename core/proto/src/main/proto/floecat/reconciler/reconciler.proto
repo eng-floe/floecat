@@ -284,6 +284,22 @@ message FileExecutionPlan {
   // are additional file-stats targets but are not additional planned/succeeded files or index
   // targets. One delete path may be attached to data files in multiple groups.
   repeated IcebergDeleteFile iceberg_delete_files = 7;
+  // Stable hashes computed by Floecat from immutable source metadata and the requested capture.
+  // Workers echo these onto generated records; later snapshots use them to prove safe reuse.
+  string source_fingerprint = 8;
+  string stats_capture_signature = 9;
+  string index_capture_signature = 10;
+  map<string, string> auxiliary_stats_fingerprints = 11;
+  reserved 12, 13, 14, 17, 18, 19;
+  // Connector-planned physical content identity (for example Delta add-file modification metadata
+  // or Iceberg sequence/record metadata). Empty means cross-snapshot reuse is forbidden.
+  string content_identity = 15;
+  // Physical data-file identity used for page-index reuse. Unlike source_fingerprint, this does
+  // not include schema, partition, deletion-vector, or delete-file context.
+  string index_source_fingerprint = 16;
+  // A worker reads each selected bundle once per file group and extracts all selected records
+  // locally.
+  repeated ReusableArtifactBundleSelection reusable_artifact_bundle_selections = 20;
 }
 
 // Immutable index-generation state against which an additive sidecar capture was planned.
@@ -308,9 +324,10 @@ message IcebergDeleteFile {
   Content content = 3;
   int32 partition_spec_id = 4;
   repeated int32 equality_field_ids = 5;
+  string content_identity = 6;
 }
 
-// Compact reference to one immutable artifact record written directly by a worker.
+// Compact target mapping to an immutable worker object. Multiple targets may share one bundle.
 message StatsObjectDescriptor {
   // Canonical opaque storage identity. File-stats targets use file-<sha256>; file index targets use
   // file:<source-file-path>.
@@ -320,8 +337,45 @@ message StatsObjectDescriptor {
   bytes payload_sha256 = 4;
 }
 
-// Immutable result metadata written directly by a file-group executor. File stats are stored as
-// individual objects; this bounded file-group payload carries only their compact references.
+// Compatibility metadata kept in the capture manifest so planning never needs to read the bundle.
+message ReusableStatsArtifactMetadata {
+  string file_path = 1;
+  string source_fingerprint = 2;
+  string stats_capture_signature = 3;
+  repeated string realized_stats_selectors = 4;
+}
+
+message ReusableIndexArtifactMetadata {
+  string file_path = 1;
+  string source_fingerprint = 2;
+  string index_capture_signature = 3;
+  repeated string realized_index_selectors = 4;
+}
+
+// One durable payload containing all reusable wrappers produced by a file group.
+message ReusableArtifactBundlePayload {
+  uint32 format_version = 1;
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord file_stats = 2;
+  repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 3;
+}
+
+// The payload descriptor plus its lightweight manifest-resident compatibility index.
+message ReusableArtifactBundleReference {
+  StatsObjectDescriptor artifact = 1;
+  repeated ReusableStatsArtifactMetadata file_stats = 2;
+  repeated ReusableIndexArtifactMetadata index_artifacts = 3;
+}
+
+// The subset of one bundle required by one file execution plan. Descriptors are deliberately
+// repeated in the plan and deduplicated by URI in the worker; bundle compatibility metadata is not.
+message ReusableArtifactBundleSelection {
+  StatsObjectDescriptor artifact = 1;
+  repeated string stats_file_paths = 2;
+  repeated string index_file_paths = 3;
+}
+
+// Immutable result metadata written directly by a file-group executor. Stats and index wrappers
+// may share one group bundle; this bounded payload carries only their compact target mappings.
 message FileGroupResultPayload {
   uint32 format_version = 1;
   string account_id = 2;
@@ -345,6 +399,8 @@ message FileGroupResultPayload {
   repeated string realized_index_selectors = 17;
   // Concrete column selectors represented by this file group's column-stat aggregates.
   repeated string realized_stats_selectors = 18;
+  reserved 19, 20, 21, 22;
+  ReusableArtifactBundleReference reusable_artifact_bundle = 23;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
@@ -364,7 +420,7 @@ message SnapshotCaptureManifest {
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
   repeated StatsObjectDescriptor final_stats = 12;
-  reserved 13, 14;
+  reserved 13, 14, 23, 24, 25, 26;
   uint32 source_file_count = 15;
   // Unique snapshot-level file-stats target count after deduplicating targets repeated across
   // file groups.
@@ -377,6 +433,7 @@ message SnapshotCaptureManifest {
   repeated string realized_index_selectors = 21;
   // Concrete column selectors present in the activated stats generation.
   repeated string realized_stats_selectors = 22;
+  repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
@@ -432,6 +489,15 @@ message FileGroupResultDescriptor {
   // Binds the bounded commit-time mappings to this durable result descriptor.
   bytes artifact_references_sha256 = 26;
   IndexGenerationPredecessor index_predecessor = 27;
+}
+
+// Compact commit-time mapping for the single immutable artifact bundle produced by a file group.
+// Target ids are substantially smaller than repeating the bundle URI, size, and digest for every
+// record, and let Floecat stage generation pointers without fetching the bundle payload.
+message FileGroupArtifactBundleDescriptor {
+  StatsObjectDescriptor artifact = 1;
+  repeated string file_stats_target_storage_ids = 2;
+  repeated string index_artifact_target_storage_ids = 3;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -958,8 +1024,10 @@ message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
     FileGroupResultDescriptor result_descriptor = 2;
+    // Legacy per-target mappings retained for captures produced before bundle commits.
     repeated StatsObjectDescriptor file_stats = 3;
     repeated StatsObjectDescriptor index_artifacts = 4;
+    FileGroupArtifactBundleDescriptor artifact_bundle = 5;
   }
 
   message Failure {
