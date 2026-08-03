@@ -1174,17 +1174,22 @@ class GrpcRemoteReconcileExecutorClientTest {
     var payload = fileGroupPayload("s3://bucket/data/file-1.parquet");
     var record =
         ai.floedb.floecat.stats.identity.TargetStatsRecords.fileRecord(
-            ResourceId.newBuilder()
-                .setAccountId("acct")
-                .setKind(ResourceKind.RK_TABLE)
-                .setId("table-1")
-                .build(),
-            55L,
-            ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
-                .setFilePath("s3://bucket/data/file-1.parquet")
-                .setRowCount(3L)
-                .build(),
-            null);
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("table-1")
+                    .build(),
+                55L,
+                ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                    .setFilePath("s3://bucket/data/file-1.parquet")
+                    .setRowCount(3L)
+                    .build(),
+                null)
+            .toBuilder()
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("a,b")))
+            .build();
     var result =
         new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(record), List.of());
 
@@ -1198,11 +1203,19 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
     assertThat(success.getResultDescriptor().getStatsObjectPrefix()).isEqualTo("/stats/");
     ArgumentCaptor<String> blobUris = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<byte[]> blobBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore, times(2))
-        .put(blobUris.capture(), any(byte[].class), eq("application/x-protobuf"));
+        .put(blobUris.capture(), blobBytes.capture(), eq("application/x-protobuf"));
     assertThat(blobUris.getAllValues()).contains("/result.pb");
     assertThat(blobUris.getAllValues())
         .anyMatch(uri -> uri.startsWith("/stats/reuse-bundles/") && uri.endsWith(".pb"));
+    int resultPayloadIndex = blobUris.getAllValues().indexOf("/result.pb");
+    assertThat(
+            FileGroupResultPayload.parseFrom(blobBytes.getAllValues().get(resultPayloadIndex))
+                .getReusableArtifactBundle()
+                .getFileStats(0)
+                .getRealizedStatsSelectorsList())
+        .containsExactly("a,b");
   }
 
   @Test
@@ -1274,7 +1287,9 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .setArtifactUri(artifactUri)
                 .setArtifactFormat("parquet")
                 .setArtifactFormatVersion(1)
-                .putProperties("indexed_columns", "#1")
+                .putProperties(
+                    FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+                    FileArtifactReuse.encodeSelectors(List.of("#1")))
                 .build(),
             null,
             "application/x-parquet");
@@ -1378,7 +1393,9 @@ class GrpcRemoteReconcileExecutorClientTest {
             .setState(IndexArtifactState.IAS_READY)
             .setArtifactUri(artifactUri)
             .setContentEtag("prior-etag")
-            .putProperties("indexed_columns", "#1")
+            .putProperties(
+                FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
             .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "index-source")
             .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, "index-signature")
             .build();

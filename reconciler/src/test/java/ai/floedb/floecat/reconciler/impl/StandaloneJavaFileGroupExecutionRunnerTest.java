@@ -218,7 +218,9 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         fileStats(path).toBuilder()
             .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "stats-source")
             .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1")
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("a,b")))
             .build();
     IndexArtifactRecord index =
         IndexArtifactRecord.newBuilder()
@@ -228,7 +230,9 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             .setState(IndexArtifactState.IAS_READY)
             .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "index-source")
             .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, "index")
-            .putProperties("indexed_columns", "#1")
+            .putProperties(
+                FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
             .build();
     ReconcileFileExecutionPlan plan =
         ReconcileFileExecutionPlan.of(
@@ -277,7 +281,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     assertThat(published.getFirst().getSnapshotId()).isEqualTo(base.snapshotId());
     assertThat(published.getFirst().getFile().getFilePath()).isEqualTo(path);
     assertThat(result.statsRecords()).isEmpty();
-    assertThat(result.realizedStatsSelectors()).containsExactly("#1");
+    assertThat(result.realizedStatsSelectors()).containsExactly("a,b");
     assertThat(result.stagedIndexArtifacts()).hasSize(1);
     assertThat(result.stagedIndexArtifacts().getFirst().content()).isNull();
     assertThat(result.stagedIndexArtifacts().getFirst().record().getArtifactUri())
@@ -295,7 +299,9 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         fileStats(path).toBuilder()
             .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "wrong-source")
             .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats-policy")
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "#1")
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
             .build();
     ReconcileFileExecutionPlan plan =
         ReconcileFileExecutionPlan.of(

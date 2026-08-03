@@ -82,11 +82,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
       if (plan.reusesFileStats()) {
         publishReusableStats(
             resolvedReuse.fileStats(), publisher, reusedFileRecords, publishedStatsTargets, stop);
-        addEncodedSelectors(
-            realizedStatsSelectors,
-            resolvedReuse
-                .fileStats()
-                .getPropertiesOrDefault(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, ""));
+        realizedStatsSelectors.addAll(
+            FileArtifactReuse.decodeSelectors(
+                resolvedReuse
+                    .fileStats()
+                    .getPropertiesOrDefault(
+                        FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "")));
       }
       for (TargetStatsRecord auxiliary : resolvedReuse.auxiliaryStats()) {
         publishReusableStats(auxiliary, publisher, reusedFileRecords, publishedStatsTargets, stop);
@@ -411,17 +412,6 @@ public class StandaloneJavaFileGroupExecutionRunner {
                   artifact.contentType()));
     }
     return List.copyOf(stamped);
-  }
-
-  private static void addEncodedSelectors(Set<String> out, String encoded) {
-    if (encoded == null || encoded.isBlank()) {
-      return;
-    }
-    for (String selector : encoded.split(",")) {
-      if (!selector.isBlank()) {
-        out.add(selector.trim());
-      }
-    }
   }
 
   private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {

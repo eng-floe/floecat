@@ -1141,14 +1141,9 @@ class GrpcRemoteReconcileExecutorClient
               .setStatsCaptureSignature(
                   record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
               .addAllRealizedStatsSelectors(
-                  java.util.Arrays.stream(
-                          record
-                              .getPropertiesOrDefault(
-                                  FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "")
-                              .split(","))
-                      .map(String::trim)
-                      .filter(value -> !value.isBlank())
-                      .toList()));
+                  FileArtifactReuse.decodeSelectors(
+                      record.getPropertiesOrDefault(
+                          FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, ""))));
     }
     for (IndexArtifactRecord record : uniqueIndexes.values()) {
       reference.addIndexArtifacts(
