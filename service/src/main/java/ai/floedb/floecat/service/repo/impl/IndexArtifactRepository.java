@@ -33,6 +33,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -82,18 +83,29 @@ public class IndexArtifactRepository {
       StatsStore.PublicationFence publicationFence,
       boolean deleteDirectPredecessor) {}
 
-  private record PrewrittenIndexWrite(String pointerKey, String blobUri, long blobBytes) {}
+  private record PrewrittenIndexWrite(
+      String pointerKey, String targetStorageId, String blobUri, long blobBytes) {}
 
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
   private final ImmutableBlobCache blobCache;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public IndexArtifactRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      TableBlobReachabilityGuard reachabilityGuard) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
+    this.reachabilityGuard = reachabilityGuard;
+  }
+
+  public IndexArtifactRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this(pointerStore, blobStore, blobCache, TableBlobReachabilityGuard.shared());
   }
 
   public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
@@ -103,6 +115,17 @@ public class IndexArtifactRepository {
   public void putIndexArtifact(IndexArtifactRecord value) {
     requireValidRecord(value);
     ResourceId tableId = value.getTableId();
+    reachabilityGuard.publishing(
+        tableId,
+        () -> {
+          putIndexArtifactGuarded(value);
+          return null;
+        });
+  }
+
+  private void putIndexArtifactGuarded(IndexArtifactRecord value) {
+    ResourceId tableId = value.getTableId();
+    refreshSharedSidecars(tableId, List.of(value));
     String targetStorageId = indexArtifactTargetStorageId(value.getTarget());
     byte[] bytes = value.toByteArray();
     String blobSha256 = Hashing.sha256Hex(bytes);
@@ -126,6 +149,7 @@ public class IndexArtifactRepository {
           List.of(
               new PrewrittenIndexWrite(
                   generationPointer(tableId, value.getSnapshotId(), generationId, targetStorageId),
+                  targetStorageId,
                   blobUri,
                   bytes.length)));
       Optional<String> after = activeGeneration(tableId, value.getSnapshotId());
@@ -165,10 +189,26 @@ public class IndexArtifactRepository {
   }
 
   /**
-   * Stages references to Floecat-owned protobuf wrappers. The referenced index sidecar URI inside
-   * each wrapper is deliberately not inspected or copied.
+   * Stages references to Floecat-owned protobuf wrappers. Before publishing the pointers, validates
+   * each wrapper or bundle and refreshes any table-owned shared sidecars while holding the table
+   * publication guard.
    */
   public void registerPrewrittenIndexArtifactReferencesInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String requiredBlobPrefix,
+      List<PrewrittenIndexArtifactReference> references) {
+    reachabilityGuard.publishing(
+        tableId,
+        () -> {
+          registerPrewrittenIndexArtifactReferencesInGenerationGuarded(
+              tableId, snapshotId, generationId, requiredBlobPrefix, references);
+          return null;
+        });
+  }
+
+  private void registerPrewrittenIndexArtifactReferencesInGenerationGuarded(
       ResourceId tableId,
       long snapshotId,
       String generationId,
@@ -214,13 +254,15 @@ public class IndexArtifactRepository {
       String pointerKey =
           generationPointer(tableId, snapshotId, generationId, reference.targetStorageId());
       PrewrittenIndexWrite write =
-          new PrewrittenIndexWrite(pointerKey, reference.blobUri(), reference.blobBytes());
+          new PrewrittenIndexWrite(
+              pointerKey, reference.targetStorageId(), reference.blobUri(), reference.blobBytes());
       PrewrittenIndexWrite duplicate = unique.putIfAbsent(pointerKey, write);
       if (duplicate != null && !duplicate.equals(write)) {
         throw new IllegalArgumentException(
             "duplicate prewritten index artifact reference has different content");
       }
     }
+    refreshPrewrittenSharedSidecars(tableId, snapshotId, unique.values());
     registerWrites(new ArrayList<>(unique.values()));
   }
 
@@ -688,6 +730,111 @@ public class IndexArtifactRepository {
   private void registerWrites(List<PrewrittenIndexWrite> writes) {
     for (int from = 0; from < writes.size(); from += MAX_POINTER_BATCH_SIZE) {
       registerChunk(writes.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, writes.size())));
+    }
+  }
+
+  private void refreshPrewrittenSharedSidecars(
+      ResourceId tableId, long snapshotId, Iterable<PrewrittenIndexWrite> writes) {
+    LinkedHashMap<String, List<PrewrittenIndexWrite>> writesByBlob = new LinkedHashMap<>();
+    for (PrewrittenIndexWrite write : writes) {
+      writesByBlob.computeIfAbsent(write.blobUri(), ignored -> new ArrayList<>()).add(write);
+    }
+    for (var entry : writesByBlob.entrySet()) {
+      String blobUri = entry.getKey();
+      List<PrewrittenIndexWrite> blobWrites = entry.getValue();
+      if (ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+        ReusableArtifactBundlePayload bundle =
+            loadReusableArtifactBundle(blobUri)
+                .orElseThrow(
+                    () ->
+                        new BaseResourceRepository.CorruptionException(
+                            "prewritten index artifact bundle is missing: " + blobUri));
+        if (blobCache != null && blobCache.enabled()) {
+          // Publication validation must bypass a warm immutable cache: GC may have swept the
+          // wrapper since it was cached. Populate the cache only after the live read succeeds.
+          blobCache.put(blobUri, bundle);
+        }
+        Set<String> bundledTargets = new LinkedHashSet<>();
+        for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
+          requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri);
+          bundledTargets.add(indexArtifactTargetStorageId(record.getTarget()));
+        }
+        for (PrewrittenIndexWrite write : blobWrites) {
+          if (!bundledTargets.contains(write.targetStorageId())) {
+            throw new BaseResourceRepository.CorruptionException(
+                "prewritten index artifact bundle has no record for target "
+                    + write.targetStorageId()
+                    + ": "
+                    + blobUri);
+          }
+        }
+        refreshSharedSidecars(tableId, bundle.getIndexArtifactsList());
+        continue;
+      }
+      try {
+        byte[] bytes = blobStore.get(blobUri);
+        if (bytes == null) {
+          throw new StorageNotFoundException(blobUri);
+        }
+        if (!blobUri.endsWith("/" + Hashing.sha256Hex(bytes) + ".pb")) {
+          throw new BaseResourceRepository.CorruptionException(
+              "prewritten index artifact content address does not match payload: " + blobUri);
+        }
+        IndexArtifactRecord record = IndexArtifactRecord.parseFrom(bytes);
+        requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri);
+        if (!blobWrites
+            .getFirst()
+            .targetStorageId()
+            .equals(indexArtifactTargetStorageId(record.getTarget()))) {
+          throw new BaseResourceRepository.CorruptionException(
+              "prewritten index artifact target does not match reference: " + blobUri);
+        }
+        refreshSharedSidecars(tableId, List.of(record));
+      } catch (StorageNotFoundException e) {
+        throw new BaseResourceRepository.CorruptionException(
+            "prewritten index artifact is missing: " + blobUri, e);
+      } catch (InvalidProtocolBufferException e) {
+        throw new BaseResourceRepository.CorruptionException(
+            "prewritten index artifact is invalid: " + blobUri, e);
+      }
+    }
+  }
+
+  private static void requirePrewrittenRecordMatches(
+      ResourceId tableId, long snapshotId, IndexArtifactRecord record, String blobUri) {
+    requireValidRecord(record);
+    if (!record.getTableId().getAccountId().equals(tableId.getAccountId())
+        || !record.getTableId().getId().equals(tableId.getId())
+        || record.getSnapshotId() != snapshotId) {
+      throw new BaseResourceRepository.CorruptionException(
+          "prewritten index artifact belongs to a different table or snapshot: " + blobUri);
+    }
+  }
+
+  private void refreshSharedSidecars(ResourceId tableId, Iterable<IndexArtifactRecord> artifacts) {
+    String requiredPrefix =
+        Keys.tableIndexSidecarBlobPrefix(tableId.getAccountId(), tableId.getId());
+    Set<String> inspected = new LinkedHashSet<>();
+    for (IndexArtifactRecord artifact : artifacts) {
+      String uri = artifact == null ? "" : artifact.getArtifactUri();
+      if (!uri.startsWith(requiredPrefix)) {
+        if (uri.startsWith("/accounts/") && uri.contains(Keys.SEG_INDEX_SIDECARS)) {
+          throw new BaseResourceRepository.CorruptionException(
+              "index artifact references a sidecar owned by another table: " + uri);
+        }
+        continue;
+      }
+      if (!inspected.add(uri)) {
+        continue;
+      }
+      // HEAD is sufficient while the table publication guard is held: if GC deleted first, this
+      // fails closed; if publication wins, the pointer becomes visible before unlock and the epoch
+      // advance forces any overlapping GC proof to restart. Never GET or rewrite a potentially
+      // large Parquet sidecar merely to publish its small wrapper.
+      if (blobStore.head(uri).isEmpty()) {
+        throw new BaseResourceRepository.CorruptionException(
+            "shared index sidecar is missing: " + uri);
+      }
     }
   }
 

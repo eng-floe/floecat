@@ -70,8 +70,6 @@ public class CasBlobGcScheduler {
   private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
   private String nextAccountId = "";
-  private String continuationBurstAccountId = "";
-  private int continuationBurstTicks;
 
   private volatile boolean stopping;
 
@@ -160,10 +158,6 @@ public class CasBlobGcScheduler {
             cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(45_000L));
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
-    final int maxContinuationTicks =
-        Math.max(
-            1,
-            cfg.getOptionalValue("floecat.gc.cas.max-continuation-ticks", Integer.class).orElse(2));
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
@@ -255,28 +249,11 @@ public class CasBlobGcScheduler {
         var continuing = gc.continuationAccountId();
         if (continuing.isPresent()) {
           // The one retained local epoch is the process-wide memory bound. Resume it next tick;
-          // starting another account would multiply that bound. Limit how many consecutive ticks
-          // it can own, then safely abandon its local epoch so the round-robin cursor advances.
-          String continuingAccount = continuing.orElseThrow();
-          if (continuingAccount.equals(continuationBurstAccountId)) {
-            continuationBurstTicks++;
-          } else {
-            continuationBurstAccountId = continuingAccount;
-            continuationBurstTicks = 1;
-          }
-          if (continuationBurstTicks < maxContinuationTicks) {
-            break;
-          }
-          LOG.infof(
-              "cas gc account %s used %d consecutive continuation ticks; rotating accounts",
-              continuingAccount, continuationBurstTicks);
-          gc.abandonContinuation();
-          continuationBurstAccountId = "";
-          continuationBurstTicks = 0;
-          continue;
+          // starting another account would multiply that bound. Abandoning the epoch to rotate
+          // accounts also discards its resumable scan tokens, so an account wider than a configured
+          // tick burst can restart forever and never reach deletion. Retain it until completion.
+          break;
         }
-        continuationBurstAccountId = "";
-        continuationBurstTicks = 0;
       }
     } finally {
       poisonedAccountsLastTick.set(poisonedThisTick);

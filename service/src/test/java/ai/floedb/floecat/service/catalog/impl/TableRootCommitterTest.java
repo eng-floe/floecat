@@ -91,6 +91,40 @@ class TableRootCommitterTest {
   }
 
   @Test
+  void commitRejectsAMissingManifestPageBeforePublishingTheRoot() {
+    TableRootCommitter.CommitFailedException failure =
+        assertThrows(
+            TableRootCommitter.CommitFailedException.class,
+            () ->
+                committer.commit(
+                    TABLE,
+                    current ->
+                        TableRoot.newBuilder()
+                            .setSnapshotManifestRef(
+                                ref("/accounts/acct/tables/tbl/root/manifest/missing.pb"))
+                            .build()));
+
+    assertTrue(failure.getCause() instanceof BaseResourceRepository.CorruptionException);
+    assertTrue(roots.get(TABLE).isEmpty(), "a dangling manifest chain must not become visible");
+  }
+
+  @Test
+  void commitRejectsAManifestPageOwnedByAnotherTable() {
+    assertThrows(
+        TableRootCommitter.CommitFailedException.class,
+        () ->
+            committer.commit(
+                TABLE,
+                current ->
+                    TableRoot.newBuilder()
+                        .setSnapshotManifestRef(
+                            ref("/accounts/acct/tables/other/root/manifest/page.pb"))
+                        .build()));
+
+    assertTrue(roots.get(TABLE).isEmpty());
+  }
+
+  @Test
   void commitAppliesTheMutatorToTheCurrentRootAndBumpsSeq() {
     commitDefinition("s3://tbl/def-1.pb");
 

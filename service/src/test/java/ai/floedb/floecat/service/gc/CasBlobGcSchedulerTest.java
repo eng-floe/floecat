@@ -112,11 +112,11 @@ class CasBlobGcSchedulerTest {
   }
 
   @Test
-  void retainedContinuationRotatesAfterTheConfiguredBurst() {
+  void retainedContinuationIsNotAbandonedBeforeItCompletes() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
-    StickyContinuationGc gc = new StickyContinuationGc();
+    CompletingContinuationGc gc = new CompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.casBlobGc = () -> gc;
@@ -126,17 +126,15 @@ class CasBlobGcSchedulerTest {
     scheduler.initMeters();
 
     System.setProperty("floecat.gc.cas.enabled", "true");
-    System.setProperty("floecat.gc.cas.max-continuation-ticks", "2");
     try {
+      scheduler.tick();
       scheduler.tick();
       scheduler.tick();
     } finally {
       System.clearProperty("floecat.gc.cas.enabled");
-      System.clearProperty("floecat.gc.cas.max-continuation-ticks");
     }
 
-    assertEquals(List.of("acct-a", "acct-a", "acct-b"), gc.accountIds);
-    assertEquals(1, gc.abandoned);
+    assertEquals(List.of("acct-a", "acct-a", "acct-a", "acct-b"), gc.accountIds);
   }
 
   private static Account account(String accountId) {
@@ -165,17 +163,18 @@ class CasBlobGcSchedulerTest {
     }
   }
 
-  private static final class StickyContinuationGc extends CasBlobGc {
+  private static final class CompletingContinuationGc extends CasBlobGc {
     private final List<String> accountIds = new ArrayList<>();
     private boolean continuing;
-    private int abandoned;
+    private int accountARuns;
 
     @Override
     public Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if ("acct-a".equals(accountId)) {
-        continuing = true;
-        return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);
+        accountARuns++;
+        continuing = accountARuns < 3;
+        return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, continuing);
       }
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, false);
     }
@@ -183,12 +182,6 @@ class CasBlobGcSchedulerTest {
     @Override
     Optional<String> continuationAccountId() {
       return continuing ? Optional.of("acct-a") : Optional.empty();
-    }
-
-    @Override
-    synchronized void abandonContinuation() {
-      continuing = false;
-      abandoned++;
     }
   }
 }

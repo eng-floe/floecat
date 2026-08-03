@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
@@ -116,7 +117,7 @@ public interface QueryContextStore extends AutoCloseable {
    * commit cannot leak roots; entries are also pruned opportunistically on registration, so the
    * structure is self-maintaining independent of the blob-GC schedule.
    */
-  void registerResolvingPinBlobs(String queryId, Collection<String> blobUris);
+  void registerResolvingPinBlobs(String queryId, ResourceId tableId, Collection<String> blobUris);
 
   /**
    * Release transient resolving roots previously registered for {@code queryId}.

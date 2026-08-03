@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -48,11 +49,20 @@ public class TableRootCommitter {
 
   private final TableRootRepository roots;
   private final TableRootSynthesizer synthesizer;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
-  public TableRootCommitter(TableRootRepository roots, TableRootSynthesizer synthesizer) {
+  public TableRootCommitter(
+      TableRootRepository roots,
+      TableRootSynthesizer synthesizer,
+      TableBlobReachabilityGuard reachabilityGuard) {
     this.roots = roots;
     this.synthesizer = synthesizer;
+    this.reachabilityGuard = reachabilityGuard;
+  }
+
+  public TableRootCommitter(TableRootRepository roots, TableRootSynthesizer synthesizer) {
+    this(roots, synthesizer, TableBlobReachabilityGuard.shared());
   }
 
   /** Without legacy synthesis (unit tests exercising pure commit semantics). */
@@ -103,6 +113,10 @@ public class TableRootCommitter {
    * commit.
    */
   public Optional<TableRoot> commit(ResourceId tableId, RootMutator mutator) {
+    return reachabilityGuard.publishing(tableId, () -> commitGuarded(tableId, mutator));
+  }
+
+  private Optional<TableRoot> commitGuarded(ResourceId tableId, RootMutator mutator) {
     BaseResourceRepository.AbortRetryableException lastRetryable = null;
     BaseResourceRepository.NotFoundException lastGone = null;
     for (int attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
@@ -154,6 +168,9 @@ public class TableRootCommitter {
                 .setRootSeq(current.map(r -> r.getRootSeq() + 1).orElse(1L))
                 .setCommittedAt(Timestamps.fromMillis(System.currentTimeMillis()))
                 .build();
+        if (desired.hasSnapshotManifestRef()) {
+          roots.requireManifestHeadLive(tableId, desired.getSnapshotManifestRef());
+        }
 
         won = fromStore ? roots.update(desired, expectedVersion) : roots.createIfAbsent(desired);
       } catch (BaseResourceRepository.AbortRetryableException retryable) {

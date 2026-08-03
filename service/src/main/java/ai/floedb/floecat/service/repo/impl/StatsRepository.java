@@ -151,6 +151,34 @@ public class StatsRepository implements StatsStore {
     }
   }
 
+  /**
+   * Fails closed unless a frozen generation manifest is live, content-valid, and still published.
+   * Query-pin registration calls this while holding the table reachability guard shared with GC
+   * generation reclamation.
+   */
+  public Keys.GenerationKey requirePublishedGenerationLive(ResourceId tableId, String manifestUri) {
+    Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
+    if (generation == null
+        || !manifestUri.equals(
+            Keys.snapshotTargetStatsManifestBlobUri(
+                tableId.getAccountId(),
+                tableId.getId(),
+                generation.snapshotId(),
+                generation.generationId()))) {
+      throw new BaseResourceRepository.CorruptionException(
+          "frozen stats generation belongs to a different table: " + manifestUri);
+    }
+    String lifecycle =
+        generationLifecycleState(tableId, generation.snapshotId(), generation.generationId());
+    String storedGeneration = loadGenerationId(manifestUri).orElse("");
+    if (!GENERATION_PUBLISHED.equals(lifecycle)
+        || !generation.generationId().equals(storedGeneration)) {
+      throw new BaseResourceRepository.CorruptionException(
+          "frozen stats generation is unavailable: " + manifestUri);
+    }
+    return generation;
+  }
+
   @Override
   public void putTargetStats(TargetStatsRecord value) {
     TargetStatsRecord canonicalRecord = canonicalRecord(value);
@@ -1655,6 +1683,46 @@ public class StatsRepository implements StatsStore {
     }
   }
 
+  /**
+   * Discovers the table's exact generation identities without reclaiming anything. GC uses this
+   * after a concurrent publication invalidates a completed table re-mark, so wrappers from a newly
+   * created generation are included before shared sidecars can be deleted.
+   */
+  public boolean discoverGenerationKeys(
+      ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
+    java.util.Objects.requireNonNull(continuation, "continuation");
+    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
+    while (!continuation.scanComplete) {
+      if (System.currentTimeMillis() >= deadlineMs) {
+        return false;
+      }
+      StringBuilder next = new StringBuilder();
+      List<Pointer> page =
+          pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
+      boolean pageComplete = true;
+      for (Pointer pointer : page) {
+        if (System.currentTimeMillis() >= deadlineMs) {
+          pageComplete = false;
+          break;
+        }
+        Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
+        if (generation != null) {
+          continuation.discover(generation);
+        }
+      }
+      if (!pageComplete) {
+        return false;
+      }
+      continuation.pointerToken = next.toString();
+      if (continuation.pointerToken.isBlank()) {
+        continuation.scanComplete = true;
+        continuation.candidates = List.copyOf(continuation.discovered);
+        continuation.discovered = null;
+      }
+    }
+    return true;
+  }
+
   public GenerationGcResult deleteUnreferencedGenerations(
       ResourceId tableId,
       java.util.function.Predicate<String> isProtectedManifestUri,
@@ -1671,40 +1739,8 @@ public class StatsRepository implements StatsStore {
       return new GenerationGcResult(0, 0, 0, true);
     }
     String accountId = tableId.getAccountId();
-    String prefix = Keys.snapshotRootPrefix(accountId, tableId.getId());
     boolean pending = false;
-    while (!continuation.scanComplete) {
-      if (System.currentTimeMillis() >= deadlineMs) {
-        pending = true;
-        break;
-      }
-      StringBuilder next = new StringBuilder();
-      List<Pointer> page =
-          pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
-      boolean pageComplete = true;
-      for (Pointer pointer : page) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          pending = true;
-          pageComplete = false;
-          break;
-        }
-        Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
-        if (generation != null) {
-          continuation.discover(generation);
-        }
-      }
-      if (!pageComplete) {
-        // Keep the old page token. The bounded set deduplicates the repeated portion when this
-        // page is resumed, avoiding both skipped generation identities and unbounded page work.
-        break;
-      }
-      continuation.pointerToken = next.toString();
-      if (continuation.pointerToken.isBlank()) {
-        continuation.scanComplete = true;
-        continuation.candidates = List.copyOf(continuation.discovered);
-        continuation.discovered = null;
-      }
-    }
+    pending |= !discoverGenerationKeys(tableId, deadlineMs, continuation);
 
     int reclaimed = 0;
     int deleteAttempts = 0;
