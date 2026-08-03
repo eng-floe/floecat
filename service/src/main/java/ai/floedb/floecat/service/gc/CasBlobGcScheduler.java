@@ -69,6 +69,9 @@ public class CasBlobGcScheduler {
   private final AtomicInteger poisonedAccountsLastTick = new AtomicInteger(0);
   private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
+  private String nextAccountId = "";
+  private String continuationBurstAccountId = "";
+  private int continuationBurstTicks;
 
   private volatile boolean stopping;
 
@@ -152,9 +155,15 @@ public class CasBlobGcScheduler {
     gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "tick"));
 
     final long maxTickMillis =
-        cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(4000L);
+        Math.max(
+            1_000L,
+            cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(45_000L));
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
+    final int maxContinuationTicks =
+        Math.max(
+            1,
+            cfg.getOptionalValue("floecat.gc.cas.max-continuation-ticks", Integer.class).orElse(2));
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
@@ -167,19 +176,23 @@ public class CasBlobGcScheduler {
       // new account with "now" so its age starts at 0 and grows only if it is never cleanly swept.
       Set<String> present =
           allAccounts.stream().map(a -> a.getResourceId().getId()).collect(Collectors.toSet());
+      gc.abandonContinuationIfAccountMissing(present);
       lastCleanSweepMs.keySet().retainAll(present);
       for (String id : present) {
         lastCleanSweepMs.putIfAbsent(id, now);
       }
 
-      Collections.shuffle(allAccounts);
+      orderAccounts(allAccounts, gc.continuationAccountId().orElse(""));
 
-      for (Account account : allAccounts) {
+      for (int accountIndex = 0; accountIndex < allAccounts.size(); accountIndex++) {
+        Account account = allAccounts.get(accountIndex);
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
+        nextAccountId =
+            allAccounts.get((accountIndex + 1) % allAccounts.size()).getResourceId().getId();
         CasBlobGc.Result result;
         try {
           result = gc.runForAccount(accountId, deadline);
@@ -210,7 +223,9 @@ public class CasBlobGcScheduler {
           // A clean, fully-reached sweep resets this account's backlog age.
           lastCleanSweepMs.put(accountId, System.currentTimeMillis());
         }
-        if (!result.deletesUnsupported() && !result.poisoned()) {
+        if (!result.deletesUnsupported()
+            && !result.poisoned()
+            && gc.continuationAccountId().isEmpty()) {
           storageUsageMetrics
               .get()
               .recordGcEstimate(
@@ -225,11 +240,43 @@ public class CasBlobGcScheduler {
         gcMetrics.recordCollection(result.blobsScanned(), Tag.of(TagKey.RESULT, "blobs-scanned"));
         gcMetrics.recordCollection(result.blobsDeleted(), Tag.of(TagKey.RESULT, "blobs-deleted"));
         gcMetrics.recordCollection(result.blobsRescued(), Tag.of(TagKey.RESULT, "blobs-rescued"));
-        gcMetrics.recordCollection(result.referenced(), Tag.of(TagKey.RESULT, "referenced"));
+        gcMetrics.recordCollection(
+            result.referenced(), Tag.of(TagKey.RESULT, "reference-index-insertions"));
+        gcMetrics.recordCollection(
+            result.referenceIndexSaturationPpm(),
+            Tag.of(TagKey.RESULT, "reference-index-saturation-ppm"));
+        gcMetrics.recordCollection(
+            result.referenceIndexEstimatedFalsePositivePpb(),
+            Tag.of(TagKey.RESULT, "reference-index-estimated-fpp-ppb"));
         gcMetrics.recordCollection(result.tablesScanned(), Tag.of(TagKey.RESULT, "tables-scanned"));
         gcMetrics.recordPause(
             Duration.ofNanos(System.nanoTime() - accountStart),
             Tag.of(TagKey.RESULT, "account-run"));
+        var continuing = gc.continuationAccountId();
+        if (continuing.isPresent()) {
+          // The one retained local epoch is the process-wide memory bound. Resume it next tick;
+          // starting another account would multiply that bound. Limit how many consecutive ticks
+          // it can own, then safely abandon its local epoch so the round-robin cursor advances.
+          String continuingAccount = continuing.orElseThrow();
+          if (continuingAccount.equals(continuationBurstAccountId)) {
+            continuationBurstTicks++;
+          } else {
+            continuationBurstAccountId = continuingAccount;
+            continuationBurstTicks = 1;
+          }
+          if (continuationBurstTicks < maxContinuationTicks) {
+            break;
+          }
+          LOG.infof(
+              "cas gc account %s used %d consecutive continuation ticks; rotating accounts",
+              continuingAccount, continuationBurstTicks);
+          gc.abandonContinuation();
+          continuationBurstAccountId = "";
+          continuationBurstTicks = 0;
+          continue;
+        }
+        continuationBurstAccountId = "";
+        continuationBurstTicks = 0;
       }
     } finally {
       poisonedAccountsLastTick.set(poisonedThisTick);
@@ -238,6 +285,24 @@ public class CasBlobGcScheduler {
           Duration.ofNanos(System.nanoTime() - tickStart), Tag.of(TagKey.RESULT, "tick"));
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
+    }
+  }
+
+  private void orderAccounts(List<Account> accounts, String continuingAccountId) {
+    accounts.sort(java.util.Comparator.comparing(account -> account.getResourceId().getId()));
+    String first = continuingAccountId.isBlank() ? nextAccountId : continuingAccountId;
+    if (first.isBlank()) {
+      return;
+    }
+    int start = -1;
+    for (int i = 0; i < accounts.size(); i++) {
+      if (accounts.get(i).getResourceId().getId().equals(first)) {
+        start = i;
+        break;
+      }
+    }
+    if (start > 0) {
+      Collections.rotate(accounts, -start);
     }
   }
 

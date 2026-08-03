@@ -1596,42 +1596,127 @@ public class StatsRepository implements StatsStore {
       long minAgeMs,
       int maxBlobDeleteAttempts,
       long deadlineMs) {
+    return deleteUnreferencedGenerations(
+        tableId,
+        isProtectedManifestUri,
+        nowMs,
+        minAgeMs,
+        maxBlobDeleteAttempts,
+        deadlineMs,
+        new GenerationGcContinuation());
+  }
+
+  /** Bounded, local continuation for the generation-identity discovery scan. */
+  public static final class GenerationGcContinuation {
+    private java.util.LinkedHashSet<Keys.GenerationKey> discovered =
+        new java.util.LinkedHashSet<>();
+    private final int maxCandidates;
+    private List<Keys.GenerationKey> candidates = List.of();
+    private String pointerToken = "";
+    private int candidateIndex;
+    private boolean scanComplete;
+
+    public GenerationGcContinuation() {
+      this(
+          Math.max(
+              1,
+              ConfigProvider.getConfig()
+                  .getOptionalValue("floecat.gc.cas.max-stats-generations-per-table", Integer.class)
+                  .orElse(100_000)));
+    }
+
+    GenerationGcContinuation(int maxCandidates) {
+      this.maxCandidates = Math.max(1, maxCandidates);
+    }
+
+    public String pointerContinuationToken() {
+      return pointerToken;
+    }
+
+    public List<Keys.GenerationKey> generations() {
+      return candidates;
+    }
+
+    private void discover(Keys.GenerationKey generation) {
+      if (discovered.contains(generation)) {
+        return;
+      }
+      if (discovered.size() >= maxCandidates) {
+        throw new GenerationGcCapacityExceededException(
+            "stats-generation continuation capacity exceeded: capacity=" + maxCandidates);
+      }
+      discovered.add(generation);
+    }
+  }
+
+  public static final class GenerationGcCapacityExceededException extends RuntimeException {
+    public GenerationGcCapacityExceededException(String message) {
+      super(message);
+    }
+  }
+
+  public GenerationGcResult deleteUnreferencedGenerations(
+      ResourceId tableId,
+      java.util.function.Predicate<String> isProtectedManifestUri,
+      long nowMs,
+      long minAgeMs,
+      int maxBlobDeleteAttempts,
+      long deadlineMs,
+      GenerationGcContinuation continuation) {
+    java.util.Objects.requireNonNull(continuation, "continuation");
+    if (!blobStore.supportsVersionedDeletes()) {
+      return new GenerationGcResult(0, 0, 0, true);
+    }
     if (maxBlobDeleteAttempts <= 0) {
       return new GenerationGcResult(0, 0, 0, true);
     }
     String accountId = tableId.getAccountId();
     String prefix = Keys.snapshotRootPrefix(accountId, tableId.getId());
-    var candidates = new java.util.LinkedHashSet<Keys.GenerationKey>();
-    String token = "";
     boolean pending = false;
-    while (true) {
+    while (!continuation.scanComplete) {
       if (System.currentTimeMillis() >= deadlineMs) {
         pending = true;
         break;
       }
       StringBuilder next = new StringBuilder();
-      List<Pointer> page = pointerStore.listPointersByPrefix(prefix, 500, token, next);
+      List<Pointer> page =
+          pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
+      boolean pageComplete = true;
       for (Pointer pointer : page) {
+        if (System.currentTimeMillis() >= deadlineMs) {
+          pending = true;
+          pageComplete = false;
+          break;
+        }
         Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
         if (generation != null) {
-          candidates.add(generation);
+          continuation.discover(generation);
         }
       }
-      token = next.toString();
-      if (token.isBlank()) {
+      if (!pageComplete) {
+        // Keep the old page token. The bounded set deduplicates the repeated portion when this
+        // page is resumed, avoiding both skipped generation identities and unbounded page work.
         break;
+      }
+      continuation.pointerToken = next.toString();
+      if (continuation.pointerToken.isBlank()) {
+        continuation.scanComplete = true;
+        continuation.candidates = List.copyOf(continuation.discovered);
+        continuation.discovered = null;
       }
     }
 
     int reclaimed = 0;
     int deleteAttempts = 0;
     int blobsDeleted = 0;
-    for (Keys.GenerationKey candidate : candidates) {
+    while (continuation.scanComplete
+        && continuation.candidateIndex < continuation.candidates.size()) {
       if (deleteAttempts >= Math.max(0, maxBlobDeleteAttempts)
           || System.currentTimeMillis() >= deadlineMs) {
         pending = true;
         break;
       }
+      Keys.GenerationKey candidate = continuation.candidates.get(continuation.candidateIndex);
       long snapshotId = candidate.snapshotId();
       String generationId = candidate.generationId();
       String manifestUri =
@@ -1643,6 +1728,16 @@ public class StatsRepository implements StatsStore {
               .orElse(null);
       String lifecycleState = lifecycle == null ? "" : blankToEmpty(lifecycle.getBlobUri());
       if (GENERATION_DELETING.equals(lifecycleState) || GENERATION_DELETED.equals(lifecycleState)) {
+        if (isProtectedManifestUri.test(manifestUri)
+            || manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+            || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
+          // A late pin/root can appear between bounded deletion slices, after an earlier slice has
+          // already removed blobs or pointers. Restoring PUBLISHED here would expose that partial
+          // generation as healthy. Keep the terminal claim in place and retry reclamation after the
+          // protection disappears; DELETING prevents writers from reviving the keyspace.
+          continuation.candidateIndex++;
+          continue;
+        }
         GenerationBlobDeleteResult result =
             deleteGenerationBlobSlice(
                 accountId,
@@ -1650,22 +1745,42 @@ public class StatsRepository implements StatsStore {
                 snapshotId,
                 generationId,
                 manifestUri,
+                nowMs,
+                minAgeMs,
                 maxBlobDeleteAttempts - deleteAttempts,
-                deadlineMs);
+                deadlineMs,
+                () ->
+                    !isProtectedManifestUri.test(manifestUri)
+                        && !manifestUri.equals(
+                            activeStatsGeneration(tableId, snapshotId).orElse(""))
+                        && !isActiveIndexGeneration(tableId, snapshotId, generationId));
         deleteAttempts += result.attempts();
         blobsDeleted += result.deleted();
         if (result.pending()) {
           pending = true;
           break;
         }
-        deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId, true);
+        if (deleteGenerationPointerSlice(
+            tableId,
+            snapshotId,
+            generationId,
+            deadlineMs,
+            () ->
+                !isProtectedManifestUri.test(manifestUri)
+                    && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+                    && !isActiveIndexGeneration(tableId, snapshotId, generationId))) {
+          pending = true;
+          break;
+        }
         reclaimed++;
+        continuation.candidateIndex++;
         continue;
       }
       // One HEAD answers both existence and age: absent means unpublished (an in-flight replace
       // writes records before publishing) or already reclaimed.
       var header = blobStore.head(manifestUri).orElse(null);
       if (header == null) {
+        continuation.candidateIndex++;
         continue;
       }
       if (nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
@@ -1679,25 +1794,31 @@ public class StatsRepository implements StatsStore {
         // exact-tie lastModified == nowMs is eligible at min-age=0, but is unreachable — nowMs is
         // stamped before any manifest the sweep could race — so the fence is exact for min-age >
         // 0.)
+        continuation.candidateIndex++;
         continue;
       }
       if (isProtectedManifestUri.test(manifestUri)) {
+        continuation.candidateIndex++;
         continue;
       }
       if (isActiveIndexGeneration(tableId, snapshotId, generationId)) {
+        continuation.candidateIndex++;
         continue;
       }
       String liveActive = activeStatsGeneration(tableId, snapshotId).orElse("");
       if (manifestUri.equals(liveActive)) {
+        continuation.candidateIndex++;
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
       if (!claimPublishedGenerationForGc(tableId, snapshotId, generationId)) {
+        continuation.candidateIndex++;
         continue;
       }
       if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
           || isProtectedManifestUri.test(manifestUri)
           || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
         restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+        continuation.candidateIndex++;
         continue;
       }
       GenerationBlobDeleteResult result =
@@ -1707,17 +1828,37 @@ public class StatsRepository implements StatsStore {
               snapshotId,
               generationId,
               manifestUri,
+              nowMs,
+              minAgeMs,
               maxBlobDeleteAttempts - deleteAttempts,
-              deadlineMs);
+              deadlineMs,
+              () ->
+                  !isProtectedManifestUri.test(manifestUri)
+                      && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+                      && !isActiveIndexGeneration(tableId, snapshotId, generationId));
       deleteAttempts += result.attempts();
       blobsDeleted += result.deleted();
       if (result.pending()) {
         pending = true;
         break;
       }
-      deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId, true);
+      if (deleteGenerationPointerSlice(
+          tableId,
+          snapshotId,
+          generationId,
+          deadlineMs,
+          () ->
+              !isProtectedManifestUri.test(manifestUri)
+                  && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+                  && !isActiveIndexGeneration(tableId, snapshotId, generationId))) {
+        pending = true;
+        break;
+      }
       reclaimed++;
+      continuation.candidateIndex++;
     }
+    pending |=
+        !continuation.scanComplete || continuation.candidateIndex < continuation.candidates.size();
     return new GenerationGcResult(reclaimed, deleteAttempts, blobsDeleted, pending);
   }
 
@@ -1732,6 +1873,13 @@ public class StatsRepository implements StatsStore {
         .isPresent();
   }
 
+  /** Whether a generation's keyspace is already under a terminal deletion claim. */
+  public boolean isGenerationDeletionInProgress(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String state = generationLifecycleState(tableId, snapshotId, generationId);
+    return GENERATION_DELETING.equals(state) || GENERATION_DELETED.equals(state);
+  }
+
   private record GenerationBlobDeleteResult(int attempts, int deleted, boolean pending) {}
 
   private GenerationBlobDeleteResult deleteGenerationBlobSlice(
@@ -1740,9 +1888,14 @@ public class StatsRepository implements StatsStore {
       long snapshotId,
       String generationId,
       String manifestUri,
+      long nowMs,
+      long minAgeMs,
       int maxAttempts,
-      long deadlineMs) {
-    if (maxAttempts <= 0 || System.currentTimeMillis() >= deadlineMs) {
+      long deadlineMs,
+      java.util.function.BooleanSupplier stillUnreferenced) {
+    if (maxAttempts <= 0
+        || System.currentTimeMillis() >= deadlineMs
+        || !stillUnreferenced.getAsBoolean()) {
       return new GenerationBlobDeleteResult(0, 0, true);
     }
     String blobPrefix =
@@ -1751,11 +1904,20 @@ public class StatsRepository implements StatsStore {
     int deleted = 0;
     BlobStore.Page page = blobStore.list(blobPrefix, Math.min(maxAttempts, 1000), "");
     for (String key : page.keys()) {
-      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
+      if (attempts >= maxAttempts
+          || System.currentTimeMillis() >= deadlineMs
+          || !stillUnreferenced.getAsBoolean()) {
+        return new GenerationBlobDeleteResult(attempts, deleted, true);
+      }
+      var header = blobStore.head(key).orElse(null);
+      if (header == null
+          || header.getVersionId().isBlank()
+          || nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
+              < minAgeMs) {
         return new GenerationBlobDeleteResult(attempts, deleted, true);
       }
       attempts++;
-      if (blobStore.delete(key)) {
+      if (blobStore.delete(key, header.getVersionId())) {
         deleted++;
       }
     }
@@ -1763,15 +1925,99 @@ public class StatsRepository implements StatsStore {
       return new GenerationBlobDeleteResult(attempts, deleted, true);
     }
     if (blobStore.head(manifestUri).isPresent()) {
-      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
+      if (attempts >= maxAttempts
+          || System.currentTimeMillis() >= deadlineMs
+          || !stillUnreferenced.getAsBoolean()) {
+        return new GenerationBlobDeleteResult(attempts, deleted, true);
+      }
+      var header = blobStore.head(manifestUri).orElse(null);
+      if (header == null
+          || header.getVersionId().isBlank()
+          || nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
+              < minAgeMs) {
         return new GenerationBlobDeleteResult(attempts, deleted, true);
       }
       attempts++;
-      if (blobStore.delete(manifestUri)) {
+      if (blobStore.delete(manifestUri, header.getVersionId())) {
         deleted++;
+      }
+      if (blobStore.head(manifestUri).isPresent()) {
+        // A version-targeted delete can reveal an older version as current. Keep the lifecycle
+        // claim and drain that immutable version in a later bounded slice; deleting the lifecycle
+        // now would orphan a readable target-stats manifest that generic CAS GC intentionally
+        // never visits.
+        return new GenerationBlobDeleteResult(attempts, deleted, true);
       }
     }
     return new GenerationBlobDeleteResult(attempts, deleted, false);
+  }
+
+  /**
+   * Deletes at most one bounded pointer batch for a claimed generation. Returning {@code true}
+   * leaves the DELETING lifecycle in place so a later GC slice resumes safely. Prefix scans start
+   * at the beginning because successful deletes remove that beginning; this avoids persisting a
+   * continuation token whose exclusive-start row was itself deleted.
+   */
+  private boolean deleteGenerationPointerSlice(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      long deadlineMs,
+      java.util.function.BooleanSupplier stillUnreferenced) {
+    String accountId = tableId.getAccountId();
+    String rawTableId = tableId.getId();
+    List<String> prefixes =
+        List.of(
+            Keys.snapshotTargetStatsGenerationPrefix(
+                accountId, rawTableId, snapshotId, generationId),
+            Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+                accountId, rawTableId, snapshotId, generationId),
+            Keys.snapshotIndexArtifactGenerationPrefix(
+                accountId, rawTableId, snapshotId, generationId),
+            Keys.snapshotTargetStatsGenerationPointerPrefix(
+                    accountId, rawTableId, snapshotId, generationId)
+                + "prepared-file-groups/");
+    int remaining = 500;
+    for (String prefix : prefixes) {
+      if (remaining <= 0
+          || System.currentTimeMillis() >= deadlineMs
+          || !stillUnreferenced.getAsBoolean()) {
+        return true;
+      }
+      StringBuilder next = new StringBuilder();
+      List<Pointer> page = pointerStore.listPointersByPrefix(prefix, remaining, "", next);
+      for (Pointer pointer : page) {
+        if (remaining <= 0
+            || System.currentTimeMillis() >= deadlineMs
+            || !stillUnreferenced.getAsBoolean()) {
+          return true;
+        }
+        remaining--;
+        pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+      }
+      if (!next.isEmpty()
+          || !pointerStore.listPointersByPrefix(prefix, 1, "", new StringBuilder()).isEmpty()) {
+        return true;
+      }
+    }
+
+    if (System.currentTimeMillis() >= deadlineMs || !stillUnreferenced.getAsBoolean()) {
+      return true;
+    }
+    String publicationIntent =
+        Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
+            accountId, rawTableId, snapshotId, generationId);
+    Pointer intent = pointerStore.get(publicationIntent).orElse(null);
+    if (intent != null
+        && !pointerStore.compareAndDelete(publicationIntent, intent.getVersion())
+        && pointerStore.get(publicationIntent).isPresent()) {
+      return true;
+    }
+    if (System.currentTimeMillis() >= deadlineMs || !stillUnreferenced.getAsBoolean()) {
+      return true;
+    }
+    markGenerationDeleted(tableId, snapshotId, generationId);
+    return false;
   }
 
   private void deleteGenerationPointers(

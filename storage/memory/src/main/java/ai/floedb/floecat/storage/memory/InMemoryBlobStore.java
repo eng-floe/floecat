@@ -247,6 +247,36 @@ public class InMemoryBlobStore implements BlobStore {
     return new PageImpl(List.copyOf(slice), next);
   }
 
+  @Override
+  public BlobStore.Page listPrefixes(String prefix, int limit, String pageToken) {
+    final String p = normalize(prefix);
+    final int lim = Math.max(1, limit);
+    var prefixes =
+        map.keySet().stream()
+            .filter(key -> key.startsWith(p))
+            .map(
+                key -> {
+                  int slash = key.indexOf('/', p.length());
+                  return slash < 0 ? "" : key.substring(0, slash + 1);
+                })
+            .filter(value -> !value.isBlank())
+            .distinct()
+            .sorted()
+            .toList();
+    int startIdx = 0;
+    if (pageToken != null && !pageToken.isBlank()) {
+      int idx = Collections.binarySearch(prefixes, pageToken);
+      startIdx = (idx >= 0) ? idx + 1 : Math.max(0, -idx - 1);
+    }
+    if (startIdx >= prefixes.size()) {
+      return new PageImpl(List.of(), "");
+    }
+    int endIdx = Math.min(prefixes.size(), startIdx + lim);
+    List<String> slice = prefixes.subList(startIdx, endIdx);
+    String next = endIdx < prefixes.size() ? slice.getLast() : "";
+    return new PageImpl(List.copyOf(slice), next);
+  }
+
   private static String sha256B64(byte[] data) {
     try {
       var md = java.security.MessageDigest.getInstance("SHA-256");

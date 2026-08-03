@@ -396,6 +396,11 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/tables/";
   }
 
+  /** Immediate object-store prefix containing every blob family owned by one table. */
+  public static String tableBlobPrefix(String accountId, String tableId) {
+    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+  }
+
   public static String tablePointerByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
     String tid = req("account_id", accountId);
@@ -455,6 +460,22 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/tables/%s/table/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
+  public static String tableDefinitionBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "table/";
+  }
+
+  public static String tableSnapshotBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "snapshots/";
+  }
+
+  public static String tableConstraintsBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "constraints/";
+  }
+
+  public static String tableRootBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "root/";
   }
 
   // ===== Snapshot =====
@@ -803,6 +824,10 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
         encode(tid), encode(tbid), sid, encode(target), encode(sha));
+  }
+
+  public static String tableIndexSidecarBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "index-sidecars/";
   }
 
   public static String snapshotCompatDirectoryPointer(
@@ -1601,7 +1626,37 @@ public final class Keys {
     if (genEnd < 0) {
       return null;
     }
-    return new GenerationKey(snapshotId, pointerKey.substring(genStart, genEnd));
+    return new GenerationKey(snapshotId, percentDecode(pointerKey.substring(genStart, genEnd)));
+  }
+
+  /** Recovers a generation identity from a generation-manifest blob URI. */
+  public static GenerationKey generationFromManifestBlobUri(String manifestUri) {
+    if (manifestUri == null) {
+      return null;
+    }
+    String marker = "/target-stats/";
+    int markerAt = manifestUri.indexOf(marker);
+    if (markerAt < 0) {
+      return null;
+    }
+    int snapshotStart = markerAt + marker.length();
+    int snapshotEnd = manifestUri.indexOf("/manifests/", snapshotStart);
+    if (snapshotEnd < 0) {
+      return null;
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(manifestUri.substring(snapshotStart, snapshotEnd));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int generationStart = snapshotEnd + "/manifests/".length();
+    int generationEnd = manifestUri.endsWith(".pb") ? manifestUri.length() - 3 : -1;
+    if (generationEnd <= generationStart || manifestUri.indexOf('/', generationStart) >= 0) {
+      return null;
+    }
+    return new GenerationKey(
+        snapshotId, percentDecode(manifestUri.substring(generationStart, generationEnd)));
   }
 
   /** One stats generation's identity within a table, as encoded in its pointer keys. */
