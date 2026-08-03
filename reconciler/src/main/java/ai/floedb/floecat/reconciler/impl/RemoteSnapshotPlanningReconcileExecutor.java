@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -671,7 +672,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (uri.isBlank()) {
       return Optional.empty();
     }
-    byte[] bytes = blobStore.get(uri);
+    byte[] bytes;
+    try {
+      bytes = blobStore.get(uri);
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    }
+    if (bytes == null) {
+      return Optional.empty();
+    }
     String declaredBytes =
         snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
     String declaredSha256 =

@@ -71,22 +71,31 @@ final class RemoteFileArtifactReusePlanner {
       Map<String, BundleSelectionBuilder> selected = new java.util.LinkedHashMap<>();
       boolean reusable = !fullRescan && !plan.contentIdentity().isBlank();
       if (reusable && requestsStats) {
-        statsByPath.getOrDefault(plan.filePath(), List.of()).stream()
-            .filter(
-                candidate -> sourceFingerprint.equals(candidate.metadata().getSourceFingerprint()))
-            .filter(
-                candidate -> statsSignature.equals(candidate.metadata().getStatsCaptureSignature()))
-            .findFirst()
-            .ifPresent(candidate -> selectStats(selected, candidate.bundle(), plan.filePath()));
-        for (Map.Entry<String, String> entry : auxiliaryFingerprints.entrySet()) {
-          statsByPath.getOrDefault(entry.getKey(), List.of()).stream()
-              .filter(
-                  candidate -> entry.getValue().equals(candidate.metadata().getSourceFingerprint()))
-              .filter(
-                  candidate ->
-                      statsSignature.equals(candidate.metadata().getStatsCaptureSignature()))
-              .findFirst()
-              .ifPresent(candidate -> selectStats(selected, candidate.bundle(), entry.getKey()));
+        List<StatsSelection> statsSelections = new ArrayList<>();
+        BundleStatsCandidate mainStats =
+            compatibleStatsCandidate(
+                    statsByPath.getOrDefault(plan.filePath(), List.of()),
+                    sourceFingerprint,
+                    statsSignature)
+                .orElse(null);
+        if (mainStats != null) {
+          statsSelections.add(new StatsSelection(mainStats, plan.filePath()));
+          for (Map.Entry<String, String> entry : auxiliaryFingerprints.entrySet()) {
+            BundleStatsCandidate auxiliaryStats =
+                compatibleStatsCandidate(
+                        statsByPath.getOrDefault(entry.getKey(), List.of()),
+                        entry.getValue(),
+                        statsSignature)
+                    .orElse(null);
+            if (auxiliaryStats == null) {
+              statsSelections.clear();
+              break;
+            }
+            statsSelections.add(new StatsSelection(auxiliaryStats, entry.getKey()));
+          }
+        }
+        for (StatsSelection statsSelection : statsSelections) {
+          selectStats(selected, statsSelection.candidate().bundle(), statsSelection.filePath());
         }
       }
       if (reusable && requestsIndexes) {
@@ -110,6 +119,14 @@ final class RemoteFileArtifactReusePlanner {
               selected.values().stream().map(BundleSelectionBuilder::build).toList()));
     }
     return List.copyOf(enriched);
+  }
+
+  private static java.util.Optional<BundleStatsCandidate> compatibleStatsCandidate(
+      List<BundleStatsCandidate> candidates, String sourceFingerprint, String statsSignature) {
+    return candidates.stream()
+        .filter(candidate -> sourceFingerprint.equals(candidate.metadata().getSourceFingerprint()))
+        .filter(candidate -> statsSignature.equals(candidate.metadata().getStatsCaptureSignature()))
+        .findFirst();
   }
 
   private static void selectStats(
@@ -137,6 +154,8 @@ final class RemoteFileArtifactReusePlanner {
   private record BundleStatsCandidate(
       ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference bundle,
       ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata metadata) {}
+
+  private record StatsSelection(BundleStatsCandidate candidate, String filePath) {}
 
   private record BundleIndexCandidate(
       ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference bundle,

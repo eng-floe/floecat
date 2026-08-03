@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
@@ -181,7 +182,7 @@ public class IndexArtifactRepository {
       boolean bundled =
           reference != null
               && reference.blobUri() != null
-              && reference.blobUri().contains("/reuse-bundles/");
+              && ReusableArtifactBundleUris.isBundleUri(reference.blobUri());
       String bundledPrefix =
           requiredBlobPrefix.endsWith("index-artifacts/")
               ? requiredBlobPrefix.substring(
@@ -195,6 +196,9 @@ public class IndexArtifactRepository {
           || reference.blobBytes() <= 0L
           || reference.blobSha256() == null
           || reference.blobSha256().length != 32
+          || (bundled
+              && !ReusableArtifactBundleUris.matchesDigest(
+                  reference.blobUri(), reference.blobSha256()))
           || (!bundled
               && !reference
                   .blobUri()
@@ -738,7 +742,7 @@ public class IndexArtifactRepository {
 
   private IndexArtifactRecord readRecord(Pointer pointer) {
     try {
-      if (!pointer.getBlobUri().contains("/reuse-bundles/")) {
+      if (!ReusableArtifactBundleUris.isBundleUri(pointer.getBlobUri())) {
         return IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri()));
       }
       ReusableArtifactBundlePayload bundle =
@@ -766,9 +770,13 @@ public class IndexArtifactRepository {
   private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundle(String uri) {
     try {
       byte[] bytes = blobStore.get(uri);
-      return bytes == null
-          ? Optional.empty()
-          : Optional.of(ReusableArtifactBundlePayload.parseFrom(bytes));
+      if (bytes == null) {
+        return Optional.empty();
+      }
+      if (!ReusableArtifactBundleUris.matchesPayload(uri, bytes)) {
+        throw new IllegalStateException("reusable artifact bundle digest mismatch: " + uri);
+      }
+      return Optional.of(ReusableArtifactBundlePayload.parseFrom(bytes));
     } catch (StorageNotFoundException e) {
       return Optional.empty();
     } catch (InvalidProtocolBufferException e) {

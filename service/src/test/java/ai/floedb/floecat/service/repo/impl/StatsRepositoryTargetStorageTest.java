@@ -143,6 +143,85 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void bundledStatsReferenceRejectsUriThatDoesNotMatchDigest() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 100L;
+    String generationId = "full-rescan-bundled";
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("bundle"));
+    String requiredPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenStatsReferencesInGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    generationId,
+                    List.of(
+                        new StatsStore.PrewrittenTargetStatsReference(
+                            "file:s3://bucket/file.parquet",
+                            requiredPrefix + "worker-uploads/job/lease/reuse-bundles/latest.pb",
+                            6L,
+                            digest))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid prewritten target stats reference");
+  }
+
+  @Test
+  void bundledStatsReadRejectsPayloadThatDoesNotMatchContentAddress() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobs);
+    long snapshotId = 100L;
+    String generationId = "full-rescan-bundled";
+    String filePath = "s3://bucket/file.parquet";
+    TargetStatsRecord record =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(filePath).build());
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(
+            new StatsStore.PrewrittenTargetStatsReference(
+                StatsTargetIdentity.storageId(record.getTarget()),
+                bundleUri,
+                bundle.length,
+                digest)));
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
+    blobs.put(
+        bundleUri,
+        ReusableArtifactBundlePayload.newBuilder().setFormatVersion(1).build().toByteArray(),
+        "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.getTargetStats(
+                    TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("digest mismatch");
+  }
+
+  @Test
   void writesAndReadsTableColumnExpressionAndFileTargets() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

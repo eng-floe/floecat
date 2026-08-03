@@ -103,6 +103,73 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void bundledIndexReferenceRejectsUriThatDoesNotMatchDigest() {
+    BlobStore blobs = mock(BlobStore.class);
+    IndexArtifactRepository repository =
+        new IndexArtifactRepository(new InMemoryPointerStore(), blobs);
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("bundle"));
+    String workerPrefix = "/worker-output/index-artifacts/";
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+                    TABLE_ID,
+                    715L,
+                    "full-rescan-bundled",
+                    workerPrefix,
+                    List.of(
+                        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                            "file:s3://bucket/file.parquet",
+                            "/worker-output/reuse-bundles/latest.pb",
+                            6L,
+                            digest))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid prewritten index artifact reference");
+    verifyNoInteractions(blobs);
+  }
+
+  @Test
+  void bundledIndexReadRejectsPayloadThatDoesNotMatchContentAddress() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 716L;
+    String generationId = "full-rescan-bundled";
+    IndexArtifactRecord record = indexRecord(snapshotId, "s3://bucket/file.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String workerPrefix = "/worker-output/index-artifacts/";
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        workerPrefix,
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/file.parquet", bundleUri, bundle.length, digest)));
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        captureManifest(snapshotId, 1, 1, "customer_id").toByteArray());
+    blobs.put(
+        bundleUri,
+        ReusableArtifactBundlePayload.newBuilder().setFormatVersion(1).build().toByteArray(),
+        "application/x-protobuf");
+
+    assertThatThrownBy(() -> repository.getIndexArtifact(TABLE_ID, snapshotId, record.getTarget()))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("digest mismatch");
+  }
+
+  @Test
   void prewrittenReferencesUseOptimisticPointerBatchesWithoutReads() {
     InMemoryPointerStore delegate = new InMemoryPointerStore();
     AtomicInteger batchCalls = new AtomicInteger();

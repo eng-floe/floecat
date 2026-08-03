@@ -45,6 +45,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -196,6 +197,88 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             any());
     verify(backend, never()).existingSnapshotIds(any(), any());
     verify(blobStore, never()).get(any());
+  }
+
+  @Test
+  void planningRegeneratesWhenExplicitParentReuseManifestObjectIsUnavailable() {
+    assertPlanningRegeneratesWhenManifestReadIsUnavailable(false);
+    assertPlanningRegeneratesWhenManifestReadIsUnavailable(true);
+  }
+
+  private static void assertPlanningRegeneratesWhenManifestReadIsUnavailable(
+      boolean throwsNotFound) {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(
+            backend, workerClient, ignored -> Optional.empty(), 2, true);
+    executor.blobStore = blobStore;
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    List.of(snapshotFile("file-1", 10L)), List.of())));
+    when(backend.fetchSnapshot(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(55L)
+                    .setParentSnapshotId(9001L)
+                    .build()));
+    String uri = "/reuse/missing-9001.pb";
+    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(9001L)
+                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
+                    .putSummary(SnapshotReuseManifestMetadata.BYTES, "123")
+                    .putSummary(SnapshotReuseManifestMetadata.SHA256, "missing")
+                    .build()));
+    if (throwsNotFound) {
+      when(blobStore.get(uri)).thenThrow(new StorageNotFoundException("missing"));
+    } else {
+      when(blobStore.get(uri)).thenReturn(null);
+    }
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    assertTrue(
+        executor
+            .execute(
+                new ReconcileExecutor.ExecutionContext(
+                    lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
+            .success());
+    verify(workerClient)
+        .submitPlanSnapshotSuccess(
+            any(),
+            any(),
+            argThat(
+                fileGroupJobs ->
+                    fileGroupJobs.stream()
+                        .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
+                        .allMatch(
+                            plan ->
+                                plan.reusableArtifactBundleSelections().isEmpty()
+                                    && !plan.sourceFingerprint().isBlank()
+                                    && !plan.statsCaptureSignature().isBlank())),
+            any());
   }
 
   @Test

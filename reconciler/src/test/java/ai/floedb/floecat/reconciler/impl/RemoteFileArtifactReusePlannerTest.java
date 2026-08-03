@@ -70,6 +70,75 @@ class RemoteFileArtifactReusePlannerTest {
   }
 
   @Test
+  void reusesStatsOnlyWhenMainAndAllAuxiliaryTargetsAreCompatible() {
+    String deletionVectorPath = "s3://bucket/deletion-vector.bin";
+    String deleteFilePath = "s3://bucket/delete-file.parquet";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector("u", deletionVectorPath, 0, 12, 3L),
+            "PARQUET",
+            0,
+            List.of(
+                new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                    deleteFilePath,
+                    45L,
+                    ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                    0,
+                    List.of(),
+                    "iceberg-delete-v1:8:11")),
+            "iceberg-data-v1:7:10");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    String statsSignature = FileArtifactReuse.statsCaptureSignature(policy);
+    String mainFingerprint = FileArtifactReuse.sourceFingerprint(plan, "{}");
+    var auxiliaryFingerprints = FileArtifactReuse.auxiliaryStatsFingerprints(plan);
+    var descriptor =
+        ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:group-1")
+            .setPayloadUri("s3://bucket/reuse-bundle.pb")
+            .setPayloadBytes(1024)
+            .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]))
+            .build();
+    var incompleteBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(descriptor)
+            .addFileStats(statsMetadata(PATH, mainFingerprint, statsSignature))
+            .addFileStats(
+                statsMetadata(
+                    deletionVectorPath,
+                    auxiliaryFingerprints.get(deletionVectorPath),
+                    statsSignature))
+            .build();
+
+    ReconcileFileExecutionPlan incomplete =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(plan), policy, false, List.of(incompleteBundle))
+            .getFirst();
+
+    assertFalse(incomplete.reusesFileStats());
+    assertTrue(incomplete.reusableArtifactBundleSelections().isEmpty());
+
+    var completeBundle =
+        incompleteBundle.toBuilder()
+            .addFileStats(
+                statsMetadata(
+                    deleteFilePath, auxiliaryFingerprints.get(deleteFilePath), statsSignature))
+            .build();
+    ReconcileFileExecutionPlan complete =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(plan), policy, false, List.of(completeBundle))
+            .getFirst();
+
+    assertTrue(complete.reusesFileStats());
+    assertEquals(
+        Set.of(PATH, deletionVectorPath, deleteFilePath),
+        Set.copyOf(complete.reusableArtifactBundleSelections().getFirst().statsFilePaths()));
+  }
+
+  @Test
   void rejectsBundleIndexThatDoesNotCoverExplicitSelectors() {
     ReconcileFileExecutionPlan plan =
         ReconcileFileExecutionPlan.of(
@@ -122,6 +191,15 @@ class RemoteFileArtifactReusePlannerTest {
                 .setIndexCaptureSignature(
                     FileArtifactReuse.indexCaptureSignature(policy, executionSchemaJson))
                 .addRealizedIndexSelectors(realizedSelector))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata statsMetadata(
+      String filePath, String sourceFingerprint, String statsCaptureSignature) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+        .setFilePath(filePath)
+        .setSourceFingerprint(sourceFingerprint)
+        .setStatsCaptureSignature(statsCaptureSignature)
         .build();
   }
 }

@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -307,7 +308,9 @@ public class StatsRepository implements StatsStore {
     for (StatsStore.PrewrittenTargetStatsReference value :
         references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references) {
       boolean bundled =
-          value != null && value.blobUri() != null && value.blobUri().contains("/reuse-bundles/");
+          value != null
+              && value.blobUri() != null
+              && ReusableArtifactBundleUris.isBundleUri(value.blobUri());
       if (value == null
           || value.targetStorageId() == null
           || value.targetStorageId().isBlank()
@@ -316,6 +319,8 @@ public class StatsRepository implements StatsStore {
           || value.blobBytes() <= 0L
           || value.blobSha256() == null
           || value.blobSha256().length != 32
+          || (bundled
+              && !ReusableArtifactBundleUris.matchesDigest(value.blobUri(), value.blobSha256()))
           || (!bundled
               && !value
                   .blobUri()
@@ -525,12 +530,16 @@ public class StatsRepository implements StatsStore {
     List<PrewrittenStatsWrite> writes = new ArrayList<>();
     for (StatsStore.PrewrittenStatsObject object :
         objects == null ? List.<StatsStore.PrewrittenStatsObject>of() : objects) {
+      boolean bundled = object != null && ReusableArtifactBundleUris.isBundleUri(object.blobUri());
       if (object == null
           || object.blobUri() == null
           || !object.blobUri().startsWith(requiredBlobPrefix)
           || object.blobBytes() <= 0L
           || object.blobSha256() == null
-          || object.blobSha256().length != 32) {
+          || object.blobSha256().length != 32
+          || (bundled
+              && !ReusableArtifactBundleUris.matchesDigest(
+                  object.blobUri(), object.blobSha256()))) {
         throw new IllegalArgumentException("invalid prewritten stats object protection");
       }
       writes.add(
@@ -2080,7 +2089,7 @@ public class StatsRepository implements StatsStore {
     @Override
     protected Optional<TargetStatsRecord> loadAndParseReferencedBlob(
         String pointerKey, String blobUri) {
-      if (!blobUri.contains("/reuse-bundles/")) {
+      if (!ReusableArtifactBundleUris.isBundleUri(blobUri)) {
         return super.loadAndParseReferencedBlob(pointerKey, blobUri);
       }
       Optional<ReusableArtifactBundlePayload> bundle =
@@ -2091,15 +2100,25 @@ public class StatsRepository implements StatsStore {
     @Override
     protected TargetStatsRecord parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
         throws Exception {
-      if (!blobUri.contains("/reuse-bundles/")) {
+      if (!ReusableArtifactBundleUris.isBundleUri(blobUri)) {
         return super.parseReferencedBlob(pointerKey, blobUri, bytes);
+      }
+      if (!ReusableArtifactBundleUris.matchesPayload(blobUri, bytes)) {
+        throw new CorruptionException("reusable artifact bundle digest mismatch: " + blobUri);
       }
       return targetFromBundle(pointerKey, ReusableArtifactBundlePayload.parseFrom(bytes));
     }
 
     private Optional<ReusableArtifactBundlePayload> loadBundle(String blobUri) {
       try {
-        return Optional.of(ReusableArtifactBundlePayload.parseFrom(blobStore.get(blobUri)));
+        byte[] bytes = blobStore.get(blobUri);
+        if (bytes == null) {
+          return Optional.empty();
+        }
+        if (!ReusableArtifactBundleUris.matchesPayload(blobUri, bytes)) {
+          throw new CorruptionException("reusable artifact bundle digest mismatch: " + blobUri);
+        }
+        return Optional.of(ReusableArtifactBundlePayload.parseFrom(bytes));
       } catch (StorageNotFoundException e) {
         return Optional.empty();
       } catch (InvalidProtocolBufferException e) {

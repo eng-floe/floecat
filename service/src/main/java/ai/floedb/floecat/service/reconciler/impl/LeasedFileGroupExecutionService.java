@@ -45,6 +45,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
@@ -459,7 +460,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     descriptors.addAll(requiredIndexArtifacts);
     Map<String, StatsObjectDescriptor> payloads = new LinkedHashMap<>();
     for (StatsObjectDescriptor object : descriptors) {
-      boolean bundled = object.getPayloadUri().contains("/reuse-bundles/");
+      boolean bundled = ReusableArtifactBundleUris.isBundleUri(object.getPayloadUri());
       StatsObjectDescriptor existingPayload = payloads.putIfAbsent(object.getPayloadUri(), object);
       if (object.getTargetStorageId().isBlank()
           || object.getPayloadUri().isBlank()
@@ -469,7 +470,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                   || !existingPayload.getPayloadSha256().equals(object.getPayloadSha256())))
           || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
           || object.getPayloadBytes() <= 0L
-          || object.getPayloadSha256().size() != 32) {
+          || object.getPayloadSha256().size() != 32
+          || (bundled
+              && !ReusableArtifactBundleUris.matchesDigest(
+                  object.getPayloadUri(), object.getPayloadSha256().toByteArray()))) {
         throw new IllegalArgumentException("invalid target stats object descriptor");
       }
       if (existingPayload == null) {
@@ -530,7 +534,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                 + object.getTargetStorageId());
       }
       if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)
-          && !object.getPayloadUri().contains("/reuse-bundles/")) {
+          && !ReusableArtifactBundleUris.isBundleUri(object.getPayloadUri())) {
         throw new IllegalArgumentException("invalid prewritten index artifact object prefix");
       }
       if (!indexTargets.add(object.getTargetStorageId())) {
@@ -574,10 +578,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     }
     StatsObjectDescriptor artifact = artifactBundle.getArtifact();
     if (artifact.getPayloadUri().isBlank()
-        || !artifact.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
-        || !artifact.getPayloadUri().contains("/reuse-bundles/")
         || artifact.getPayloadBytes() <= 0L
-        || artifact.getPayloadSha256().size() != 32) {
+        || artifact.getPayloadSha256().size() != 32
+        || !ReusableArtifactBundleUris.matchesDigest(
+            artifact.getPayloadUri(),
+            descriptor.statsObjectPrefix(),
+            artifact.getPayloadSha256().toByteArray())) {
       throw new IllegalArgumentException("invalid file-group artifact bundle descriptor");
     }
     List<StatsObjectDescriptor> bundledFileStats =

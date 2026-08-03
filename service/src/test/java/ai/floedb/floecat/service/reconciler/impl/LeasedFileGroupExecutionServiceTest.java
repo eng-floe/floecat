@@ -75,6 +75,7 @@ import io.grpc.StatusRuntimeException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -724,7 +725,11 @@ class LeasedFileGroupExecutionServiceTest {
     StatsObjectDescriptor bundle =
         StatsObjectDescriptor.newBuilder()
             .setTargetStorageId("reuse-bundle:group-1")
-            .setPayloadUri(statsObjectPrefix() + "reuse-bundles/bundle.pb")
+            .setPayloadUri(
+                statsObjectPrefix()
+                    + "reuse-bundles/"
+                    + HexFormat.of().formatHex(sha256(bundleBytes))
+                    + ".pb")
             .setPayloadBytes(bundleBytes.length)
             .setPayloadSha256(ByteString.copyFrom(sha256(bundleBytes)))
             .build();
@@ -837,7 +842,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessRejectsDigestMismatchAndUnplannedStatsTarget() {
+  void persistSuccessRejectsBundleUriDigestMismatchAndUnplannedStatsTarget() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -877,16 +882,18 @@ class LeasedFileGroupExecutionServiceTest {
                     .setPayloadUri(statsObjectPrefix() + "reuse-bundles/changed.pb"))
             .build();
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            service.persistSuccess(
-                principal,
-                CHILD_JOB_ID,
-                LEASE_EPOCH,
-                "result-1",
-                resultDescriptor(List.of(record)),
-                changedBundle));
+    IllegalArgumentException bundleUriMismatch =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    CHILD_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    resultDescriptor(List.of(record)),
+                    changedBundle));
+    assertTrue(bundleUriMismatch.getMessage().contains("invalid file-group artifact bundle"));
 
     StatsObjectDescriptor unplannedTarget =
         bundleArtifact().toBuilder()
@@ -1512,11 +1519,13 @@ class LeasedFileGroupExecutionServiceTest {
 
   private StatsObjectDescriptor bundleArtifact() {
     byte[] bytes = "bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    byte[] digest = sha256(bytes);
     return StatsObjectDescriptor.newBuilder()
         .setTargetStorageId("reuse-bundle:group-1")
-        .setPayloadUri(statsObjectPrefix() + "reuse-bundles/bundle.pb")
+        .setPayloadUri(
+            statsObjectPrefix() + "reuse-bundles/" + HexFormat.of().formatHex(digest) + ".pb")
         .setPayloadBytes(bytes.length)
-        .setPayloadSha256(ByteString.copyFrom(sha256(bytes)))
+        .setPayloadSha256(ByteString.copyFrom(digest))
         .build();
   }
 
