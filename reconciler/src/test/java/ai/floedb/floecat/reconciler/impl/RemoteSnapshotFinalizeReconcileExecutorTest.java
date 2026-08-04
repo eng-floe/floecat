@@ -298,6 +298,84 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void cumulativeReuseIndexReplacesChangedTargetsAndRetainsUnchangedInheritedTargets() {
+    String changedPath = "s3://bucket/shared-delete.parquet";
+    String unchangedPath = "s3://bucket/unchanged.parquet";
+    String changedTarget =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(changedPath));
+    byte[] inheritedSha256 = new byte[32];
+    inheritedSha256[0] = 1;
+    byte[] currentSha256 = new byte[32];
+    currentSha256[0] = 2;
+    var inheritedArtifact =
+        statsDescriptor("reuse-bundle:base", "/stats/base-bundle.pb", inheritedSha256);
+    var currentArtifact =
+        statsDescriptor("reuse-bundle:current", "/stats/current-bundle.pb", currentSha256);
+    var inheritedBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(inheritedArtifact)
+            .addFileStats(reusableStatsMetadata(changedPath, "old-source"))
+            .addFileStats(reusableStatsMetadata(unchangedPath, "unchanged-source"))
+            .build();
+    var currentBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(currentArtifact)
+            .addFileStats(reusableStatsMetadata(changedPath, "new-source"))
+            .build();
+
+    var cumulative =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+            List.of(statsDescriptor(changedTarget, currentArtifact.getPayloadUri(), currentSha256)),
+            List.of(inheritedBundle, currentBundle));
+
+    assertEquals(
+        List.of(unchangedPath),
+        cumulative.reuseBundles().get(0).getFileStatsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+            .toList());
+    assertEquals(
+        List.of(changedPath),
+        cumulative.reuseBundles().get(1).getFileStatsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+            .toList());
+  }
+
+  @Test
+  void cumulativeReuseIndexCarriesMoreThanSixtyFourIncrementalSnapshots() {
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> cumulative =
+        new java.util.ArrayList<>();
+
+    for (int generation = 0; generation < 65; generation++) {
+      String path = "s3://bucket/file-" + generation + ".parquet";
+      byte[] sha256 = new byte[32];
+      sha256[0] = (byte) generation;
+      var artifact =
+          statsDescriptor(
+              "reuse-bundle:generation-" + generation,
+              "/stats/generation-" + generation + ".pb",
+              sha256);
+      cumulative.add(
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+              .setArtifact(artifact)
+              .addFileStats(reusableStatsMetadata(path, "source-" + generation))
+              .build());
+      String target =
+          ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+              ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(path));
+      cumulative =
+          new java.util.ArrayList<>(
+              RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+                      List.of(statsDescriptor(target, artifact.getPayloadUri(), sha256)),
+                      cumulative)
+                  .reuseBundles());
+    }
+
+    assertEquals(65, cumulative.size());
+    assertEquals(65, cumulative.stream().mapToInt(bundle -> bundle.getFileStatsCount()).sum());
+  }
+
+  @Test
   void acceptsEmptyFileGroupWithoutStatsPartials() {
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -606,6 +684,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .setSnapshotId(54L)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .setReusableArtifactBundlesComplete(true)
             .addReusableArtifactBundles(bundle)
             .build()
             .toByteArray();
@@ -665,7 +744,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             eq(List.of()),
             eq(List.of()),
             eq(List.of()),
-            eq(List.of()),
+            eq(List.of(bundle)),
             eq(List.of()),
             eq(List.of()),
             any(),
@@ -707,6 +786,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .setSnapshotId(54L)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .setReusableArtifactBundlesComplete(true)
             .addReusableArtifactBundles(bundle)
             .build()
             .toByteArray();
@@ -871,6 +951,15 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .setPayloadUri(payloadUri)
         .setPayloadBytes(12L)
         .setPayloadSha256(ByteString.copyFrom(sha256))
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata
+      reusableStatsMetadata(String path, String sourceFingerprint) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+        .setFilePath(path)
+        .setSourceFingerprint(sourceFingerprint)
+        .setStatsCaptureSignature("stats-v1")
         .build();
   }
 

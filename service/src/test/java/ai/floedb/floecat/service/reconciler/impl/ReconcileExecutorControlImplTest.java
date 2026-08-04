@@ -574,8 +574,8 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void renewReconcileLeaseReturnsCancellationSignal() {
-    when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
-    when(service.jobs.isCancellationRequested("job-1")).thenReturn(true);
+    when(service.jobs.renewLeaseWithCancellation("job-1", "lease-1"))
+        .thenReturn(new ReconcileJobStore.LeaseRenewal(true, true));
 
     var response =
         service

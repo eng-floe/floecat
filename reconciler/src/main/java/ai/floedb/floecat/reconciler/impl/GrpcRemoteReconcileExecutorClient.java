@@ -1538,11 +1538,19 @@ class GrpcRemoteReconcileExecutorClient
             .map(record -> publishStatsObject(blobStore, stableStatsObjectPrefix, record))
             .toList();
     int totalFileStats =
-        stableFileStats.size()
-            + (appendOnlyBase == null ? 0 : appendOnlyBase.fileStatsRecordCount());
+        Math.toIntExact(
+            stableReuseBundles.stream()
+                .flatMap(bundle -> bundle.getFileStatsList().stream())
+                .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+                .distinct()
+                .count());
     int totalIndexArtifacts =
-        stableIndexArtifacts.size()
-            + (appendOnlyBase == null ? 0 : appendOnlyBase.indexArtifactCount());
+        Math.toIntExact(
+            stableReuseBundles.stream()
+                .flatMap(bundle -> bundle.getIndexArtifactsList().stream())
+                .map(ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata::getFilePath)
+                .distinct()
+                .count());
     SnapshotCaptureManifest.Builder manifest =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)

@@ -451,6 +451,8 @@ public interface ReconcileJobStore {
 
   boolean renewLease(String jobId, String leaseEpoch);
 
+  LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch);
+
   default Optional<LeasedJob> getCompletionLeaseView(
       String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
     return Optional.empty();
@@ -472,8 +474,8 @@ public interface ReconcileJobStore {
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
-    boolean leaseValid = renewLease(jobId, leaseEpoch);
-    if (leaseValid) {
+    LeaseRenewal renewal = renewLeaseWithCancellation(jobId, leaseEpoch);
+    if (renewal.leaseValid) {
       markProgress(
           jobId,
           leaseEpoch,
@@ -486,7 +488,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           message);
     }
-    return new ProgressUpdate(leaseValid, isCancellationRequested(jobId));
+    return new ProgressUpdate(renewal.leaseValid, renewal.cancellationRequested);
   }
 
   default ProgressUpdate reportProgress(
@@ -1701,6 +1703,16 @@ public interface ReconcileJobStore {
     public final boolean cancellationRequested;
 
     public ProgressUpdate(boolean leaseValid, boolean cancellationRequested) {
+      this.leaseValid = leaseValid;
+      this.cancellationRequested = cancellationRequested;
+    }
+  }
+
+  final class LeaseRenewal {
+    public final boolean leaseValid;
+    public final boolean cancellationRequested;
+
+    public LeaseRenewal(boolean leaseValid, boolean cancellationRequested) {
       this.leaseValid = leaseValid;
       this.cancellationRequested = cancellationRequested;
     }

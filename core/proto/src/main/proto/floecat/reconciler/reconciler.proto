@@ -449,10 +449,13 @@ message SnapshotCaptureManifest {
   repeated string realized_index_selectors = 21;
   // Concrete column selectors present in the activated stats generation.
   repeated string realized_stats_selectors = 22;
-  // Complete compatibility index for the current snapshot. A false value is not eligible as a
-  // reuse source and is replaced by the next complete capture.
+  // Complete compatibility index for the current snapshot. This is not a per-snapshot delta:
+  // unchanged entries may reference immutable bundles produced by an earlier snapshot, changed
+  // entries reference bundles produced by this snapshot, and removed entries are absent.
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
   AppendOnlySnapshotBase append_only_base = 28;
+  // Distinguishes the complete current-state contract from older delta-only manifests. A false
+  // value is not eligible as a reuse source and is replaced by the next complete capture.
   bool reusable_artifact_bundles_complete = 29;
 }
 

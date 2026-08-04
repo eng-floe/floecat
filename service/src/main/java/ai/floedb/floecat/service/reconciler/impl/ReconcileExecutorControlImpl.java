@@ -212,8 +212,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             () -> {
               long bodyStartNanos = System.nanoTime();
               long setupNanos = 0L;
-              long renewNanos = 0L;
-              long cancellationNanos = 0L;
+              long renewalNanos = 0L;
               String jobId = request == null ? "" : request.getJobId();
               String correlationId = "";
               String outcome = "failed";
@@ -228,33 +227,29 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 setupNanos = System.nanoTime() - phaseStartNanos;
 
                 phaseStartNanos = System.nanoTime();
-                boolean renewed = jobs.renewLease(jobId, leaseEpoch);
-                renewNanos = System.nanoTime() - phaseStartNanos;
-
-                phaseStartNanos = System.nanoTime();
-                boolean cancellationRequested = jobs.isCancellationRequested(jobId);
-                cancellationNanos = System.nanoTime() - phaseStartNanos;
-                outcome = renewed ? "renewed" : "rejected";
+                ReconcileJobStore.LeaseRenewal renewal =
+                    jobs.renewLeaseWithCancellation(jobId, leaseEpoch);
+                renewalNanos = System.nanoTime() - phaseStartNanos;
+                outcome = renewal.leaseValid ? "renewed" : "rejected";
                 return RenewReconcileLeaseResponse.newBuilder()
-                    .setRenewed(renewed)
-                    .setCancellationRequested(cancellationRequested)
+                    .setRenewed(renewal.leaseValid)
+                    .setCancellationRequested(renewal.cancellationRequested)
                     .build();
               } finally {
                 long totalNanos = System.nanoTime() - handlerEntryNanos;
                 long bodyNanos = System.nanoTime() - bodyStartNanos;
                 long queueNanos = Math.max(0L, bodyStartNanos - handlerEntryNanos);
-                long accountedBodyNanos = setupNanos + renewNanos + cancellationNanos;
+                long accountedBodyNanos = setupNanos + renewalNanos;
                 long otherBodyNanos = Math.max(0L, bodyNanos - accountedBodyNanos);
                 long slowNanos = 250_000_000L;
                 if (!"renewed".equals(outcome)
                     || totalNanos >= slowNanos
                     || queueNanos >= slowNanos
-                    || renewNanos >= slowNanos
-                    || cancellationNanos >= slowNanos) {
+                    || renewalNanos >= slowNanos) {
                   LOG.infof(
                       "slow_or_unsuccessful_reconcile_lease_handler jobId=%s correlationId=%s outcome=%s"
-                          + " totalMs=%.3f queueMs=%.3f bodyMs=%.3f setupMs=%.3f renewMs=%.3f"
-                          + " cancellationMs=%.3f otherBodyMs=%.3f",
+                          + " totalMs=%.3f queueMs=%.3f bodyMs=%.3f setupMs=%.3f renewalMs=%.3f"
+                          + " otherBodyMs=%.3f",
                       jobId,
                       correlationId,
                       outcome,
@@ -262,8 +257,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       queueNanos / 1_000_000.0,
                       bodyNanos / 1_000_000.0,
                       setupNanos / 1_000_000.0,
-                      renewNanos / 1_000_000.0,
-                      cancellationNanos / 1_000_000.0,
+                      renewalNanos / 1_000_000.0,
                       otherBodyNanos / 1_000_000.0);
                 }
               }

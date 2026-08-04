@@ -54,7 +54,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
-  private static final long DEFAULT_LEASE_MS = 120_000L;
+  private static final long DEFAULT_LEASE_MS = 600_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
@@ -1044,6 +1044,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
     leaseExpiresAtMs.put(jobId, now + leaseMs);
     return true;
+  }
+
+  @Override
+  public LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch) {
+    boolean leaseValid = renewLease(jobId, leaseEpoch);
+    var job = jobs.get(jobId);
+    boolean cancellationRequested =
+        job != null && ("JS_CANCELLING".equals(job.state) || "JS_CANCELLED".equals(job.state));
+    return new LeaseRenewal(leaseValid, cancellationRequested);
   }
 
   @Override

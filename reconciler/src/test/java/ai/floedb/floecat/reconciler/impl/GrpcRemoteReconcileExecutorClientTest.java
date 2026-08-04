@@ -367,6 +367,22 @@ class GrpcRemoteReconcileExecutorClientTest {
             .setPayloadBytes(12L)
             .setPayloadSha256(ByteString.copyFrom(payloadSha256))
             .build();
+    var firstBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(sharedDeleteStats.toBuilder().setTargetStorageId("reuse-bundle:group-a"))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/shared-delete.parquet")
+                    .setSourceFingerprint("delete-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    var secondBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                sharedDeleteStats.toBuilder()
+                    .setTargetStorageId("reuse-bundle:group-b")
+                    .setPayloadUri("/stats/delete-b.pb"))
+            .build();
 
     client.prepareSnapshotFinalizeSuccess(
         remoteSnapshotFinalizeLease(2),
@@ -380,7 +396,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         List.of(sharedDeleteStats),
         List.of(),
         List.of(),
-        List.of(),
+        List.of(firstBundle, secondBundle),
         List.of(),
         List.of(),
         null);

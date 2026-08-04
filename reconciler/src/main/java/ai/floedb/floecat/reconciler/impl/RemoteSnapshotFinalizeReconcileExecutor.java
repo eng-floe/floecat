@@ -219,6 +219,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
       if (appendOnly != null) {
         partials.addAll(appendOnly.aggregateRecords());
+        reuseBundles.addAll(appendOnly.reusableArtifactBundles());
         realizedStatsSelectors.addAll(appendOnly.realizedStatsSelectors());
         realizedIndexSelectors.addAll(appendOnly.realizedIndexSelectors());
         if (defaultStatsSelection) {
@@ -423,8 +424,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || base.fileStatsRecordCount() != manifest.getFileStatsRecordCount()
         || base.indexArtifactCount() != manifest.getIndexArtifactCount()
         || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
-        || base.chainDepth()
-            != (manifest.hasAppendOnlyBase() ? manifest.getAppendOnlyBase().getChainDepth() + 1 : 1)
+        || !manifest.getReusableArtifactBundlesComplete()
+        || base.chainDepth() != 1
         || (base.indexArtifactCount() > 0
             && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
         || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(
@@ -457,6 +458,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     return new AppendOnlyArtifacts(
         base,
         List.copyOf(aggregates),
+        manifest.getReusableArtifactBundlesList(),
         manifest.getRealizedStatsSelectorsList(),
         manifest.getRealizedIndexSelectorsList());
   }
@@ -464,6 +466,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
   private record AppendOnlyArtifacts(
       SnapshotPlanBlobStore.AppendOnlyBase base,
       List<TargetStatsRecord> aggregateRecords,
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
+          reusableArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors) {}
 
@@ -872,7 +876,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       for (var metadata : bundle.getFileStatsList()) {
         String target =
             StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(metadata.getFilePath()));
-        if (ownerByTarget.getOrDefault(target, -1) == index) {
+        if (!ownerByTarget.containsKey(target) || ownerByTarget.get(target) == index) {
           builder.addFileStats(metadata);
         }
       }

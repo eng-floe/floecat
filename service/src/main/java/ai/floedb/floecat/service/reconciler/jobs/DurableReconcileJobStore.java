@@ -144,7 +144,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
-  private static final long DEFAULT_LEASE_MS = 120_000L;
+  private static final long DEFAULT_LEASE_MS = 600_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
@@ -1766,6 +1766,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     return renewLeaseByJobId(loaded.get().record.accountId, jobId, leaseEpoch);
+  }
+
+  @Override
+  public LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch) {
+    StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+    if (loaded == null || loaded.record == null) {
+      return new LeaseRenewal(false, false);
+    }
+    boolean leaseValid = renewLeaseByJobId(loaded.record.accountId, jobId, leaseEpoch);
+    boolean cancellationRequested =
+        isCancellationState(loaded.record.state) || isBlockedByAncestorCancellation(loaded.record);
+    return new LeaseRenewal(leaseValid, cancellationRequested);
   }
 
   @Override
