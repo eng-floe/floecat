@@ -584,13 +584,16 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     List<SubmitLeasedPlanSnapshotResultRequest.Chunk> stagedChunks =
         loadStagedPlanSnapshotChunks(principalContext, jobId, leaseEpoch, chunkCount);
     List<PlannedFileGroupJob> referencedJobs = List.of();
+    SnapshotPlanBlobStore.AppendOnlyBase referencedAppendOnlyBase = null;
     if (chunkCount == 0 && plannedFileGroupJobs > 0) {
       validateReferencedPlanUri(lease, durableSnapshotTask.fileGroupPlanBlobUri());
-      referencedJobs =
-          snapshotPlanBlobStore.loadPlanJobs(durableSnapshotTask.fileGroupPlanBlobUri());
+      SnapshotPlanBlobStore.SnapshotPlanBlob referencedPlan =
+          snapshotPlanBlobStore.loadPlan(durableSnapshotTask.fileGroupPlanBlobUri());
+      referencedJobs = referencedPlan.toPlannedFileGroupJobs();
+      referencedAppendOnlyBase = referencedPlan.appendOnlyBase().orElse(null);
     }
     if (!referencedJobs.isEmpty()) {
-      validateReferencedPlan(lease, durableSnapshotTask, referencedJobs);
+      validateReferencedPlan(lease, durableSnapshotTask, referencedJobs, referencedAppendOnlyBase);
     }
     long stagedFileGroupJobs =
         referencedJobs.isEmpty()
@@ -683,12 +686,24 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       ReconcileJobStore.LeasedJob lease,
       ReconcileSnapshotTask snapshotTask,
       List<PlannedFileGroupJob> plannedJobs) {
+    validateReferencedPlan(lease, snapshotTask, plannedJobs, null);
+  }
+
+  static void validateReferencedPlan(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> plannedJobs,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
     List<ReconcileFileGroupTask> groups =
         plannedJobs.stream()
             .map(job -> job == null ? ReconcileFileGroupTask.empty() : job.fileGroupTask())
             .toList();
     String expectedUri =
-        SnapshotPlanManifestIds.manifestBlobUri(lease.accountId, lease.jobId, groups);
+        SnapshotPlanManifestIds.manifestBlobUri(
+            lease.accountId,
+            lease.jobId,
+            groups,
+            appendOnlyBase == null ? List.of() : appendOnlyBase.manifestIdentity());
     if (!expectedUri.equals(snapshotTask.fileGroupPlanBlobUri())) {
       invalidReferencedPlan("snapshot plan URI does not match its account, job, and content");
     }
@@ -738,6 +753,13 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
               effectiveScope(lease), group);
       if (!expectedScope.semanticallyEquals(job.scope())) {
         invalidReferencedPlan("snapshot plan file-group scope does not match the leased scope");
+      }
+    }
+    if (appendOnlyBase != null) {
+      try {
+        sourceFileCount = Math.addExact(sourceFileCount, appendOnlyBase.sourceFileCount());
+      } catch (ArithmeticException e) {
+        invalidReferencedPlan("snapshot plan source file count overflow");
       }
     }
     if (snapshotTask.sourceFileCount() != sourceFileCount) {

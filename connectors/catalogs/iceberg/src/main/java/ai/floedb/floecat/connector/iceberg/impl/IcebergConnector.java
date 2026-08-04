@@ -429,6 +429,31 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        columnSelectorPolicy);
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<String> indexColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -470,8 +495,21 @@ public abstract class IcebergConnector implements FloecatConnector {
             ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
                 .read(plannedFilePaths)
             : ParquetPageIndexReader.ReadResult.empty();
-    return FileGroupCaptureResult.of(
-        stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    if (!captureIndexes) {
+      return FileGroupCaptureResult.of(
+          stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    }
+    List<ParquetPageIndexEntry> selectedPageIndexes =
+        selectPageIndexEntries(
+            table,
+            snapshot,
+            indexColumns,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            pageIndexes.entries(),
+            pageIndexes.rowGroups());
+    return FileGroupCaptureResult.ofSelectedPageIndexes(
+        stats, selectedPageIndexes, pageIndexes.rowGroups(), realizedStatsSelectors);
   }
 
   @Override
@@ -489,6 +527,25 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (snapshot == null) {
       throw new IllegalArgumentException("Unknown Iceberg snapshot: " + snapshotId);
     }
+    return Optional.of(
+        selectPageIndexEntries(
+            table,
+            snapshot,
+            selectors,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            entries,
+            rowGroups));
+  }
+
+  private List<ParquetPageIndexEntry> selectPageIndexEntries(
+      Table table,
+      Snapshot snapshot,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
     Schema schema = schemaForSnapshot(table, snapshot);
     List<ParquetPageIndexEntry> available = entries == null ? List.of() : entries;
     Map<Integer, SyntheticPageIndexColumn> syntheticColumns =
@@ -498,7 +555,7 @@ public abstract class IcebergConnector implements FloecatConnector {
             ? resolveDefaultPageIndexFieldIds(columnSelectorPolicy, syntheticColumns.keySet())
             : resolveIncludedFieldIds(schema, selectors, columnSelectorPolicy);
     if (selectedFieldIds.isEmpty()) {
-      return Optional.of(List.of());
+      return List.of();
     }
     for (int fieldId : selectedFieldIds) {
       if (!syntheticColumns.containsKey(fieldId)) {
@@ -598,7 +655,7 @@ public abstract class IcebergConnector implements FloecatConnector {
                 "Iceberg page indexes for " + filePath + " do not cover selectors " + selectors);
           }
         });
-    return Optional.of(List.copyOf(selected));
+    return List.copyOf(selected);
   }
 
   private static Set<Integer> resolveDefaultPageIndexFieldIds(

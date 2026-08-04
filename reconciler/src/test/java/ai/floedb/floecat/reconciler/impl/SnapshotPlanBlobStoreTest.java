@@ -227,6 +227,54 @@ class SnapshotPlanBlobStoreTest {
   }
 
   @Test
+  void resolvesFileGroupsFromDurablePlanThroughBoundedIndexCache() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileFileGroupTask first =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/first.parquet"));
+    ReconcileFileGroupTask second =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-2", "table-1", 55L, List.of("s3://bucket/second.parquet"));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            2);
+    ReconcileSnapshotTask persisted =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            snapshotTask,
+            List.of(
+                new PlannedFileGroupJob(ReconcileScope.empty(), first),
+                new PlannedFileGroupJob(ReconcileScope.empty(), second)));
+
+    assertEquals(
+        Optional.of(first),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-1"));
+    assertEquals(
+        Optional.of(second),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-2"));
+    assertEquals(1, blobStore.getCount);
+
+    store.clearPlanIndexCache();
+
+    assertEquals(
+        Optional.of(first),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-1"));
+    assertEquals(2, blobStore.getCount);
+  }
+
+  @Test
   void persistDirectStatsRoundTripsRecords() {
     SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -287,9 +335,24 @@ class SnapshotPlanBlobStoreTest {
 
     ReconcileSnapshotTask persisted =
         store.persistPlan("acct", "job-1", snapshotTask, List.of(), base);
+    SnapshotPlanBlobStore.AppendOnlyBase otherBase =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            53L,
+            "/reuse/other-base.pb",
+            124L,
+            "cd".repeat(32),
+            1,
+            1,
+            0,
+            "full-rescan-other-base-job",
+            "",
+            1);
+    ReconcileSnapshotTask persistedOther =
+        store.persistPlan("acct", "job-1", snapshotTask, List.of(), otherBase);
 
     assertEquals(
         Optional.of(base), store.loadPlan(persisted.fileGroupPlanBlobUri()).appendOnlyBase());
+    assertNotEquals(persisted.fileGroupPlanBlobUri(), persistedOther.fileGroupPlanBlobUri());
   }
 
   @Test
@@ -482,9 +545,11 @@ class SnapshotPlanBlobStoreTest {
 
   private static final class InMemoryBlobStore implements BlobStore {
     private final Map<String, byte[]> bytesByUri = new HashMap<>();
+    private int getCount;
 
     @Override
     public byte[] get(String uri) {
+      getCount++;
       return Optional.ofNullable(bytesByUri.get(uri)).orElseThrow();
     }
 

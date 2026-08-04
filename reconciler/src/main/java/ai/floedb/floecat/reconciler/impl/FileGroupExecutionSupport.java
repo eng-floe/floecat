@@ -21,7 +21,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -30,7 +29,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 public final class FileGroupExecutionSupport {
@@ -93,25 +91,6 @@ public final class FileGroupExecutionSupport {
               ai.floedb.floecat.connector.spi.FloecatConnector.DefaultColumnScope.FIRST_N;
         },
         effective.maxDefaultColumns());
-  }
-
-  public static Optional<ReconcileFileGroupTask> resolvePlannedTask(
-      ReconcileJobStore jobs, ReconcileJobStore.LeasedJob lease, ReconcileFileGroupTask task) {
-    if (task != null && !task.filePaths().isEmpty()) {
-      return Optional.of(task);
-    }
-    if (jobs == null
-        || lease == null
-        || lease.parentJobId == null
-        || lease.parentJobId.isBlank()
-        || lease.accountId == null
-        || lease.accountId.isBlank()) {
-      return Optional.empty();
-    }
-    return jobs.get(lease.accountId, lease.parentJobId)
-        .map(parent -> parent.snapshotTask)
-        .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
-        .flatMap(snapshotTask -> findPlannedGroup(snapshotTask, task));
   }
 
   public static List<ReconcileFileResult> fileResultsForSuccess(
@@ -193,17 +172,5 @@ public final class FileGroupExecutionSupport {
     }
     plannedFiles.removeAll(artifactFiles);
     return List.copyOf(plannedFiles);
-  }
-
-  private static Optional<ReconcileFileGroupTask> findPlannedGroup(
-      ReconcileSnapshotTask snapshotTask, ReconcileFileGroupTask groupRef) {
-    if (groupRef == null) {
-      return Optional.empty();
-    }
-    return snapshotTask.fileGroups().stream()
-        .filter(group -> group != null && !group.isEmpty())
-        .filter(group -> group.groupId().equals(groupRef.groupId()))
-        .filter(group -> group.planId().equals(groupRef.planId()))
-        .findFirst();
   }
 }

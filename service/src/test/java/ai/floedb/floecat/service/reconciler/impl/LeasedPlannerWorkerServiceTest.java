@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
@@ -238,6 +239,23 @@ class LeasedPlannerWorkerServiceTest {
                     List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
 
     assertTrue(error.getStatus().getDescription().contains("source file count"));
+  }
+
+  @Test
+  void referencedAppendOnlyPlanCountsInheritedAndDeltaFilesSeparately() {
+    String file = "s3://bucket/data/new-file.parquet";
+    ReconcileFileGroupTask group =
+        referencedGroup("job-1", "group-1", List.of(file), List.of(file));
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L, "/capture/base.pb", 100L, "ab".repeat(32), 2, 2, 0, "stats-generation", "", 1);
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 3, base);
+
+    LeasedPlannerWorkerService.validateReferencedPlan(
+        snapshotLease(ReconcileScope.empty(), snapshotTask),
+        snapshotTask,
+        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)),
+        base);
   }
 
   @Test
@@ -1854,6 +1872,13 @@ class LeasedPlannerWorkerServiceTest {
 
   private static ReconcileSnapshotTask referencedSnapshotTask(
       List<ReconcileFileGroupTask> groups, int sourceFileCount) {
+    return referencedSnapshotTask(groups, sourceFileCount, null);
+  }
+
+  private static ReconcileSnapshotTask referencedSnapshotTask(
+      List<ReconcileFileGroupTask> groups,
+      int sourceFileCount,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
     return ReconcileSnapshotTask.of(
         "table-1",
         55L,
@@ -1862,7 +1887,11 @@ class LeasedPlannerWorkerServiceTest {
         List.of(),
         true,
         ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-        SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", groups),
+        SnapshotPlanManifestIds.manifestBlobUri(
+            "acct",
+            "job-1",
+            groups,
+            appendOnlyBase == null ? List.of() : appendOnlyBase.manifestIdentity()),
         groups.size(),
         sourceFileCount,
         "",

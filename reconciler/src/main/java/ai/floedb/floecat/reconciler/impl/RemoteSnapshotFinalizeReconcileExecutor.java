@@ -225,7 +225,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           resolvedDefaultStatsSelectors = Set.copyOf(appendOnly.realizedStatsSelectors());
         }
         if (defaultIndexSelection) {
-          resolvedDefaultIndexSelectors = Set.copyOf(appendOnly.realizedIndexSelectors());
+          resolvedDefaultIndexSelectors =
+              defaultIndexSelectorIdentities(appendOnly.realizedIndexSelectors());
         }
       }
       for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
@@ -253,7 +254,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         }
         if (defaultIndexSelection) {
           Set<String> groupSelectors =
-              FileArtifactReuse.selectorIdentities(artifacts.realizedIndexSelectors());
+              defaultIndexSelectorIdentities(artifacts.realizedIndexSelectors());
           if (resolvedDefaultIndexSelectors == null) {
             resolvedDefaultIndexSelectors = groupSelectors;
           } else if (!resolvedDefaultIndexSelectors.equals(groupSelectors)) {
@@ -907,6 +908,10 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       throw new IllegalArgumentException(
           "snapshot file-group contains unrequested index artifacts");
     }
+  }
+
+  static Set<String> defaultIndexSelectorIdentities(java.util.Collection<String> selectors) {
+    return FileArtifactReuse.selectorIdentities(selectors);
   }
 
   static void validateReuseBundleArtifact(

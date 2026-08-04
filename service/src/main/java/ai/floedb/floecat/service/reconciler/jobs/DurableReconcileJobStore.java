@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.AppendOnlyBase;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -2090,7 +2091,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           payloads()
               .requireBlob(
                   manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
-      validateSnapshotPlanManifestHash(manifestUri, payload.fileGroups());
+      validateSnapshotPlanManifestHash(manifestUri, payload);
       if (!payload.fileGroups().isEmpty()) {
         throw new IllegalArgumentException(
             "snapshot plan manifest file-group count mismatch expected=0 actual="
@@ -2107,7 +2108,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             .requireBlob(
                 manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
     List<ReconcileFileGroupTask> plannedFileGroups = payload.fileGroups();
-    validateSnapshotPlanManifestHash(manifestUri, plannedFileGroups);
+    validateSnapshotPlanManifestHash(manifestUri, payload);
     if (plannedFileGroups.size() != effective.fileGroupCount()) {
       throw new IllegalArgumentException(
           "snapshot plan manifest file-group count mismatch expected="
@@ -2254,15 +2255,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             == predecessor.captureManifestPointerVersion();
   }
 
-  private void validateSnapshotPlanManifestHash(
-      String manifestUri, List<ReconcileFileGroupTask> plannedFileGroups) {
+  private void validateSnapshotPlanManifestHash(String manifestUri, SnapshotPlanBlob payload) {
     String effectiveManifestUri = blankToEmpty(manifestUri);
     if (effectiveManifestUri.isBlank()) {
       return;
     }
+    List<ReconcileFileGroupTask> plannedFileGroups =
+        payload == null ? List.of() : payload.fileGroups();
+    List<String> additionalIdentity =
+        payload == null
+            ? List.of()
+            : payload.appendOnlyBase().map(AppendOnlyBase::manifestIdentity).orElse(List.of());
     String expectedManifestUri =
         SnapshotPlanManifestIds.manifestBlobUri(
-            "ignored-account", "ignored-job", plannedFileGroups);
+            "ignored-account", "ignored-job", plannedFileGroups, additionalIdentity);
     String expectedFilename =
         expectedManifestUri.substring(expectedManifestUri.lastIndexOf('/') + 1);
     if (!effectiveManifestUri.endsWith("/" + expectedFilename)

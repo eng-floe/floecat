@@ -28,24 +28,43 @@ public final class SnapshotPlanManifestIds {
 
   public static String manifestHash(List<ReconcileFileGroupTask> fileGroups) {
     ManifestDigest digest = new ManifestDigest("snapshot-plan-v2");
-    List<byte[]> groups =
-        fileGroups == null
-            ? List.of()
-            : fileGroups.stream()
-                .filter(group -> group != null && !group.isEmpty())
-                .map(SnapshotPlanManifestIds::fileGroupDigest)
-                .sorted(SnapshotPlanManifestIds::compareDigest)
-                .toList();
+    List<byte[]> groups = fileGroupDigests(fileGroups);
     digest.add(groups.size());
     groups.forEach(digest::add);
     return digest.finish();
   }
 
+  public static String manifestHash(
+      List<ReconcileFileGroupTask> fileGroups, List<String> additionalIdentity) {
+    List<String> identity =
+        additionalIdentity == null
+            ? List.of()
+            : additionalIdentity.stream().map(SnapshotPlanManifestIds::blankToEmpty).toList();
+    if (identity.isEmpty()) {
+      return manifestHash(fileGroups);
+    }
+    ManifestDigest digest = new ManifestDigest("snapshot-plan-v3");
+    List<byte[]> groups = fileGroupDigests(fileGroups);
+    digest.add(groups.size());
+    groups.forEach(digest::add);
+    digest.add(identity.size());
+    identity.forEach(digest::add);
+    return digest.finish();
+  }
+
   public static String manifestBlobUri(
       String accountId, String jobId, List<ReconcileFileGroupTask> fileGroups) {
+    return manifestBlobUri(accountId, jobId, fileGroups, List.of());
+  }
+
+  public static String manifestBlobUri(
+      String accountId,
+      String jobId,
+      List<ReconcileFileGroupTask> fileGroups,
+      List<String> additionalIdentity) {
     return manifestBlobPrefix(accountId, jobId)
         + "snapshot-plan-"
-        + manifestHash(fileGroups)
+        + manifestHash(fileGroups, additionalIdentity)
         + ".json";
   }
 
@@ -57,6 +76,16 @@ public final class SnapshotPlanManifestIds {
           "accountId and jobId are required for snapshot plan manifests");
     }
     return "/accounts/" + acct + "/reconcile/jobs/" + job + "/snapshot-plan/";
+  }
+
+  private static List<byte[]> fileGroupDigests(List<ReconcileFileGroupTask> fileGroups) {
+    return fileGroups == null
+        ? List.of()
+        : fileGroups.stream()
+            .filter(group -> group != null && !group.isEmpty())
+            .map(SnapshotPlanManifestIds::fileGroupDigest)
+            .sorted(SnapshotPlanManifestIds::compareDigest)
+            .toList();
   }
 
   private static byte[] fileGroupDigest(ReconcileFileGroupTask group) {

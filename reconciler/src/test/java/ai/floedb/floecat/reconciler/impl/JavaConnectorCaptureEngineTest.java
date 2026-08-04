@@ -585,6 +585,7 @@ class JavaConnectorCaptureEngineTest {
             eq(55L),
             eq(Set.of(plannedFile)),
             eq(Set.of("stats_only")),
+            eq(Set.of("index_only")),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(true),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
@@ -677,7 +678,7 @@ class JavaConnectorCaptureEngineTest {
     var selectedEntry =
         pageIndexEntry(plannedFile, "customer_id").withSelectorAliases(Set.of("#1", "customer_id"));
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(),
@@ -737,7 +738,7 @@ class JavaConnectorCaptureEngineTest {
     String plannedFile = "s3://bucket/path/file-1.parquet";
     var availableEntry = pageIndexEntry(plannedFile, "customer_id");
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of(availableEntry)));
     when(connector.selectPageIndexEntries(
             "db",
@@ -774,6 +775,49 @@ class JavaConnectorCaptureEngineTest {
     engine.capture(request, outputs::accept);
 
     assertThat(outputs.pageIndexEntries).isEmpty();
+  }
+
+  @Test
+  void captureUsesConnectorPreselectedPageIndexesWithoutASecondMetadataLookup() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    var selectedEntry = pageIndexEntry(plannedFile, "customer_id");
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.ofSelectedPageIndexes(
+                List.of(), List.of(selectedEntry), List.of(), List.of()));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of("#2"),
+            Set.of("#1"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries).containsExactly(selectedEntry);
+    verify(connector, never())
+        .selectPageIndexEntries(any(), any(), anyLong(), any(), any(), any(), any(), any());
   }
 
   @Test

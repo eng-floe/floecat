@@ -298,6 +298,55 @@ class RemoteFileArtifactReusePlannerTest {
             .reusesFileStats());
   }
 
+  @Test
+  void changedDeleteContextCanReusePhysicalIndexButNotLogicalStats() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileFileExecutionPlan prior =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 3L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    ReconcileFileExecutionPlan current =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 4L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    var priorBundle =
+        statsBundle(prior, policy).toBuilder()
+            .addIndexArtifacts(
+                ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(prior))
+                    .setIndexCaptureSignature(FileArtifactReuse.indexCaptureSignature(policy, "{}"))
+                    .addRealizedIndexSelectors("#1"))
+            .build();
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(current), policy, false, List.of(priorBundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesFileStats());
+    assertTrue(enriched.reusesIndexArtifact());
+  }
+
   private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference indexBundle(
       ReconcileFileExecutionPlan plan,
       ReconcileCapturePolicy policy,

@@ -331,6 +331,29 @@ public interface FloecatConnector extends Closeable {
         captureIndexes);
   }
 
+  default FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<String> indexColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        columnSelectorPolicy);
+  }
+
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.
    *
@@ -404,7 +427,8 @@ public interface FloecatConnector extends Closeable {
       List<TargetStatsRecord> statsRecords,
       List<ParquetPageIndexEntry> pageIndexEntries,
       List<ParquetRowGroup> pageIndexRowGroups,
-      List<String> realizedStatsSelectors) {
+      List<String> realizedStatsSelectors,
+      boolean pageIndexSelectionComplete) {
     public FileGroupCaptureResult {
       statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
       pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
@@ -422,7 +446,8 @@ public interface FloecatConnector extends Closeable {
 
     public static FileGroupCaptureResult of(
         List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
-      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, List.of(), List.of());
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, List.of(), List.of(), false);
     }
 
     public static FileGroupCaptureResult of(
@@ -430,7 +455,7 @@ public interface FloecatConnector extends Closeable {
         List<ParquetPageIndexEntry> pageIndexEntries,
         List<String> realizedStatsSelectors) {
       return new FileGroupCaptureResult(
-          statsRecords, pageIndexEntries, List.of(), realizedStatsSelectors);
+          statsRecords, pageIndexEntries, List.of(), realizedStatsSelectors, false);
     }
 
     public static FileGroupCaptureResult of(
@@ -439,11 +464,20 @@ public interface FloecatConnector extends Closeable {
         List<ParquetRowGroup> pageIndexRowGroups,
         List<String> realizedStatsSelectors) {
       return new FileGroupCaptureResult(
-          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors);
+          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors, false);
+    }
+
+    public static FileGroupCaptureResult ofSelectedPageIndexes(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<ParquetRowGroup> pageIndexRowGroups,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors, true);
     }
 
     public static FileGroupCaptureResult empty() {
-      return new FileGroupCaptureResult(List.of(), List.of(), List.of(), List.of());
+      return new FileGroupCaptureResult(List.of(), List.of(), List.of(), List.of(), false);
     }
   }
 

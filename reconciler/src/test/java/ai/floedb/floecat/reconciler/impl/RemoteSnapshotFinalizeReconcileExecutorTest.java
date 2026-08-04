@@ -85,6 +85,18 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void appendOnlyDefaultIndexSelectorsCompareByStableFieldIdentity() {
+    Set<String> inherited =
+        RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(
+            List.of("#1", "customer_id", "id"));
+    Set<String> delta =
+        RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(List.of("#1"));
+
+    assertEquals(Set.of("#1"), inherited);
+    assertEquals(inherited, delta);
+  }
+
+  @Test
   void reuseBundleArtifactMustMatchEveryCommittedDescriptorPayloadField() {
     byte[] digest = new byte[32];
     digest[0] = 7;

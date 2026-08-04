@@ -101,6 +101,7 @@ class LeasedFileGroupExecutionServiceTest {
   private StatsStore statsStore;
   private IndexArtifactRepository indexArtifactRepository;
   private StatsOrchestrator statsOrchestrator;
+  private ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore snapshotPlanBlobStore;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -115,6 +116,7 @@ class LeasedFileGroupExecutionServiceTest {
     statsStore = mock(StatsStore.class);
     indexArtifactRepository = mock(IndexArtifactRepository.class);
     statsOrchestrator = mock(StatsOrchestrator.class);
+    snapshotPlanBlobStore = mock(ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.tableRepo = tableRepo;
@@ -124,6 +126,7 @@ class LeasedFileGroupExecutionServiceTest {
     service.idempotencyStore = idempotencyStore;
     service.statsStore = statsStore;
     service.indexArtifactRepository = indexArtifactRepository;
+    service.snapshotPlanBlobStore = snapshotPlanBlobStore;
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
@@ -140,7 +143,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void resolveUsesParentSnapshotTaskFileGroupsFromDurableJobView() {
+  void resolveUsesIndexedDurableSnapshotPlan() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
             "plan-1",
@@ -201,6 +204,7 @@ class LeasedFileGroupExecutionServiceTest {
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
+    stubIndexedPlan(group);
     when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
 
@@ -219,6 +223,9 @@ class LeasedFileGroupExecutionServiceTest {
         payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
     assertEquals(group.fileExecutionPlans(), payload.fileExecutionPlans());
     verify(statsStore).beginStatsGeneration(tableId(), SNAPSHOT_ID, "full-rescan-" + PARENT_JOB_ID);
+    verify(snapshotPlanBlobStore)
+        .resolveFileGroup(anyString(), eq(group.planId()), eq(group.groupId()));
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -251,8 +258,9 @@ class LeasedFileGroupExecutionServiceTest {
             "");
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.getLeaseView(PARENT_JOB_ID)).thenReturn(Optional.of(parent));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
 
     boolean accepted =
         service.persistSuccess(
@@ -368,7 +376,7 @@ class LeasedFileGroupExecutionServiceTest {
             PARENT_JOB_ID);
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -387,6 +395,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileFileGroupTask.empty(),
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
     List<TargetStatsRecord> records =
         List.of(fileStatsRecord(dataFile, 10L), fileStatsRecord(deleteFile, 2L));
     List<StatsObjectDescriptor> descriptors = statsObjectDescriptors(records);
@@ -464,6 +473,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileFileGroupTask.empty(),
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
     List<TargetStatsRecord> records =
         List.of(fileStatsRecord(dataFile, 10L), fileStatsRecord(deletionVectorFile, 2L));
     List<StatsObjectDescriptor> descriptors = statsObjectDescriptors(records);
@@ -615,7 +625,8 @@ class LeasedFileGroupExecutionServiceTest {
             "");
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    stubIndexedPlan(plannedGroup);
+    when(jobs.getLeaseView(PARENT_JOB_ID)).thenReturn(Optional.of(parent));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -670,6 +681,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileFileGroupTask.empty(),
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
     TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
 
     assertTrue(
@@ -738,6 +750,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileFileGroupTask.empty(),
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
 
     TargetStatsRecord record = fileStatsRecord(filePath, 10L);
     StatsObjectDescriptor originalFileStats = statsObjectDescriptors(List.of(record)).getFirst();
@@ -830,6 +843,7 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
     when(jobs.completeFileGroupSuccess(
             anyString(),
             anyString(),
@@ -895,6 +909,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileFileGroupTask.empty(),
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    stubIndexedPlan(plannedGroup);
     TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
     var changedBundle =
         artifactBundle(List.of(record), List.of()).toBuilder()
@@ -997,6 +1012,24 @@ class LeasedFileGroupExecutionServiceTest {
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
+    when(jobs.getLeaseView(PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
 
     StatusRuntimeException error =
         assertThrows(
@@ -1006,6 +1039,9 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(
         "FAILED_PRECONDITION: planned file group could not be resolved from parent snapshot plan",
         error.getMessage());
+    verify(snapshotPlanBlobStore)
+        .resolveFileGroup(anyString(), eq(childRef.planId()), eq(childRef.groupId()));
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1059,6 +1095,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileScope.empty())));
     when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
+    stubIndexedPlan(group);
 
     StandaloneFileGroupExecutionPayload payload =
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
@@ -1096,7 +1133,8 @@ class LeasedFileGroupExecutionServiceTest {
                     PARENT_JOB_ID,
                     CaptureMode.METADATA_AND_CAPTURE,
                     scope)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    stubIndexedPlan(group);
+    when(jobs.getLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1130,6 +1168,7 @@ class LeasedFileGroupExecutionServiceTest {
         .loadGenerationInput(
             eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath)));
     verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1174,6 +1213,7 @@ class LeasedFileGroupExecutionServiceTest {
                     .build()));
     when(connectorRepo.getById(connectorId()))
         .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_DELTA).build()));
+    stubIndexedPlan(group);
 
     StandaloneFileGroupExecutionPayload payload =
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
@@ -1226,6 +1266,7 @@ class LeasedFileGroupExecutionServiceTest {
                     .setMetadataLocation(
                         "s3://bucket/warehouse/orders/metadata/00001.metadata.json")
                     .build()));
+    stubIndexedPlan(group);
 
     StandaloneFileGroupExecutionPayload payload =
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
@@ -1292,6 +1333,7 @@ class LeasedFileGroupExecutionServiceTest {
                                             .setSessionToken("test-token")))
                             .build())
                     .build()));
+    stubIndexedPlan(group);
 
     StandaloneFileGroupExecutionPayload payload =
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
@@ -1426,6 +1468,46 @@ class LeasedFileGroupExecutionServiceTest {
         0L,
         0L,
         parentJobId);
+  }
+
+  private void stubIndexedPlan(ReconcileFileGroupTask group) {
+    String planUri = "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json";
+    ReconcileFileGroupTask indexedGroup = group;
+    if (indexedGroup.fileExecutionPlans().isEmpty()) {
+      indexedGroup =
+          indexedGroup.withFileExecutionPlans(
+              indexedGroup.filePaths().stream()
+                  .map(
+                      path ->
+                          ReconcileFileExecutionPlan.of(
+                              path, 1L, "", null, "PARQUET", 0, List.of(), "test-content"))
+                  .toList());
+    }
+    ReconcileSnapshotTask compactParentTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            planUri,
+            1,
+            group.fileCount(),
+            "",
+            0);
+    when(jobs.getLeaseView(PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    compactParentTask,
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(snapshotPlanBlobStore.resolveFileGroup(planUri, group.planId(), group.groupId()))
+        .thenReturn(Optional.of(indexedGroup));
   }
 
   private static TargetStatsRecord fileStatsRecord(String filePath, long rowCount) {

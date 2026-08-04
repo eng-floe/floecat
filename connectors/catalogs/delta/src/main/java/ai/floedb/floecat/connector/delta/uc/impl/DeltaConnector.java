@@ -421,6 +421,31 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy) {
+    return capturePlannedFileGroup(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        plannedFilePaths,
+        includeColumns,
+        includeColumns,
+        includeTargetKinds,
+        captureIndexes,
+        columnSelectorPolicy);
+  }
+
+  @Override
+  public FileGroupCaptureResult capturePlannedFileGroup(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> plannedFilePaths,
+      Set<String> includeColumns,
+      Set<String> indexColumns,
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -460,8 +485,20 @@ abstract class DeltaConnector implements FloecatConnector {
         captureIndexes
             ? new ParquetPageIndexReader(parquetInput).read(plannedFilePaths)
             : ParquetPageIndexReader.ReadResult.empty();
-    return FileGroupCaptureResult.of(
-        stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    if (!captureIndexes) {
+      return FileGroupCaptureResult.of(
+          stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    }
+    List<ParquetPageIndexEntry> selectedPageIndexes =
+        selectPageIndexEntries(
+            snapshot,
+            indexColumns,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            pageIndexes.entries(),
+            pageIndexes.rowGroups());
+    return FileGroupCaptureResult.ofSelectedPageIndexes(
+        stats, selectedPageIndexes, pageIndexes.rowGroups(), realizedStatsSelectors);
   }
 
   @Override
@@ -480,6 +517,18 @@ abstract class DeltaConnector implements FloecatConnector {
     if (snapshot == null) {
       throw new IllegalArgumentException("Unknown Delta snapshot: " + snapshotId);
     }
+    return Optional.of(
+        selectPageIndexEntries(
+            snapshot, selectors, columnSelectorPolicy, plannedFilePaths, entries, rowGroups));
+  }
+
+  private List<ParquetPageIndexEntry> selectPageIndexEntries(
+      Snapshot snapshot,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
     var schemaDescriptor =
         new LogicalSchemaMapper()
             .mapRaw(
@@ -534,7 +583,7 @@ abstract class DeltaConnector implements FloecatConnector {
                 columnSelectorPolicy)
             : selectors;
     if (effectiveSelectors.isEmpty()) {
-      return Optional.of(List.of());
+      return List.of();
     }
 
     Map<Long, LinkedHashSet<String>> aliasesByColumnId = new LinkedHashMap<>();
@@ -649,7 +698,7 @@ abstract class DeltaConnector implements FloecatConnector {
                     + effectiveSelectors);
           }
         });
-    return Optional.of(List.copyOf(selectedEntries));
+    return List.copyOf(selectedEntries);
   }
 
   private static ai.floedb.floecat.query.rpc.SchemaColumn deltaColumnForEntry(

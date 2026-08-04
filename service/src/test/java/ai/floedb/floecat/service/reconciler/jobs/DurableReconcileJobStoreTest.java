@@ -6273,7 +6273,6 @@ class DurableReconcileJobStoreTest {
     var snapshotLease = leaseJob(snapshotJobId);
     store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
 
-    String planUri = SnapshotPlanManifestIds.manifestBlobUri(ACCOUNT_ID, snapshotJobId, List.of());
     AppendOnlyBase appendOnlyBase =
         new AppendOnlyBase(
             55L,
@@ -6286,6 +6285,9 @@ class DurableReconcileJobStoreTest {
             "full-rescan-base-job",
             "",
             1);
+    String planUri =
+        SnapshotPlanManifestIds.manifestBlobUri(
+            ACCOUNT_ID, snapshotJobId, List.of(), appendOnlyBase.manifestIdentity());
     store.blobStore.put(
         planUri,
         store.mapper.writeValueAsBytes(SnapshotPlanBlob.of(List.of(), appendOnlyBase)),
