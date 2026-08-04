@@ -78,6 +78,7 @@ class StatsRepositoryTargetStorageTest {
   @Test
   void baseGenerationOverlayServesInheritedAndDeltaTargets() {
     AtomicInteger largestPageRequest = new AtomicInteger();
+    AtomicInteger blobGets = new AtomicInteger();
     PointerStore pointerStore =
         new RepoTestPointerStores.DelegatingPointerStore(new InMemoryPointerStore()) {
           @Override
@@ -87,7 +88,15 @@ class StatsRepositoryTargetStorageTest {
             return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
           }
         };
-    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            blobGets.incrementAndGet();
+            return super.get(uri);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
     long baseSnapshotId = 97L;
     long snapshotId = 98L;
     String basePath = "s3://bucket/base.parquet";
@@ -153,8 +162,10 @@ class StatsRepositoryTargetStorageTest {
                 .map(record -> record.getTarget().getFile().getFilePath()))
         .containsExactlyInAnyOrder(basePath, deltaPath);
     assertThat(largestPageRequest.get()).isEqualTo(2);
+    blobGets.set(0);
     assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE)))
         .isEqualTo(2);
+    assertThat(blobGets.get()).isEqualTo(1);
   }
 
   @Test

@@ -353,6 +353,20 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
     assertThat(manifest.getReusableArtifactBundlesComplete()).isTrue();
+    assertEquals(1, manifest.getGenerationChainDepth());
+  }
+
+  @Test
+  void generationChainDepthAdvancesAndCheckpointsAtTheBound() {
+    assertEquals(1, GrpcRemoteReconcileExecutorClient.nextGenerationChainDepth(null));
+    assertEquals(
+        2,
+        GrpcRemoteReconcileExecutorClient.nextGenerationChainDepth(
+            appendOnlyBaseWithChainDepth(1)));
+    assertEquals(
+        1,
+        GrpcRemoteReconcileExecutorClient.nextGenerationChainDepth(
+            appendOnlyBaseWithChainDepth(SnapshotPlanBlobStore.MAX_GENERATION_CHAIN_DEPTH)));
   }
 
   @Test
@@ -1828,6 +1842,20 @@ class GrpcRemoteReconcileExecutorClientTest {
   private static ReconcileCapturePolicy indexCapturePolicy() {
     return ReconcileCapturePolicy.of(
         List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBaseWithChainDepth(int depth) {
+    return new SnapshotPlanBlobStore.AppendOnlyBase(
+        54L,
+        "/manifest.pb",
+        1L,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        1,
+        1,
+        0,
+        "full-rescan-base",
+        "",
+        depth);
   }
 
   private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor() {

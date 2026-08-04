@@ -65,6 +65,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
   private final Set<String> snapshotFinalizeCommits = ConcurrentHashMap.newKeySet();
+  private final Map<String, SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntents =
+      new ConcurrentHashMap<>();
   private final Map<String, SnapshotFinalizeCompletion> snapshotFinalizeCompletions =
       new ConcurrentHashMap<>();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
@@ -886,6 +888,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     markSucceeded(
         jobId, leaseEpoch, finishedAtMs, 0L, 0L, 0L, 0L, 1L, Math.max(0L, statsRecordCount));
     snapshotFinalizeCommits.remove(jobId);
+    snapshotFinalizeCommitIntents.remove(jobId);
     return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
   }
 
@@ -1071,6 +1074,39 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           return job;
         });
     return accepted.get();
+  }
+
+  @Override
+  public boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent) {
+    if (intent == null
+        || !jobId.equals(intent.jobId())
+        || !leaseEpoch.equals(intent.leaseEpoch())) {
+      return false;
+    }
+    if (!beginSnapshotFinalizeCommit(jobId, leaseEpoch)) {
+      return false;
+    }
+    SnapshotFinalizeCommitIntent existing =
+        snapshotFinalizeCommitIntents.putIfAbsent(jobId, intent);
+    return existing == null || existing.equals(intent);
+  }
+
+  @Override
+  public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
+    return Optional.ofNullable(snapshotFinalizeCommitIntents.get(jobId));
+  }
+
+  @Override
+  public SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken) {
+    int limit = Math.max(1, pageSize);
+    List<SnapshotFinalizeCommitIntent> pending =
+        snapshotFinalizeCommitIntents.entrySet().stream()
+            .filter(entry -> snapshotFinalizeCommits.contains(entry.getKey()))
+            .map(Map.Entry::getValue)
+            .limit(limit)
+            .toList();
+    return new SnapshotFinalizeCommitPage(pending, "");
   }
 
   @Override
@@ -1306,6 +1342,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               statsProcessed);
     }
     snapshotFinalizeCommits.remove(jobId);
+    snapshotFinalizeCommitIntents.remove(jobId);
     return true;
   }
 
@@ -1378,6 +1415,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
@@ -1387,6 +1426,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          accepted.set(true);
           releaseLane(id);
           leased.remove(id);
           leaseEpochs.remove(id);
@@ -1454,6 +1494,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.fileGroupTask,
               job.parentJobId);
         });
+    if (accepted.get()) {
+      snapshotFinalizeCommits.remove(jobId);
+      snapshotFinalizeCommitIntents.remove(jobId);
+    }
   }
 
   @Override
@@ -1526,6 +1570,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
@@ -1535,6 +1581,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          accepted.set(true);
           releaseLane(id);
           releaseSnapshotOwnership(id);
           leased.remove(id);
@@ -1570,6 +1617,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.fileGroupTask,
               job.parentJobId);
         });
+    if (accepted.get()) {
+      snapshotFinalizeCommits.remove(jobId);
+      snapshotFinalizeCommitIntents.remove(jobId);
+    }
   }
 
   @Override
@@ -1773,6 +1824,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             }
             releaseLane(id);
             snapshotFinalizeCommits.remove(id);
+            snapshotFinalizeCommitIntents.remove(id);
             leaseEpochs.remove(id);
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {

@@ -6500,6 +6500,83 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void snapshotFinalizeCommitIntentIsDurableAndDiscoverableForPublication() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            123L,
+            "abcdef",
+            1,
+            3,
+            4L,
+            2L);
+
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
+    assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
+    store.markFailed(
+        finalizerJobId,
+        finalizerLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+  }
+
+  @Test
   void expiredSnapshotCoverageClaimDoesNotRetainOldAggregateOwner() {
     store.snapshotCoverageClaimRetentionMs = -1L;
     ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));

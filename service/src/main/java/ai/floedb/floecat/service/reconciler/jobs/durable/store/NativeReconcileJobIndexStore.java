@@ -927,6 +927,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.fileGroupIndexPredecessorCaptureManifestPointerVersion =
         source.fileGroupIndexPredecessorCaptureManifestPointerVersion;
     copy.fileGroupResultCreatedAtMs = source.fileGroupResultCreatedAtMs;
+    copy.snapshotFinalizeResultLeaseEpoch = source.snapshotFinalizeResultLeaseEpoch;
+    copy.snapshotFinalizeResultId = source.snapshotFinalizeResultId;
+    copy.snapshotFinalizeManifestUri = source.snapshotFinalizeManifestUri;
+    copy.snapshotFinalizeManifestBytes = source.snapshotFinalizeManifestBytes;
+    copy.snapshotFinalizeManifestSha256 = source.snapshotFinalizeManifestSha256;
+    copy.snapshotFinalizeFileGroupCount = source.snapshotFinalizeFileGroupCount;
+    copy.snapshotFinalizeSourceFileCount = source.snapshotFinalizeSourceFileCount;
+    copy.snapshotFinalizeStatsRecordCount = source.snapshotFinalizeStatsRecordCount;
+    copy.snapshotFinalizeIndexArtifactCount = source.snapshotFinalizeIndexArtifactCount;
+    copy.snapshotFinalizeCommitStarted = source.snapshotFinalizeCommitStarted;
     copy.definition = cloneDefinition(source.definition);
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
     copy.state = source.state;

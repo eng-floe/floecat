@@ -457,6 +457,10 @@ message SnapshotCaptureManifest {
   // Distinguishes the complete current-state contract from older delta-only manifests. A false
   // value is not eligible as a reuse source and is replaced by the next complete capture.
   bool reusable_artifact_bundles_complete = 29;
+  // Depth of the published stats/index generation overlay. A value of one is a fully
+  // materialized checkpoint. Append-only finalizers may build bounded overlays and reset this
+  // value to one whenever the configured maximum depth is reached.
+  uint32 generation_chain_depth = 30;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

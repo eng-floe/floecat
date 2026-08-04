@@ -425,7 +425,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || base.indexArtifactCount() != manifest.getIndexArtifactCount()
         || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
         || !manifest.getReusableArtifactBundlesComplete()
-        || base.chainDepth() != 1
+        || base.chainDepth() <= 0
+        || base.chainDepth() > SnapshotPlanBlobStore.MAX_GENERATION_CHAIN_DEPTH
         || (base.indexArtifactCount() > 0
             && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
         || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(

@@ -725,6 +725,16 @@ public interface ReconcileJobStore {
     return renewLease(jobId, leaseEpoch);
   }
 
+  /** Durably records the remote result that snapshot publication must commit. */
+  boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent);
+
+  /** Returns a previously accepted snapshot-finalize publication intent. */
+  Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId);
+
+  /** Lists accepted snapshot-finalize intents that still require publication. */
+  SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken);
+
   /** Whether this store enforces durable snapshot-publication ownership fences. */
   default boolean enforcesSnapshotFinalizeOwnership() {
     return false;
@@ -744,6 +754,26 @@ public interface ReconcileJobStore {
       List<String> materializedCoverage,
       long finishedAtMs,
       String message);
+
+  record SnapshotFinalizeCommitIntent(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount) {}
+
+  record SnapshotFinalizeCommitPage(
+      List<SnapshotFinalizeCommitIntent> intents, String nextPageToken) {
+    public SnapshotFinalizeCommitPage {
+      intents = intents == null ? List.of() : List.copyOf(intents);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
 
   void markCancelled(
       String jobId,

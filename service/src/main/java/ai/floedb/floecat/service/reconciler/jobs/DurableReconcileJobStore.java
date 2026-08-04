@@ -2456,6 +2456,129 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent) {
+    if (intent == null
+        || !blankToEmpty(jobId).equals(blankToEmpty(intent.jobId()))
+        || !blankToEmpty(leaseEpoch).equals(blankToEmpty(intent.leaseEpoch()))
+        || blank(intent.resultId())
+        || blank(intent.manifestUri())
+        || intent.manifestBytes() <= 0L
+        || blank(intent.manifestSha256())
+        || intent.fileGroupCount() < 0
+        || intent.sourceFileCount() < 0
+        || intent.statsRecordCount() < 0L
+        || intent.indexArtifactCount() < 0L) {
+      return false;
+    }
+    return onHotPath(
+        () -> {
+          StoredEnvelope finalizer = loadByAnyAccount(jobId).orElse(null);
+          if (finalizer == null || blank(finalizer.record.parentJobId)) {
+            return false;
+          }
+          StoredEnvelope parent = loadByAnyAccount(finalizer.record.parentJobId).orElse(null);
+          if (parent == null
+              || parent.record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+              || !leaseManager()
+                  .isSnapshotOwnershipHeldBy(parent.record, parent.canonicalPointerKey)) {
+            return false;
+          }
+          return mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (existing == null
+                        || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                        || !"JS_RUNNING".equals(existing.state)
+                        || !leaseManager()
+                            .hasActiveLease(
+                                jobId,
+                                leaseEpoch,
+                                existing,
+                                "beginSnapshotFinalizeCommit",
+                                true,
+                                true,
+                                false)) {
+                      return null;
+                    }
+                    SnapshotFinalizeCommitIntent existingIntent =
+                        snapshotFinalizeCommitIntent(existing);
+                    if (existing.snapshotFinalizeCommitStarted
+                        && existingIntent != null
+                        && !existingIntent.equals(intent)) {
+                      return null;
+                    }
+                    existing.snapshotFinalizeResultLeaseEpoch = blankToEmpty(intent.leaseEpoch());
+                    existing.snapshotFinalizeResultId = blankToEmpty(intent.resultId());
+                    existing.snapshotFinalizeManifestUri = blankToEmpty(intent.manifestUri());
+                    existing.snapshotFinalizeManifestBytes = intent.manifestBytes();
+                    existing.snapshotFinalizeManifestSha256 = blankToEmpty(intent.manifestSha256());
+                    existing.snapshotFinalizeFileGroupCount = intent.fileGroupCount();
+                    existing.snapshotFinalizeSourceFileCount = intent.sourceFileCount();
+                    existing.snapshotFinalizeStatsRecordCount = intent.statsRecordCount();
+                    existing.snapshotFinalizeIndexArtifactCount = intent.indexArtifactCount();
+                    existing.snapshotFinalizeCommitStarted = true;
+                    existing.updatedAtMs = System.currentTimeMillis();
+                    return existing;
+                  })
+              .isPresent();
+        });
+  }
+
+  @Override
+  public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
+    StoredEnvelope stored = loadByAnyAccount(jobId).orElse(null);
+    return Optional.ofNullable(
+        stored == null || !stored.record.snapshotFinalizeCommitStarted
+            ? null
+            : snapshotFinalizeCommitIntent(stored.record));
+  }
+
+  @Override
+  public SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken) {
+    var page =
+        jobIndexStore()
+            .listStoredJobsInState("JS_RUNNING", Math.max(1, pageSize), blankToEmpty(pageToken));
+    List<SnapshotFinalizeCommitIntent> intents = new ArrayList<>();
+    for (StoredReconcileJob record : page.records()) {
+      if (record == null
+          || record.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+          || !record.snapshotFinalizeCommitStarted) {
+        continue;
+      }
+      SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);
+      if (intent != null) {
+        intents.add(intent);
+      }
+    }
+    return new SnapshotFinalizeCommitPage(intents, page.nextPageToken());
+  }
+
+  private static SnapshotFinalizeCommitIntent snapshotFinalizeCommitIntent(
+      StoredReconcileJob record) {
+    if (record == null
+        || blank(record.jobId)
+        || blank(record.snapshotFinalizeResultLeaseEpoch)
+        || blank(record.snapshotFinalizeResultId)
+        || blank(record.snapshotFinalizeManifestUri)
+        || record.snapshotFinalizeManifestBytes <= 0L
+        || blank(record.snapshotFinalizeManifestSha256)) {
+      return null;
+    }
+    return new SnapshotFinalizeCommitIntent(
+        record.jobId,
+        record.snapshotFinalizeResultLeaseEpoch,
+        record.snapshotFinalizeResultId,
+        record.snapshotFinalizeManifestUri,
+        record.snapshotFinalizeManifestBytes,
+        record.snapshotFinalizeManifestSha256,
+        record.snapshotFinalizeFileGroupCount,
+        record.snapshotFinalizeSourceFileCount,
+        record.snapshotFinalizeStatsRecordCount,
+        record.snapshotFinalizeIndexArtifactCount);
+  }
+
+  @Override
   public boolean enforcesSnapshotFinalizeOwnership() {
     return true;
   }
@@ -2495,6 +2618,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         existing.snapshotFinalizeFileGroupCount = fileGroupCount;
                         existing.snapshotFinalizeSourceFileCount = sourceFileCount;
                         existing.snapshotFinalizeStatsRecordCount = statsRecordCount;
+                        existing.snapshotFinalizeIndexArtifactCount = indexArtifactCount;
                         if (materializedCoverage != null) {
                           existing.snapshotTaskRequestedCoverage =
                               ReconcileSnapshotContentState.unionCoverage(

@@ -23,7 +23,23 @@ import java.util.List;
 import java.util.TreeMap;
 
 final class OverlayPointerPager {
+  private static final int COUNT_PAGE_SIZE = 500;
+
   private OverlayPointerPager() {}
+
+  static int count(PointerStore pointerStore, List<GenerationScan> generations) {
+    int count = 0;
+    String afterTargetKey = "";
+    while (true) {
+      Page page = page(pointerStore, generations, COUNT_PAGE_SIZE, afterTargetKey);
+      int pageSize = Math.min(page.candidates().size(), COUNT_PAGE_SIZE);
+      count = Math.addExact(count, pageSize);
+      if (!page.hasMore() || pageSize == 0) {
+        return count;
+      }
+      afterTargetKey = page.candidates().get(pageSize - 1).targetKey();
+    }
+  }
 
   static Page page(
       PointerStore pointerStore,

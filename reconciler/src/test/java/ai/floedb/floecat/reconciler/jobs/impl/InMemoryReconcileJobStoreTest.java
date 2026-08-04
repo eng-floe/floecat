@@ -593,6 +593,71 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void retryableSnapshotFinalizeFailureClearsAcceptedPublicationIntent() {
+    var store = new InMemoryReconcileJobStore();
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-job",
+            "");
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            100L,
+            "sha256",
+            0,
+            0,
+            0L,
+            0L);
+
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
+
+    store.markFailed(
+        finalizerJobId,
+        finalizerLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+  }
+
+  @Test
   void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
     var store = new InMemoryReconcileJobStore();
 

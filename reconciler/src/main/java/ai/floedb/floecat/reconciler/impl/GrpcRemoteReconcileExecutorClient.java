@@ -1572,6 +1572,7 @@ class GrpcRemoteReconcileExecutorClient
                     .sum())
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(totalIndexArtifacts)
+            .setGenerationChainDepth(nextGenerationChainDepth(appendOnlyBase))
             .addAllReusableArtifactBundles(stableReuseBundles)
             .setReusableArtifactBundlesComplete(true)
             .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
@@ -1656,6 +1657,14 @@ class GrpcRemoteReconcileExecutorClient
             .setIndexArtifactCount(totalIndexArtifacts)
             .build();
     return new PreparedSnapshotFinalizeSuccess(stableResultId, manifestDescriptor);
+  }
+
+  static int nextGenerationChainDepth(SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
+    if (appendOnlyBase == null
+        || appendOnlyBase.chainDepth() >= SnapshotPlanBlobStore.MAX_GENERATION_CHAIN_DEPTH) {
+      return 1;
+    }
+    return appendOnlyBase.chainDepth() + 1;
   }
 
   @Override

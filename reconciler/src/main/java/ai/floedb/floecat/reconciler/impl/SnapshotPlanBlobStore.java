@@ -44,6 +44,7 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotPlanBlobStore {
+  public static final int MAX_GENERATION_CHAIN_DEPTH = 8;
   private static final Logger LOG = Logger.getLogger(SnapshotPlanBlobStore.class);
   private static final int MAX_CACHED_PLAN_INDEXES = 64;
   private static final int MAX_CACHED_PLAN_FILES = 65_536;
