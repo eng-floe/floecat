@@ -930,22 +930,32 @@
     "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
   },
   {
-    "name": "floecat.service.storage.account.bytes",
+    "name": "floecat.service.storage.account.gc_estimated_bytes",
     "type": "GAUGE",
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
-    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
+    "description": "Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
   {
-    "name": "floecat.service.storage.account.pointers",
+    "name": "floecat.service.storage.account.gc_estimated_pointers",
     "type": "GAUGE",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Per-account pointer count stored in the service.",
+    "description": "Pointer roots traversed by the latest per-account CAS GC mark.",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
+    "name": "floecat.service.storage.account.gc_size_coverage",
+    "type": "GAUGE",
+    "unit": "ratio",
+    "since": "v1",
+    "origin": "service",
+    "description": "Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
