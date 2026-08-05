@@ -331,7 +331,16 @@ class SnapshotPlanBlobStoreTest {
             0);
     SnapshotPlanBlobStore.AppendOnlyBase base =
         new SnapshotPlanBlobStore.AppendOnlyBase(
-            54L, "/reuse/base.pb", 123L, "ab".repeat(32), 1, 1, 0, "full-rescan-base-job", "", 1);
+            54L,
+            "/reuse/base.pb",
+            123L,
+            "ab".repeat(32),
+            1,
+            0,
+            1,
+            "full-rescan-base-job",
+            "full-rescan-base-job",
+            1);
 
     ReconcileSnapshotTask persisted =
         store.persistPlan("acct", "job-1", snapshotTask, List.of(), base);
@@ -352,6 +361,8 @@ class SnapshotPlanBlobStoreTest {
 
     assertEquals(
         Optional.of(base), store.loadPlan(persisted.fileGroupPlanBlobUri()).appendOnlyBase());
+    assertEquals(0, base.fileStatsRecordCount());
+    assertEquals(1, base.indexArtifactCount());
     assertNotEquals(persisted.fileGroupPlanBlobUri(), persistedOther.fileGroupPlanBlobUri());
   }
 

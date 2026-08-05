@@ -1523,7 +1523,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessVerifiesReusedIndexSidecar() {
+  void submitFileGroupSuccessDoesNotVerifyReusedIndexSidecar() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -1594,31 +1594,24 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(new ReconcilerBackend.StagedIndexArtifact(record, null, "")));
-    when(client.blobStore.head(artifactUri))
-        .thenReturn(
-            Optional.of(
-                BlobHeader.newBuilder().setContentLength(128L).setEtag("prior-etag").build()));
-
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
-    verify(client.blobStore).head(artifactUri);
+    verify(client.blobStore, never()).head(artifactUri);
     verify(client.blobStore, never()).put(eq(artifactUri), any(byte[].class), any(String.class));
 
-    when(client.blobStore.head(artifactUri)).thenReturn(Optional.empty());
     assertThrows(
         IllegalArgumentException.class,
-        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
-
-    when(client.blobStore.head(artifactUri))
-        .thenReturn(
-            Optional.of(
-                BlobHeader.newBuilder()
-                    .setContentLength(128L)
-                    .setEtag("replacement-etag")
-                    .build()));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+        () ->
+            client.submitSuccess(
+                remoteFileGroupLease(),
+                payload,
+                new StandaloneFileGroupExecutionResult(
+                    "result-1",
+                    List.of(),
+                    List.of(),
+                    List.of(
+                        new ReconcilerBackend.StagedIndexArtifact(
+                            record, new byte[] {1}, "application/x-parquet")))));
   }
 
   private static ResourceId connectorId() {

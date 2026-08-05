@@ -491,7 +491,7 @@ public class SnapshotPlanBlobStore {
           || manifestBytes <= 0
           || manifestSha256.length() != 64
           || sourceFileCount <= 0
-          || fileStatsRecordCount < sourceFileCount
+          || fileStatsRecordCount < 0
           || indexArtifactCount < 0
           || statsGenerationId.isBlank()
           || (indexArtifactCount > 0 && indexGenerationId.isBlank())

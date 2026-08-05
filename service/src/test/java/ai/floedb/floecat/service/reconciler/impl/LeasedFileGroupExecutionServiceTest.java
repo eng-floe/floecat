@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -225,7 +226,60 @@ class LeasedFileGroupExecutionServiceTest {
     verify(statsStore).beginStatsGeneration(tableId(), SNAPSHOT_ID, "full-rescan-" + PARENT_JOB_ID);
     verify(snapshotPlanBlobStore)
         .resolveFileGroup(anyString(), eq(group.planId()), eq(group.groupId()));
-    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs).get(ACCOUNT_ID, PARENT_JOB_ID);
+  }
+
+  @Test
+  void resolveRejectsIndexedPlanWhosePathsDoNotMatchExecutionPlans() {
+    String expectedPath = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(expectedPath));
+    ReconcileFileGroupTask mismatched =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of(expectedPath),
+            List.of(),
+            List.of(),
+            "schema",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/data/other.parquet",
+                    1L,
+                    "",
+                    null,
+                    "PARQUET",
+                    0,
+                    List.of(),
+                    "content")));
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID)));
+    stubIndexedPlan(group);
+    when(snapshotPlanBlobStore.resolveFileGroup(anyString(), eq("plan-1"), eq("group-1")))
+        .thenReturn(Optional.of(mismatched));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH));
+
+    assertEquals(
+        "FAILED_PRECONDITION: planned file group could not be resolved from parent snapshot plan",
+        error.getMessage());
   }
 
   @Test
@@ -521,6 +575,7 @@ class LeasedFileGroupExecutionServiceTest {
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
+    stubIndexedPlan(plannedGroup);
 
     assertTrue(
         service.persistSuccess(
@@ -626,7 +681,7 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     stubIndexedPlan(plannedGroup);
-    when(jobs.getLeaseView(PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -1041,7 +1096,7 @@ class LeasedFileGroupExecutionServiceTest {
         error.getMessage());
     verify(snapshotPlanBlobStore)
         .resolveFileGroup(anyString(), eq(childRef.planId()), eq(childRef.groupId()));
-    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1134,7 +1189,7 @@ class LeasedFileGroupExecutionServiceTest {
                     CaptureMode.METADATA_AND_CAPTURE,
                     scope)));
     stubIndexedPlan(group);
-    when(jobs.getLeaseView(PARENT_JOB_ID))
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1168,7 +1223,7 @@ class LeasedFileGroupExecutionServiceTest {
         .loadGenerationInput(
             eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath)));
     verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
-    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs, times(2)).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1497,7 +1552,7 @@ class LeasedFileGroupExecutionServiceTest {
             group.fileCount(),
             "",
             0);
-    when(jobs.getLeaseView(PARENT_JOB_ID))
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
