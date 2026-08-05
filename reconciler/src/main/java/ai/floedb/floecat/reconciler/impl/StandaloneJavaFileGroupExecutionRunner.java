@@ -74,8 +74,10 @@ public class StandaloneJavaFileGroupExecutionRunner {
     Set<String> publishedStatsTargets = new HashSet<>();
     Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     Map<String, ReconcileFileExecutionPlan> plansByPath = new LinkedHashMap<>();
-    Map<String, LoadedReuseBundle> reuseBundles = loadReuseBundles(payload.fileExecutionPlans());
+    Map<String, LoadedReuseBundle> reuseBundles =
+        loadReuseBundles(payload.fileExecutionPlans(), stop);
     for (ReconcileFileExecutionPlan plan : payload.fileExecutionPlans()) {
+      throwIfCancellationRequested(stop);
       ResolvedReuse resolvedReuse =
           resolveBundleSelections(plan, payload.tableId(), payload.snapshotId(), reuseBundles);
       plansByPath.put(plan.filePath(), plan);
@@ -96,6 +98,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
         stagedIndexArtifacts.add(
             new ReconcilerBackend.StagedIndexArtifact(
                 resolvedReuse.indexArtifact(), null, "application/x-parquet"));
+        throwIfCancellationRequested(stop);
       }
     }
     if (!reusedFileRecords.isEmpty()) {
@@ -163,13 +166,15 @@ public class StandaloneJavaFileGroupExecutionRunner {
                   throwIfCancellationRequested(stop);
                 });
         throwIfCancellationRequested(stop);
-        for (TargetStatsRecord record : completedStats) {
-          TargetStatsRecord stamped =
-              stampCapturedStats(record, plansByPath, capture.realizedStatsSelectors());
-          String target =
-              ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(stamped.getTarget());
-          if (publishedStatsTargets.add(target)) {
-            publisher.accept(stamped);
+        if (captureStats) {
+          for (TargetStatsRecord record : completedStats) {
+            TargetStatsRecord stamped =
+                stampCapturedStats(record, plansByPath, capture.realizedStatsSelectors());
+            String target =
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(stamped.getTarget());
+            if (publishedStatsTargets.add(target)) {
+              publisher.accept(stamped);
+            }
           }
         }
         if (captureIndex) {
@@ -213,13 +218,13 @@ public class StandaloneJavaFileGroupExecutionRunner {
     for (var selection : plan.reusableArtifactBundleSelections()) {
       var bundle = bundles.get(selection.payloadUri());
       if (bundle == null) {
-        throw new IllegalStateException(
-            "Reusable artifact bundle was not loaded: " + selection.payloadUri());
+        throw invalidReuseBundle(
+            "Reusable artifact bundle was not loaded: " + selection.payloadUri(), null);
       }
       for (String path : selection.statsFilePaths()) {
         TargetStatsRecord record = bundle.statsByPath().get(path);
         if (record == null) {
-          throw new IllegalStateException("Reusable artifact bundle is missing stats for " + path);
+          throw invalidReuseBundle("Reusable artifact bundle is missing stats for " + path, null);
         }
         String fingerprint =
             path.equals(plan.filePath())
@@ -227,8 +232,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 : plan.auxiliaryStatsFingerprints().getOrDefault(path, "");
         if (!FileArtifactReuse.compatibleStats(
             record, path, fingerprint, plan.statsCaptureSignature())) {
-          throw new IllegalStateException(
-              "Reusable artifact bundle contains incompatible stats for " + path);
+          throw invalidReuseBundle(
+              "Reusable artifact bundle contains incompatible stats for " + path, null);
         }
         TargetStatsRecord rebound =
             FileArtifactReuse.bindStatsToSnapshot(
@@ -242,12 +247,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
       for (String path : selection.indexFilePaths()) {
         IndexArtifactRecord record = bundle.indexesByPath().get(path);
         if (record == null) {
-          throw new IllegalStateException("Reusable artifact bundle is missing index for " + path);
+          throw invalidReuseBundle("Reusable artifact bundle is missing index for " + path, null);
         }
         if (!FileArtifactReuse.compatibleIndex(
             record, path, plan.indexSourceFingerprint(), plan.indexCaptureSignature())) {
-          throw new IllegalStateException(
-              "Reusable artifact bundle contains incompatible index for " + path);
+          throw invalidReuseBundle(
+              "Reusable artifact bundle contains incompatible index for " + path, null);
         }
         index =
             FileArtifactReuse.bindIndexToSnapshot(
@@ -261,7 +266,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
     return new ResolvedReuse(fileStats, List.copyOf(auxiliary), index);
   }
 
-  private Map<String, LoadedReuseBundle> loadReuseBundles(List<ReconcileFileExecutionPlan> plans) {
+  private Map<String, LoadedReuseBundle> loadReuseBundles(
+      List<ReconcileFileExecutionPlan> plans, BooleanSupplier stop) {
     Map<String, ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection> selections =
         new LinkedHashMap<>();
     plans.stream()
@@ -269,6 +275,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
         .forEach(selection -> selections.putIfAbsent(selection.payloadUri(), selection));
     Map<String, LoadedReuseBundle> bundles = new LinkedHashMap<>();
     for (var selection : selections.values()) {
+      throwIfCancellationRequested(stop);
       try {
         byte[] bytes =
             readReference(
@@ -295,12 +302,26 @@ public class StandaloneJavaFileGroupExecutionRunner {
           }
         }
         bundles.put(selection.payloadUri(), new LoadedReuseBundle(statsByPath, indexesByPath));
+        throwIfCancellationRequested(stop);
+      } catch (java.util.concurrent.CancellationException error) {
+        throw error;
+      } catch (ReconcileFailureException error) {
+        throw error;
       } catch (Exception error) {
-        throw new IllegalStateException(
+        throw invalidReuseBundle(
             "Failed to load reusable artifact bundle " + selection.payloadUri(), error);
       }
     }
     return bundles;
+  }
+
+  private static ReconcileFailureException invalidReuseBundle(String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
   }
 
   private static String statsFilePath(TargetStatsRecord record) {

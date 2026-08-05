@@ -308,13 +308,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
           jobs.completeFileGroupSuccess(
               jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
       requireAcceptedLeaseOutcome(replayed, jobId);
+      ReconcileFileGroupTask plannedTask =
+          resolvePlannedTask(existing.accountId, existing.parentJobId, existing.fileGroupTask);
       StagedArtifactReferences staged =
           prepareArtifactReferences(
               existing.accountId,
               existing.parentJobId,
               existing.jobId,
               leaseEpoch,
-              existing.fileGroupTask,
+              plannedTask,
               descriptor,
               artifactBundle,
               publishesFileStats(existing.scope.capturePolicy()));
@@ -784,6 +786,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         lease == null || lease.fileGroupTask == null
             ? ReconcileFileGroupTask.empty()
             : lease.fileGroupTask;
+    return resolvePlannedTask(
+        lease == null ? "" : lease.accountId, lease == null ? "" : lease.parentJobId, task);
+  }
+
+  private ReconcileFileGroupTask resolvePlannedTask(
+      String accountId, String parentJobId, ReconcileFileGroupTask task) {
     if (!task.isEmpty()
         && !task.filePaths().isEmpty()
         && task.fileExecutionPlans().size() == task.filePaths().size()) {
@@ -791,14 +799,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     }
     // Legacy fallback for child jobs staged before bounded execution plans were self-contained.
     if (jobs == null
-        || lease == null
-        || lease.parentJobId == null
-        || lease.parentJobId.isBlank()
-        || lease.accountId == null
-        || lease.accountId.isBlank()) {
+        || parentJobId == null
+        || parentJobId.isBlank()
+        || accountId == null
+        || accountId.isBlank()) {
       throw unresolvedPlannedTask();
     }
-    return jobs.get(lease.accountId, lease.parentJobId)
+    return jobs.get(accountId, parentJobId)
         .map(parent -> parent.snapshotTask)
         .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
         .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))

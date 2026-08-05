@@ -1437,6 +1437,7 @@ class GrpcRemoteReconcileExecutorClient
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size())
             .addAllReusableArtifactBundles(stableReuseBundles)
+            .setReusableArtifactBundlesComplete(true)
             .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
             .addAllRealizedStatsSelectors(stableRealizedStatsSelectors);
     if (indexPredecessor != null) {
@@ -1672,7 +1673,22 @@ class GrpcRemoteReconcileExecutorClient
         if (content != null && content.length > 0) {
           throw new IllegalArgumentException("reused index artifact must not contain staged bytes");
         }
-        out.add(artifact.record());
+        var header =
+            blobStore
+                .head(uri)
+                .orElseThrow(
+                    () ->
+                        new IllegalArgumentException(
+                            "reused index artifact object is missing: " + uri));
+        if (header.getContentLength() <= 0L) {
+          throw new IllegalArgumentException("reused index artifact object is empty: " + uri);
+        }
+        String expectedEtag = artifact.record().getContentEtag();
+        if (!expectedEtag.isBlank() && !expectedEtag.equals(header.getEtag())) {
+          throw new IllegalArgumentException(
+              "reused index artifact object ETag does not match: " + uri);
+        }
+        out.add(artifact.record().toBuilder().setContentEtag(header.getEtag()).build());
         continue;
       }
       if (content != null && content.length > 0) {

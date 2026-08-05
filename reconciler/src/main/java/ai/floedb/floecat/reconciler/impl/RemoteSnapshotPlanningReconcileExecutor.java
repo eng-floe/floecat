@@ -465,7 +465,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         new ArrayList<>();
     if (!lease.fullRescan) {
       Optional<HistoricalArtifacts> manifestArtifacts =
-          loadPredecessorReuseManifest(context, tableId, task.snapshotId());
+          loadPredecessorReuseManifest(context, tableId, task.snapshotId(), lease.connectorId);
       manifestArtifacts.ifPresent(artifacts -> historicalBundles.addAll(artifacts.bundles()));
     }
     List<ReconcileFileGroupTask> enriched =
@@ -660,7 +660,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private Optional<HistoricalArtifacts> loadReuseManifest(
-      ReconcileContext context, ResourceId tableId, long snapshotId) {
+      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
     if (blobStore == null) {
       return Optional.empty();
     }
@@ -700,28 +700,51 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             Base64.getEncoder()
                 .encodeToString(sha256(bytes))
                 .getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
-      throw new IllegalStateException("snapshot reuse manifest metadata mismatch: " + uri);
+      throw invalidReuseManifest("snapshot reuse manifest metadata mismatch: " + uri, null);
     }
     try {
       SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(bytes);
-      if (manifest.getFormatVersion() != 1
-          || !tableId.getId().equals(manifest.getTableId())
-          || snapshotId != manifest.getSnapshotId()) {
-        throw new IllegalStateException("snapshot reuse manifest identity mismatch: " + uri);
+      validateReuseManifestIdentity(tableId, snapshotId, expectedConnectorId, manifest, uri);
+      if (!manifest.getReusableArtifactBundlesComplete()) {
+        return Optional.empty();
       }
       return Optional.of(new HistoricalArtifacts(manifest.getReusableArtifactBundlesList()));
     } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new IllegalStateException("invalid snapshot reuse manifest: " + uri, e);
+      throw invalidReuseManifest("invalid snapshot reuse manifest: " + uri, e);
+    }
+  }
+
+  private static ReconcileFailureException invalidReuseManifest(String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.TERMINAL,
+        ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
+  }
+
+  static void validateReuseManifestIdentity(
+      ResourceId tableId,
+      long snapshotId,
+      String expectedConnectorId,
+      SnapshotCaptureManifest manifest,
+      String uri) {
+    if (manifest.getFormatVersion() != 1
+        || !tableId.getAccountId().equals(manifest.getAccountId())
+        || !java.util.Objects.equals(expectedConnectorId, manifest.getConnectorId())
+        || !tableId.getId().equals(manifest.getTableId())
+        || snapshotId != manifest.getSnapshotId()) {
+      throw invalidReuseManifest("snapshot reuse manifest identity mismatch: " + uri, null);
     }
   }
 
   private Optional<HistoricalArtifacts> loadPredecessorReuseManifest(
-      ReconcileContext context, ResourceId tableId, long snapshotId) {
+      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
     Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
     if (snapshot == null || !snapshot.hasParentSnapshotId()) {
       return Optional.empty();
     }
-    return loadReuseManifest(context, tableId, snapshot.getParentSnapshotId());
+    return loadReuseManifest(context, tableId, snapshot.getParentSnapshotId(), expectedConnectorId);
   }
 
   private static byte[] sha256(byte[] bytes) {

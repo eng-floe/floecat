@@ -46,7 +46,8 @@ class RemoteFileArtifactReusePlannerTest {
                 ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
                     .setFilePath(PATH)
                     .setSourceFingerprint(statsFingerprint)
-                    .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy)))
+                    .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy))
+                    .addRealizedStatsSelectors("#1"))
             .addIndexArtifacts(
                 ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
                     .setFilePath(PATH)
@@ -155,6 +156,40 @@ class RemoteFileArtifactReusePlannerTest {
             .getFirst();
 
     assertFalse(enriched.reusesIndexArtifact());
+  }
+
+  @Test
+  void rejectsBundleStatsThatDoNotCoverExplicitSelectors() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "iceberg-data-v1:7:10");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#2", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    String statsFingerprint = FileArtifactReuse.sourceFingerprint(plan, "{}");
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:group-1")
+                    .setPayloadUri("s3://bucket/reuse-bundle.pb")
+                    .setPayloadBytes(1024)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(statsFingerprint)
+                    .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy))
+                    .addRealizedStatsSelectors("#1"))
+            .build();
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesFileStats());
   }
 
   @Test

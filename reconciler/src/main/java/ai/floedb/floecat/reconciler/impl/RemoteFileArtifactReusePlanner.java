@@ -74,7 +74,8 @@ final class RemoteFileArtifactReusePlanner {
             compatibleStatsCandidate(
                     statsByPath.getOrDefault(plan.filePath(), List.of()),
                     sourceFingerprint,
-                    statsSignature)
+                    statsSignature,
+                    effectivePolicy)
                 .orElse(null);
         if (mainStats != null) {
           statsSelections.add(new StatsSelection(mainStats, plan.filePath()));
@@ -83,7 +84,8 @@ final class RemoteFileArtifactReusePlanner {
                 compatibleStatsCandidate(
                         statsByPath.getOrDefault(entry.getKey(), List.of()),
                         entry.getValue(),
-                        statsSignature)
+                        statsSignature,
+                        effectivePolicy)
                     .orElse(null);
             if (auxiliaryStats == null) {
               statsSelections.clear();
@@ -120,11 +122,28 @@ final class RemoteFileArtifactReusePlanner {
   }
 
   private static java.util.Optional<BundleStatsCandidate> compatibleStatsCandidate(
-      List<BundleStatsCandidate> candidates, String sourceFingerprint, String statsSignature) {
+      List<BundleStatsCandidate> candidates,
+      String sourceFingerprint,
+      String statsSignature,
+      ReconcileCapturePolicy capturePolicy) {
     return candidates.stream()
         .filter(candidate -> sourceFingerprint.equals(candidate.metadata().getSourceFingerprint()))
         .filter(candidate -> statsSignature.equals(candidate.metadata().getStatsCaptureSignature()))
+        .filter(candidate -> reusableStatsCoversPolicy(candidate.metadata(), capturePolicy))
         .findFirst();
+  }
+
+  private static boolean reusableStatsCoversPolicy(
+      ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata metadata,
+      ReconcileCapturePolicy capturePolicy) {
+    if (!capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      return true;
+    }
+    List<String> realized = metadata.getRealizedStatsSelectorsList();
+    if (realized.stream().allMatch(String::isBlank)) {
+      return false;
+    }
+    return FileArtifactReuse.coversExplicitSelectors(realized, capturePolicy.selectorsForStats());
   }
 
   private static void selectStats(

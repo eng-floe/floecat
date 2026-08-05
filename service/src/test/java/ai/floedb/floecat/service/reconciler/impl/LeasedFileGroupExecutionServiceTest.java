@@ -488,8 +488,27 @@ class LeasedFileGroupExecutionServiceTest {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileJobStore.ReconcileJob terminal = terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED");
+    ReconcileJobStore.ReconcileJob terminal =
+        terminalFileGroupJob(plannedGroup.asReference(), "JS_SUCCEEDED");
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
 
     assertTrue(
         service.persistSuccess(

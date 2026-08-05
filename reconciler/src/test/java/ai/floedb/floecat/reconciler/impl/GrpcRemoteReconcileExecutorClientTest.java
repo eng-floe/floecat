@@ -79,6 +79,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -318,6 +319,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
+    assertThat(manifest.getReusableArtifactBundlesComplete()).isTrue();
   }
 
   @Test
@@ -1458,7 +1460,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessDoesNotTouchReusedIndexSidecar() {
+  void submitFileGroupSuccessVerifiesReusedIndexSidecar() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -1529,11 +1531,31 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(new ReconcilerBackend.StagedIndexArtifact(record, null, "")));
+    when(client.blobStore.head(artifactUri))
+        .thenReturn(
+            Optional.of(
+                BlobHeader.newBuilder().setContentLength(128L).setEtag("prior-etag").build()));
 
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
-    verify(client.blobStore, never()).head(artifactUri);
+    verify(client.blobStore).head(artifactUri);
     verify(client.blobStore, never()).put(eq(artifactUri), any(byte[].class), any(String.class));
+
+    when(client.blobStore.head(artifactUri)).thenReturn(Optional.empty());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+
+    when(client.blobStore.head(artifactUri))
+        .thenReturn(
+            Optional.of(
+                BlobHeader.newBuilder()
+                    .setContentLength(128L)
+                    .setEtag("replacement-etag")
+                    .build()));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
   }
 
   private static ResourceId connectorId() {

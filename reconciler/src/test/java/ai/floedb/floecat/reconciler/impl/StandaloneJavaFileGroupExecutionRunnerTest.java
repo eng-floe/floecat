@@ -49,6 +49,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -158,6 +160,34 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
 
     assertThat(published).containsExactly(fileStats);
     assertThat(result.statsRecords()).isEmpty();
+  }
+
+  @Test
+  void executeDoesNotPublishConnectorStatsForIndexOnlyCapture() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(
+                  List.of(fileStats(plannedFile)), List.of(pageIndexEntry(plannedFile)));
+              return CaptureEngineResult.empty();
+            });
+    List<TargetStatsRecord> published = new ArrayList<>();
+
+    CaptureEngineResult result = runner.execute(indexOnlyPayload(), () -> false, published::add);
+
+    assertThat(published).isEmpty();
+    assertThat(result.stagedIndexArtifacts()).hasSize(1);
+    ArgumentCaptor<CaptureEngineRequest> request =
+        ArgumentCaptor.forClass(CaptureEngineRequest.class);
+    verify(runner.captureEngineRegistry).capture(request.capture(), any());
+    assertThat(request.getValue().requestedStatsTargetKinds()).isEmpty();
+    assertThat(request.getValue().capturePageIndex()).isTrue();
   }
 
   @Test
@@ -333,8 +363,12 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
 
     assertThatThrownBy(
             () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("incompatible stats");
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("incompatible stats")
+        .satisfies(
+            error ->
+                assertThat(((ReconcileFailureException) error).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
     verify(runner.captureEngineRegistry, never()).capture(any(), any());
   }
 
@@ -361,9 +395,58 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
 
     assertThatThrownBy(
             () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
-        .isInstanceOf(IllegalStateException.class)
+        .isInstanceOf(ReconcileFailureException.class)
         .hasMessageContaining("Failed to load reusable artifact bundle")
-        .hasRootCauseMessage("Reusable artifact reference is missing: " + bundleUri);
+        .hasRootCauseMessage("Reusable artifact reference is missing: " + bundleUri)
+        .satisfies(
+            error ->
+                assertThat(((ReconcileFailureException) error).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeObservesCancellationAfterLoadingReusableBundle() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    AtomicBoolean stopped = new AtomicBoolean();
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/reuse-bundle.pb";
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .build();
+    byte[] bytes = bundle.toByteArray();
+    when(runner.blobStore.get(bundleUri))
+        .thenAnswer(
+            ignored -> {
+              stopped.set(true);
+              return bytes;
+            });
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle",
+                        bundleUri,
+                        bytes.length,
+                        sha256(bytes),
+                        List.of(),
+                        List.of(path))));
+
+    assertThatThrownBy(
+            () ->
+                runner.execute(payloadWithPlan(indexPayload(), plan), stopped::get, ignored -> {}))
+        .isInstanceOf(CancellationException.class);
     verify(runner.captureEngineRegistry, never()).capture(any(), any());
   }
 
@@ -510,6 +593,29 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                 ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
   }
 
+  private static StandaloneFileGroupExecutionPayload indexOnlyPayload() {
+    StandaloneFileGroupExecutionPayload base = payload();
+    return new StandaloneFileGroupExecutionPayload(
+        base.jobId(),
+        base.leaseEpoch(),
+        base.parentJobId(),
+        base.sourceConnector(),
+        base.sourceNamespace(),
+        base.sourceTable(),
+        base.storageLocation(),
+        base.tableId(),
+        base.snapshotId(),
+        base.planId(),
+        base.groupId(),
+        base.resultPayloadUri(),
+        base.statsObjectPrefix(),
+        base.plannedFilePaths(),
+        base.executionSchemaJson(),
+        base.fileExecutionPlans(),
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
   private static StandaloneFileGroupExecutionPayload payloadWithPlan(
       StandaloneFileGroupExecutionPayload base, ReconcileFileExecutionPlan plan) {
     return new StandaloneFileGroupExecutionPayload(
@@ -572,15 +678,18 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             .addAllIndexArtifacts(indexes)
             .build()
             .toByteArray();
-    byte[] sha256;
-    try {
-      sha256 = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (java.security.NoSuchAlgorithmException error) {
-      throw new IllegalStateException(error);
-    }
+    byte[] sha256 = sha256(bytes);
     when(blobStore.get(uri)).thenReturn(bytes);
     return new ReusableArtifactBundleSelection(
         "reuse-bundle", uri, bytes.length, sha256, statsPaths, indexPaths);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (java.security.NoSuchAlgorithmException error) {
+      throw new IllegalStateException(error);
+    }
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(String filePath) {

@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -100,8 +101,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
             .setTableId("table-1")
             .setSnapshotId(9001L)
+            .setReusableArtifactBundlesComplete(true)
             .build()
             .toByteArray();
     String uri = "/reuse/9001.pb";
@@ -132,6 +136,117 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             .success());
     verify(blobStore).get(uri);
     verify(backend, never()).existingSnapshotIds(any(), any());
+  }
+
+  @Test
+  void planningFailsTerminalWhenReuseManifestIntegrityIsInvalid() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(
+            backend, workerClient, ignored -> Optional.empty(), 2, true);
+    executor.blobStore = blobStore;
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    List.of(snapshotFile("file-1", 10L)), List.of())));
+    when(backend.fetchSnapshot(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(55L)
+                    .setParentSnapshotId(9001L)
+                    .build()));
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setTableId("table-1")
+            .setSnapshotId(9001L)
+            .build()
+            .toByteArray();
+    String uri = "/reuse/corrupt-9001.pb";
+    when(backend.fetchSnapshot(any(), any(), eq(9001L)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(9001L)
+                    .putSummary(SnapshotReuseManifestMetadata.URI, uri)
+                    .putSummary(
+                        SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
+                    .putSummary(
+                        SnapshotReuseManifestMetadata.SHA256,
+                        Base64.getEncoder().encodeToString(new byte[32]))
+                    .build()));
+    when(blobStore.get(uri)).thenReturn(manifestBytes);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(!result.success());
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
+    verify(workerClient)
+        .submitPlanSnapshotFailure(
+            any(),
+            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
+            argThat(detail -> detail.contains("snapshot reuse manifest metadata mismatch")));
+    verify(workerClient, never()).submitPlanSnapshotSuccess(any(), any(), any(), any());
+  }
+
+  @Test
+  void reuseManifestIdentityRequiresMatchingAccountAndConnector() {
+    SnapshotCaptureManifest wrongAccount =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("other-account")
+            .setConnectorId("connector-1")
+            .setTableId("table-1")
+            .setSnapshotId(9001L)
+            .build();
+    ReconcileFailureException accountFailure =
+        assertThrows(
+            ReconcileFailureException.class,
+            () ->
+                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                    tableId(), 9001L, "connector-1", wrongAccount, "/reuse/account.pb"));
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        accountFailure.retryDisposition());
+
+    SnapshotCaptureManifest wrongConnector =
+        wrongAccount.toBuilder().setAccountId("acct").setConnectorId("other-connector").build();
+    ReconcileFailureException connectorFailure =
+        assertThrows(
+            ReconcileFailureException.class,
+            () ->
+                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                    tableId(), 9001L, "connector-1", wrongConnector, "/reuse/connector.pb"));
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        connectorFailure.retryDisposition());
   }
 
   @Test
@@ -205,6 +320,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NOT_FOUND);
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.MISSING_METADATA);
     assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NON_NUMERIC_BYTES);
+    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.UNMARKED_MANIFEST);
   }
 
   private static void assertPlanningRegeneratesWhenManifestIsUnavailable(
@@ -249,7 +365,23 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             .setTableId(tableId())
             .setSnapshotId(9001L)
             .putSummary(SnapshotReuseManifestMetadata.URI, uri);
-    if (unavailableMode != ManifestUnavailableMode.MISSING_METADATA) {
+    if (unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST) {
+      byte[] manifestBytes =
+          SnapshotCaptureManifest.newBuilder()
+              .setFormatVersion(1)
+              .setAccountId("acct")
+              .setConnectorId("connector-1")
+              .setTableId("table-1")
+              .setSnapshotId(9001L)
+              .build()
+              .toByteArray();
+      parent
+          .putSummary(SnapshotReuseManifestMetadata.BYTES, Integer.toString(manifestBytes.length))
+          .putSummary(
+              SnapshotReuseManifestMetadata.SHA256,
+              Base64.getEncoder().encodeToString(sha256(manifestBytes)));
+      when(blobStore.get(uri)).thenReturn(manifestBytes);
+    } else if (unavailableMode != ManifestUnavailableMode.MISSING_METADATA) {
       parent.putSummary(
           SnapshotReuseManifestMetadata.BYTES,
           unavailableMode == ManifestUnavailableMode.NON_NUMERIC_BYTES ? "not-a-number" : "123");
@@ -289,7 +421,16 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     NULL_BLOB,
     NOT_FOUND,
     MISSING_METADATA,
-    NON_NUMERIC_BYTES
+    NON_NUMERIC_BYTES,
+    UNMARKED_MANIFEST
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new AssertionError(e);
+    }
   }
 
   @Test
