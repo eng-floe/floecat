@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -305,6 +306,9 @@ public class StandaloneJavaFileGroupExecutionRunner {
         throwIfCancellationRequested(stop);
       } catch (java.util.concurrent.CancellationException error) {
         throw error;
+      } catch (StorageAbortRetryableException error) {
+        throw retryableReuseBundleRead(
+            "Failed to load reusable artifact bundle " + selection.payloadUri(), error);
       } catch (ReconcileFailureException error) {
         throw error;
       } catch (Exception error) {
@@ -320,6 +324,16 @@ public class StandaloneJavaFileGroupExecutionRunner {
         ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
+  }
+
+  private static ReconcileFailureException retryableReuseBundleRead(
+      String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+        ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
         message,
         cause);
   }

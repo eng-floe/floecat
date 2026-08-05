@@ -43,6 +43,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.ArrayList;
 import java.util.List;
@@ -442,6 +443,45 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             error ->
                 assertThat(((ReconcileFailureException) error).retryDisposition())
                     .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executePreservesRetryabilityForTransientReusableBundleRead() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/temporarily-unavailable-bundle.pb";
+    when(runner.blobStore.get(bundleUri))
+        .thenThrow(new StorageAbortRetryableException("bundle read throttled"));
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle", bundleUri, 1L, new byte[32], List.of(path), List.of())));
+
+    assertThatThrownBy(
+            () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("Failed to load reusable artifact bundle")
+        .hasRootCauseMessage("bundle read throttled")
+        .satisfies(
+            error -> {
+              ReconcileFailureException failure = (ReconcileFailureException) error;
+              assertThat(failure.retryDisposition())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE);
+              assertThat(failure.retryClass())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR);
+            });
     verify(runner.captureEngineRegistry, never()).capture(any(), any());
   }
 
