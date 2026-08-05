@@ -1948,12 +1948,13 @@ The behavioral contract replaces them with explicit source-to-target prefix mapp
 <span class="w">  </span><span class="n">ResourceId</span><span class="w"> </span><span class="na">catalog_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
 <span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespaceMapping</span><span class="w"> </span><span class="na">namespace_mappings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
 <span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">exclude_namespaces</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayPolicy</span><span class="w"> </span><span class="na">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayState</span><span class="w"> </span><span class="na">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">8</span><span class="p">;</span>
+<span class="w">  </span><span class="n">CatalogOverlayState</span><span class="w"> </span><span class="na">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span>
+<span class="w">  </span><span class="n">CatalogOverlayPolicy</span><span class="w"> </span><span class="na">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">8</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
-<p>The protobuf above is illustrative; field numbering and request separation are finalized when the
-contract is implemented. The semantics are fixed:</p>
+<p>The protobuf above is illustrative. The inert CRUD field numbers remain contiguous; numbering for
+new fields and request separation are finalized when the contract is implemented. The semantics
+are fixed:</p>
 <ul>
 <li>Paths are ordered from catalog root to namespace leaf, trimmed, and matched case-sensitively.</li>
 <li>A recursive mapping maps every descendant by appending its suffix to <code>target_prefix</code>.</li>
