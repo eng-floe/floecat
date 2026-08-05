@@ -1206,9 +1206,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#complex-types-v1" class="md-nav__link">
+  <a href="#complex-types" class="md-nav__link">
     <span class="md-ellipsis">
-      Complex types (v1)
+      Complex types
     </span>
   </a>
   
@@ -1854,9 +1854,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#complex-types-v1" class="md-nav__link">
+  <a href="#complex-types" class="md-nav__link">
     <span class="md-ellipsis">
-      Complex types (v1)
+      Complex types
     </span>
   </a>
   
@@ -2088,17 +2088,17 @@ Delta, etc.) and SQL-facing components.</p>
 <tr>
 <td><code>ARRAY</code></td>
 <td>16</td>
-<td>Ordered collection (non-parameterised in v1)</td>
+<td>Ordered collection (carries an element type tree)</td>
 </tr>
 <tr>
 <td><code>MAP</code></td>
 <td>17</td>
-<td>Key-value map (non-parameterised in v1)</td>
+<td>Key-value map (carries key/value type trees)</td>
 </tr>
 <tr>
 <td><code>STRUCT</code></td>
 <td>18</td>
-<td>Named-field record (non-parameterised in v1)</td>
+<td>Named-field record (carries an ordered field list)</td>
 </tr>
 <tr>
 <td><code>VARIANT</code></td>
@@ -2153,14 +2153,45 @@ carried via overlays/hints, not Floecat core types.</p>
   When enabled, zoned timestamps are converted into that session zone and stored as local
   <code>TIMESTAMP</code> values.</li>
 </ul>
-<h3 id="complex-types-v1">Complex types (v1)<a class="headerlink" href="#complex-types-v1" title="Permanent link">&para;</a></h3>
-<p><code>ARRAY</code>, <code>MAP</code>, <code>STRUCT</code>, and <code>VARIANT</code> are non-parameterised in v1. The logical kind captures
-only the container category; element/value/field types are captured by child <code>SchemaColumn</code> rows
-carrying their own paths (e.g. <code>address.city</code>, <code>items[]</code>, <code>tags{}</code>).</p>
+<h3 id="complex-types">Complex types<a class="headerlink" href="#complex-types" title="Permanent link">&para;</a></h3>
+<p><code>ARRAY</code>, <code>MAP</code>, and <code>STRUCT</code> carry a recursive type tree on <code>LogicalType</code>: <code>element()</code> +
+<code>elementNullable()</code> for ARRAY, <code>key()</code>/<code>value()</code> + <code>valueNullable()</code> for MAP, and ordered
+<code>LogicalField</code> entries (<code>name</code>, <code>nullable</code>, <code>type</code>) for STRUCT. <code>VARIANT</code> is self-describing and
+never carries a tree. A bare container tag (<code>LogicalType.of(LogicalKind.ARRAY)</code>) remains valid and
+represents the legacy non-parameterised form; use <code>hasTypeTree()</code> to distinguish the two.</p>
+<p>The string grammar mirrors the tree:</p>
+<div class="highlight"><pre><span></span><code>type   ::= scalar
+         | ARRAY &quot;&lt;&quot; type &quot;&gt;&quot;
+         | STRUCT &quot;&lt;&quot; field (&quot;,&quot; field)* &quot;&gt;&quot;
+         | MAP &quot;&lt;&quot; type &quot;,&quot; type &quot;&gt;&quot;
+field  ::= name &quot;:&quot; type
+</code></pre></div>
+<p>e.g. <code>ARRAY&lt;INT&gt;</code>, <code>MAP&lt;STRING, DOUBLE&gt;</code>, <code>ARRAY&lt;STRUCT&lt;sku: STRING, quantities: ARRAY&lt;INT&gt;&gt;&gt;</code>.
+Struct field names are case-preserved; names that are not simple identifiers are double-quoted
+with <code>""</code> escaping. Nullability is not part of the grammar (parsing defaults to nullable).</p>
+<p>On the wire, <code>SchemaColumn.type</code> is the single authoritative semantic type: a recursive
+<code>floecat.types.LogicalType</code> message that preserves the full nested shape <em>including</em>
+element/value/field nullability, which the string grammar cannot carry. (The former flat
+<code>logical_type</code> string field is reserved; persisted columns written before the change are
+re-reconciled from upstream metadata where an upstream exists, and view output columns with no
+upstream are upgraded transparently on load via
+<code>LogicalTypeProtoAdapter.upgradeLegacyColumn</code>, which recovers the legacy string from protobuf
+unknown fields.) <code>LogicalTypeProtoAdapter.toProto</code>/<code>fromProto</code> convert
+between the JVM model and the wire message; the string grammar remains for textual inputs
+(generic schema declarations), docs, and debugging via <code>LogicalTypeFormat</code>.</p>
+<p>Nested fields additionally surface as child <code>SchemaColumn</code> rows with their own canonical paths —
+struct children as <code>parent.child</code>, list elements as <code>parent[]</code>, map keys as <code>parent.key</code>, map
+values as <code>parent{}</code> (e.g. <code>address.city</code>, <code>items[].sku</code>, <code>tags{}.v</code>). Schema construction and
+the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
+set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.</p>
+<p><code>ScalarStats.logical_type</code> remains a flat canonical string: stats rows exist only for leaves, and
+leaf types are never parameterised containers.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>LogicalType</code> / <code>LogicalKind</code></strong> – Immutable representations of logical types. <code>LogicalType</code>
-  stores <code>(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)</code>.
+  stores <code>(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)</code>
+  plus the nested type tree for complex kinds (<code>element</code>/<code>elementNullable</code>, <code>key</code>/<code>value</code>/<code>valueNullable</code>,
+  <code>fields</code>).
   <code>temporalPrecision</code> is optional (unset means default microsecond precision). Interval fields are
   optional and only apply to <code>INTERVAL</code>. Canonical <code>DECIMAL</code> semantics are
   <code>precision ≥ 1</code> and <code>0 ≤ scale ≤ precision</code> with no global precision ceiling in the core model.
@@ -2168,7 +2199,8 @@ carrying their own paths (e.g. <code>address.city</code>, <code>items[]</code>, 
   sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
   precision (0..6). All other kinds reject parameters.</li>
 <li><strong><code>LogicalTypeProtoAdapter</code></strong> – Converts between the protobuf <code>ai.floedb.floecat.types.LogicalType</code>
-  wire message and the JVM <code>LogicalType</code>, preserving kind/precision/scale/interval range metadata.</li>
+  wire message and the JVM <code>LogicalType</code>, preserving scalar parameters, recursive shape, and nested
+  requiredness.</li>
 <li><strong><code>LogicalCoercions</code></strong> – Coerces raw stat values to the canonical Java type for a given kind (e.g.
   any <code>Number</code> → <code>Long</code> for <code>INT</code>, string → <code>LocalDateTime</code> for <code>TIMESTAMP</code> (timezone‑naive policy),
   string → <code>Instant</code> for <code>TIMESTAMPTZ</code>).</li>
@@ -2205,15 +2237,16 @@ carrying their own paths (e.g. <code>address.city</code>, <code>items[]</code>, 
 <span class="n">String</span><span class="w"> </span><span class="n">logicalType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LogicalTypeFormat</span><span class="p">.</span><span class="na">format</span><span class="p">(</span><span class="n">t</span><span class="p">);</span>
 <span class="n">String</span><span class="w"> </span><span class="n">encoded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MinMaxCodec</span><span class="p">.</span><span class="na">encode</span><span class="p">(</span><span class="n">t</span><span class="p">,</span><span class="w"> </span><span class="n">BigDecimal</span><span class="p">.</span><span class="na">valueOf</span><span class="p">(</span><span class="mi">42</span><span class="p">));</span>
 </code></pre></div>
-<code>LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)</code> and
-<code>.encodeLogicalType(LogicalType logicalType)</code> convert between canonical logical type strings and
-runtime objects.</p>
+<code>LogicalTypeFormat.parse(String)</code> and <code>.format(LogicalType)</code> convert between canonical logical type
+strings and runtime objects. <code>LogicalTypeProtoAdapter</code> converts the runtime type to and from the
+typed protobuf payload.</p>
 <h2 id="arrow-mapping-contract">Arrow Mapping Contract<a class="headerlink" href="#arrow-mapping-contract" title="Permanent link">&para;</a></h2>
 <p><code>core/arrow</code> helpers (especially <code>ArrowSchemaUtil</code>) are defined over Floecat logical types, not over
 arbitrary engine-native type systems.</p>
 <ul>
-<li>Input is <code>SchemaColumn.logical_type</code> and should be a Floecat canonical logical type string (or an
-  accepted alias handled by <code>LogicalKind.fromName</code> semantics).</li>
+<li>Input is <code>SchemaColumn.type</code>, a recursive <code>floecat.types.LogicalType</code> message; decode it with
+  <code>LogicalTypeProtoAdapter.columnType</code>. Textual entry points (generic schema declarations) still
+  accept canonical names and aliases via <code>LogicalKind.fromName</code> semantics.</li>
 <li>Integer aliases (<code>TINYINT</code>, <code>SMALLINT</code>, <code>INT</code>, <code>BIGINT</code>, <code>INT2/4/8</code>, <code>UINT2/4/8</code>) all map to
   Arrow signed 64-bit (<code>Int64</code>) to preserve collapsed canonical <code>INT</code> behavior.</li>
 <li>Unknown, null, or blank logical types fail fast with <code>IllegalArgumentException</code>; they are not
@@ -2268,8 +2301,8 @@ intend lossy rounding opt in explicitly, e.g.
 </ul>
 <h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>Connector reads Parquet/Delta/Iceberg schema
-  → schema mapper emits canonical LogicalKind strings (e.g. &quot;INT&quot;, &quot;TIMESTAMPTZ&quot;, &quot;ARRAY&quot;)
-  → SchemaColumn.logical_type stores the canonical string
+  → schema mapper emits recursive LogicalType trees (e.g. INT, TIMESTAMPTZ, ARRAY&lt;STRUCT&lt;...&gt;&gt;)
+  → SchemaColumn.type stores the typed tree; nested nodes also surface as child rows by path
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
   → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
@@ -2285,15 +2318,16 @@ intend lossy rounding opt in explicitly, e.g.
    canonical name.</p>
 <h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Iceberg schema parsing</strong> – <code>IcebergSchemaMapper.toCanonical(Type)</code> converts Iceberg types to
-  canonical strings (e.g. <code>TimestampType.withZone()</code> → <code>"TIMESTAMPTZ"</code>), storing them in
-  <code>SchemaColumn.logical_type</code>. This avoids the historic ambiguity where <code>"timestamp"</code> meant
-  UTC-stored in Delta but non-UTC in Iceberg. Iceberg <code>TimestampNanoType</code> is mapped with the same
-  timezone semantics (<code>withZone()</code> → <code>"TIMESTAMPTZ"</code>, <code>withoutZone()</code> → <code>"TIMESTAMP"</code>), and
-  Iceberg <code>VariantType</code> maps to canonical <code>"VARIANT"</code>.</li>
-<li><strong>Delta schema parsing</strong> – <code>DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)</code> applies Delta-
-  specific semantics: <code>"timestamp"</code> → <code>"TIMESTAMPTZ"</code> (UTC-stored), <code>"timestamp_ntz"</code> → <code>"TIMESTAMP"</code>
-  (timezone-naive).</li>
+<li><strong>Iceberg schema parsing</strong> – <code>IcebergTypeMappings.toLogical(Type)</code> converts Iceberg types to
+  <code>LogicalType</code>, recursing into LIST/MAP/STRUCT and preserving element/key/value types and
+  nullability; <code>IcebergSchemaMapper</code> stores the result in <code>SchemaColumn.type</code>. This avoids the
+  historic ambiguity where <code>"timestamp"</code> meant UTC-stored in Delta but non-UTC in Iceberg.
+  Iceberg <code>TimestampNanoType</code> uses the same timezone semantics (<code>withZone()</code> → <code>TIMESTAMPTZ</code>,
+  <code>withoutZone()</code> → <code>TIMESTAMP</code>), and Iceberg <code>VariantType</code> maps to <code>VARIANT</code>.</li>
+<li><strong>Delta schema parsing</strong> – <code>DeltaSchemaMapper.toLogicalType(DataType)</code> (kernel path) and
+  <code>fallbackLogicalType(JsonNode)</code> (JSON fallback) apply Delta-specific semantics: <code>"timestamp"</code> →
+  <code>TIMESTAMPTZ</code> (UTC-stored), <code>"timestamp_ntz"</code> → <code>TIMESTAMP</code> (timezone-naive). Both recurse into
+  arrays/maps/structs, preserving <code>containsNull</code> / <code>valueContainsNull</code>.</li>
 <li><strong>Statistics ingestion</strong> – NDV providers convert Parquet min/max values using <code>MinMaxCodec</code> before
   storing them in <code>ScalarStats</code>, ensuring planners can compare them without deserialising actual
   binary payloads. Connector planners canonicalize connector-native numeric temporal bounds to
