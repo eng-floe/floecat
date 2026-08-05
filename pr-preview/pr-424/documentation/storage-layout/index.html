@@ -1636,9 +1636,6 @@
 <p>Floecat stores every entity twice: the immutable protobuf payload lives in a BlobStore while a
 PointerStore entry (with versions) exposes hierarchical lookup and CAS updates. This design keeps
 history in blobs while enabling fast name-based resolution via pointers.</p>
-<p>Catalog integration credential payloads are not part of this layout. They are stored through the
-configured secrets manager; integration blobs contain only an opaque credential reference, and that
-reference (plus opaque references durably queued for deletion) is cleared from API responses.</p>
 <p>This list is authoritative and should remain in sync with <code>service/src/main/java/ai/floedb/floecat/service/repo/model/Keys.java</code>.</p>
 <p>Blobs follow deterministic prefixes:</p>
 <div class="highlight"><pre><span></span><code>/accounts/{account_id}/account/{sha}.pb
@@ -1678,6 +1675,7 @@ reference (plus opaque references durably queued for deletion) is cleared from A
 /accounts/{account_id}/connectors/by-name/{connector_name}
 /accounts/{account_id}/catalog-integrations/by-id/{integration_id}
 /accounts/{account_id}/catalog-integrations/by-name/{integration_name}
+/accounts/{account_id}/catalog-integrations/overlays-marker/{integration_id}
 /accounts/{account_id}/catalog-overlays/by-id/{overlay_id}
 /accounts/{account_id}/catalog-overlays/by-name/{overlay_name}
 /accounts/{account_id}/catalog-overlays/by-integration/{integration_id}/{overlay_id}
