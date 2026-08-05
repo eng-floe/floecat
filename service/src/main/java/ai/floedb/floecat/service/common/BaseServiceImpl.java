@@ -42,7 +42,6 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
-import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Multi;
@@ -92,19 +91,13 @@ public abstract class BaseServiceImpl {
   }
 
   /**
-   * The OTel context to re-activate inside a hopped body. Prefers the context current at method
-   * entry, but when that carries no valid span — the norm on this server, where the span is only
-   * current inside the innermost tracing interceptor's window and never at the method layer — it
-   * grafts on the span {@code SpanCaptureInterceptor} stashed on the per-call duplicated-context
-   * carrier. Without this, {@code Span.current()} inside the body is the invalid root span and
-   * every per-request decoration and diagnostic summary event silently no-ops.
+   * The OTel context to re-activate inside a hopped body: the entry context, with the call's gRPC
+   * server span grafted on when it carries none (the norm at the method layer). See {@link
+   * ResolvedCallContexts#withCurrentCallSpan} for why — the same rule {@code PropagatedContext}
+   * uses.
    */
   private static Context otelContextForBody(Context captured) {
-    if (Span.fromContext(captured).getSpanContext().isValid()) {
-      return captured;
-    }
-    Span carried = ResolvedCallContexts.currentCallSpanOrInvalid();
-    return carried.getSpanContext().isValid() ? captured.with(carried) : captured;
+    return ResolvedCallContexts.withCurrentCallSpan(captured);
   }
 
   protected <T> Uni<T> run(Supplier<T> body) {
@@ -119,7 +112,7 @@ public abstract class BaseServiceImpl {
             () ->
                 grpcCtx.call(
                     () ->
-                        ResolvedCallContexts.callWith(
+                        ResolvedCallContexts.callWithOrInherit(
                             callCtx,
                             () -> {
                               try (Scope ignored = otelCtx.makeCurrent()) {
@@ -146,7 +139,7 @@ public abstract class BaseServiceImpl {
             () ->
                 grpcCtx.call(
                     () ->
-                        ResolvedCallContexts.callWith(
+                        ResolvedCallContexts.callWithOrInherit(
                             callCtx,
                             () -> {
                               try (Scope ignored = otelCtx.makeCurrent()) {
@@ -167,7 +160,7 @@ public abstract class BaseServiceImpl {
             emitter ->
                 grpcCtx.run(
                     () ->
-                        ResolvedCallContexts.runWith(
+                        ResolvedCallContexts.runWithOrInherit(
                             callCtx,
                             () -> {
                               try (Scope ignored = otelCtx.makeCurrent()) {

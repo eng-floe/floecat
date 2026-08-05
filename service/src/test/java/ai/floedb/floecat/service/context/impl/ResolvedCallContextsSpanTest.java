@@ -24,6 +24,7 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.TraceFlags;
 import io.opentelemetry.api.trace.TraceState;
+import io.opentelemetry.context.Context;
 import io.smallrye.common.vertx.VertxContext;
 import io.vertx.core.Vertx;
 import java.util.concurrent.CompletableFuture;
@@ -84,6 +85,61 @@ class ResolvedCallContextsSpanTest {
   }
 
   @Test
+  void theCarriedCallSpanIsGraftedOntoAnOtelContextThatHasNone() throws Exception {
+    // The graft itself, which the store/read tests above do not reach: withCurrentCallSpan is what
+    // BaseServiceImpl's hopped bodies and PropagatedContext.capture() both rely on. The server span
+    // is not current at the service-method layer, so a captured context has no valid span; without
+    // the graft a hopped body re-roots its spans and they detach from the request trace.
+    Vertx vertx = Vertx.vertx();
+    try {
+      Span grafted =
+          onDuplicatedContext(
+              vertx,
+              () -> {
+                ResolvedCallContexts.storeSpanOnDuplicatedContext(SAMPLED_SPAN);
+                Context withNoSpan = Context.root();
+                assertFalse(
+                    Span.fromContext(withNoSpan).getSpanContext().isValid(),
+                    "premise: the captured context must carry no valid span");
+                return Span.fromContext(ResolvedCallContexts.withCurrentCallSpan(withNoSpan));
+              });
+      assertTrue(grafted.getSpanContext().isValid());
+      assertEquals(
+          SAMPLED_SPAN.getSpanContext().getTraceId(), grafted.getSpanContext().getTraceId());
+      assertEquals(SAMPLED_SPAN.getSpanContext().getSpanId(), grafted.getSpanContext().getSpanId());
+    } finally {
+      vertx.close().toCompletionStage().toCompletableFuture().get();
+    }
+  }
+
+  @Test
+  void anAlreadyValidSpanIsNotReplacedByTheCarriedOne() throws Exception {
+    // The graft must not override a context that already has a span: that context is the more
+    // specific one (a body that started its own span), and replacing it would reparent live spans.
+    Vertx vertx = Vertx.vertx();
+    try {
+      Span kept =
+          onDuplicatedContext(
+              vertx,
+              () -> {
+                ResolvedCallContexts.storeSpanOnDuplicatedContext(SAMPLED_SPAN);
+                Span own =
+                    Span.wrap(
+                        SpanContext.createFromRemoteParent(
+                            "11111111111111111111111111111111",
+                            "2222222222222222",
+                            TraceFlags.getSampled(),
+                            TraceState.getDefault()));
+                return Span.fromContext(
+                    ResolvedCallContexts.withCurrentCallSpan(Context.root().with(own)));
+              });
+      assertEquals("2222222222222222", kept.getSpanContext().getSpanId());
+    } finally {
+      vertx.close().toCompletionStage().toCompletableFuture().get();
+    }
+  }
+
+  @Test
   void anInvalidSpanIsNotCarried() throws Exception {
     Vertx vertx = Vertx.vertx();
     try {
@@ -94,10 +150,17 @@ class ResolvedCallContextsSpanTest {
           onDuplicatedContext(
               vertx,
               () -> {
+                // Store a valid span first: if the invalid store were NOT a no-op it would
+                // overwrite this, so reading back the valid span proves the skip. Asserting only
+                // that the result is invalid would pass either way.
+                ResolvedCallContexts.storeSpanOnDuplicatedContext(SAMPLED_SPAN);
                 ResolvedCallContexts.storeSpanOnDuplicatedContext(Span.getInvalid());
                 return ResolvedCallContexts.currentCallSpanOrInvalid();
               });
-      assertFalse(readBack.getSpanContext().isValid());
+      assertTrue(
+          readBack.getSpanContext().isValid(), "the invalid store must not have overwritten it");
+      assertEquals(
+          SAMPLED_SPAN.getSpanContext().getSpanId(), readBack.getSpanContext().getSpanId());
     } finally {
       vertx.close().toCompletionStage().toCompletableFuture().get();
     }
