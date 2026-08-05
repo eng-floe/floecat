@@ -2022,9 +2022,10 @@ CatalogClientFactory
 CatalogCapabilities
 </code></pre></div>
 <p>No type in this boundary imports Connector protobufs or carries a Connector resource ID. The first
-vertical slice is Iceberg REST. The existing Iceberg Connector may delegate catalog access to this
-library during transition, but Integration code never delegates to a Connector resource or service.
-Unity Catalog and Glue support follow as separate provider implementations.</p>
+vertical slice is Iceberg REST. The existing Iceberg Connector remains operational on its separate
+Connector SPI and does not delegate to this library. Integration code likewise never delegates to a
+Connector resource or service. Unity Catalog and Glue support follow as separate provider
+implementations.</p>
 <p>The client boundary covers connection validation, namespace and relation enumeration, stable
 identity lookup, and provider metadata access. Capture planning, scheduling, Floecat persistence,
 overlay binding, and query resolution remain outside the catalog client.</p>
@@ -2121,8 +2122,8 @@ make ownership, credentials, scheduling, and failure semantics impossible to rea
 <h2 id="implementation-sequence">Implementation sequence<a class="headerlink" href="#implementation-sequence" title="Permanent link">&para;</a></h2>
 <p>The next changes should retain clear review boundaries:</p>
 <ol>
-<li>Introduce the neutral catalog-access SPI and an Iceberg REST implementation; adapt the legacy
-   Iceberg Connector to use it internally.</li>
+<li>Introduce the neutral catalog-access SPI and an Iceberg REST implementation while leaving the
+   operational legacy Iceberg Connector on its separate Connector SPI.</li>
 <li>Add integration authentication, secret persistence, credential rotation, capability discovery,
    validation, and their CLI surface. Do not schedule reconciliation yet.</li>
 <li>Add integration-scoped canonical capture identity and lightweight overlay bindings, including

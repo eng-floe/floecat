@@ -1800,7 +1800,7 @@ redacts property and header values.</p>
 <span class="w">        </span><span class="n">CatalogProtocol</span><span class="p">.</span><span class="na">ICEBERG_REST</span><span class="p">,</span>
 <span class="w">        </span><span class="n">URI</span><span class="p">.</span><span class="na">create</span><span class="p">(</span><span class="s">&quot;https://catalog.example/v1&quot;</span><span class="p">),</span>
 <span class="w">        </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">&quot;warehouse&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;sales&quot;</span><span class="p">),</span>
-<span class="w">        </span><span class="k">new</span><span class="w"> </span><span class="n">CatalogAuthentication</span><span class="p">(</span><span class="s">&quot;oauth2&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">()));</span>
+<span class="w">        </span><span class="k">new</span><span class="w"> </span><span class="n">CatalogAuthentication</span><span class="p">(</span><span class="n">CatalogAuthenticationScheme</span><span class="p">.</span><span class="na">OAUTH2</span><span class="p">,</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">()));</span>
 
 <span class="n">ResolvedCatalogCredentials</span><span class="w"> </span><span class="n">credentials</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="k">new</span><span class="w"> </span><span class="n">ResolvedCatalogCredentials</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">&quot;token&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">token</span><span class="p">),</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(),</span><span class="w"> </span><span class="n">expiresAt</span><span class="p">);</span>
@@ -1851,13 +1851,14 @@ representations use hashed provider references and never include keys or tokens.
 <p>The Iceberg REST auth manager replaces storage provider configuration with the catalog-scoped
 provider only while signing REST requests. FileIO retains the separately configured storage scope,
 including credentials vended through later Iceberg table configuration.</p>
-<p>Iceberg REST does not expose a generally stable table identifier, so discovered tables explicitly
-use a path-derived, unstable identity. A rename is therefore interpreted as deletion plus creation,
-matching the target integration semantics.</p>
+<p>Iceberg REST tables use the Iceberg table UUID as their stable external identity when table metadata
+exposes it. Tables without an available UUID use a path-derived, explicitly unstable fallback; a
+rename of such a table is interpreted as deletion plus creation.</p>
 <p>OAuth secrets, AWS keys, renewable-provider IDs, and Iceberg credential-provider hooks are rejected
 in persistable connection configuration and accepted only through <code>ResolvedCatalogCredentials</code>.
-Unsupported authentication schemes, incomplete or unknown credential properties, and endpoint
-protocols fail instead of falling back to Connector behavior.</p>
+Persisted HTTP headers and endpoint user-info are rejected for the same reason. Unsupported
+authentication schemes, incomplete or unknown credential properties, and endpoint protocols fail
+instead of falling back to Connector behavior.</p>
 <h2 id="current-boundary">Current boundary<a class="headerlink" href="#current-boundary" title="Permanent link">&para;</a></h2>
 <p>This first slice is discovery infrastructure. It does not add Integration credentials or validation
 RPCs, schedule reconciliation, write captured resources, or change the existing Iceberg Connector.
