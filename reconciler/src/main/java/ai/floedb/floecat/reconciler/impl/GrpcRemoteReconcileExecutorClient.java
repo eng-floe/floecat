@@ -1730,7 +1730,7 @@ class GrpcRemoteReconcileExecutorClient
       }
       Set<String> persistedSelectors = persistedIndexSelectors(record);
       if (!requiredSelectors.isEmpty()
-          && !coversExplicitSelectors(persistedSelectors, requiredSelectors)) {
+          && !FileArtifactReuse.coversExplicitSelectors(persistedSelectors, requiredSelectors)) {
         throw new IllegalArgumentException(
             "index artifact does not cover the explicitly requested selectors");
       }
@@ -1759,18 +1759,6 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "index capture requires one ready artifact per planned file");
     }
-  }
-
-  private static boolean coversExplicitSelectors(
-      Set<String> persistedSelectors, Set<String> requiredSelectors) {
-    if (persistedSelectors.containsAll(requiredSelectors)) {
-      return true;
-    }
-    if (requiredSelectors.stream().anyMatch(selector -> !selector.startsWith("#"))) {
-      return false;
-    }
-    return FileArtifactReuse.selectorIdentities(persistedSelectors)
-        .containsAll(FileArtifactReuse.selectorIdentities(requiredSelectors));
   }
 
   private static int realizedIndexColumnCount(Set<String> selectors) {

@@ -158,6 +158,32 @@ class RemoteFileArtifactReusePlannerTest {
   }
 
   @Test
+  void rejectsBundleIndexWhenNamedRequirementIsMissingDespiteMatchingStableIdentity() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "iceberg-data-v1:7:10");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(
+                new ReconcileCapturePolicy.Column("#1", false, true),
+                new ReconcileCapturePolicy.Column("logical_customer_id", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    var bundle = indexBundle(plan, policy, "{}", "#1", "physical_customer_id");
+
+    assertEquals(
+        FileArtifactReuse.selectorIdentities(policy.selectorsForIndex()),
+        FileArtifactReuse.selectorIdentities(
+            bundle.getIndexArtifacts(0).getRealizedIndexSelectorsList()));
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesIndexArtifact());
+  }
+
+  @Test
   void rejectsDefaultBundleIndexWhenExecutionSchemaChanges() {
     ReconcileFileExecutionPlan plan =
         ReconcileFileExecutionPlan.of(
@@ -179,18 +205,21 @@ class RemoteFileArtifactReusePlannerTest {
       ReconcileFileExecutionPlan plan,
       ReconcileCapturePolicy policy,
       String executionSchemaJson,
-      String realizedSelector) {
+      String... realizedSelectors) {
     return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
         .setArtifact(
             ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
-                .setPayloadUri("s3://bucket/reuse-bundle.pb"))
+                .setTargetStorageId("reuse-bundle:group-1")
+                .setPayloadUri("s3://bucket/reuse-bundle.pb")
+                .setPayloadBytes(1024)
+                .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
         .addIndexArtifacts(
             ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
                 .setFilePath(PATH)
                 .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(plan))
                 .setIndexCaptureSignature(
                     FileArtifactReuse.indexCaptureSignature(policy, executionSchemaJson))
-                .addRealizedIndexSelectors(realizedSelector))
+                .addAllRealizedIndexSelectors(List.of(realizedSelectors)))
         .build();
   }
 

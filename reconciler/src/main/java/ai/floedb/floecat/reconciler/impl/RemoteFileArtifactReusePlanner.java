@@ -16,8 +16,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 /** Computes file artifact reuse in the remote planner, before file-group jobs are persisted. */
 final class RemoteFileArtifactReusePlanner {
@@ -164,15 +162,11 @@ final class RemoteFileArtifactReusePlanner {
   private static boolean reusableIndexCoversPolicy(
       ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata metadata,
       ReconcileCapturePolicy capturePolicy) {
-    Set<String> realizedSelectors =
-        metadata.getRealizedIndexSelectorsList().stream()
-            .map(String::trim)
-            .filter(selector -> !selector.isBlank())
-            .collect(Collectors.toSet());
-    if (realizedSelectors.isEmpty()) {
+    if (metadata.getRealizedIndexSelectorsList().stream().allMatch(String::isBlank)) {
       return false;
     }
-    return realizedSelectors.containsAll(capturePolicy.selectorsForIndex());
+    return FileArtifactReuse.coversExplicitSelectors(
+        metadata.getRealizedIndexSelectorsList(), capturePolicy.selectorsForIndex());
   }
 
   private static final class BundleSelectionBuilder {

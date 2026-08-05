@@ -287,6 +287,13 @@ public final class FileArtifactReuse {
     return fieldIds.isEmpty() ? java.util.Set.copyOf(normalized) : fieldIds;
   }
 
+  /** Checks every explicit selector without collapsing distinct named requirements. */
+  static boolean coversExplicitSelectors(
+      Collection<String> realizedSelectors, Collection<String> requiredSelectors) {
+    return java.util.Set.copyOf(normalizedSelectors(realizedSelectors))
+        .containsAll(normalizedSelectors(requiredSelectors));
+  }
+
   private static List<String> normalizedSelectors(Collection<String> selectors) {
     return selectors == null
         ? List.of()
