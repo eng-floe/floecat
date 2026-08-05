@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -123,6 +124,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     String statsPrefix = "/stats/group-1/";
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .addFileGroups(
                 FileGroupResultDescriptor.newBuilder()
                     .setGroupId("group-1")
@@ -159,10 +161,24 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void reusableBundleMetadataMustBeMarkedComplete() {
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.newBuilder().build();
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                LeasedSnapshotFinalizeExecutionService.validateReusableArtifactCoverage(manifest));
+
+    assertTrue(failure.getMessage().contains("reuse bundle index is not complete"));
+  }
+
+  @Test
   void reusableBundleMetadataMustCoverDeclaredManifestArtifacts() {
     String statsPrefix = "/stats/group-1/";
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .addFileGroups(
                 FileGroupResultDescriptor.newBuilder()
                     .setGroupId("group-1")
@@ -192,6 +208,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   void reusableBundlesAreMatchedByFencedPrefixWhenGroupIdsRepeatAcrossPlans() {
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .addFileGroups(
                 FileGroupResultDescriptor.newBuilder()
                     .setPlanId("plan-1")
@@ -374,6 +391,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .build();
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setConnectorId("connector")
@@ -451,6 +469,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .build();
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setConnectorId("connector")
@@ -515,6 +534,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   void successRejectsIncompleteIndexCoverageBeforeActivation() {
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setConnectorId("connector")
@@ -564,6 +584,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setConnectorId("connector")
@@ -762,6 +783,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setConnectorId("connector")
@@ -945,6 +967,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   private static byte[] manifestBytes() {
     return SnapshotCaptureManifest.newBuilder()
+        .setReusableArtifactBundlesComplete(true)
         .setFormatVersion(1)
         .setAccountId(ACCOUNT_ID)
         .setConnectorId("connector")
@@ -968,6 +991,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   private static byte[] indexCaptureManifestBytes() {
     return SnapshotCaptureManifest.newBuilder()
+        .setReusableArtifactBundlesComplete(true)
         .setFormatVersion(1)
         .setAccountId(ACCOUNT_ID)
         .setConnectorId("connector")

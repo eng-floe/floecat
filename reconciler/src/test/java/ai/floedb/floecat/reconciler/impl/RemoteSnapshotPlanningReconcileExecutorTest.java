@@ -78,22 +78,22 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     ReconcileFailureException accountFailure =
         assertThrows(
             ReconcileFailureException.class,
-        () ->
-            RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
-                tableId().toBuilder().setAccountId("other-acct").build(),
-                9001L,
-                "connector-1",
-                valid,
-                "/reuse.pb"));
+            () ->
+                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                    tableId().toBuilder().setAccountId("other-acct").build(),
+                    9001L,
+                    "connector-1",
+                    valid,
+                    "/reuse.pb"));
     assertEquals(
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         accountFailure.retryDisposition());
     ReconcileFailureException connectorFailure =
         assertThrows(
             ReconcileFailureException.class,
-        () ->
-            RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
-                tableId(), 9001L, "other-connector", valid, "/reuse.pb"));
+            () ->
+                RemoteSnapshotPlanningReconcileExecutor.validateReuseManifestIdentity(
+                    tableId(), 9001L, "other-connector", valid, "/reuse.pb"));
     assertEquals(
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         connectorFailure.retryDisposition());

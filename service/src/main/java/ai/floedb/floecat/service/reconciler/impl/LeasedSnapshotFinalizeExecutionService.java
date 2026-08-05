@@ -390,6 +390,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           .add(group.getStatsObjectPrefix());
     }
 
+    if (!manifest.getReusableArtifactBundlesComplete()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest reuse bundle index is not complete");
+    }
     if (manifest.getReusableArtifactBundlesCount() != manifest.getFileGroupsCount()) {
       throw new IllegalArgumentException("snapshot capture manifest reuse bundle count mismatch");
     }
