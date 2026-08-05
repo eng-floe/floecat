@@ -20,9 +20,11 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Context;
 import io.smallrye.common.vertx.VertxContext;
 import io.vertx.core.Vertx;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Callable;
 import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
@@ -34,9 +36,11 @@ import org.jboss.logging.MDC;
  * <p>The resolved context is carried on three channels, consulted in order of reliability:
  *
  * <ol>
- *   <li><b>Explicit scope</b> ({@link #callWith}/{@link #runWith}) — a thread-confined override for
- *       code that was handed the context by reference across an executor hop. This is the only
- *       channel that works on arbitrary executor threads.
+ *   <li><b>Explicit scope</b> ({@link #callWith}/{@link #runWith}, or the explicitly empty scope
+ *       {@link #callWithoutRequestScope} installs) — a thread-confined override for code that was
+ *       handed the context by reference across an executor hop. This is the only channel that works
+ *       on arbitrary executor threads, and the only one that can deliberately resolve to nothing:
+ *       an empty scope beats the two fallback channels below rather than deferring to them.
  *   <li><b>Vert.x duplicated-context local</b> ({@link #storeOnDuplicatedContext}) — written once
  *       by the inbound interceptor on the same per-call duplicated context that carries MDC. It
  *       survives Quarkus's gRPC dispatch worker hops and Mutiny's contextualized callbacks for
@@ -72,7 +76,10 @@ public final class ResolvedCallContexts {
    */
   private static final String SPAN_LOCAL = "floecat.call-span";
 
-  private static final ThreadLocal<ResolvedCallContext> SCOPE = new ThreadLocal<>();
+  // A present holder is an explicit scope; Optional.empty() is an explicitly empty scope (an
+  // off-request capture) that must win over the fallback carriers. A null value (thread-local
+  // absent) means no explicit scope, so the carriers are consulted.
+  private static final ThreadLocal<Optional<ResolvedCallContext>> SCOPE = new ThreadLocal<>();
 
   private ResolvedCallContexts() {}
 
@@ -142,14 +149,34 @@ public final class ResolvedCallContexts {
   }
 
   /**
+   * Graft the call's gRPC server span onto {@code captured} when {@code captured} carries no valid
+   * span. The server span is not current at the service-method layer — it lives on the
+   * duplicated-context carrier (see {@link #currentCallSpanOrInvalid}) — so without this a hopped
+   * or off-thread body would re-establish an invalid trace root and its spans would silently detach
+   * from the request trace. {@code BaseServiceImpl}'s hopped bodies (unary and both streaming
+   * forms, via {@code otelContextForBody}) and {@link
+   * ai.floedb.floecat.service.context.PropagatedContext} both route their OpenTelemetry context
+   * through here so the graft rule cannot diverge between them.
+   */
+  public static Context withCurrentCallSpan(Context captured) {
+    if (Span.fromContext(captured).getSpanContext().isValid()) {
+      return captured;
+    }
+    Span carried = currentCallSpanOrInvalid();
+    return carried.getSpanContext().isValid() ? captured.with(carried) : captured;
+  }
+
+  /**
    * Returns the resolved call context for the current thread, or {@code null} when no channel
    * carries one. Channels are consulted in reliability order: explicit scope, duplicated-context
-   * local, {@code io.grpc.Context} keys.
+   * local, {@code io.grpc.Context} keys. An explicit scope — including the explicitly empty one an
+   * off-request capture installs — short-circuits: it wins over the fallback carriers, so an
+   * isolated body cannot inherit a foreign request the worker's duplicated or gRPC context bears.
    */
   public static ResolvedCallContext currentOrNull() {
-    ResolvedCallContext scoped = SCOPE.get();
+    Optional<ResolvedCallContext> scoped = SCOPE.get();
     if (scoped != null) {
-      return scoped;
+      return scoped.orElse(null);
     }
     ResolvedCallContext fromDuplicatedContext = fromDuplicatedContext();
     if (fromDuplicatedContext != null) {
@@ -194,12 +221,14 @@ public final class ResolvedCallContexts {
   /**
    * Runs {@code body} with {@code resolved} as the current thread's call context. Use to carry the
    * context by reference across an executor hop: read the context once before the hop, then wrap
-   * the hopped body. Passing {@code null} is allowed and runs the body unscoped.
+   * the hopped body. {@code resolved} must be non-null — see {@link #runWithOrInherit} for the
+   * read-may-be-null case.
    */
   public static void runWith(ResolvedCallContext resolved, Runnable body) {
     Objects.requireNonNull(body, "body");
-    ResolvedCallContext previous = SCOPE.get();
-    SCOPE.set(resolved);
+    Objects.requireNonNull(resolved, "resolved");
+    Optional<ResolvedCallContext> previous = SCOPE.get();
+    SCOPE.set(Optional.of(resolved));
     try {
       body.run();
     } finally {
@@ -209,24 +238,82 @@ public final class ResolvedCallContexts {
 
   /**
    * Calls {@code body} with {@code resolved} as the current thread's call context and returns the
-   * result. Checked exceptions are wrapped in a {@link RuntimeException}.
+   * result. Checked exceptions are wrapped in a {@link RuntimeException}. {@code resolved} must be
+   * non-null — see {@link #callWithOrInherit} for the read-may-be-null case.
    */
   public static <T> T callWith(ResolvedCallContext resolved, Callable<T> body) {
     Objects.requireNonNull(body, "body");
-    ResolvedCallContext previous = SCOPE.get();
-    SCOPE.set(resolved);
+    Objects.requireNonNull(resolved, "resolved");
+    Optional<ResolvedCallContext> previous = SCOPE.get();
+    SCOPE.set(Optional.of(resolved));
+    try {
+      return runBody(body);
+    } finally {
+      restore(previous);
+    }
+  }
+
+  /**
+   * {@link #runWith} for a context read that may legitimately be {@code null} — a service method
+   * grafting a pre-hop read, where "no resolved context" means "inherit", not "isolate". A null
+   * {@code resolved} leaves the enclosing scope in force: with no enclosing scope {@link
+   * #currentOrNull()} still consults the fallback carriers, and inside a {@link
+   * #callWithoutRequestScope} body the isolation is preserved. Named rather than spelled {@code
+   * null} because the three scope states are genuinely distinct and a null used to mean the
+   * opposite of this one.
+   */
+  public static void runWithOrInherit(ResolvedCallContext resolved, Runnable body) {
+    Objects.requireNonNull(body, "body");
+    if (resolved == null) {
+      body.run();
+      return;
+    }
+    runWith(resolved, body);
+  }
+
+  /**
+   * {@link #callWith} for a context read that may legitimately be {@code null}; see {@link
+   * #runWithOrInherit}.
+   */
+  public static <T> T callWithOrInherit(ResolvedCallContext resolved, Callable<T> body) {
+    Objects.requireNonNull(body, "body");
+    if (resolved == null) {
+      return runBody(body);
+    }
+    return callWith(resolved, body);
+  }
+
+  /**
+   * Calls {@code body} under an explicitly empty call scope: {@link #currentOrNull()} returns
+   * {@code null} for its duration regardless of any fallback carrier (duplicated-context local,
+   * {@code io.grpc.Context} keys) the thread bears, and the prior scope is restored afterward. Use
+   * to isolate an off-request body — captured before an executor hop — from a foreign request the
+   * worker may still carry. Distinct from {@code callWith(null, ...)}, which leaves the enclosing
+   * scope in place and lets the carriers show through when there is none.
+   */
+  public static <T> T callWithoutRequestScope(Callable<T> body) {
+    Objects.requireNonNull(body, "body");
+    Optional<ResolvedCallContext> previous = SCOPE.get();
+    SCOPE.set(Optional.empty());
+    try {
+      return runBody(body);
+    } finally {
+      restore(previous);
+    }
+  }
+
+  /** Run {@code body}, wrapping any checked exception in a {@link RuntimeException}. */
+  private static <T> T runBody(Callable<T> body) {
     try {
       return body.call();
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException(e);
-    } finally {
-      restore(previous);
     }
   }
 
-  private static void restore(ResolvedCallContext previous) {
+  private static void restore(Optional<ResolvedCallContext> previous) {
     if (previous == null) {
       SCOPE.remove();
     } else {
