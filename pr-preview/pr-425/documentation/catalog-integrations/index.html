@@ -1673,63 +1673,51 @@
 
 
 <h1 id="catalog-integrations-and-overlays">Catalog Integrations and Overlays<a class="headerlink" href="#catalog-integrations-and-overlays" title="Permanent link">&para;</a></h1>
-<p>Floecat separates connection details from catalog placement:</p>
+<p>Catalog integrations and overlays are operationally inert records that establish the resource
+model for future external-catalog connectivity:</p>
 <ul>
-<li>A <strong>catalog integration</strong> describes one upstream catalog endpoint and its authentication.</li>
-<li>A <strong>catalog overlay</strong> selects which upstream namespaces appear in one Floecat SQL catalog.</li>
+<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, display metadata, state, and
+  non-secret properties.</li>
+<li>A <strong>catalog overlay</strong> binds an integration and namespace filters to an existing Floecat catalog.</li>
 </ul>
-<p>This lets several overlays reuse one authenticated integration without duplicating credentials or
-connection configuration.</p>
-<div class="highlight"><pre><span></span><code>CatalogIntegration (endpoint + auth)
- ├── CatalogOverlay &quot;sales&quot;   → Floecat Catalog &quot;sales&quot;
- └── CatalogOverlay &quot;finance&quot; → Floecat Catalog &quot;finance&quot;
+<div class="highlight"><pre><span></span><code>CatalogIntegration (external catalog identity)
+ ├── CatalogOverlay &quot;sales&quot;   → existing Floecat Catalog &quot;sales&quot;
+ └── CatalogOverlay &quot;finance&quot; → existing Floecat Catalog &quot;finance&quot;
 </code></pre></div>
-<p>The legacy <code>Connector</code> API and shell commands remain available during the migration. New catalog
-configuration should use integrations and overlays. Reconciliation and query-path migration are
-still being completed, so the legacy connector path remains the operational fallback for capture.</p>
+<p>These resources do not store authentication or credentials, validate connectivity, refresh
+metadata, reconcile or capture tables, or affect query paths. The legacy <code>Connector</code> API and Shell
+commands remain the operational path for external catalog connectivity.</p>
 <h2 id="shell-workflow">Shell workflow<a class="headerlink" href="#shell-workflow" title="Permanent link">&para;</a></h2>
-<p>Create and validate the upstream integration:</p>
-<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
-  --auth-scheme oauth2 \
-  --cred-type bearer \
-  --cred token=&lt;token&gt;
-
-integration validate lakehouse
+<p>Create the integration record, then attach it to an existing catalog:</p>
+<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1
+overlay create sales-overlay lakehouse sales --include prod.sales,prod.reference
 </code></pre></div>
-<p>Create an overlay. Floecat creates its SQL catalog automatically:</p>
-<div class="highlight"><pre><span></span><code>overlay create sales lakehouse --include prod.sales,prod.reference
-</code></pre></div>
-<p>The everyday commands are intentionally small:</p>
+<p>The overlay command accepts either resource IDs or display names for the integration and catalog.
+Namespace filters are comma-separated paths supplied with <code>--include</code> and <code>--exclude</code>. Omitting both
+selects the whole upstream namespace tree.</p>
+<p>The available commands are:</p>
 <div class="highlight"><pre><span></span><code>integrations
+integration list
 integration get &lt;name|id&gt;
+integration create &lt;name&gt; &lt;type&gt; &lt;uri&gt; [options]
 integration update &lt;name|id&gt; [options]
 integration delete &lt;name|id&gt;
 
 overlays [--integration &lt;name|id&gt;]
+overlay list [--integration &lt;name|id&gt;]
 overlay get &lt;name|id&gt;
+overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt; [options]
 overlay update &lt;name|id&gt; [options]
 overlay delete &lt;name|id&gt;
 </code></pre></div>
-<p>Namespace filters are comma-separated paths supplied with <code>--include</code> and <code>--exclude</code>. Omitting
-both exposes the whole upstream namespace tree. The Shell always creates the Floecat catalog for
-the overlay automatically.</p>
-<p>Automatic refresh is optional. <code>--refresh-every &lt;seconds&gt;</code> enables it; <code>--refresh-off</code> disables it
-on an existing overlay. Detailed reconcile and capture controls remain on the legacy connector
-commands until reconciliation moves to the new resource model.</p>
-<p>Credentials supplied with <code>--cred-type</code> and <code>--cred</code> are stored out of band. Integration records
-and read responses never contain the credential payload. The interactive Shell also excludes
-commands containing <code>--cred</code> or <code>--cred-head</code> from its persistent history.</p>
-<p>The API replaces authentication as a unit. The CLI carries forward omitted public settings, but
-credentials are not returned and cannot be carried forward. Resupply <code>--cred-type</code> and the
-credential values when changing the scheme, auth properties, headers, or credentials; the CLI
-rejects partial auth updates that could silently remove the stored secret.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <ul>
+<li>Overlay creation requires an active integration and an existing catalog.</li>
+<li>At most one overlay can refer to a catalog.</li>
+<li>An overlay's <code>catalog_id</code> is a non-owning reference. Overlay CRUD never creates, updates, locks,
+  empties, or deletes the catalog or its namespaces.</li>
 <li>An integration cannot be deleted while overlays refer to it.</li>
-<li>An overlay owns its automatically created Floecat catalog.</li>
-<li>Overlay deletion currently requires that catalog to be empty.</li>
-<li>Integration and overlay records use the same optimistic <code>--etag</code> preconditions as other Floecat
-  resources.</li>
+<li>Integration and overlay mutations support optimistic <code>--etag</code> preconditions.</li>
 </ul>
 <p>The protobuf contracts are in <code>core/proto/src/main/proto/floecat/integration/</code>.</p>
 
