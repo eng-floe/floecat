@@ -2034,16 +2034,17 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
 <li><strong>AccountServiceImpl</strong> – Administers accounts and enforces conventional permissions.</li>
 <li><strong>CatalogIntegrationsImpl</strong> – Provides CRUD for external catalog identity records. The contract is
   intentionally independent of legacy Connectors and contains no credential, adapter,
-  connectivity-validation, or reconciliation behavior. Reads require <code>catalog-integration.read</code>;
-  writes require <code>catalog-integration.write</code>.</li>
+  connectivity-validation, or reconciliation behavior. Catalog endpoint URIs must be absolute and
+  cannot contain user-info, fragments, or sensitive query keys. Reads require
+  <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Maps an integration and optional upstream namespace filters to one
   existing SQL-visible catalog. Creating an overlay atomically publishes its pointers while
   requiring the integration and catalog pointers to remain at their validated versions, and it
   advances the integration dependency marker in the same transaction. Deleting an overlay deletes
   only the overlay. It never creates, mutates, locks, or deletes catalogs or namespaces.
-  Reads require <code>catalog-overlay.read</code>; writes require <code>catalog-overlay.write</code>; creation also
-  requires <code>catalog-integration.use</code> and <code>catalog.write</code>. Catalog lifecycle enforcement, cleanup,
-  and reconciliation are deferred.</li>
+  Reads require <code>catalog-overlay.read</code>; writes require <code>catalog-overlay.write</code> and <code>catalog.write</code>;
+  creation also requires <code>catalog-integration.use</code>. Catalog lifecycle enforcement, cleanup, and
+  reconciliation are deferred.</li>
 <li><strong>ConnectorsImpl</strong> – Manages connector lifecycle, validates <code>ConnectorSpec</code> via SPI factories,
   wires reconciliation job submission, and exposes <code>ValidateConnector</code> + <code>StartCapture</code>.
   <code>CaptureNow</code> maps to reconciler capture modes:</li>
