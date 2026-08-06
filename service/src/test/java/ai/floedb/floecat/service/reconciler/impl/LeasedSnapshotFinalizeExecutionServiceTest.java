@@ -182,8 +182,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .build()
             .toByteArray();
     byte[] payloadDigest = MessageDigest.getInstance("SHA-256").digest(payload);
-    String uri =
-        "/stats/group/reuse-bundles/" + HexFormat.of().formatHex(payloadDigest) + ".pb";
+    String uri = "/stats/group/reuse-bundles/" + HexFormat.of().formatHex(payloadDigest) + ".pb";
     StatsObjectDescriptor artifact =
         StatsObjectDescriptor.newBuilder()
             .setTargetStorageId("reuse-bundle:group-1")
@@ -212,9 +211,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     assertDoesNotThrow(() -> service.validateReusableArtifactBundle(valid, stagedDigest));
     ReusableArtifactBundleReference tampered =
         valid.toBuilder()
-            .setFileStats(
-                0,
-                valid.getFileStats(0).toBuilder().setSourceFingerprint("substituted"))
+            .setFileStats(0, valid.getFileStats(0).toBuilder().setSourceFingerprint("substituted"))
             .build();
     assertThrows(
         IllegalArgumentException.class,

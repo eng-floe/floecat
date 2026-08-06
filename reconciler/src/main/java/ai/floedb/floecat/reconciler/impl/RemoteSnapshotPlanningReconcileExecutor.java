@@ -670,8 +670,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     var manifestRef = snapshot.getReuseManifestRef();
     String uri = manifestRef.getUri().trim();
     if (uri.isBlank()) {
-      throw invalidReuseManifest(
-          "snapshot reuse manifest URI is missing: " + snapshotId, null);
+      throw invalidReuseManifest("snapshot reuse manifest URI is missing: " + snapshotId, null);
     }
     byte[] bytes;
     try {

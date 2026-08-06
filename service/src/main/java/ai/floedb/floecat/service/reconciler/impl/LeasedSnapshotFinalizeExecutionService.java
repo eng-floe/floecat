@@ -29,8 +29,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
@@ -675,7 +675,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       String artifactReferencesSha256 =
           HexFormat.of().formatHex(fileGroup.getArtifactReferencesSha256().toByteArray());
-      if (stagedArtifactDigests.putIfAbsent(expectedStatsPrefix, artifactReferencesSha256) != null) {
+      if (stagedArtifactDigests.putIfAbsent(expectedStatsPrefix, artifactReferencesSha256)
+          != null) {
         throw new IllegalArgumentException("duplicate reusable artifact bundle identity");
       }
       if (!statsStore.isPreparedFileGroup(
@@ -984,8 +985,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                       .stream()
                       .sorted()
                       .toList()));
-      indexDescriptors.add(
-          artifact.toBuilder().setTargetStorageId("file:" + filePath).build());
+      indexDescriptors.add(artifact.toBuilder().setTargetStorageId("file:" + filePath).build());
     }
     if (!expected.build().equals(submitted)
         || !ArtifactReferenceDigest.sha256(statsDescriptors, indexDescriptors)
