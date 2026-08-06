@@ -433,7 +433,10 @@ message SnapshotCaptureManifest {
   repeated string realized_index_selectors = 21;
   // Concrete column selectors present in the activated stats generation.
   repeated string realized_stats_selectors = 22;
+  // Complete compatibility index for the current snapshot. A false value is not eligible as a
+  // reuse source and is replaced by the next complete capture.
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
+  bool reusable_artifact_bundles_complete = 29;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
@@ -1024,9 +1027,8 @@ message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
     FileGroupResultDescriptor result_descriptor = 2;
-    // Legacy per-target mappings retained for captures produced before bundle commits.
-    repeated StatsObjectDescriptor file_stats = 3;
-    repeated StatsObjectDescriptor index_artifacts = 4;
+    reserved 3, 4;
+    reserved "file_stats", "index_artifacts";
     FileGroupArtifactBundleDescriptor artifact_bundle = 5;
   }
 

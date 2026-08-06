@@ -1659,8 +1659,10 @@ class QueuedReconcileWorkerSupport {
       FloecatConnector.SnapshotBundle bundle,
       Snapshot existing) {
     long parentSnapshotId = bundle.parentId();
-    if (parentSnapshotId <= 0 && existing != null) {
+    boolean hasParentSnapshotId = parentSnapshotId >= 0;
+    if (!hasParentSnapshotId && existing != null && existing.hasParentSnapshotId()) {
       parentSnapshotId = existing.getParentSnapshotId();
+      hasParentSnapshotId = true;
     }
 
     Timestamp upstreamTimestamp;
@@ -1677,7 +1679,7 @@ class QueuedReconcileWorkerSupport {
             .setTableId(tableId)
             .setSnapshotId(bundle.snapshotId())
             .setUpstreamCreatedAt(upstreamTimestamp);
-    if (parentSnapshotId > 0) {
+    if (hasParentSnapshotId) {
       builder.setParentSnapshotId(parentSnapshotId);
     }
     applyField(

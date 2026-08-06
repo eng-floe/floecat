@@ -676,7 +676,7 @@ class ReconcileExecutorControlImplTest {
   @Test
   void commitLeasedFileGroupResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any()))
         .thenReturn(true);
 
     var response =
@@ -689,6 +689,7 @@ class ReconcileExecutorControlImplTest {
                         CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
                             .setResultDescriptor(fileGroupResultDescriptor())
+                            .setArtifactBundle(fileGroupArtifactBundle())
                             .build())
                     .build())
             .await()
@@ -711,7 +712,6 @@ class ReconcileExecutorControlImplTest {
                             .captureManifestUri()
                             .equals("/capture-1.pb")
                         && descriptor.indexPredecessor().captureManifestPointerVersion() == 9L),
-            any(),
             any());
   }
 
@@ -720,7 +720,7 @@ class ReconcileExecutorControlImplTest {
     service.connectorRepo = mock(ConnectorRepository.class);
     when(service.connectorRepo.existsById(any())).thenReturn(false);
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any()))
         .thenReturn(true);
 
     var response =
@@ -733,6 +733,7 @@ class ReconcileExecutorControlImplTest {
                         CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
                             .setResultDescriptor(fileGroupResultDescriptor())
+                            .setArtifactBundle(fileGroupArtifactBundle())
                             .build())
                     .build())
             .await()
@@ -740,7 +741,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
+        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any());
   }
 
   @Test
@@ -1163,6 +1164,19 @@ class ReconcileExecutorControlImplTest {
                 .setCaptureManifestUri("/capture-1.pb")
                 .setCaptureManifestPointerVersion(9L)
                 .build())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor
+      fileGroupArtifactBundle() {
+    return ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId("reuse-bundle:group-1")
+                .setPayloadUri("/stats/reuse-bundles/bundle.pb")
+                .setPayloadBytes(1L)
+                .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+        .addFileStatsTargetStorageIds("file:s3://bucket/file.parquet")
         .build();
   }
 

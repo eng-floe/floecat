@@ -2058,7 +2058,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
     }
 
@@ -2787,7 +2787,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
 
       @Override

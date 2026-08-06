@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -32,19 +33,26 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -62,6 +70,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private final boolean enabled;
   private final boolean workerAuthRequired;
   private final int maxFilesPerGroup;
+  @Inject BlobStore blobStore;
 
   @Inject
   public RemoteSnapshotPlanningReconcileExecutor(
@@ -411,7 +420,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     if (directSnapshotTask.isPresent()) {
       return directSnapshotTask.get();
     }
-    List<ReconcileFileGroupTask> fileGroupTasks = buildFileGroupTasks(lease, task);
+    List<ReconcileFileGroupTask> fileGroupTasks =
+        enrichFileGroupTasks(lease, payload, task, buildFileGroupTasks(lease, task));
     return PlannedSnapshotCapture.fileGroups(
         ReconcileSnapshotTask.of(
             task.tableId(),
@@ -432,6 +442,321 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             task.indexPredecessor()),
         fileGroupTasks);
   }
+
+  private List<ReconcileFileGroupTask> enrichFileGroupTasks(
+      ReconcileJobStore.LeasedJob lease,
+      StandalonePlanSnapshotPayload payload,
+      ReconcileSnapshotTask task,
+      List<ReconcileFileGroupTask> groups) {
+    if (groups.isEmpty()) {
+      return groups;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(task.tableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ReconcileContext context = reconcileContext(lease);
+    ReconcileScope scope = effectiveSnapshotScope(payload.scope(), task);
+    ReconcileCapturePolicy capturePolicy =
+        scope == null ? ReconcileCapturePolicy.empty() : scope.capturePolicy();
+    List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> historicalBundles =
+        new ArrayList<>();
+    if (!lease.fullRescan) {
+      Optional<HistoricalArtifacts> manifestArtifacts =
+          loadPredecessorReuseManifest(context, tableId, task.snapshotId(), lease.connectorId);
+      manifestArtifacts.ifPresent(artifacts -> historicalBundles.addAll(artifacts.bundles()));
+    }
+    List<ReconcileFileGroupTask> enriched =
+        groups.stream()
+            .map(
+                group ->
+                    group.withFileExecutionPlans(
+                        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                            group.executionSchemaJson(),
+                            group.fileExecutionPlans(),
+                            capturePolicy,
+                            lease.fullRescan,
+                            historicalBundles)))
+            .toList();
+    return historicalBundles.isEmpty()
+        ? enriched
+        : regroupByReuseBundleAffinity(enriched, maxFilesPerGroup);
+  }
+
+  static List<ReconcileFileGroupTask> regroupByReuseBundleAffinity(
+      List<ReconcileFileGroupTask> groups, int maxFilesPerGroup) {
+    if (groups == null || groups.isEmpty()) {
+      return List.of();
+    }
+    ReconcileFileGroupTask template = groups.get(0);
+    List<ReconcileFileExecutionPlan> plans =
+        groups.stream().flatMap(group -> group.fileExecutionPlans().stream()).toList();
+    if (plans.isEmpty()) {
+      return List.copyOf(groups);
+    }
+    int effectiveMaxFiles = Math.max(1, maxFilesPerGroup);
+    Map<String, List<ReconcileFileExecutionPlan>> plansByBundle = new java.util.TreeMap<>();
+    List<ReconcileFileExecutionPlan> unbound = new ArrayList<>();
+    for (ReconcileFileExecutionPlan plan : plans) {
+      String affinity = primaryReuseBundleUri(plan);
+      if (affinity.isBlank()) {
+        unbound.add(plan);
+      } else {
+        plansByBundle.computeIfAbsent(affinity, ignored -> new ArrayList<>()).add(plan);
+      }
+    }
+    if (plansByBundle.isEmpty()) {
+      return List.copyOf(groups);
+    }
+
+    List<ExecutionPlanBucket> buckets = new ArrayList<>();
+    for (List<ReconcileFileExecutionPlan> bundlePlans : plansByBundle.values()) {
+      int bundleGroupCount = (bundlePlans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+      List<ExecutionPlanBucket> bundleBuckets = new ArrayList<>(bundleGroupCount);
+      PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
+      for (int index = 0; index < bundleGroupCount; index++) {
+        ExecutionPlanBucket bucket = new ExecutionPlanBucket(buckets.size() + index);
+        bundleBuckets.add(bucket);
+        available.add(bucket);
+      }
+      for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(bundlePlans)) {
+        ExecutionPlanBucket bucket = available.remove();
+        bucket.add(plan);
+        if (bucket.fileCount() < effectiveMaxFiles) {
+          available.add(bucket);
+        }
+      }
+      buckets.addAll(bundleBuckets);
+    }
+
+    int minimumGroupCount = (plans.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+    while (buckets.size() < minimumGroupCount) {
+      buckets.add(new ExecutionPlanBucket(buckets.size()));
+    }
+    PriorityQueue<ExecutionPlanBucket> available = executionPlanBucketQueue();
+    buckets.stream()
+        .filter(bucket -> bucket.fileCount() < effectiveMaxFiles)
+        .forEach(available::add);
+    for (ReconcileFileExecutionPlan plan : plansByEstimatedWork(unbound)) {
+      ExecutionPlanBucket bucket = available.remove();
+      bucket.add(plan);
+      if (bucket.fileCount() < effectiveMaxFiles) {
+        available.add(bucket);
+      }
+    }
+
+    List<ReconcileFileGroupTask> regrouped = new ArrayList<>(buckets.size());
+    for (ExecutionPlanBucket bucket : buckets) {
+      if (bucket.fileCount() == 0) {
+        continue;
+      }
+      List<ReconcileFileExecutionPlan> bucketPlans = bucket.immutablePlans();
+      String groupId = "snapshot-" + template.snapshotId() + "-group-" + regrouped.size();
+      List<String> filePaths =
+          bucketPlans.stream().map(ReconcileFileExecutionPlan::filePath).toList();
+      regrouped.add(
+          ReconcileFileGroupTask.of(
+              template.planId(),
+              groupId,
+              template.tableId(),
+              template.snapshotId(),
+              filePaths.size(),
+              "",
+              0,
+              filePaths,
+              List.of(),
+              List.of(),
+              template.executionSchemaJson(),
+              bucketPlans));
+    }
+    return List.copyOf(regrouped);
+  }
+
+  private static String primaryReuseBundleUri(ReconcileFileExecutionPlan plan) {
+    return plan.reusableArtifactBundleSelections().stream()
+        .filter(
+            selection ->
+                selection.statsFilePaths().contains(plan.filePath())
+                    || selection.indexFilePaths().contains(plan.filePath()))
+        .map(ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection::payloadUri)
+        .filter(uri -> uri != null && !uri.isBlank())
+        .sorted()
+        .findFirst()
+        .orElseGet(
+            () ->
+                plan.reusableArtifactBundleSelections().stream()
+                    .map(
+                        ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection
+                            ::payloadUri)
+                    .filter(uri -> uri != null && !uri.isBlank())
+                    .sorted()
+                    .findFirst()
+                    .orElse(""));
+  }
+
+  private static List<ReconcileFileExecutionPlan> plansByEstimatedWork(
+      List<ReconcileFileExecutionPlan> plans) {
+    return plans.stream()
+        .sorted(
+            Comparator.comparingLong(
+                    RemoteSnapshotPlanningReconcileExecutor::estimatedExecutionPlanWork)
+                .reversed()
+                .thenComparing(ReconcileFileExecutionPlan::filePath)
+                .thenComparing(ReconcileFileExecutionPlan::fileFormat))
+        .toList();
+  }
+
+  private static PriorityQueue<ExecutionPlanBucket> executionPlanBucketQueue() {
+    return new PriorityQueue<>(
+        Comparator.comparingLong(ExecutionPlanBucket::estimatedWork)
+            .thenComparingInt(ExecutionPlanBucket::fileCount)
+            .thenComparingInt(ExecutionPlanBucket::index));
+  }
+
+  private static long estimatedExecutionPlanWork(ReconcileFileExecutionPlan plan) {
+    long estimatedWork = saturatedAdd(plan.fileSizeInBytes(), ESTIMATED_FILE_OVERHEAD_BYTES);
+    if (plan.deletionVector() != null) {
+      estimatedWork = saturatedAdd(estimatedWork, plan.deletionVector().sizeInBytes());
+    }
+    for (ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile : plan.icebergDeleteFiles()) {
+      estimatedWork = saturatedAdd(estimatedWork, deleteFile.fileSizeInBytes());
+    }
+    return estimatedWork;
+  }
+
+  private static final class ExecutionPlanBucket {
+    private final int index;
+    private final List<ReconcileFileExecutionPlan> plans = new ArrayList<>();
+    private long estimatedWork;
+
+    private ExecutionPlanBucket(int index) {
+      this.index = index;
+    }
+
+    private void add(ReconcileFileExecutionPlan plan) {
+      plans.add(plan);
+      estimatedWork = saturatedAdd(estimatedWork, estimatedExecutionPlanWork(plan));
+    }
+
+    private int index() {
+      return index;
+    }
+
+    private int fileCount() {
+      return plans.size();
+    }
+
+    private long estimatedWork() {
+      return estimatedWork;
+    }
+
+    private List<ReconcileFileExecutionPlan> immutablePlans() {
+      return plans.stream()
+          .sorted(Comparator.comparing(ReconcileFileExecutionPlan::filePath))
+          .toList();
+    }
+  }
+
+  private Optional<HistoricalArtifacts> loadReuseManifest(
+      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
+    if (blobStore == null) {
+      return Optional.empty();
+    }
+    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+    String uri = snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.URI, "").trim();
+    if (uri.isBlank()) {
+      return Optional.empty();
+    }
+    String declaredBytes =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.BYTES, "").trim();
+    String declaredSha256 =
+        snapshot.getSummaryOrDefault(SnapshotReuseManifestMetadata.SHA256, "").trim();
+    if (declaredBytes.isBlank() || declaredSha256.isBlank()) {
+      return Optional.empty();
+    }
+    long expectedBytes;
+    try {
+      expectedBytes = Long.parseLong(declaredBytes);
+    } catch (NumberFormatException e) {
+      return Optional.empty();
+    }
+    byte[] bytes;
+    try {
+      bytes = blobStore.get(uri);
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    }
+    if (bytes == null) {
+      return Optional.empty();
+    }
+    if (expectedBytes != bytes.length
+        || !MessageDigest.isEqual(
+            declaredSha256.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+            Base64.getEncoder()
+                .encodeToString(sha256(bytes))
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+      throw invalidReuseManifest("snapshot reuse manifest metadata mismatch: " + uri, null);
+    }
+    try {
+      SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(bytes);
+      validateReuseManifestIdentity(tableId, snapshotId, expectedConnectorId, manifest, uri);
+      if (!manifest.getReusableArtifactBundlesComplete()) {
+        return Optional.empty();
+      }
+      return Optional.of(new HistoricalArtifacts(manifest.getReusableArtifactBundlesList()));
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw invalidReuseManifest("invalid snapshot reuse manifest: " + uri, e);
+    }
+  }
+
+  private static ReconcileFailureException invalidReuseManifest(String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.TERMINAL,
+        ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
+  }
+
+  static void validateReuseManifestIdentity(
+      ResourceId tableId,
+      long snapshotId,
+      String expectedConnectorId,
+      SnapshotCaptureManifest manifest,
+      String uri) {
+    if (manifest.getFormatVersion() != 1
+        || !tableId.getAccountId().equals(manifest.getAccountId())
+        || !java.util.Objects.equals(expectedConnectorId, manifest.getConnectorId())
+        || !tableId.getId().equals(manifest.getTableId())
+        || snapshotId != manifest.getSnapshotId()) {
+      throw invalidReuseManifest("snapshot reuse manifest identity mismatch: " + uri, null);
+    }
+  }
+
+  private Optional<HistoricalArtifacts> loadPredecessorReuseManifest(
+      ReconcileContext context, ResourceId tableId, long snapshotId, String expectedConnectorId) {
+    Snapshot snapshot = backend.fetchSnapshot(context, tableId, snapshotId).orElse(null);
+    if (snapshot == null || !snapshot.hasParentSnapshotId()) {
+      return Optional.empty();
+    }
+    return loadReuseManifest(context, tableId, snapshot.getParentSnapshotId(), expectedConnectorId);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  private record HistoricalArtifacts(
+      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> bundles) {}
 
   private Optional<PlannedSnapshotCapture> tryDirectStatsCapture(
       ReconcileJobStore.LeasedJob lease,
@@ -747,7 +1072,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
-  private static ReconcileScope effectiveFileGroupScope(
+  public static ReconcileScope effectiveFileGroupScope(
       ReconcileScope baseScope, ReconcileFileGroupTask fileGroupTask) {
     if (baseScope == null || !baseScope.hasCaptureRequestFilter() || fileGroupTask == null) {
       return baseScope == null ? ReconcileScope.empty() : baseScope;

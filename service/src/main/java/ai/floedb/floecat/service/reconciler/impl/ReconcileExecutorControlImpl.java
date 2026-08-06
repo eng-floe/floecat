@@ -1124,8 +1124,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getSuccess().getResultId(),
                         fromProtoFileGroupResultDescriptor(
                             request.getSuccess().getResultDescriptor()),
-                        request.getSuccess().getFileStatsList(),
-                        request.getSuccess().getIndexArtifactsList());
+                        request.getSuccess().hasArtifactBundle()
+                            ? request.getSuccess().getArtifactBundle()
+                            : null);
                 return CommitLeasedFileGroupResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

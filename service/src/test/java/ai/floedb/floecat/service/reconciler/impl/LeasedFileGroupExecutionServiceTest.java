@@ -69,7 +69,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -217,6 +216,7 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(
         ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
         payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
+    assertEquals(group.fileExecutionPlans(), payload.fileExecutionPlans());
   }
 
   @Test
@@ -259,8 +259,7 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(List.of()),
-            List.of(),
-            List.of());
+            artifactBundle(List.of(), List.of()));
 
     assertTrue(accepted);
     ArgumentCaptor<ReconcileFileGroupResultDescriptor> persisted =
@@ -397,8 +396,7 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(records),
-            descriptors,
-            List.of()));
+            artifactBundle(records, List.of())));
 
     verify(statsStore)
         .registerPrewrittenStatsReferencesInGeneration(
@@ -475,8 +473,7 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(records),
-            descriptors,
-            List.of()));
+            artifactBundle(records, List.of())));
 
     verify(statsStore)
         .registerPrewrittenStatsReferencesInGeneration(
@@ -491,8 +488,27 @@ class LeasedFileGroupExecutionServiceTest {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileJobStore.ReconcileJob terminal = terminalFileGroupJob(plannedGroup, "JS_SUCCEEDED");
+    ReconcileJobStore.ReconcileJob terminal =
+        terminalFileGroupJob(plannedGroup.asReference(), "JS_SUCCEEDED");
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
 
     assertTrue(
         service.persistSuccess(
@@ -501,8 +517,7 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(List.of()),
-            List.of(),
-            List.of()));
+            artifactBundle(List.of(), List.of())));
 
     var order = inOrder(jobs, statsStore);
     order
@@ -547,8 +562,7 @@ class LeasedFileGroupExecutionServiceTest {
                 LEASE_EPOCH,
                 "result-1",
                 resultDescriptor(List.of()),
-                List.of(),
-                List.of()));
+                artifactBundle(List.of(), List.of())));
 
     verifyNoInteractions(statsStore, indexArtifactRepository);
   }
@@ -610,8 +624,7 @@ class LeasedFileGroupExecutionServiceTest {
                 LEASE_EPOCH,
                 "result-1",
                 resultDescriptor(List.of(), List.of(), List.of(), submitted),
-                List.of(),
-                List.of()));
+                artifactBundle(List.of(), List.of())));
 
     verify(jobs, never())
         .completeFileGroupSuccess(
@@ -623,7 +636,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessProtectsEachIndividualStatsObjectWithoutReadingIt() {
+  void persistSuccessProtectsTheStatsBundleWithoutReadingIt() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -664,8 +677,7 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(List.of(record)),
-            statsObjectDescriptors(List.of(record)),
-            List.of()));
+            artifactBundle(List.of(record), List.of())));
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
@@ -678,7 +690,7 @@ class LeasedFileGroupExecutionServiceTest {
             eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
             objects.capture());
     assertEquals(1, objects.getValue().size());
-    assertEquals(statsObjectPrefix() + "0.pb", objects.getValue().getFirst().blobUri());
+    assertEquals(bundleArtifact().getPayloadUri(), objects.getValue().getFirst().blobUri());
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenTargetStatsReference>> references =
         ArgumentCaptor.forClass(List.class);
@@ -692,7 +704,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessAllowsStatsAndIndexPointersForTheSameTarget() {
+  void persistSuccessExpandsOneCompactBundleWithoutReadingIt() {
     String filePath = "s3://bucket/data/file-1.parquet";
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
@@ -726,21 +738,24 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
 
     TargetStatsRecord record = fileStatsRecord(filePath, 10L);
-    StatsObjectDescriptor fileStats = statsObjectDescriptors(List.of(record)).getFirst();
-    byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    StatsObjectDescriptor originalFileStats = statsObjectDescriptors(List.of(record)).getFirst();
+    byte[] bundleBytes = "bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     String indexArtifactObjectPrefix = statsObjectPrefix() + "index-artifacts/";
-    StatsObjectDescriptor indexArtifact =
+    StatsObjectDescriptor bundle =
         StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId("file:" + filePath)
+            .setTargetStorageId("reuse-bundle:group-1")
             .setPayloadUri(
-                indexArtifactObjectPrefix
-                    + Hashing.sha256Hex(fileStats.getTargetStorageId())
-                    + "/"
-                    + HexFormat.of().formatHex(sha256(indexBytes))
+                statsObjectPrefix()
+                    + "reuse-bundles/"
+                    + HexFormat.of().formatHex(sha256(bundleBytes))
                     + ".pb")
-            .setPayloadBytes(indexBytes.length)
-            .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
+            .setPayloadBytes(bundleBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(bundleBytes)))
             .build();
+    StatsObjectDescriptor fileStats =
+        bundle.toBuilder().setTargetStorageId(originalFileStats.getTargetStorageId()).build();
+    StatsObjectDescriptor indexArtifact =
+        bundle.toBuilder().setTargetStorageId("file:" + filePath).build();
 
     assertTrue(
         service.persistSuccess(
@@ -749,8 +764,11 @@ class LeasedFileGroupExecutionServiceTest {
             LEASE_EPOCH,
             "result-1",
             resultDescriptor(List.of(record), List.of(fileStats), List.of(indexArtifact)),
-            List.of(fileStats),
-            List.of(indexArtifact)));
+            ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+                .setArtifact(bundle)
+                .addFileStatsTargetStorageIds(fileStats.getTargetStorageId())
+                .addIndexArtifactTargetStorageIds(indexArtifact.getTargetStorageId())
+                .build()));
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
@@ -762,7 +780,8 @@ class LeasedFileGroupExecutionServiceTest {
             eq("full-rescan-" + PARENT_JOB_ID),
             eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
             objects.capture());
-    assertEquals(2, objects.getValue().size());
+    assertEquals(1, objects.getValue().size());
+    assertEquals(bundle.getPayloadUri(), objects.getValue().getFirst().blobUri());
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<IndexArtifactRepository.PrewrittenIndexArtifactReference>> references =
         ArgumentCaptor.forClass(List.class);
@@ -827,8 +846,7 @@ class LeasedFileGroupExecutionServiceTest {
                     LEASE_EPOCH,
                     "result-1",
                     resultDescriptor(List.of()),
-                    List.of(),
-                    List.of()));
+                    artifactBundle(List.of(), List.of())));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
     verify(statsStore, never())
@@ -843,7 +861,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessRejectsDigestMismatchAndUnplannedStatsTarget() {
+  void persistSuccessRejectsBundleUriDigestMismatchAndUnplannedStatsTarget() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -876,25 +894,28 @@ class LeasedFileGroupExecutionServiceTest {
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
-    StatsObjectDescriptor changed =
-        statsObjectDescriptors(List.of(record)).getFirst().toBuilder()
-            .setPayloadUri(statsObjectPrefix() + "changed.pb")
+    var changedBundle =
+        artifactBundle(List.of(record), List.of()).toBuilder()
+            .setArtifact(
+                bundleArtifact().toBuilder()
+                    .setPayloadUri(statsObjectPrefix() + "reuse-bundles/changed.pb"))
             .build();
 
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            service.persistSuccess(
-                principal,
-                CHILD_JOB_ID,
-                LEASE_EPOCH,
-                "result-1",
-                resultDescriptor(List.of(record)),
-                List.of(changed),
-                List.of()));
+    IllegalArgumentException bundleUriMismatch =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    CHILD_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    resultDescriptor(List.of(record)),
+                    changedBundle));
+    assertTrue(bundleUriMismatch.getMessage().contains("invalid file-group artifact bundle"));
 
     StatsObjectDescriptor unplannedTarget =
-        changed.toBuilder()
+        bundleArtifact().toBuilder()
             .setTargetStorageId(
                 StatsTargetIdentity.storageId(
                     StatsTargetIdentity.fileTarget("s3://bucket/data/not-in-group.parquet")))
@@ -909,21 +930,15 @@ class LeasedFileGroupExecutionServiceTest {
                     LEASE_EPOCH,
                     "result-1",
                     resultDescriptor(List.of(record), List.of(unplannedTarget), List.of()),
-                    List.of(unplannedTarget),
-                    List.of()));
+                    ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+                        .setArtifact(bundleArtifact())
+                        .addFileStatsTargetStorageIds(unplannedTarget.getTargetStorageId())
+                        .build()));
     assertTrue(outsideGroup.getMessage().contains("outside the leased file group"));
 
-    byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     StatsObjectDescriptor unplannedIndex =
-        StatsObjectDescriptor.newBuilder()
+        bundleArtifact().toBuilder()
             .setTargetStorageId("file:s3://bucket/data/not-in-group.parquet")
-            .setPayloadUri(
-                statsObjectPrefix()
-                    + "index-artifacts/unplanned/"
-                    + HexFormat.of().formatHex(sha256(indexBytes))
-                    + ".pb")
-            .setPayloadBytes(indexBytes.length)
-            .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
             .build();
     IllegalArgumentException outsideIndexGroup =
         assertThrows(
@@ -935,8 +950,10 @@ class LeasedFileGroupExecutionServiceTest {
                     LEASE_EPOCH,
                     "result-1",
                     resultDescriptor(List.of(), List.of(), List.of(unplannedIndex)),
-                    List.of(),
-                    List.of(unplannedIndex)));
+                    ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+                        .setArtifact(bundleArtifact())
+                        .addIndexArtifactTargetStorageIds(unplannedIndex.getTargetStorageId())
+                        .build()));
     assertTrue(outsideIndexGroup.getMessage().contains("outside the leased file group"));
 
     verify(jobs, never())
@@ -1446,7 +1463,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   private ReconcileFileGroupResultDescriptor resultDescriptor(List<TargetStatsRecord> fileStats) {
-    return resultDescriptor(fileStats, statsObjectDescriptors(fileStats), List.of());
+    return resultDescriptor(fileStats, bundledStatsDescriptors(fileStats), List.of());
   }
 
   private ReconcileFileGroupResultDescriptor resultDescriptor(
@@ -1504,6 +1521,42 @@ class LeasedFileGroupExecutionServiceTest {
               .build());
     }
     return List.copyOf(builder);
+  }
+
+  private ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor artifactBundle(
+      List<TargetStatsRecord> fileStats, List<String> indexFiles) {
+    return ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+        .setArtifact(bundleArtifact())
+        .addAllFileStatsTargetStorageIds(
+            fileStats.stream()
+                .map(record -> StatsTargetIdentity.storageId(record.getTarget()))
+                .toList())
+        .addAllIndexArtifactTargetStorageIds(
+            indexFiles.stream().map(path -> "file:" + path).toList())
+        .build();
+  }
+
+  private StatsObjectDescriptor bundleArtifact() {
+    byte[] bytes = "bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    byte[] digest = sha256(bytes);
+    return StatsObjectDescriptor.newBuilder()
+        .setTargetStorageId("reuse-bundle:group-1")
+        .setPayloadUri(
+            statsObjectPrefix() + "reuse-bundles/" + HexFormat.of().formatHex(digest) + ".pb")
+        .setPayloadBytes(bytes.length)
+        .setPayloadSha256(ByteString.copyFrom(digest))
+        .build();
+  }
+
+  private List<StatsObjectDescriptor> bundledStatsDescriptors(List<TargetStatsRecord> fileStats) {
+    StatsObjectDescriptor artifact = bundleArtifact();
+    return fileStats.stream()
+        .map(
+            record ->
+                artifact.toBuilder()
+                    .setTargetStorageId(StatsTargetIdentity.storageId(record.getTarget()))
+                    .build())
+        .toList();
   }
 
   private static byte[] sha256(byte[] bytes) {

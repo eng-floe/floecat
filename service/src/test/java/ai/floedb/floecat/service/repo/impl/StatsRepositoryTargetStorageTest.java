@@ -38,6 +38,8 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -55,6 +57,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -69,6 +72,154 @@ class StatsRepositoryTargetStorageTest {
 
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
+
+  @Test
+  void bundledPrewrittenStatsResolveAllTargetsWithOneBlobRead() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    AtomicInteger bundleGets = new AtomicInteger();
+    BlobStore blobs =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            if (uri.contains("/reuse-bundles/")) {
+              bundleGets.incrementAndGet();
+            }
+            return super.get(uri);
+          }
+        };
+    StatsRepository repository =
+        new StatsRepository(
+            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    long snapshotId = 99L;
+    String generationId = "full-rescan-bundled";
+    String firstPath = "s3://bucket/first.parquet";
+    String secondPath = "s3://bucket/second.parquet";
+    TargetStatsRecord first =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(firstPath).build());
+    TargetStatsRecord second =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(secondPath).build());
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(first)
+            .addFileStats(second)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    List<StatsStore.PrewrittenTargetStatsReference> references =
+        List.of(
+            new StatsStore.PrewrittenTargetStatsReference(
+                StatsTargetIdentity.storageId(first.getTarget()), bundleUri, bundle.length, digest),
+            new StatsStore.PrewrittenTargetStatsReference(
+                StatsTargetIdentity.storageId(second.getTarget()),
+                bundleUri,
+                bundle.length,
+                digest));
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, references);
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
+
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(firstPath)))
+        .contains(first);
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(secondPath)))
+        .contains(second);
+    assertThat(bundleGets).hasValue(1);
+  }
+
+  @Test
+  void bundledStatsReferenceRejectsUriThatDoesNotMatchDigest() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 100L;
+    String generationId = "full-rescan-bundled";
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("bundle"));
+    String requiredPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenStatsReferencesInGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    generationId,
+                    List.of(
+                        new StatsStore.PrewrittenTargetStatsReference(
+                            "file:s3://bucket/file.parquet",
+                            requiredPrefix + "worker-uploads/job/lease/reuse-bundles/latest.pb",
+                            6L,
+                            digest))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid prewritten target stats reference");
+  }
+
+  @Test
+  void bundledStatsReadRejectsPayloadThatDoesNotMatchContentAddress() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobs);
+    long snapshotId = 100L;
+    String generationId = "full-rescan-bundled";
+    String filePath = "s3://bucket/file.parquet";
+    TargetStatsRecord record =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID, snapshotId, FileTargetStats.newBuilder().setFilePath(filePath).build());
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(
+            new StatsStore.PrewrittenTargetStatsReference(
+                StatsTargetIdentity.storageId(record.getTarget()),
+                bundleUri,
+                bundle.length,
+                digest)));
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
+    blobs.put(
+        bundleUri,
+        ReusableArtifactBundlePayload.newBuilder().setFormatVersion(1).build().toByteArray(),
+        "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.getTargetStats(
+                    TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("digest mismatch");
+  }
 
   @Test
   void writesAndReadsTableColumnExpressionAndFileTargets() {

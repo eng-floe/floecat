@@ -17,12 +17,19 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -31,12 +38,19 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -149,6 +163,34 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
   }
 
   @Test
+  void executeDoesNotPublishConnectorStatsForIndexOnlyCapture() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(
+                  List.of(fileStats(plannedFile)), List.of(pageIndexEntry(plannedFile)));
+              return CaptureEngineResult.empty();
+            });
+    List<TargetStatsRecord> published = new ArrayList<>();
+
+    CaptureEngineResult result = runner.execute(indexOnlyPayload(), () -> false, published::add);
+
+    assertThat(published).isEmpty();
+    assertThat(result.stagedIndexArtifacts()).hasSize(1);
+    ArgumentCaptor<CaptureEngineRequest> request =
+        ArgumentCaptor.forClass(CaptureEngineRequest.class);
+    verify(runner.captureEngineRegistry).capture(request.capture(), any());
+    assertThat(request.getValue().requestedStatsTargetKinds()).isEmpty();
+    assertThat(request.getValue().capturePageIndex()).isTrue();
+  }
+
+  @Test
   void executeStagesIndexesOnlyForFilesInTheLeasedGroup() {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
@@ -164,7 +206,9 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                   invocation.getArgument(1);
               consumer.accept(
                   List.of(plannedStats, deleteStats),
-                  List.of(pageIndexEntry(plannedFile), pageIndexEntry(associatedDeleteFile)));
+                  List.of(
+                      pageIndexEntry(plannedFile).withSelectorAliases(Set.of("#1", "customer_id")),
+                      pageIndexEntry(associatedDeleteFile)));
               return CaptureEngineResult.empty();
             });
 
@@ -173,6 +217,14 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     assertThat(result.stagedIndexArtifacts())
         .extracting(artifact -> artifact.record().getTarget().getFile().getFilePath())
         .containsExactly(plannedFile);
+    assertThat(
+            FileArtifactReuse.decodeSelectors(
+                result
+                    .stagedIndexArtifacts()
+                    .getFirst()
+                    .record()
+                    .getPropertiesOrDefault(FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, "")))
+        .containsExactly("#1", "customer_id", "id");
   }
 
   @Test
@@ -193,6 +245,297 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     CaptureEngineResult result = runner.execute(indexPayload(), () -> false, ignored -> {});
 
     assertThat(result.stagedIndexArtifacts()).isEmpty();
+  }
+
+  @Test
+  void executeReusesStatsAndIndexWithoutCallingCaptureEngine() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    TargetStatsRecord stats =
+        fileStats(path).toBuilder()
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "stats-source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("a,b")))
+            .build();
+    IndexArtifactRecord index =
+        IndexArtifactRecord.newBuilder()
+            .setTarget(
+                IndexTarget.newBuilder().setFile(IndexFileTarget.newBuilder().setFilePath(path)))
+            .setArtifactUri("s3://sidecars/prior.parquet")
+            .setState(IndexArtifactState.IAS_READY)
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "index-source")
+            .putProperties(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, "index")
+            .putProperties(
+                FileArtifactReuse.INDEXED_COLUMNS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
+            .build();
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats",
+                "index",
+                Map.of(),
+                List.of(
+                    reuseBundleSelection(
+                        runner.blobStore,
+                        "/reuse-bundle.pb",
+                        List.of(stats),
+                        List.of(index),
+                        List.of(path),
+                        List.of(path))));
+    StandaloneFileGroupExecutionPayload base = indexPayload();
+    StandaloneFileGroupExecutionPayload payload =
+        new StandaloneFileGroupExecutionPayload(
+            base.jobId(),
+            base.leaseEpoch(),
+            base.parentJobId(),
+            base.sourceConnector(),
+            base.sourceNamespace(),
+            base.sourceTable(),
+            base.storageLocation(),
+            base.tableId(),
+            base.snapshotId(),
+            base.planId(),
+            base.groupId(),
+            base.resultPayloadUri(),
+            base.statsObjectPrefix(),
+            base.plannedFilePaths(),
+            base.executionSchemaJson(),
+            List.of(plan),
+            base.capturePolicy());
+    List<TargetStatsRecord> published = new ArrayList<>();
+
+    CaptureEngineResult result = runner.execute(payload, () -> false, published::add);
+
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+    assertThat(published).hasSize(1);
+    assertThat(published.getFirst().getTableId()).isEqualTo(base.tableId());
+    assertThat(published.getFirst().getSnapshotId()).isEqualTo(base.snapshotId());
+    assertThat(published.getFirst().getFile().getFilePath()).isEqualTo(path);
+    assertThat(result.statsRecords()).isEmpty();
+    assertThat(result.realizedStatsSelectors()).containsExactly("a,b");
+    assertThat(result.stagedIndexArtifacts()).hasSize(1);
+    assertThat(result.stagedIndexArtifacts().getFirst().content()).isNull();
+    assertThat(result.stagedIndexArtifacts().getFirst().record().getArtifactUri())
+        .isEqualTo("s3://sidecars/prior.parquet");
+  }
+
+  @Test
+  void executeRejectsIncompatibleBundleRecordBeforeRebindingIt() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    TargetStatsRecord incompatible =
+        fileStats(path).toBuilder()
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "wrong-source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats-policy")
+            .putProperties(
+                FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY,
+                FileArtifactReuse.encodeSelectors(List.of("#1")))
+            .build();
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "expected-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    reuseBundleSelection(
+                        runner.blobStore,
+                        "/incompatible-bundle.pb",
+                        List.of(incompatible),
+                        List.of(),
+                        List.of(path),
+                        List.of())));
+
+    assertThatThrownBy(
+            () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("incompatible stats")
+        .satisfies(
+            error ->
+                assertThat(((ReconcileFailureException) error).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeReportsMissingReusableBundleWithoutNullDereference() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/missing-bundle.pb";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle", bundleUri, 1L, new byte[32], List.of(path), List.of())));
+
+    assertThatThrownBy(
+            () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("Failed to load reusable artifact bundle")
+        .hasRootCauseMessage("Reusable artifact reference is missing: " + bundleUri)
+        .satisfies(
+            error ->
+                assertThat(((ReconcileFailureException) error).retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL));
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeObservesCancellationAfterLoadingReusableBundle() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    AtomicBoolean stopped = new AtomicBoolean();
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/reuse-bundle.pb";
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .build();
+    byte[] bytes = bundle.toByteArray();
+    when(runner.blobStore.get(bundleUri))
+        .thenAnswer(
+            ignored -> {
+              stopped.set(true);
+              return bytes;
+            });
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle",
+                        bundleUri,
+                        bytes.length,
+                        sha256(bytes),
+                        List.of(),
+                        List.of(path))));
+
+    assertThatThrownBy(
+            () ->
+                runner.execute(payloadWithPlan(indexPayload(), plan), stopped::get, ignored -> {}))
+        .isInstanceOf(CancellationException.class);
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeMergesAggregatePartialsFromReusedAndCapturedFiles() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    StandaloneFileGroupExecutionPayload base = payload();
+    String reusedPath = "s3://bucket/path/reused.parquet";
+    String capturedPath = "s3://bucket/path/captured.parquet";
+    TargetStatsRecord reused =
+        boundFileStats(base, reusedPath).toBuilder()
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "stats-reused")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats-policy")
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "")
+            .build();
+    TargetStatsRecord captured = boundFileStats(base, capturedPath);
+    ReconcileFileExecutionPlan reusedPlan =
+        ReconcileFileExecutionPlan.of(
+                reusedPath, 1L, "", null, "PARQUET", 0, List.of(), "reused-identity")
+            .withReuseBundleSelections(
+                "stats-reused",
+                "index-reused",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    reuseBundleSelection(
+                        runner.blobStore,
+                        "/reused-bundle.pb",
+                        List.of(reused),
+                        List.of(),
+                        List.of(reusedPath),
+                        List.of())));
+    ReconcileFileExecutionPlan capturedPlan =
+        ReconcileFileExecutionPlan.of(
+                capturedPath, 1L, "", null, "PARQUET", 0, List.of(), "captured-identity")
+            .withReuseBundleSelections(
+                "stats-captured",
+                "index-captured",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(captured), List.of());
+              return CaptureEngineResult.of(
+                  FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
+                      base.tableId(),
+                      base.snapshotId(),
+                      Set.of(
+                          FloecatConnector.StatsTargetKind.TABLE,
+                          FloecatConnector.StatsTargetKind.FILE),
+                      List.of(captured)),
+                  List.of(),
+                  List.of(),
+                  List.of());
+            });
+    StandaloneFileGroupExecutionPayload payload =
+        new StandaloneFileGroupExecutionPayload(
+            base.jobId(),
+            base.leaseEpoch(),
+            base.parentJobId(),
+            base.sourceConnector(),
+            base.sourceNamespace(),
+            base.sourceTable(),
+            base.storageLocation(),
+            base.tableId(),
+            base.snapshotId(),
+            base.planId(),
+            base.groupId(),
+            base.resultPayloadUri(),
+            base.statsObjectPrefix(),
+            List.of(reusedPath, capturedPath),
+            base.executionSchemaJson(),
+            List.of(reusedPlan, capturedPlan),
+            base.capturePolicy());
+
+    CaptureEngineResult result = runner.execute(payload, () -> false, ignored -> {});
+
+    assertThat(result.statsRecords()).hasSize(1);
+    assertThat(result.statsRecords().getFirst().getTable().getRowCount()).isEqualTo(2L);
+    assertThat(result.statsRecords().getFirst().getTable().getDataFileCount()).isEqualTo(2L);
   }
 
   private static StandaloneFileGroupExecutionPayload payload() {
@@ -250,6 +593,51 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                 ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
   }
 
+  private static StandaloneFileGroupExecutionPayload indexOnlyPayload() {
+    StandaloneFileGroupExecutionPayload base = payload();
+    return new StandaloneFileGroupExecutionPayload(
+        base.jobId(),
+        base.leaseEpoch(),
+        base.parentJobId(),
+        base.sourceConnector(),
+        base.sourceNamespace(),
+        base.sourceTable(),
+        base.storageLocation(),
+        base.tableId(),
+        base.snapshotId(),
+        base.planId(),
+        base.groupId(),
+        base.resultPayloadUri(),
+        base.statsObjectPrefix(),
+        base.plannedFilePaths(),
+        base.executionSchemaJson(),
+        base.fileExecutionPlans(),
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
+  private static StandaloneFileGroupExecutionPayload payloadWithPlan(
+      StandaloneFileGroupExecutionPayload base, ReconcileFileExecutionPlan plan) {
+    return new StandaloneFileGroupExecutionPayload(
+        base.jobId(),
+        base.leaseEpoch(),
+        base.parentJobId(),
+        base.sourceConnector(),
+        base.sourceNamespace(),
+        base.sourceTable(),
+        base.storageLocation(),
+        base.tableId(),
+        base.snapshotId(),
+        base.planId(),
+        base.groupId(),
+        base.resultPayloadUri(),
+        base.statsObjectPrefix(),
+        base.plannedFilePaths(),
+        base.executionSchemaJson(),
+        List.of(plan),
+        base.capturePolicy());
+  }
+
   private static TargetStatsRecord fileStats(String filePath) {
     return TargetStatsRecord.newBuilder()
         .setTarget(
@@ -261,6 +649,47 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                 .setRowCount(1L)
                 .setSizeBytes(1L))
         .build();
+  }
+
+  private static TargetStatsRecord boundFileStats(
+      StandaloneFileGroupExecutionPayload payload, String filePath) {
+    TargetStatsRecord record = fileStats(filePath);
+    return record.toBuilder()
+        .setTableId(payload.tableId())
+        .setSnapshotId(payload.snapshotId())
+        .setFile(
+            record.getFile().toBuilder()
+                .setTableId(payload.tableId())
+                .setSnapshotId(payload.snapshotId()))
+        .build();
+  }
+
+  private static ReusableArtifactBundleSelection reuseBundleSelection(
+      BlobStore blobStore,
+      String uri,
+      List<TargetStatsRecord> stats,
+      List<IndexArtifactRecord> indexes,
+      List<String> statsPaths,
+      List<String> indexPaths) {
+    byte[] bytes =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addAllFileStats(stats)
+            .addAllIndexArtifacts(indexes)
+            .build()
+            .toByteArray();
+    byte[] sha256 = sha256(bytes);
+    when(blobStore.get(uri)).thenReturn(bytes);
+    return new ReusableArtifactBundleSelection(
+        "reuse-bundle", uri, bytes.length, sha256, statsPaths, indexPaths);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (java.security.NoSuchAlgorithmException error) {
+      throw new IllegalStateException(error);
+    }
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(String filePath) {

@@ -8,12 +8,8 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileContent;
-import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
-import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -233,73 +229,6 @@ public final class FileArtifactReuse {
         .build();
   }
 
-  public static TargetStatsRecord auxiliaryStatsRecord(
-      ReconcileFileExecutionPlan plan,
-      String filePath,
-      ResourceId tableId,
-      long snapshotId,
-      String sourceFingerprint,
-      String statsSignature) {
-    FileTargetStats.Builder file =
-        FileTargetStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setFilePath(filePath);
-    ReconcileFileExecutionPlan.DeltaDeletionVector dv = plan.deletionVector();
-    if (dv != null && dv.onDisk() && dv.pathOrInlineDv().equals(filePath)) {
-      file.setRowCount(dv.cardinality())
-          .setSizeBytes(dv.sizeInBytes())
-          .setFileContent(FileContent.FC_POSITION_DELETES);
-    } else {
-      ReconcileFileExecutionPlan.IcebergDeleteFile delete =
-          plan.icebergDeleteFiles().stream()
-              .filter(candidate -> candidate.filePath().equals(filePath))
-              .findFirst()
-              .orElseThrow(
-                  () -> new IllegalArgumentException("unknown auxiliary stats path " + filePath));
-      IcebergContentIdentity identity = parseIcebergContentIdentity(delete.contentIdentity());
-      file.setRowCount(identity.recordCount())
-          .setSizeBytes(delete.fileSizeInBytes())
-          .setFileContent(
-              switch (delete.content()) {
-                case POSITION -> FileContent.FC_POSITION_DELETES;
-                case EQUALITY -> FileContent.FC_EQUALITY_DELETES;
-                case UNSPECIFIED -> FileContent.FC_UNSPECIFIED;
-              })
-          .setPartitionSpecId(delete.partitionSpecId())
-          .addAllEqualityFieldIds(delete.equalityFieldIds());
-      if (identity.sequenceNumber() != null && identity.sequenceNumber() > 0L) {
-        file.setSequenceNumber(identity.sequenceNumber());
-      }
-    }
-    TargetStatsRecord record =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
-            .setFile(file)
-            .build();
-    return stampStats(record, sourceFingerprint, statsSignature, List.of());
-  }
-
-  private static IcebergContentIdentity parseIcebergContentIdentity(String encoded) {
-    if (encoded == null || !encoded.startsWith("iceberg-") || !encoded.contains("-v1:")) {
-      return new IcebergContentIdentity(null, 0L);
-    }
-    String[] parts = encoded.substring(encoded.indexOf("-v1:") + 4).split(":", -1);
-    try {
-      Long sequence = parts.length > 0 && !parts[0].isBlank() ? Long.valueOf(parts[0]) : null;
-      long records = parts.length > 1 && !parts[1].isBlank() ? Long.parseLong(parts[1]) : 0L;
-      return new IcebergContentIdentity(sequence, Math.max(0L, records));
-    } catch (NumberFormatException ignored) {
-      return new IcebergContentIdentity(null, 0L);
-    }
-  }
-
-  private record IcebergContentIdentity(Long sequenceNumber, long recordCount) {}
-
   public static IndexArtifactRecord bindIndexToSnapshot(
       IndexArtifactRecord prior,
       ResourceId tableId,
@@ -347,6 +276,22 @@ public final class FileArtifactReuse {
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException("Failed to decode realized selectors", e);
     }
+  }
+
+  static java.util.Set<String> selectorIdentities(Collection<String> selectors) {
+    List<String> normalized = normalizedSelectors(selectors);
+    java.util.Set<String> fieldIds =
+        normalized.stream()
+            .filter(selector -> selector.startsWith("#"))
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    return fieldIds.isEmpty() ? java.util.Set.copyOf(normalized) : fieldIds;
+  }
+
+  /** Checks every explicit selector without collapsing distinct named requirements. */
+  static boolean coversExplicitSelectors(
+      Collection<String> realizedSelectors, Collection<String> requiredSelectors) {
+    return java.util.Set.copyOf(normalizedSelectors(realizedSelectors))
+        .containsAll(normalizedSelectors(requiredSelectors));
   }
 
   private static List<String> normalizedSelectors(Collection<String> selectors) {

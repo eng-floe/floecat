@@ -158,6 +158,18 @@ class FileArtifactReuseTest {
   }
 
   @Test
+  void explicitSelectorCoverageNormalizesSyntaxWithoutDroppingNamedRequirements() {
+    assertThat(
+            FileArtifactReuse.coversExplicitSelectors(
+                List.of(" #1 ", " customer_id "), List.of("#1", "customer_id")))
+        .isTrue();
+    assertThat(
+            FileArtifactReuse.coversExplicitSelectors(
+                List.of("#1", "physical_customer_id"), List.of("#1", "logical_customer_id")))
+        .isFalse();
+  }
+
+  @Test
   void captureSignatureSeparatesSelectorsFromOutputs() {
     var explicitFileStatsColumn =
         ReconcileCapturePolicy.of(

@@ -63,8 +63,24 @@ final class JavaConnectorFileGroupCaptureAdapter {
         uniqueFileStats(captured.statsRecords(), publishedFileTargets);
     realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
     List<FloecatConnector.ParquetPageIndexEntry> capturedPageIndexEntries =
-        filterPageIndexEntries(
-            captured.pageIndexEntries(), request.indexColumns(), request.columnSelectorPolicy());
+        request.capturePageIndex()
+            ? source
+                .selectPageIndexEntries(
+                    request.sourceNamespace(),
+                    request.sourceTable(),
+                    request.snapshotId(),
+                    request.indexColumns(),
+                    request.columnSelectorPolicy(),
+                    new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+                    captured.pageIndexEntries(),
+                    captured.pageIndexRowGroups())
+                .orElseGet(
+                    () ->
+                        filterPageIndexEntries(
+                            captured.pageIndexEntries(),
+                            request.indexColumns(),
+                            request.columnSelectorPolicy()))
+            : List.of();
     Map<String, List<TargetStatsRecord>> statsByFile = new LinkedHashMap<>();
     Map<String, List<FloecatConnector.ParquetPageIndexEntry>> indexesByFile = new LinkedHashMap<>();
     Map<String, String> fileByStatsTarget = new java.util.HashMap<>();

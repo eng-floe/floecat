@@ -269,8 +269,10 @@ public final class FileGroupIndexArtifactStager {
     }
     List<String> selectors =
         pageIndexEntries.stream()
-            .map(FloecatConnector.ParquetPageIndexEntry::columnName)
-            .filter(name -> name != null && !name.isBlank())
+            .flatMap(entry -> entry.selectorAliases().stream())
+            .filter(selector -> selector != null && !selector.isBlank())
+            .distinct()
+            .sorted()
             .toList();
     return selectors.isEmpty() ? "" : FileArtifactReuse.encodeSelectors(selectors);
   }

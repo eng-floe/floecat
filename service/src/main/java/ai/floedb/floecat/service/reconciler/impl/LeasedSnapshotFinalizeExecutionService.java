@@ -374,6 +374,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     if (manifest.getSourceFileCount() == 0) {
       return;
     }
+    if (!required.isEmpty() && !realized.containsAll(required)) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not cover explicitly requested index selectors");
+    }
     if (defaultSelection && realized.isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot capture manifest does not report resolved default index selectors");
@@ -570,8 +574,21 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       declaredFileStats += fileGroup.getFileStatsRecordCount();
       declaredIndexArtifacts += fileGroup.getIndexArtifactCount();
     }
+    Set<String> reusableStatsFiles = new HashSet<>();
+    int reusableStatsMetadataCount = 0;
+    for (var bundle : manifest.getReusableArtifactBundlesList()) {
+      for (var metadata : bundle.getFileStatsList()) {
+        reusableStatsMetadataCount++;
+        if (metadata.getFilePath().isBlank() || !reusableStatsFiles.add(metadata.getFilePath())) {
+          throw new IllegalArgumentException(
+              "snapshot reusable bundle contains duplicate or invalid stats metadata");
+        }
+      }
+    }
     if (!storedFileGroups.isEmpty()
-        || declaredFileStats != manifest.getFileStatsRecordCount()
+        || declaredFileStats < manifest.getFileStatsRecordCount()
+        || reusableStatsMetadataCount != manifest.getFileStatsRecordCount()
+        || reusableStatsFiles.size() != manifest.getFileStatsRecordCount()
         || declaredIndexArtifacts != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot file-group artifact count mismatch");
     }

@@ -45,8 +45,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
+import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -66,6 +68,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -110,6 +113,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
     Connector resolvedConnector = resolvedConnectorPayload(connector, table);
+    String sourceNamespace = String.join(".", table.getUpstream().getNamespacePathList());
+    String sourceTable = table.getUpstream().getTableDisplayName();
     ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
     IndexArtifactRepository.GenerationInput capturedIndexInput =
         capturePolicy.requestsIndexes()
@@ -126,8 +131,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         lease.leaseEpoch,
         lease.parentJobId,
         resolvedConnector,
-        String.join(".", table.getUpstream().getNamespacePathList()),
-        table.getUpstream().getTableDisplayName(),
+        sourceNamespace,
+        sourceTable,
         resolvePayloadStorageLocation(table),
         tableId,
         plannedTask.snapshotId(),
@@ -293,8 +298,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String resultId,
       ReconcileFileGroupResultDescriptor descriptor,
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts) {
+      FileGroupArtifactBundleDescriptor artifactBundle) {
     String corr = principalContext.getCorrelationId();
     String requiredResultId = requireResultId(resultId);
     ReconcileJobStore.ReconcileJob existing = jobs.getLeaseView(jobId).orElse(null);
@@ -304,16 +308,17 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
           jobs.completeFileGroupSuccess(
               jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
       requireAcceptedLeaseOutcome(replayed, jobId);
+      ReconcileFileGroupTask plannedTask =
+          resolvePlannedTask(existing.accountId, existing.parentJobId, existing.fileGroupTask);
       StagedArtifactReferences staged =
           prepareArtifactReferences(
               existing.accountId,
               existing.parentJobId,
               existing.jobId,
               leaseEpoch,
-              existing.fileGroupTask,
+              plannedTask,
               descriptor,
-              fileStats,
-              indexArtifacts,
+              artifactBundle,
               publishesFileStats(existing.scope.capturePolicy()));
       stageArtifactReferences(staged);
       return true;
@@ -330,8 +335,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             lease.leaseEpoch,
             plannedTask,
             validated,
-            fileStats,
-            indexArtifacts,
+            artifactBundle,
             publishesFileStats(lease.scope.capturePolicy()));
     boolean accepted =
         jobs.completeFileGroupSuccess(
@@ -432,12 +436,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       ReconcileFileGroupTask plannedTask,
       ReconcileFileGroupResultDescriptor descriptor,
-      List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts,
+      FileGroupArtifactBundleDescriptor artifactBundle,
       boolean publishFileStats) {
-    List<StatsObjectDescriptor> requiredFileStats = fileStats == null ? List.of() : fileStats;
-    List<StatsObjectDescriptor> requiredIndexArtifacts =
-        indexArtifacts == null ? List.of() : indexArtifacts;
+    ArtifactMappings mappings = artifactMappings(artifactBundle, descriptor);
+    List<StatsObjectDescriptor> requiredFileStats = mappings.fileStats();
+    List<StatsObjectDescriptor> requiredIndexArtifacts = mappings.indexArtifacts();
     if (descriptor.fileStatsRecordCount() != requiredFileStats.size()
         || descriptor.indexArtifactCount() != requiredIndexArtifacts.size()) {
       throw new IllegalArgumentException("file-group pointer counts do not match descriptor");
@@ -457,21 +460,31 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     String indexArtifactObjectPrefix = descriptor.statsObjectPrefix() + "index-artifacts/";
     List<StatsObjectDescriptor> descriptors = new ArrayList<>(requiredFileStats);
     descriptors.addAll(requiredIndexArtifacts);
-    HashSet<String> payloadUris = new HashSet<>();
+    Map<String, StatsObjectDescriptor> payloads = new LinkedHashMap<>();
     for (StatsObjectDescriptor object : descriptors) {
+      boolean bundled = ReusableArtifactBundleUris.isBundleUri(object.getPayloadUri());
+      StatsObjectDescriptor existingPayload = payloads.putIfAbsent(object.getPayloadUri(), object);
       if (object.getTargetStorageId().isBlank()
           || object.getPayloadUri().isBlank()
-          || !payloadUris.add(object.getPayloadUri())
+          || (existingPayload != null
+              && (!bundled
+                  || existingPayload.getPayloadBytes() != object.getPayloadBytes()
+                  || !existingPayload.getPayloadSha256().equals(object.getPayloadSha256())))
           || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
           || object.getPayloadBytes() <= 0L
-          || object.getPayloadSha256().size() != 32) {
+          || object.getPayloadSha256().size() != 32
+          || (bundled
+              && !ReusableArtifactBundleUris.matchesDigest(
+                  object.getPayloadUri(), object.getPayloadSha256().toByteArray()))) {
         throw new IllegalArgumentException("invalid target stats object descriptor");
       }
-      objects.add(
-          new StatsStore.PrewrittenStatsObject(
-              object.getPayloadUri(),
-              object.getPayloadBytes(),
-              object.getPayloadSha256().toByteArray()));
+      if (existingPayload == null) {
+        objects.add(
+            new StatsStore.PrewrittenStatsObject(
+                object.getPayloadUri(),
+                object.getPayloadBytes(),
+                object.getPayloadSha256().toByteArray()));
+      }
     }
     HashSet<String> statsTargets = new HashSet<>();
     HashSet<String> plannedStatsTargets = new HashSet<>();
@@ -522,7 +535,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             "index artifact target is outside the leased file group: "
                 + object.getTargetStorageId());
       }
-      if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)) {
+      if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)
+          && !ReusableArtifactBundleUris.isBundleUri(object.getPayloadUri())) {
         throw new IllegalArgumentException("invalid prewritten index artifact object prefix");
       }
       if (!indexTargets.add(object.getTargetStorageId())) {
@@ -553,6 +567,36 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         List.copyOf(objects),
         List.copyOf(statsReferences),
         List.copyOf(indexReferences));
+  }
+
+  private record ArtifactMappings(
+      List<StatsObjectDescriptor> fileStats, List<StatsObjectDescriptor> indexArtifacts) {}
+
+  private static ArtifactMappings artifactMappings(
+      FileGroupArtifactBundleDescriptor artifactBundle,
+      ReconcileFileGroupResultDescriptor descriptor) {
+    if (artifactBundle == null || !artifactBundle.hasArtifact()) {
+      throw new IllegalArgumentException("file-group artifact bundle is required");
+    }
+    StatsObjectDescriptor artifact = artifactBundle.getArtifact();
+    if (artifact.getPayloadUri().isBlank()
+        || artifact.getPayloadBytes() <= 0L
+        || artifact.getPayloadSha256().size() != 32
+        || !ReusableArtifactBundleUris.matchesDigest(
+            artifact.getPayloadUri(),
+            descriptor.statsObjectPrefix(),
+            artifact.getPayloadSha256().toByteArray())) {
+      throw new IllegalArgumentException("invalid file-group artifact bundle descriptor");
+    }
+    List<StatsObjectDescriptor> bundledFileStats =
+        artifactBundle.getFileStatsTargetStorageIdsList().stream()
+            .map(target -> artifact.toBuilder().setTargetStorageId(target).build())
+            .toList();
+    List<StatsObjectDescriptor> bundledIndexArtifacts =
+        artifactBundle.getIndexArtifactTargetStorageIdsList().stream()
+            .map(target -> artifact.toBuilder().setTargetStorageId(target).build())
+            .toList();
+    return new ArtifactMappings(bundledFileStats, bundledIndexArtifacts);
   }
 
   private static boolean publishesFileStats(ReconcileCapturePolicy policy) {
@@ -742,15 +786,26 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         lease == null || lease.fileGroupTask == null
             ? ReconcileFileGroupTask.empty()
             : lease.fileGroupTask;
+    return resolvePlannedTask(
+        lease == null ? "" : lease.accountId, lease == null ? "" : lease.parentJobId, task);
+  }
+
+  private ReconcileFileGroupTask resolvePlannedTask(
+      String accountId, String parentJobId, ReconcileFileGroupTask task) {
+    if (!task.isEmpty()
+        && !task.filePaths().isEmpty()
+        && task.fileExecutionPlans().size() == task.filePaths().size()) {
+      return task;
+    }
+    // Legacy fallback for child jobs staged before bounded execution plans were self-contained.
     if (jobs == null
-        || lease == null
-        || lease.parentJobId == null
-        || lease.parentJobId.isBlank()
-        || lease.accountId == null
-        || lease.accountId.isBlank()) {
+        || parentJobId == null
+        || parentJobId.isBlank()
+        || accountId == null
+        || accountId.isBlank()) {
       throw unresolvedPlannedTask();
     }
-    return jobs.get(lease.accountId, lease.parentJobId)
+    return jobs.get(accountId, parentJobId)
         .map(parent -> parent.snapshotTask)
         .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
         .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))

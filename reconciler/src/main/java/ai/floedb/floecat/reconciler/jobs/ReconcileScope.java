@@ -319,4 +319,14 @@ public final class ReconcileScope {
   public boolean hasSnapshotSelection() {
     return snapshotSelection.isSpecified();
   }
+
+  public boolean semanticallyEquals(ReconcileScope other) {
+    return other != null
+        && destinationNamespaceIds.equals(other.destinationNamespaceIds)
+        && Objects.equals(destinationTableId, other.destinationTableId)
+        && Objects.equals(destinationViewId, other.destinationViewId)
+        && destinationCaptureRequests.equals(other.destinationCaptureRequests)
+        && capturePolicy.semanticallyEquals(other.capturePolicy)
+        && snapshotSelection.equals(other.snapshotSelection);
+  }
 }

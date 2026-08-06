@@ -667,6 +667,116 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
+  void captureResolvesStableIndexSelectorBeforeFilteringPhysicalPageEntries() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    var selectedEntry =
+        pageIndexEntry(plannedFile, "customer_id").withSelectorAliases(Set.of("#1", "customer_id"));
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(),
+                List.of(
+                    pageIndexEntry(plannedFile, "customer_id"),
+                    pageIndexEntry(plannedFile, "unrequested"))));
+    when(connector.selectPageIndexEntries(
+            "db",
+            "events",
+            55L,
+            Set.of("#1"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(plannedFile),
+            List.of(
+                pageIndexEntry(plannedFile, "customer_id"),
+                pageIndexEntry(plannedFile, "unrequested")),
+            List.of()))
+        .thenReturn(Optional.of(List.of(selectedEntry)));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of(),
+            Set.of("#1"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries)
+        .extracting(FloecatConnector.ParquetPageIndexEntry::columnName)
+        .containsExactly("customer_id");
+    assertThat(outputs.pageIndexEntries.getFirst().selectorAliases())
+        .containsExactlyInAnyOrder("#1", "customer_id");
+  }
+
+  @Test
+  void captureDoesNotApplyDefaultsWhenExplicitIndexSelectorsResolveToNoEntries() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    var availableEntry = pageIndexEntry(plannedFile, "customer_id");
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of(availableEntry)));
+    when(connector.selectPageIndexEntries(
+            "db",
+            "events",
+            55L,
+            Set.of("#999"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(plannedFile),
+            List.of(availableEntry),
+            List.of()))
+        .thenReturn(Optional.of(List.of()));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of(),
+            Set.of("#999"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries).isEmpty();
+  }
+
+  @Test
   void captureResolvesDefaultFirstNPageIndexSelectors() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();

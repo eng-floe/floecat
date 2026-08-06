@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -174,8 +175,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     String blobUri = requireBlobReference(pointer, key);
     Optional<T> loaded =
         blobCacheable()
-            ? blobCache.get(blobUri, this::loadAndParseBlob)
-            : loadAndParseBlob(blobUri);
+            ? ReusableArtifactBundleUris.isBundleUri(blobUri)
+                ? blobCache.getProjection(
+                    blobUri, key, ignored -> loadAndParseReferencedBlob(key, blobUri))
+                : blobCache.get(blobUri, ignored -> loadAndParseReferencedBlob(key, blobUri))
+            : loadAndParseReferencedBlob(key, blobUri);
     if (loaded.isPresent()) {
       return loaded;
     }
@@ -208,6 +212,30 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + blobUri, e);
     }
+  }
+
+  /** Decodes a pointer-resolved blob. Subclasses may select one record from a shared bundle. */
+  protected Optional<T> loadAndParseReferencedBlob(String pointerKey, String blobUri) {
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        return Optional.empty();
+      }
+      return Optional.of(parseReferencedBlob(pointerKey, blobUri, bytes));
+    } catch (StorageNotFoundException snf) {
+      return Optional.empty();
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (StorageAbortRetryableException sar) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
+  }
+
+  protected T parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
+      throws Exception {
+    return parser.parse(bytes);
   }
 
   private boolean pointerChangedOrDeleted(String key, Pointer before) {
@@ -449,7 +477,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             }
 
             try {
-              T parsed = parser.parse(bytes);
+              T parsed = parseReferencedBlob(row.getKey(), blobUri, bytes);
               if (blobCacheable()) {
                 blobCache.put(blobUri, parsed);
               }

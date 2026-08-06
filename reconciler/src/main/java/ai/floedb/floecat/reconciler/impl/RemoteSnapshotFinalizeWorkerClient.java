@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import java.util.List;
@@ -37,6 +38,7 @@ interface RemoteSnapshotFinalizeWorkerClient {
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<ReusableArtifactBundleReference> reusableArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);

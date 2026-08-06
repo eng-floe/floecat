@@ -17,21 +17,21 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
-import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
 
 public record StandaloneFileGroupExecutionResult(
     String resultId,
     List<TargetStatsRecord> partialAggregateRecords,
-    List<StatsObjectDescriptor> fileStats,
+    List<TargetStatsRecord> publishedFileStatsRecords,
     List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
     List<String> realizedStatsSelectors) {
   public StandaloneFileGroupExecutionResult {
     resultId = resultId == null ? "" : resultId.trim();
     partialAggregateRecords =
         partialAggregateRecords == null ? List.of() : List.copyOf(partialAggregateRecords);
-    fileStats = fileStats == null ? List.of() : List.copyOf(fileStats);
+    publishedFileStatsRecords =
+        publishedFileStatsRecords == null ? List.of() : List.copyOf(publishedFileStatsRecords);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
     realizedStatsSelectors =
@@ -41,9 +41,14 @@ public record StandaloneFileGroupExecutionResult(
   public StandaloneFileGroupExecutionResult(
       String resultId,
       List<TargetStatsRecord> partialAggregateRecords,
-      List<StatsObjectDescriptor> fileStats,
+      List<TargetStatsRecord> publishedFileStatsRecords,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    this(resultId, partialAggregateRecords, fileStats, stagedIndexArtifacts, List.of());
+    this(
+        resultId,
+        partialAggregateRecords,
+        publishedFileStatsRecords,
+        stagedIndexArtifacts,
+        List.of());
   }
 
   public static StandaloneFileGroupExecutionResult empty(String resultId) {
