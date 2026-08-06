@@ -1890,7 +1890,8 @@ reconcile control RPCs:</p>
   aggregate stats.</li>
 <li><strong>Snapshot planning persistence</strong>: the immutable snapshot plan is stored in a content-bound blob
   referenced by the compact parent <code>PLAN_SNAPSHOT</code> job. Its identity includes the complete
-  file-execution plans and, for append-only plans, the inherited base descriptor. Child
+  file-execution plans and, for append-only plans, the inherited base descriptor and persistent
+  reusable-artifact sorted-run index. Child
   <code>EXEC_FILE_GROUP</code> and <code>FINALIZE_SNAPSHOT_CAPTURE</code> jobs reference that plan through <code>parentJobId</code>.
   File-group execution resolves <code>(planId, groupId)</code> through a bounded in-process index over the
   durable blob; a cold cache reloads the immutable plan. There is no expanded parent-task scan or
@@ -1901,7 +1902,10 @@ reconcile control RPCs:</p>
 <li>For a connector-proven append-only Delta or Iceberg change with unchanged schema, capture
     policy, and delete artifacts, the plan contains groups only for net-new parquet data files.
     Finalization inherits the prior stats/index generations through durable base-generation edges
-    and publishes a new manifest without reopening or regenerating inherited parquet artifacts. Any
+    and publishes only the delta bundle references. The service writes one immutable level-zero
+    sorted run and carries forward the authenticated prior run references, so the new manifest represents complete
+    reuse coverage without repeating inherited bundle metadata or reopening inherited parquet
+    artifacts. Any
     removed data file, changed Delta deletion vector, or added/removed Iceberg delete file rejects
     the append-only path and uses ordinary delete-aware file-group planning instead.</li>
 <li>Each file execution plan carries connector-provided physical <code>content_identity</code>, source
@@ -1910,8 +1914,11 @@ reconcile control RPCs:</p>
     file.</li>
 <li>Snapshot planning reads the compact capture manifest from the most recently reconciled snapshot
     with finalized reusable artifacts, ordered by durable <code>ingested_at</code> rather than snapshot id or
-    source parentage. It does not read reusable bundle payloads, source files, or page-index
-    sidecars.
+    source parentage. Append-only overlap checks use point lookups in the persistent artifact index
+    through Bloom-filtered, batched run probes and scale with delta files and the compacted run count.
+    Ordinary full-file planning resolves reuse in bounded file-group batches instead of loading the
+    complete index. Planning does not read reusable bundle payloads, source files,
+    or page-index sidecars.
     The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
     rebinds selected records to the destination snapshot, and captures only missing outputs.</li>
 <li>The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
@@ -1954,13 +1961,18 @@ reconcile control RPCs:</p>
     metadata for one file-group commit.</li>
 <li>The finalizer reads and verifies each bounded <code>FileGroupResultPayload</code>, derives exact file-stats
     coverage from the immutable data-file execution plans and their attached delete artifacts, and
-    merges the embedded aggregate partials. It validates reusable bundle references and carries one
-    normalized reference per file group into <code>SnapshotCaptureManifest</code> without reading bundle
-    payloads. Finalize submission can race with pointer staging and must retry the exact same result
-    when a prepared marker is not yet present.</li>
+    merges the embedded aggregate partials. It validates one current bundle reference per file
+    group without reading bundle payloads. Before publication, the service rejects duplicate typed
+    file paths against the inherited runs, writes only the delta run plus bounded low-level
+    compaction, and stores the complete run set in the durable <code>SnapshotCaptureManifest</code>. Finalize submission can
+    race with pointer staging and must retry the exact same result when a prepared marker is not yet
+    present. A reuse manifest without a persistent run index is invalid; planning rejects it instead of
+    falling back to the former manifest-level bundle index.</li>
 <li>Successful publication stores the capture-manifest descriptor in the snapshot's system-owned
     <code>reuse_manifest_ref</code> and heads the reusable stats generation from the table root. Garbage
-    collection treats both references as live publication state.</li>
+    collection traverses that manifest's run manifests, filters, and blocks and treats them and referenced
+    reusable bundle payloads—and the stats generations that own those payloads—as live publication
+    state.</li>
 <li>Current snapshot reads surface <code>file_groups_total</code>, <code>file_groups_completed</code>,
     <code>file_groups_failed</code>, <code>files_total</code>, <code>files_completed</code>, and <code>files_failed</code>.</li>
 <li><strong>Index artifacts</strong>:</li>
@@ -1991,6 +2003,25 @@ reconcile control RPCs:</p>
     their request origin in capture-policy properties.</li>
 <li>content-state coverage is checked before execution. Missing coverage attempts connector-native
     direct stats first and uses file-group capture when direct stats cannot satisfy the request.</li>
+<li><strong>External reusable-index contract</strong>:</li>
+<li>external <code>EXEC_FILE_GROUP</code> workers do not read, construct, or compact reusable-index runs. They
+    continue to consume the bundle selections in their leased execution payload and publish the
+    current file group's bundle metadata.</li>
+<li>external <code>PLAN_SNAPSHOT</code> implementations must regenerate their protobuf bindings for the
+    format-1 sorted-run messages and preserve the complete <code>AppendOnlySnapshotBase</code>, including its
+    <code>reusable_artifact_index</code>, through planning and finalization. There is no reader for the former
+    trie-root format and no dual-read fallback.</li>
+<li>a planner that performs reusable-artifact lookup must authenticate object length and SHA-256,
+    batch-fetch run filters and manifests, and fetch only candidate data blocks. It must not turn
+    lookup into one object-store request per source file. A missing index object makes the base
+    unavailable for reuse; malformed or digest-invalid index metadata is a terminal invalid-base
+    error.</li>
+<li>an external snapshot finalizer submits the current <code>reusable_artifact_bundles</code> delta and the
+    leased <code>append_only_base</code>, but must leave <code>SnapshotCaptureManifest.reusable_artifact_index</code>
+    unset. The control plane owns run creation, compaction, publication, and garbage-collection
+    reachability and rejects a worker-supplied value.</li>
+<li>run objects are immutable and content-addressed. Their filter encoding and storage layout are
+    internal implementation details, not an extension point for independently constructed runs.</li>
 <li><strong>Connector security boundary</strong>: all upstream I/O remains inside <code>FloecatConnector</code>.
   <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.</li>
