@@ -35,7 +35,6 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -214,49 +213,6 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
-  /** Records the system-owned finalized reuse manifest without replacing concurrent updates. */
-  public void recordReuseManifest(
-      ResourceId tableId,
-      long snapshotId,
-      String uri,
-      long bytes,
-      byte[] sha256,
-      String statsGenerationManifestUri) {
-    if (uri == null
-        || uri.isBlank()
-        || bytes <= 0L
-        || sha256 == null
-        || sha256.length != 32
-        || statsGenerationManifestUri == null
-        || statsGenerationManifestUri.isBlank()) {
-      throw new IllegalArgumentException("complete reuse manifest metadata is required");
-    }
-    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
-    for (int attempt = 0; attempt < 8; attempt++) {
-      MutationMeta meta = repo.pointerMetaForSafe(key);
-      Snapshot current =
-          repo.getByKey(key)
-              .orElseThrow(() -> new IllegalStateException("snapshot not found: " + snapshotId));
-      Snapshot next =
-          current.toBuilder()
-              .setReuseManifestRef(
-                  SnapshotReuseManifestRef.newBuilder()
-                      .setUri(uri)
-                      .setPayloadBytes(bytes)
-                      .setPayloadSha256(ByteString.copyFrom(sha256))
-                      .setStatsGenerationManifestUri(statsGenerationManifestUri))
-              .build();
-      if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
-        return;
-      }
-      if (attempt < 7) {
-        backoffCurrentPointerAdvance(attempt);
-      }
-    }
-    throw new StorageAbortRetryableException(
-        "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
-  }
-
   /**
    * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
    * the exact snapshot revision written so callers do not need a racy follow-up read.
@@ -264,6 +220,8 @@ public class SnapshotRepository {
   public Snapshot recordReuseManifest(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
     if (reuseManifestRef == null
+        || reuseManifestRef.getFormatVersion()
+            != ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
         || reuseManifestRef.getUri().isBlank()
         || reuseManifestRef.getPayloadBytes() <= 0L
         || reuseManifestRef.getPayloadSha256().size() != 32
@@ -432,7 +390,11 @@ public class SnapshotRepository {
     return rootCurrentSnapshot(tableId, false);
   }
 
-  /** Returns the newest root-published reusable snapshot at or before committed current. */
+  /**
+   * Returns the newest root-published reusable snapshot at or before the committed current. This
+   * deliberately does not consult the ingest-time current pointer: while a new snapshot is being
+   * reconciled that pointer already names the unfinalized target.
+   */
   public Optional<Snapshot> getLatestFinalizedSnapshotForReuse(
       ResourceId tableId, Long excludedSnapshotId) {
     if (tableId == null) {

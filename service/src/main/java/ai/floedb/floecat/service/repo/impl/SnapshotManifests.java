@@ -387,6 +387,29 @@ public final class SnapshotManifests {
     return Optional.ofNullable(best[0]);
   }
 
+  /** The newest finalized entry at or before the committed current that publishes reuse data. */
+  public static Optional<SnapshotManifestEntry> latestReusableCurrent(
+      TableRootRepository roots,
+      BlobRef head,
+      SnapshotManifestEntry committedCurrent,
+      Long excludedSnapshotId) {
+    SnapshotManifestEntry[] best = {null};
+    forEachEntry(
+        roots,
+        head,
+        e -> {
+          if (!e.hasReuseStatsGenerationRef()
+              || newer(e, committedCurrent)
+              || (excludedSnapshotId != null && e.getSnapshotId() == excludedSnapshotId)) {
+            return;
+          }
+          if (best[0] == null || newer(e, best[0])) {
+            best[0] = e;
+          }
+        });
+    return Optional.ofNullable(best[0]);
+  }
+
   /**
    * Computes the newest reusable entries at or before committed current for publication on the
    * table root. This is a write-path manifest walk; readers consume the bounded root index

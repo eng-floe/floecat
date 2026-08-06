@@ -361,6 +361,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 snapshotTask()));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.SnapshotFilePlan(
+                    List.of(snapshotFile("file-1", 10L)), List.of())));
     when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
         .thenReturn(
             Optional.of(
