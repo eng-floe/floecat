@@ -79,7 +79,6 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -1848,7 +1847,32 @@ class GrpcRemoteReconcileExecutorClientTest {
         0,
         "full-rescan-base",
         "",
-        depth);
+        depth,
+        testArtifactIndex(1, 0));
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference testArtifactIndex(
+      int stats, int indexes) {
+    int entries = stats + indexes;
+    var index =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(1)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (entries > 0) {
+      var object =
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1L)
+              .setPayloadSha256(ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(entries)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor() {

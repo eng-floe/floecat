@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageException;
@@ -34,6 +35,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -480,12 +482,17 @@ public class SnapshotPlanBlobStore {
       int indexArtifactCount,
       String statsGenerationId,
       String indexGenerationId,
-      int chainDepth) {
+      int chainDepth,
+      ReusableArtifactIndexReference reusableArtifactIndex) {
     public AppendOnlyBase {
       manifestUri = manifestUri == null ? "" : manifestUri.trim();
       manifestSha256 = manifestSha256 == null ? "" : manifestSha256.trim().toLowerCase();
       statsGenerationId = statsGenerationId == null ? "" : statsGenerationId.trim();
       indexGenerationId = indexGenerationId == null ? "" : indexGenerationId.trim();
+      reusableArtifactIndex =
+          reusableArtifactIndex == null
+              ? ReusableArtifactIndexReference.getDefaultInstance()
+              : reusableArtifactIndex;
       if (snapshotId < 0
           || manifestUri.isBlank()
           || manifestBytes <= 0
@@ -497,6 +504,11 @@ public class SnapshotPlanBlobStore {
           || (indexArtifactCount > 0 && indexGenerationId.isBlank())
           || chainDepth <= 0) {
         throw new IllegalArgumentException("invalid append-only snapshot base");
+      }
+      ReusableArtifactIndexStore.validateReference(reusableArtifactIndex);
+      if (reusableArtifactIndex.getFileStatsRecordCount() != fileStatsRecordCount
+          || reusableArtifactIndex.getIndexArtifactCount() != indexArtifactCount) {
+        throw new IllegalArgumentException("append-only snapshot base index count mismatch");
       }
       try {
         if (HexFormat.of().parseHex(manifestSha256).length != 32) {
@@ -523,7 +535,8 @@ public class SnapshotPlanBlobStore {
           Integer.toString(indexArtifactCount),
           statsGenerationId,
           indexGenerationId,
-          Integer.toString(chainDepth));
+          Integer.toString(chainDepth),
+          Base64.getEncoder().encodeToString(reusableArtifactIndex.toByteArray()));
     }
   }
 
@@ -538,6 +551,7 @@ public class SnapshotPlanBlobStore {
     public String statsGenerationId = "";
     public String indexGenerationId = "";
     public int chainDepth = 0;
+    public String artifactIndex = "";
 
     static StoredAppendOnlyBase from(AppendOnlyBase value) {
       if (value == null) {
@@ -554,6 +568,8 @@ public class SnapshotPlanBlobStore {
       stored.statsGenerationId = value.statsGenerationId();
       stored.indexGenerationId = value.indexGenerationId();
       stored.chainDepth = value.chainDepth();
+      stored.artifactIndex =
+          Base64.getEncoder().encodeToString(value.reusableArtifactIndex().toByteArray());
       return stored;
     }
 
@@ -568,7 +584,19 @@ public class SnapshotPlanBlobStore {
           indexArtifactCount,
           statsGenerationId,
           indexGenerationId,
-          chainDepth);
+          chainDepth,
+          artifactIndexReference());
+    }
+
+    private ReusableArtifactIndexReference artifactIndexReference() {
+      if (artifactIndex == null || artifactIndex.isBlank()) {
+        throw new IllegalArgumentException("stored append-only base index is missing");
+      }
+      try {
+        return ReusableArtifactIndexReference.parseFrom(Base64.getDecoder().decode(artifactIndex));
+      } catch (Exception error) {
+        throw new IllegalArgumentException("stored append-only base index is invalid", error);
+      }
     }
   }
 

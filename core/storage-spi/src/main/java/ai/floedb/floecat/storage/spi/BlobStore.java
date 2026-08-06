@@ -17,7 +17,7 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -25,7 +25,28 @@ import java.util.Optional;
 public interface BlobStore {
   byte[] get(String uri);
 
+  /** Reads the inclusive byte range {@code [offset, offset + length)}. */
+  default byte[] getRange(String uri, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range is invalid");
+    }
+    byte[] bytes = get(uri);
+    if (offset > bytes.length || (long) length > bytes.length - offset) {
+      throw new IllegalArgumentException("blob range exceeds the object");
+    }
+    return java.util.Arrays.copyOfRange(
+        bytes, Math.toIntExact(offset), Math.toIntExact(offset + length));
+  }
+
   void put(String uri, byte[] bytes, String contentType);
+
+  /**
+   * Writes content whose URI is immutable and content-derived. Implementations may skip the
+   * read-before-write metadata preservation performed by ordinary mutable writes.
+   */
+  default void putImmutable(String uri, byte[] bytes, String contentType) {
+    put(uri, bytes, contentType);
+  }
 
   Optional<BlobHeader> head(String uri);
 
@@ -69,8 +90,25 @@ public interface BlobStore {
   int deletePrefix(String prefix);
 
   default Map<String, byte[]> getBatch(List<String> uris) {
-    Map<String, byte[]> out = new HashMap<>(uris.size());
+    Map<String, byte[]> out = new LinkedHashMap<>(uris.size());
     for (String u : uris) out.put(u, get(u));
+    return out;
+  }
+
+  record Range(String uri, long offset, int length) {
+    public Range {
+      if (uri == null || uri.isBlank() || offset < 0L || length < 0) {
+        throw new IllegalArgumentException("blob range is invalid");
+      }
+    }
+  }
+
+  /** Reads independent ranges; returned keys are the requested range descriptors. */
+  default Map<Range, byte[]> getRanges(List<Range> ranges) {
+    Map<Range, byte[]> out = new LinkedHashMap<>(ranges.size());
+    for (Range range : ranges) {
+      out.put(range, getRange(range.uri(), range.offset(), range.length()));
+    }
     return out;
   }
 

@@ -1537,20 +1537,27 @@ class GrpcRemoteReconcileExecutorClient
         records.stream()
             .map(record -> publishStatsObject(blobStore, stableStatsObjectPrefix, record))
             .toList();
-    int totalFileStats =
+    int currentFileStats =
         Math.toIntExact(
             stableReuseBundles.stream()
                 .flatMap(bundle -> bundle.getFileStatsList().stream())
                 .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
                 .distinct()
                 .count());
-    int totalIndexArtifacts =
+    int currentIndexArtifacts =
         Math.toIntExact(
             stableReuseBundles.stream()
                 .flatMap(bundle -> bundle.getIndexArtifactsList().stream())
                 .map(ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata::getFilePath)
                 .distinct()
                 .count());
+    int totalFileStats =
+        Math.addExact(
+            appendOnlyBase == null ? 0 : appendOnlyBase.fileStatsRecordCount(), currentFileStats);
+    int totalIndexArtifacts =
+        Math.addExact(
+            appendOnlyBase == null ? 0 : appendOnlyBase.indexArtifactCount(),
+            currentIndexArtifacts);
     SnapshotCaptureManifest.Builder manifest =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
@@ -1594,7 +1601,8 @@ class GrpcRemoteReconcileExecutorClient
               .setIndexArtifactCount(appendOnlyBase.indexArtifactCount())
               .setStatsGenerationId(appendOnlyBase.statsGenerationId())
               .setIndexGenerationId(appendOnlyBase.indexGenerationId())
-              .setChainDepth(appendOnlyBase.chainDepth()));
+              .setChainDepth(appendOnlyBase.chainDepth())
+              .setReusableArtifactIndex(appendOnlyBase.reusableArtifactIndex()));
     }
     Set<String> indexedStatsTargets = new HashSet<>();
     for (ReconcileFileGroupResultDescriptor fileGroup : stableFileGroups) {

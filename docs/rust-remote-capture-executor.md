@@ -33,7 +33,10 @@ satisfy the request directly.
 If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the leased snapshot task's
 `source_revision`, `metadata_fingerprint`, and complete `requested_coverage` in its successful
 planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
-snapshot finalizer must likewise populate the realized-selector fields described below.
+snapshot finalizer must likewise populate the realized-selector fields described below. Planner
+and finalizer implementations must use bindings generated from the same protobuf version as the
+control plane: reusable-artifact indexes use format-1 immutable sorted runs, and the former
+trie-root format is not accepted.
 
 ## Execution Architecture
 The leased file-group execution path is:
@@ -448,10 +451,28 @@ target, and retains that target's compatibility metadata on its owning bundle. I
 hash delete-file content.
 
 The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
-its `artifact_references_sha256`, and one normalized `reusable_artifact_bundles` entry per file
-group. It carries file-group descriptors, bundle compatibility indexes, snapshot-wide aggregate
-descriptors, and counts. Data-file source/success counts do not include auxiliary delete artifacts;
-file-stats record counts include their group-level target mappings.
+its `artifact_references_sha256`, and one normalized `reusable_artifact_bundles` entry per current
+file group. These bundles are a publication delta. When the leased plan has an `append_only_base`,
+the finalizer must return it unchanged, including its opaque format-1 `reusable_artifact_index`,
+but must leave `SnapshotCaptureManifest.reusable_artifact_index` unset. That output field is service-owned;
+the service rejects a worker-supplied value, authenticates the prior index, applies the delta, and
+publishes the complete immutable run set.
+The manifest also carries snapshot-wide aggregate descriptors and counts. Data-file source/success
+counts do not include auxiliary delete artifacts; file-stats record counts include their
+group-level target mappings.
+
+An external `PLAN_SNAPSHOT` implementation that offers reuse must use the same lookup semantics as
+the control plane: authenticate every fetched index object by length and SHA-256, batch-fetch run
+filters and manifests, and read only candidate data blocks. It must not issue an object-store
+request per planned source file, and it never needs to read source Parquet, bundle payloads, or
+page-index sidecars to decide compatibility. A missing run object makes the base unavailable for
+reuse; corrupt authenticated metadata is a terminal invalid-base error. The run filter encoding
+and compaction layout are internal, so an external implementation should use a shared compatible
+index library rather than manufacture or compact run objects itself.
+
+These requirements do not change the standalone Rust `EXEC_FILE_GROUP` contract. A deployment
+that externalizes only file-group execution can treat the run index as opaque and needs no new
+object-store access pattern.
 
 For column-stats capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the

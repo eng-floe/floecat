@@ -219,7 +219,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
       if (appendOnly != null) {
         partials.addAll(appendOnly.aggregateRecords());
-        reuseBundles.addAll(appendOnly.reusableArtifactBundles());
         realizedStatsSelectors.addAll(appendOnly.realizedStatsSelectors());
         realizedIndexSelectors.addAll(appendOnly.realizedIndexSelectors());
         if (defaultStatsSelection) {
@@ -423,6 +422,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || base.sourceFileCount() != manifest.getSourceFileCount()
         || base.fileStatsRecordCount() != manifest.getFileStatsRecordCount()
         || base.indexArtifactCount() != manifest.getIndexArtifactCount()
+        || !manifest.hasReusableArtifactIndex()
+        || !base.reusableArtifactIndex().equals(manifest.getReusableArtifactIndex())
         || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
         || !manifest.getReusableArtifactBundlesComplete()
         || base.chainDepth() <= 0
@@ -459,7 +460,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     return new AppendOnlyArtifacts(
         base,
         List.copyOf(aggregates),
-        manifest.getReusableArtifactBundlesList(),
         manifest.getRealizedStatsSelectorsList(),
         manifest.getRealizedIndexSelectorsList());
   }
@@ -467,8 +467,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
   private record AppendOnlyArtifacts(
       SnapshotPlanBlobStore.AppendOnlyBase base,
       List<TargetStatsRecord> aggregateRecords,
-      List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
-          reusableArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors) {}
 

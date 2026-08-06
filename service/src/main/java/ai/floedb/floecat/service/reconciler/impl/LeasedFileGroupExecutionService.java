@@ -837,10 +837,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         || resolved.fileCount() != resolved.filePaths().size()
         || resolved.fileExecutionPlans().size() != resolved.filePaths().size()
         || new HashSet<>(resolved.filePaths()).size() != resolved.filePaths().size()
-        || !resolved.filePaths().equals(
-            resolved.fileExecutionPlans().stream()
-                .map(ReconcileFileExecutionPlan::filePath)
-                .toList())) {
+        || !resolved
+            .filePaths()
+            .equals(
+                resolved.fileExecutionPlans().stream()
+                    .map(ReconcileFileExecutionPlan::filePath)
+                    .toList())) {
       throw unresolvedPlannedTask();
     }
     return resolved;

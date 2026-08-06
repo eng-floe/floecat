@@ -47,6 +47,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -248,7 +251,17 @@ class LeasedPlannerWorkerServiceTest {
         referencedGroup("job-1", "group-1", List.of(file), List.of(file));
     SnapshotPlanBlobStore.AppendOnlyBase base =
         new SnapshotPlanBlobStore.AppendOnlyBase(
-            54L, "/capture/base.pb", 100L, "ab".repeat(32), 2, 2, 0, "stats-generation", "", 1);
+            54L,
+            "/capture/base.pb",
+            100L,
+            "ab".repeat(32),
+            2,
+            2,
+            0,
+            "stats-generation",
+            "",
+            1,
+            testArtifactIndex(2, 0));
     ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 3, base);
 
     LeasedPlannerWorkerService.validateReferencedPlan(
@@ -1896,6 +1909,38 @@ class LeasedPlannerWorkerServiceTest {
         sourceFileCount,
         "",
         0);
+  }
+
+  private static ReusableArtifactIndexReference testArtifactIndex(int stats, int indexes) {
+    var index =
+        ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(1)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (stats + indexes > 0) {
+      var object =
+          ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1)
+              .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(
+                  object
+                      .clone()
+                      .setUri(
+                          Keys.tableReusableArtifactIndexObjectBlobPrefix("acct", "table-1")
+                              + "manifest.pb"))
+              .setFilter(
+                  object
+                      .clone()
+                      .setUri(
+                          Keys.tableReusableArtifactIndexObjectBlobPrefix("acct", "table-1")
+                              + "filter.bf"))
+              .setEntryCount(stats + indexes)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static ReconcileFileGroupTask referencedGroup(

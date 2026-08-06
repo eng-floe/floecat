@@ -340,7 +340,8 @@ class SnapshotPlanBlobStoreTest {
             1,
             "full-rescan-base-job",
             "full-rescan-base-job",
-            1);
+            1,
+            testArtifactIndex(0, 1));
 
     ReconcileSnapshotTask persisted =
         store.persistPlan("acct", "job-1", snapshotTask, List.of(), base);
@@ -355,7 +356,8 @@ class SnapshotPlanBlobStoreTest {
             0,
             "full-rescan-other-base-job",
             "",
-            1);
+            1,
+            testArtifactIndex(1, 0));
     ReconcileSnapshotTask persistedOther =
         store.persistPlan("acct", "job-1", snapshotTask, List.of(), otherBase);
 
@@ -552,6 +554,30 @@ class SnapshotPlanBlobStoreTest {
         .setId("table-1")
         .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
         .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference testArtifactIndex(
+      int stats, int indexes) {
+    int entries = stats + indexes;
+    var index =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(1)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (entries > 0) {
+      var object =
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1L)
+              .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(entries)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static final class InMemoryBlobStore implements BlobStore {

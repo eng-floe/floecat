@@ -374,8 +374,66 @@ message ReusableArtifactBundleSelection {
   repeated string index_file_paths = 3;
 }
 
-// Immutable predecessor used by the append-only fast path. The referenced manifest is verified
-// before its aggregate records and reusable bundle references are carried into the new snapshot.
+// Content-addressed object identity used by the reusable-artifact run index.
+message ReusableArtifactIndexObjectReference {
+  string uri = 1;
+  uint64 payload_bytes = 2;
+  bytes payload_sha256 = 3;
+}
+
+message ReusableArtifactIndexBlockReference {
+  ReusableArtifactIndexObjectReference object = 1;
+  bytes first_key_sha256 = 2;
+  bytes last_key_sha256 = 3;
+  uint64 entry_count = 4;
+}
+
+// Authenticated block directory for one immutable sorted run.
+message ReusableArtifactIndexRunManifest {
+  uint32 format_version = 1;
+  repeated ReusableArtifactIndexBlockReference blocks = 2;
+}
+
+// One immutable sorted run and its probabilistic membership filter. Level zero contains newly
+// published deltas; higher levels are compacted asynchronously without changing entry semantics.
+message ReusableArtifactIndexRunReference {
+  uint32 level = 1;
+  ReusableArtifactIndexObjectReference manifest = 2;
+  ReusableArtifactIndexObjectReference filter = 3;
+  uint64 entry_count = 4;
+  uint32 file_stats_record_count = 5;
+  uint32 index_artifact_count = 6;
+}
+
+// Complete reusable-artifact compatibility index for one snapshot. Runs are immutable and sorted
+// by typed-key SHA-256. Counts are split because stats may additionally cover auxiliary delete/DV
+// files while page-index entries cover source data files.
+message ReusableArtifactIndexReference {
+  uint32 format_version = 1;
+  reserved 2;
+  uint32 file_stats_record_count = 3;
+  uint32 index_artifact_count = 4;
+  repeated ReusableArtifactIndexRunReference runs = 5;
+}
+
+// One typed file identity in the persistent index. The bundle descriptor names the immutable
+// payload containing the reusable wrapper; exactly one metadata variant must be present.
+message ReusableArtifactIndexEntry {
+  StatsObjectDescriptor artifact = 1;
+  oneof metadata {
+    ReusableStatsArtifactMetadata file_stats = 2;
+    ReusableIndexArtifactMetadata index_artifact = 3;
+  }
+}
+
+// Size-bounded data block within a sorted run.
+message ReusableArtifactIndexBlock {
+  uint32 format_version = 1;
+  repeated ReusableArtifactIndexEntry entries = 2;
+}
+
+// Immutable predecessor used by the append-only fast path. The referenced manifest and persistent
+// reusable-artifact run index are verified before its aggregate generation is inherited.
 message AppendOnlySnapshotBase {
   uint32 format_version = 1;
   uint64 snapshot_id = 2;
@@ -388,6 +446,7 @@ message AppendOnlySnapshotBase {
   string stats_generation_id = 9;
   string index_generation_id = 10;
   uint32 chain_depth = 11;
+  ReusableArtifactIndexReference reusable_artifact_index = 12;
 }
 
 // Immutable result metadata written directly by a file-group executor. Stats and index wrappers
@@ -449,18 +508,22 @@ message SnapshotCaptureManifest {
   repeated string realized_index_selectors = 21;
   // Concrete column selectors present in the activated stats generation.
   repeated string realized_stats_selectors = 22;
-  // Complete compatibility index for the current snapshot. This is not a per-snapshot delta:
-  // unchanged entries may reference immutable bundles produced by an earlier snapshot, changed
-  // entries reference bundles produced by this snapshot, and removed entries are absent.
+  // Bundles produced by this snapshot's file groups. The complete current-state compatibility
+  // index is the persistent immutable run set below; append-only manifests do not repeat inherited
+  // bundle metadata.
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
   AppendOnlySnapshotBase append_only_base = 28;
-  // Distinguishes the complete current-state contract from older delta-only manifests. A false
-  // value is not eligible as a reuse source and is replaced by the next complete capture.
+  // Marks a complete compatibility contract: current bundles plus the authenticated base runs are
+  // sufficient for the service to publish the complete persistent index. A false value is not
+  // eligible as a reuse source and is replaced by the next complete capture.
   bool reusable_artifact_bundles_complete = 29;
   // Depth of the published stats/index generation overlay. A value of one is a fully
   // materialized checkpoint. Append-only finalizers may build bounded overlays and reset this
   // value to one whenever the configured maximum depth is reached.
   uint32 generation_chain_depth = 30;
+  // Complete persistent compatibility index for this snapshot. The service constructs this run set
+  // from the authenticated base runs and the current file-group bundles before publication.
+  ReusableArtifactIndexReference reusable_artifact_index = 31;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

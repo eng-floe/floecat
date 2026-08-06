@@ -47,6 +47,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
@@ -6206,7 +6209,8 @@ class DurableReconcileJobStoreTest {
             0,
             "full-rescan-base-job",
             "",
-            1);
+            1,
+            testArtifactIndex(5, 0));
     String sourcePlanUri = "/accounts/acct-1/reconcile/jobs/snapshot-job/snapshot-plan.json";
     store.blobStore.put(
         sourcePlanUri,
@@ -6284,7 +6288,8 @@ class DurableReconcileJobStoreTest {
             0,
             "full-rescan-base-job",
             "",
-            1);
+            1,
+            testArtifactIndex(1, 0));
     String planUri =
         SnapshotPlanManifestIds.manifestBlobUri(
             ACCOUNT_ID, snapshotJobId, List.of(), appendOnlyBase.manifestIdentity());
@@ -7968,6 +7973,28 @@ class DurableReconcileJobStoreTest {
             System.currentTimeMillis()),
         System.currentTimeMillis(),
         "Succeeded");
+  }
+
+  private static ReusableArtifactIndexReference testArtifactIndex(int stats, int indexes) {
+    var index =
+        ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(1)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (stats + indexes > 0) {
+      var object =
+          ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1)
+              .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(stats + indexes)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static ReconcileScope resolvedCaptureScope(
