@@ -20,15 +20,13 @@ a separate legacy path during migration and will eventually be deprecated.
 
 ## Resource and ownership model
 
-The target model has three distinct layers:
+The target model has two resource layers plus shared captured metadata:
 
 ```text
 CatalogIntegration                 connection, authentication, canonical upstream identity
  ├── captured namespace/table      shared metadata, snapshots, file groups, and statistics
- ├── CatalogOverlay                mappings, visibility, and freshness demand
- │    └── existing Catalog         SQL-visible placement; not owned by the overlay
- └── CatalogOverlay
-      └── existing Catalog
+ ├── CatalogOverlay "sales"        top-level SQL catalog, mappings, visibility, and demand
+ └── CatalogOverlay "finance"      another top-level projection of the same integration
 ```
 
 ### Catalog integration
@@ -48,19 +46,14 @@ generation. Credential writes use a dedicated request that never returns secret 
 
 ### Catalog overlay
 
-`CatalogOverlay` is a non-owning, read-only projection of one integration into one existing
-Floecat `Catalog`. It owns namespace mappings, visibility state, and refresh/retention demand. It
-does not create, rename, empty, lock, or delete its target catalog.
+`CatalogOverlay` is a read-only top-level SQL catalog backed by one integration. Its display name is
+the catalog name. It owns namespace mappings, visibility state, and refresh/retention demand; it
+does not point to or mutate a separate `Catalog` resource.
 
-Initially, at most one overlay may target a catalog. This keeps name resolution and collision
-reporting deterministic while still allowing several catalogs to expose different projections of
-the same integration. Supporting overlay composition within one catalog requires a separate design
-decision.
-
-The target catalog remains a normal catalog. Users may create local namespaces and views in it,
-and views may reference overlay-bound tables. Captured namespaces and relations are read-only.
-Local and overlay objects never shadow one another: an exposed-name collision prevents that binding
-from becoming visible and puts the overlay into a degraded condition until the conflict is fixed.
+Several overlays may expose different projections of the same integration under different
+top-level catalog names. The account-level catalog namespace must reject collisions between overlay
+display names and other top-level catalogs. Captured namespaces and relations inside an overlay are
+read-only; writable local objects belong in a separate regular catalog.
 
 ## Namespace selection and mapping
 
@@ -75,12 +68,12 @@ message NamespaceMapping {
 }
 
 message CatalogOverlaySpec {
-  ResourceId integration_id = 3;
-  ResourceId catalog_id = 4;
-  repeated NamespaceMapping namespace_mappings = 5;
-  repeated NamespacePath exclude_namespaces = 6;
-  CatalogOverlayState state = 7;
-  CatalogOverlayPolicy policy = 8;
+  optional string display_name = 1;
+  ResourceId integration_id = 2;
+  repeated NamespaceMapping namespace_mappings = 3;
+  repeated NamespacePath exclude_namespaces = 4;
+  CatalogOverlayState state = 5;
+  CatalogOverlayPolicy policy = 6;
 }
 ```
 
@@ -93,7 +86,7 @@ are fixed:
 - A non-recursive mapping exposes only the exact source namespace.
 - Exclusions are expressed in upstream namespace space and take precedence over mappings.
 - Newly discovered namespaces that match an active mapping become visible automatically.
-- Empty source or target prefixes represent the corresponding catalog root.
+- Empty source or target prefixes represent the upstream or overlay catalog root, respectively.
 - Source mappings within one overlay may not overlap. Target prefixes may not overlap. Rejecting
   ambiguity is preferable to order-dependent precedence.
 - Two overlays may expose the same canonical table under different catalogs or names without
@@ -117,10 +110,11 @@ upstream path is the fallback identity and an upstream rename is observed as del
 Display names and overlay mappings are never part of canonical identity.
 
 Canonical tables own their schemas, snapshots, manifests, file groups, and statistics. An overlay
-binding is lightweight state that associates a canonical object with an exposed catalog/namespace
-path. Its identity includes the overlay ID, canonical object ID, and exposed path. Query resolution
-returns the canonical table identity plus the binding through which it was resolved, so several
-names can safely share one captured object and one set of statistics.
+binding is lightweight state that associates a canonical object with a path inside the overlay's
+top-level catalog. Its identity includes the overlay ID, canonical object ID, and exposed path.
+Query resolution returns the canonical table identity plus the binding through which it was
+resolved, so several overlay catalogs can safely share one captured object and one set of
+statistics.
 
 This requires an explicit replacement for the current connector-rooted `UpstreamRef`; adding an
 integration ID beside a connector ID would create two competing identities. The integration path
@@ -181,8 +175,7 @@ Lifecycle operations have the following effects:
 | Operation | Required behavior |
 | --- | --- |
 | Pause overlay | Hide its bindings and remove its policy demand; retain shared captures. |
-| Delete overlay | Fence its jobs, remove bindings and policy demand, and leave its catalog untouched. |
-| Drop target catalog | Reject while an overlay references it unless an explicit cascade removes the overlay first. |
+| Delete overlay | Fence its jobs, remove its top-level catalog bindings and policy demand, and retain shared captures still in use. |
 | Pause integration | Stop new work and fence publication from work planned before the pause. |
 | Rotate credentials | Atomically advance the credential/configuration generation; never expose the old or new secret. |
 | Delete integration | Reject while overlays exist unless explicit cascade was requested. |
@@ -217,8 +210,9 @@ temporary coexistence decision, not a compatibility layer:
 - Integration validation and reconciliation do not call Connector RPCs.
 - New integration contracts and neutral catalog-access types do not import Connector protos.
 - Existing Connector-backed tables and jobs continue to work unchanged until an explicit migration.
-- Migration maps connectivity and authentication to integrations and placement/filtering to
-  overlays, then retires Connector APIs and persisted state in a separately reviewed change.
+- Migration maps connectivity and authentication to integrations and top-level catalog
+  projection/filtering to overlays, then retires Connector APIs and persisted state in a separately
+  reviewed change.
 
 There is deliberately no runtime fallback from an Integration to a Connector. Silent fallback would
 make ownership, credentials, scheduling, and failure semantics impossible to reason about.
