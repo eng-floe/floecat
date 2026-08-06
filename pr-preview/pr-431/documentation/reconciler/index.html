@@ -2014,8 +2014,9 @@ reconcile control RPCs:</p>
 <li>a planner that performs reusable-artifact lookup must authenticate object length and SHA-256,
     batch-fetch run filters and manifests, and fetch only candidate data blocks. It must not turn
     lookup into one object-store request per source file. A missing index object makes the base
-    unavailable for reuse; malformed or digest-invalid index metadata is a terminal invalid-base
-    error.</li>
+    unavailable for reuse. A reuse manifest without an artifact index is likewise ineligible and
+    falls back to a full capture; malformed or digest-invalid index metadata is a terminal
+    invalid-base error.</li>
 <li>an external snapshot finalizer submits the current <code>reusable_artifact_bundles</code> delta and the
     leased <code>append_only_base</code>, but must leave <code>SnapshotCaptureManifest.reusable_artifact_index</code>
     unset. The control plane owns run creation, compaction, publication, and garbage-collection
