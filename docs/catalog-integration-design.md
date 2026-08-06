@@ -138,9 +138,10 @@ CatalogCapabilities
 ```
 
 No type in this boundary imports Connector protobufs or carries a Connector resource ID. The first
-vertical slice is Iceberg REST. The existing Iceberg Connector may delegate catalog access to this
-library during transition, but Integration code never delegates to a Connector resource or service.
-Unity Catalog and Glue support follow as separate provider implementations.
+vertical slice is Iceberg REST. The existing Iceberg Connector remains operational on its separate
+Connector SPI and does not delegate to this library. Integration code likewise never delegates to a
+Connector resource or service. Unity Catalog and Glue support follow as separate provider
+implementations.
 
 The client boundary covers connection validation, namespace and relation enumeration, stable
 identity lookup, and provider metadata access. Capture planning, scheduling, Floecat persistence,
@@ -221,8 +222,8 @@ make ownership, credentials, scheduling, and failure semantics impossible to rea
 
 The next changes should retain clear review boundaries:
 
-1. Introduce the neutral catalog-access SPI and an Iceberg REST implementation; adapt the legacy
-   Iceberg Connector to use it internally.
+1. Introduce the neutral catalog-access SPI and an Iceberg REST implementation while leaving the
+   operational legacy Iceberg Connector on its separate Connector SPI.
 2. Add integration authentication, secret persistence, credential rotation, capability discovery,
    validation, and their CLI surface. Do not schedule reconciliation yet.
 3. Add integration-scoped canonical capture identity and lightweight overlay bindings, including
