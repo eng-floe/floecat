@@ -399,6 +399,32 @@ public class SnapshotRepository {
     return rootCurrentSnapshot(tableId, false);
   }
 
+  /** Returns the newest root-published reusable snapshot at or before committed current. */
+  public Optional<Snapshot> getLatestFinalizedSnapshotForReuse(
+      ResourceId tableId, Long excludedSnapshotId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()
+        || lookup.root() == null
+        || !lookup.root().hasCurrentSnapshotId()
+        || !lookup.root().hasSnapshotManifestRef()) {
+      return Optional.empty();
+    }
+    var head = lookup.root().getSnapshotManifestRef();
+    Optional<SnapshotManifestEntry> committedCurrent =
+        SnapshotManifests.findEntry(roots, head, lookup.root().getCurrentSnapshotId());
+    if (committedCurrent.isEmpty()) {
+      return Optional.empty();
+    }
+    return SnapshotManifests.latestReusableCurrent(
+            roots, head, committedCurrent.get(), excludedSnapshotId)
+        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
+        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()))
+        .filter(Snapshot::hasReuseManifestRef);
+  }
+
   private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {
     if (tableId == null) {
       return Optional.empty();

@@ -701,6 +701,62 @@ class SnapshotRepositoryTest {
     assertEquals(updated, snapshotRepo.getById(tableRid, 42L).orElseThrow());
   }
 
+  @Test
+  void latestFinalizedSnapshotForReuseIgnoresTheUnfinalizedCommittedCurrent() {
+    var tableRid = newSeededTable();
+    long now = clock.millis();
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      Snapshot.Builder snapshot =
+          Snapshot.newBuilder()
+              .setTableId(tableRid)
+              .setSnapshotId(snapshotId)
+              .setIngestedAt(Timestamps.fromMillis(now))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        snapshot.setReuseManifestRef(
+            ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef.newBuilder()
+                .setUri("/reuse/" + snapshotId + ".pb"));
+      }
+      snapshotRepo.create(snapshot.build());
+    }
+
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      var entry =
+          ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+              .setSnapshotId(snapshotId)
+              .setSnapshotRef(
+                  ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                      .setUri(snapshotRepo.metaForSafe(tableRid, snapshotId).getBlobUri()))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        entry.setReuseStatsGenerationRef(
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri("/reuse-stats/" + snapshotId));
+      }
+      committer.commit(
+          tableRid,
+          ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+              roots, tableRid, entry.build(), null, false));
+    }
+    committer.commit(
+        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(3L).build());
+
+    assertEquals(
+        2L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 3L)
+            .orElseThrow()
+            .getSnapshotId());
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
   private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {
     var roots = new TableRootRepository(ptr, blobs);
     var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);

@@ -294,7 +294,7 @@ Connector StartCapture / CaptureNow
           → create or update the destination view
       → if PLAN_SNAPSHOT:
           → ask FloecatConnector for planned parquet file membership
-          → read the predecessor capture manifest and select compatible bundle records
+          → read the newest root-published finalized reuse manifest and select compatible bundle records
           → persist grouped file plan on parent job payload
           → enqueue EXEC_FILE_GROUP children
           → enqueue FINALIZE_SNAPSHOT_CAPTURE child

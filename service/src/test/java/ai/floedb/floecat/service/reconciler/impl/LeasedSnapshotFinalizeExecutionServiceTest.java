@@ -35,7 +35,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
@@ -50,6 +52,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -57,6 +61,7 @@ import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -158,6 +163,62 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     assertDoesNotThrow(
         () -> LeasedSnapshotFinalizeExecutionService.validateReusableArtifactCoverage(manifest));
+  }
+
+  @Test
+  void reusableBundleMetadataMustMatchTheServiceStagedBundle() throws Exception {
+    String filePath = "s3://bucket/data.parquet";
+    var statsRecord =
+        ai.floedb.floecat.catalog.rpc.TargetStatsRecord.newBuilder()
+            .setTarget(StatsTargetIdentity.fileTarget(filePath))
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
+            .build();
+    byte[] payload =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(statsRecord)
+            .build()
+            .toByteArray();
+    byte[] payloadDigest = MessageDigest.getInstance("SHA-256").digest(payload);
+    String uri =
+        "/stats/group/reuse-bundles/" + HexFormat.of().formatHex(payloadDigest) + ".pb";
+    StatsObjectDescriptor artifact =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:group-1")
+            .setPayloadUri(uri)
+            .setPayloadBytes(payload.length)
+            .setPayloadSha256(ByteString.copyFrom(payloadDigest))
+            .build();
+    ReusableArtifactBundleReference valid =
+        ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(artifact)
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(filePath)
+                    .setSourceFingerprint("source")
+                    .setStatsCaptureSignature("stats"))
+            .build();
+    String stagedDigest =
+        ArtifactReferenceDigest.sha256(
+            List.of(
+                artifact.toBuilder()
+                    .setTargetStorageId(StatsTargetIdentity.storageId(statsRecord.getTarget()))
+                    .build()),
+            List.of());
+    when(blobs.get(uri)).thenReturn(payload);
+
+    assertDoesNotThrow(() -> service.validateReusableArtifactBundle(valid, stagedDigest));
+    ReusableArtifactBundleReference tampered =
+        valid.toBuilder()
+            .setFileStats(
+                0,
+                valid.getFileStats(0).toBuilder().setSourceFingerprint("substituted"))
+            .build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> service.validateReusableArtifactBundle(tampered, stagedDigest));
   }
 
   @Test
@@ -348,20 +409,34 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void successActivatesPreparedFileStatsWithoutReadingOrRepeatingTheirObjects() {
+  void successActivatesPreparedFileStatsAfterValidatingTheCompactBundle() {
     String childJobId = "file-group-job";
     String childLeaseEpoch = "child-lease";
     String filePath = "s3://bucket/data/file-1.parquet";
     String statsPrefix =
         Keys.reconcileFileGroupStatsObjectPrefix(
             ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch);
-    byte[] statsSha256 = sha256(new byte[] {1, 2, 3});
-    String statsUri = statsPrefix + "reuse-bundles/bundle.pb";
+    var statsRecord =
+        ai.floedb.floecat.catalog.rpc.TargetStatsRecord.newBuilder()
+            .setTarget(StatsTargetIdentity.fileTarget(filePath))
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source-fingerprint")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats-signature")
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
+            .build();
+    byte[] bundleBytes =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addFileStats(statsRecord)
+            .build()
+            .toByteArray();
+    byte[] statsSha256 = sha256(bundleBytes);
+    String statsUri =
+        statsPrefix + "reuse-bundles/" + HexFormat.of().formatHex(statsSha256) + ".pb";
     StatsObjectDescriptor bundleArtifact =
         StatsObjectDescriptor.newBuilder()
             .setTargetStorageId("reuse-bundle:group-1")
             .setPayloadUri(statsUri)
-            .setPayloadBytes(3)
+            .setPayloadBytes(bundleBytes.length)
             .setPayloadSha256(ByteString.copyFrom(statsSha256))
             .build();
     byte[] payloadBytes = new byte[] {7};
@@ -387,7 +462,17 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setPlannedFileCount(1)
             .setSucceededFileCount(1)
             .setFileStatsRecordCount(1)
-            .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32]))
+            .setArtifactReferencesSha256(
+                ByteString.copyFrom(
+                    HexFormat.of()
+                        .parseHex(
+                            ArtifactReferenceDigest.sha256(
+                                List.of(
+                                    bundleArtifact.toBuilder()
+                                        .setTargetStorageId(
+                                            StatsTargetIdentity.storageId(statsRecord.getTarget()))
+                                        .build()),
+                                List.of()))))
             .build();
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
@@ -422,6 +507,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             new SnapshotFinalizeChildStateService.ChildState(
                 1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
     when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(blobs.get(statsUri)).thenReturn(bundleBytes);
     when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, "parent-job", 500, ""))
         .thenReturn(
             new ReconcileJobStore.FileGroupResultDescriptorPage(
@@ -431,7 +517,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     verify(blobs, times(1)).get(manifestUri());
     verify(blobs, never()).get(payloadUri);
-    verify(blobs, never()).get(statsUri);
+    verify(blobs, times(1)).get(statsUri);
     verify(persistence)
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());

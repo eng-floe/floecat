@@ -141,12 +141,7 @@ public class TableRootWriter {
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
-    if (candidate.hasReuseManifestRef()
-        && !candidate.getReuseManifestRef().getStatsGenerationManifestUri().isBlank()) {
-      entry.setReuseStatsGenerationRef(
-          BlobRef.newBuilder()
-              .setUri(candidate.getReuseManifestRef().getStatsGenerationManifestUri()));
-    }
+    ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(entry, candidate);
     return entry.build();
   }
 
@@ -333,12 +328,8 @@ public class TableRootWriter {
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));
-              if (s.hasReuseManifestRef()
-                  && !s.getReuseManifestRef().getStatsGenerationManifestUri().isBlank()) {
-                builder.setReuseStatsGenerationRef(
-                    BlobRef.newBuilder()
-                        .setUri(s.getReuseManifestRef().getStatsGenerationManifestUri()));
-              }
+              ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(
+                  builder, s);
             });
     // Attach the finalized aux refs the same way TableRootSynthesizer.entryFor does. A resync
     // creates a fresh entry (no prior entry for preserveAuxRefs to copy from), so without this a

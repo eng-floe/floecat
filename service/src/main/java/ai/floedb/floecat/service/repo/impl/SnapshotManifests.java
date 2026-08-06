@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -384,6 +385,29 @@ public final class SnapshotManifests {
     return Optional.ofNullable(best[0]);
   }
 
+  /** The newest finalized entry at or before the committed current that publishes reuse data. */
+  public static Optional<SnapshotManifestEntry> latestReusableCurrent(
+      TableRootRepository roots,
+      BlobRef head,
+      SnapshotManifestEntry committedCurrent,
+      Long excludedSnapshotId) {
+    SnapshotManifestEntry[] best = {null};
+    forEachEntry(
+        roots,
+        head,
+        e -> {
+          if (!e.hasReuseStatsGenerationRef()
+              || newer(e, committedCurrent)
+              || (excludedSnapshotId != null && e.getSnapshotId() == excludedSnapshotId)) {
+            return;
+          }
+          if (best[0] == null || newer(e, best[0])) {
+            best[0] = e;
+          }
+        });
+    return Optional.ofNullable(best[0]);
+  }
+
   /**
    * The newest manifest entry at or before {@code asOfMs}, optionally requiring finalized stats.
    * This is the shared AS_OF ordering and visibility rule for query pins and public artifact APIs.
@@ -429,5 +453,15 @@ public final class SnapshotManifests {
 
   private static boolean isPresent(BlobRef ref) {
     return ref != null && !ref.getUri().isEmpty();
+  }
+
+  public static void applyReuseGenerationRef(
+      SnapshotManifestEntry.Builder entry, Snapshot snapshot) {
+    if (snapshot.hasReuseManifestRef()
+        && !snapshot.getReuseManifestRef().getStatsGenerationManifestUri().isBlank()) {
+      entry.setReuseStatsGenerationRef(
+          BlobRef.newBuilder()
+              .setUri(snapshot.getReuseManifestRef().getStatsGenerationManifestUri()));
+    }
   }
 }

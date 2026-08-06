@@ -21,6 +21,7 @@ import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
@@ -56,6 +57,50 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class SnapshotServiceImplTest {
+
+  @Test
+  void latestFinalizedSnapshotUsesTheRootPublishedReuseBasis() {
+    var svc = new SnapshotServiceImpl();
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+    var principalContext = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(principalContext);
+    when(principalContext.getCorrelationId()).thenReturn("corr");
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    Snapshot finalized =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(41L)
+            .setReuseManifestRef(SnapshotReuseManifestRef.newBuilder().setUri("/reuse/41.pb"))
+            .build();
+    when(svc.snapshotRepo.getLatestFinalizedSnapshotForReuse(tableId, 55L))
+        .thenReturn(Optional.of(finalized));
+
+    var response =
+        svc.getLatestFinalizedSnapshot(
+                GetLatestFinalizedSnapshotRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setExcludedSnapshotId(55L)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.hasSnapshot());
+    assertEquals(41L, response.getSnapshot().getSnapshotId());
+    verify(svc.snapshotRepo).getLatestFinalizedSnapshotForReuse(tableId, 55L);
+  }
 
   @Test
   void ensureTableVisible_rejectsNonTableNode() {

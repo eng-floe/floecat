@@ -87,15 +87,11 @@ public interface ReconcilerBackend {
   Optional<Snapshot> fetchSnapshot(ReconcileContext ctx, ResourceId tableId, long snapshotId);
 
   /**
-   * Returns the most recently reconciled snapshot that has finalized reusable artifacts, excluding
-   * the snapshot currently being planned.
-   *
-   * <p>Recency is reconciliation recency, not snapshot-id ordering or source snapshot lineage.
+   * Returns the newest finalized snapshot at or before the committed current snapshot that has
+   * reusable artifacts, excluding the snapshot currently being planned.
    */
-  default Optional<Snapshot> latestReconciledSnapshotForReuse(
-      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
-    return Optional.empty();
-  }
+  Optional<Snapshot> latestReconciledSnapshotForReuse(
+      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId);
 
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 

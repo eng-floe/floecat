@@ -20,14 +20,20 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -40,6 +46,7 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -638,6 +645,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     int declaredFileStats = 0;
     int declaredIndexArtifacts = 0;
+    Map<String, String> stagedArtifactDigests = new LinkedHashMap<>();
     for (var fileGroup : manifest.getFileGroupsList()) {
       ReconcileFileGroupResultDescriptor stored =
           storedFileGroups.remove(fileGroup.getFileGroupJobId());
@@ -667,6 +675,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       String artifactReferencesSha256 =
           HexFormat.of().formatHex(fileGroup.getArtifactReferencesSha256().toByteArray());
+      if (stagedArtifactDigests.putIfAbsent(expectedStatsPrefix, artifactReferencesSha256) != null) {
+        throw new IllegalArgumentException("duplicate reusable artifact bundle identity");
+      }
       if (!statsStore.isPreparedFileGroup(
           tableId,
           snapshotTask.snapshotId(),
@@ -683,6 +694,22 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     Set<String> reusableStatsFiles = new HashSet<>();
     int reusableStatsMetadataCount = 0;
     for (var bundle : manifest.getReusableArtifactBundlesList()) {
+      String matchedPrefix = null;
+      for (String statsPrefix : stagedArtifactDigests.keySet()) {
+        if (bundle.getArtifact().getPayloadUri().startsWith(statsPrefix + "reuse-bundles/")) {
+          if (matchedPrefix != null) {
+            throw new IllegalArgumentException(
+                "snapshot reusable bundle matches multiple staged file groups");
+          }
+          matchedPrefix = statsPrefix;
+        }
+      }
+      if (matchedPrefix == null) {
+        throw new IllegalArgumentException(
+            "snapshot reusable bundle does not match a staged file group");
+      }
+      String expectedArtifactDigest = stagedArtifactDigests.remove(matchedPrefix);
+      validateReusableArtifactBundle(bundle, expectedArtifactDigest);
       for (var metadata : bundle.getFileStatsList()) {
         reusableStatsMetadataCount++;
         if (metadata.getFilePath().isBlank() || !reusableStatsFiles.add(metadata.getFilePath())) {
@@ -692,6 +719,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
     }
     if (!storedFileGroups.isEmpty()
+        || !stagedArtifactDigests.isEmpty()
         || declaredFileStats < manifest.getFileStatsRecordCount()
         || reusableStatsMetadataCount != manifest.getFileStatsRecordCount()
         || reusableStatsFiles.size() != manifest.getFileStatsRecordCount()
@@ -889,6 +917,81 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  void validateReusableArtifactBundle(
+      ReusableArtifactBundleReference submitted, String expectedArtifactDigest) {
+    StatsObjectDescriptor artifact = submitted.getArtifact();
+    byte[] bytes =
+        loadRequiredPublishedObject(
+            artifact.getPayloadUri(), "reusable artifact bundle " + artifact.getTargetStorageId());
+    byte[] digest = sha256(bytes);
+    if (artifact.getPayloadBytes() != bytes.length
+        || artifact.getPayloadSha256().size() != 32
+        || !MessageDigest.isEqual(digest, artifact.getPayloadSha256().toByteArray())
+        || !ReusableArtifactBundleUris.matchesDigest(artifact.getPayloadUri(), digest)) {
+      throw new IllegalArgumentException("reusable artifact bundle descriptor mismatch");
+    }
+    ReusableArtifactBundlePayload payload;
+    try {
+      payload = ReusableArtifactBundles.parse(bytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException | IllegalArgumentException error) {
+      throw new IllegalArgumentException("reusable artifact bundle payload is invalid", error);
+    }
+
+    ReusableArtifactBundleReference.Builder expected =
+        ReusableArtifactBundleReference.newBuilder().setArtifact(artifact);
+    List<StatsObjectDescriptor> statsDescriptors = new ArrayList<>();
+    for (var record : payload.getFileStatsList()) {
+      String filePath =
+          record.hasTarget() && record.getTarget().hasFile()
+              ? record.getTarget().getFile().getFilePath()
+              : "";
+      expected.addFileStats(
+          ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+              .setFilePath(filePath)
+              .setSourceFingerprint(
+                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+              .setStatsCaptureSignature(
+                  record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
+              .addAllRealizedStatsSelectors(
+                  FileArtifactReuse.decodeSelectors(
+                      record.getPropertiesOrDefault(
+                          FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, ""))));
+      statsDescriptors.add(
+          artifact.toBuilder()
+              .setTargetStorageId(StatsTargetIdentity.storageId(record.getTarget()))
+              .build());
+    }
+    List<StatsObjectDescriptor> indexDescriptors = new ArrayList<>();
+    for (var record : payload.getIndexArtifactsList()) {
+      String filePath =
+          record.hasTarget() && record.getTarget().hasFile()
+              ? record.getTarget().getFile().getFilePath()
+              : "";
+      expected.addIndexArtifacts(
+          ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+              .setFilePath(filePath)
+              .setSourceFingerprint(
+                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
+              .setIndexCaptureSignature(
+                  record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, ""))
+              .addAllRealizedIndexSelectors(
+                  FileArtifactReuse.decodeSelectors(
+                          record.getPropertiesOrDefault(
+                              FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, ""))
+                      .stream()
+                      .sorted()
+                      .toList()));
+      indexDescriptors.add(
+          artifact.toBuilder().setTargetStorageId("file:" + filePath).build());
+    }
+    if (!expected.build().equals(submitted)
+        || !ArtifactReferenceDigest.sha256(statsDescriptors, indexDescriptors)
+            .equalsIgnoreCase(expectedArtifactDigest)) {
+      throw new IllegalArgumentException(
+          "reusable artifact bundle metadata does not match staged artifacts");
     }
   }
 

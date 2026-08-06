@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -37,11 +38,12 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
@@ -101,7 +103,7 @@ import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
   @Test
-  void latestReconciledSnapshotForReuseUsesIngestionTimeNotSnapshotId() {
+  void latestReconciledSnapshotForReuseReadsLatestFinalizedSnapshotDirectly() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
             Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
@@ -115,31 +117,13 @@ class GrpcReconcilerBackendTest {
             .build();
     SnapshotReuseManifestRef reuseManifest =
         SnapshotReuseManifestRef.newBuilder().setUri("/reuse.pb").build();
-    when(backend.snapshot.listSnapshots(any()))
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
         .thenReturn(
-            ListSnapshotsResponse.newBuilder()
-                .addSnapshots(
-                    Snapshot.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(55L)
-                        .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(4_000L))
-                        .setReuseManifestRef(reuseManifest))
-                .addSnapshots(
-                    Snapshot.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(2L)
-                        .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(3_000L)))
-                .addSnapshots(
+            GetLatestFinalizedSnapshotResponse.newBuilder()
+                .setSnapshot(
                     Snapshot.newBuilder()
                         .setTableId(tableId)
                         .setSnapshotId(7L)
-                        .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(2_000L))
-                        .setReuseManifestRef(reuseManifest))
-                .addSnapshots(
-                    Snapshot.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(9_001L)
-                        .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(1_000L))
                         .setReuseManifestRef(reuseManifest))
                 .build());
 
@@ -147,6 +131,33 @@ class GrpcReconcilerBackendTest {
         backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L);
 
     assertThat(selected).map(Snapshot::getSnapshotId).contains(7L);
+    ArgumentCaptor<GetLatestFinalizedSnapshotRequest> request =
+        ArgumentCaptor.forClass(GetLatestFinalizedSnapshotRequest.class);
+    verify(backend.snapshot).getLatestFinalizedSnapshot(request.capture());
+    assertThat(request.getValue().getTableId()).isEqualTo(tableId);
+    assertThat(request.getValue().getExcludedSnapshotId()).isEqualTo(55L);
+    verify(backend.snapshot, never()).getSnapshot(any());
+    verify(backend.snapshot, never()).listSnapshots(any());
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseReturnsEmptyBeforeTheFirstFinalization() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenReturn(GetLatestFinalizedSnapshotResponse.getDefaultInstance());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThat(backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isEmpty();
   }
 
   @Test
