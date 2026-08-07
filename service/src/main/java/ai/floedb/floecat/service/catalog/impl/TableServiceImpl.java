@@ -50,17 +50,16 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -74,16 +73,15 @@ import org.jboss.logging.Logger;
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
   @Inject TableRepository tableRepo;
-  @Inject SnapshotRepository snapshotRepo;
+  @Inject TableCleanupRepository tableCleanupRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
-  @Inject PointerStore pointerStore;
   @Inject TableRootWriter rootWriter;
-  @Inject TableRootRepository tableRoots;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
@@ -158,6 +156,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<CreateTableResponse> createTable(CreateTableRequest request) {
     var L = LogHelper.start(LOG, "CreateTable");
 
+    // Publishing a child carries the namespace fence, so BatchGuardFailedException — retryable by
+    // design — is now an ordinary outcome here: any concurrent write to the parent namespace, a
+    // rename included, breaks the guard. The retry is the plain one; run() already subscribes on
+    // the
+    // Mutiny default executor, so a re-subscribed attempt blocks on a worker like the first.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -169,11 +172,15 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var writePolicy = catalogSurfaceWritePolicy();
                   var catId = request.getSpec().getCatalogId();
                   writePolicy.requireWritableCatalog(catId, "spec.catalog_id", corr);
+                  var namespaceId =
+                      request.getSpec().getNamespaceId().toBuilder()
+                          .setAccountId(accountId)
+                          .build();
                   var nsNode =
-                      writePolicy.requireWritableNamespace(
-                          request.getSpec().getNamespaceId(), "spec.namespace_id", corr);
-                  writePolicy.requireNamespaceInCatalog(
-                      nsNode, request.getSpec().getNamespaceId(), catId, corr);
+                      writePolicy.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(nsNode, namespaceId, catId, corr);
+                  var namespaceGuard =
+                      markerStore.namespaceChildGuard(namespaceId, nsNode.blobUri());
 
                   var tsNow = nowTs();
 
@@ -187,7 +194,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var normalizedSpec = normalizedForPersistence(spec, normName, namespaceId);
                   var fingerprint = canonicalFingerprint(normalizedSpec);
                   var tableResourceId = randomResourceId(accountId, ResourceKind.RK_TABLE);
 
@@ -195,25 +202,45 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       Table.newBuilder()
                           .setResourceId(tableResourceId)
                           .setDisplayName(normName)
-                          .setDescription(spec.getDescription())
-                          .setCatalogId(spec.getCatalogId())
-                          .setNamespaceId(spec.getNamespaceId())
+                          .setDescription(normalizedSpec.getDescription())
+                          .setCatalogId(normalizedSpec.getCatalogId())
+                          .setNamespaceId(normalizedSpec.getNamespaceId())
                           .setCreatedAt(tsNow)
-                          .setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "schema_json", corr))
-                          .putAllProperties(spec.getPropertiesMap());
-                  if (spec.hasUpstream()) {
-                    validateUpstreamRef(spec.getUpstream(), corr);
-                    tableBuilder.setUpstream(spec.getUpstream());
+                          .setSchemaJson(
+                              mustNonEmpty(normalizedSpec.getSchemaJson(), "schema_json", corr))
+                          .putAllProperties(normalizedSpec.getPropertiesMap());
+                  if (normalizedSpec.hasUpstream()) {
+                    validateUpstreamRef(normalizedSpec.getUpstream(), corr);
+                    tableBuilder.setUpstream(normalizedSpec.getUpstream());
                   }
                   var table = tableBuilder.build();
 
                   if (idempotencyKey == null) {
-                    var existing =
-                        tableRepo.getByName(
-                            accountId,
-                            spec.getCatalogId().getId(),
-                            spec.getNamespaceId().getId(),
-                            normName);
+                    java.util.Optional<Table> existing;
+                    try {
+                      existing =
+                          tableRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    } catch (BaseResourceRepository.CorruptionException dangling) {
+                      // The name resolves to a row whose blob is unreadable. A delete that could
+                      // not
+                      // parse its target removes the canonical pointer alone — the secondary keys
+                      // are
+                      // derived from the value — so this row can outlive the table and keep its
+                      // name
+                      // reserved. Release provably orphaned rows and re-ask; if the name is still
+                      // held, the row belongs to something live and the read genuinely failed.
+                      reclaimStrandedNames(spec, normName);
+                      existing =
+                          tableRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    }
                     if (existing.isPresent()) {
                       throw GrpcErrors.alreadyExists(
                           corr,
@@ -224,17 +251,26 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      tableRepo.create(table);
+                      // The namespace guard advances the children marker inside the create batch
+                      // and pins the namespace pointer, so this table and a concurrent
+                      // DeleteNamespace cannot both commit (see BatchGuard).
+                      tableRepo.create(table, namespaceGuard);
                     } catch (BaseResourceRepository.NameConflictException nce) {
-                      throw GrpcErrors.alreadyExists(
-                          corr,
-                          TABLE_ALREADY_EXISTS,
-                          Map.of(
-                              "display_name", normName,
-                              "catalog_id", spec.getCatalogId().getId(),
-                              "namespace_id", spec.getNamespaceId().getId()));
+                      // The name may be held by a row whose relation no longer exists. A delete
+                      // that
+                      // could not parse its target removes the canonical pointer but cannot derive
+                      // the
+                      // secondary keys to remove with it, so the name stays reserved by a table
+                      // that
+                      // is gone — and this create is where that first becomes visible and where the
+                      // namespace needed to clean it up is actually known. Reconcile provably
+                      // orphaned rows and try once more before reporting the name as taken.
+                      if (!retryCreateAfterReclaimingStrandedNames(
+                          table, spec, normName, namespaceGuard)) {
+                        throw relationNameConflict(
+                            corr, accountId, spec.getCatalogId(), spec.getNamespaceId(), normName);
+                      }
                     }
-                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
@@ -252,20 +288,51 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   () -> fingerprint,
                                   () -> {
                                     try {
-                                      tableRepo.create(table);
+                                      tableRepo.create(table, namespaceGuard);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt =
-                                          tableRepo.getByName(
-                                              accountId,
-                                              spec.getCatalogId().getId(),
-                                              spec.getNamespaceId().getId(),
-                                              normName);
+                                      // Same two hazards as the unkeyed path above, and the same
+                                      // handling: the name may be held by a row whose relation is
+                                      // already gone, and the read that would tell us may itself
+                                      // hit
+                                      // that unreadable blob. Left out here, a keyed create was the
+                                      // one caller with no way back from a name a corrupt-blob
+                                      // delete
+                                      // had reserved — ALREADY_EXISTS on every attempt, for a table
+                                      // that does not exist, while the identical unkeyed request
+                                      // recovered.
+                                      java.util.Optional<Table> existingOpt;
+                                      boolean releasedHere = false;
+                                      try {
+                                        existingOpt =
+                                            tableRepo.getByName(
+                                                accountId,
+                                                spec.getCatalogId().getId(),
+                                                spec.getNamespaceId().getId(),
+                                                normName);
+                                      } catch (
+                                          BaseResourceRepository.CorruptionException dangling) {
+                                        // The read itself hit the unreadable blob the stranded row
+                                        // names. Release the provably orphaned rows and ask again.
+                                        reclaimStrandedNames(spec, normName);
+                                        releasedHere = true;
+                                        existingOpt =
+                                            tableRepo.getByName(
+                                                accountId,
+                                                spec.getCatalogId().getId(),
+                                                spec.getNamespaceId().getId(),
+                                                normName);
+                                      }
                                       if (existingOpt.isPresent()) {
                                         var existingSpec = specFromTable(existingOpt.get());
                                         if (Arrays.equals(
                                             fingerprint, canonicalFingerprint(existingSpec))) {
-                                          markerStore.bumpNamespaceMarker(
-                                              existingOpt.get().getNamespaceId());
+                                          // No children-marker bump: this replay publishes nothing,
+                                          // and the marker is a delete fence. The read above is
+                                          // already stale by now — the table it found can have been
+                                          // deleted since — so bumping could fail a legal
+                                          // DeleteNamespace that scanned the emptied namespace,
+                                          // unretryably, on behalf of a create that created
+                                          // nothing.
                                           metadataGraph.invalidate(
                                               existingOpt.get().getResourceId());
                                           topology.evictRelationRefs(
@@ -274,15 +341,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          TABLE_ALREADY_EXISTS,
-                                          Map.of(
-                                              "display_name", normName,
-                                              "catalog_id", spec.getCatalogId().getId(),
-                                              "namespace_id", spec.getNamespaceId().getId()));
+                                      // Nothing resolves the name, so it is held by index rows
+                                      // alone.
+                                      // Try once more before calling the name taken — releasing
+                                      // those
+                                      // rows first, unless the read above has already done it.
+                                      if (!(releasedHere
+                                          ? createOnceMore(table, namespaceGuard)
+                                          : retryCreateAfterReclaimingStrandedNames(
+                                              table, spec, normName, namespaceGuard))) {
+                                        throw relationNameConflict(
+                                            corr,
+                                            accountId,
+                                            spec.getCatalogId(),
+                                            spec.getNamespaceId(),
+                                            normName);
+                                      }
                                     }
-                                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                                     metadataGraph.invalidate(tableResourceId);
                                     topology.evictRelationRefs(table.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
@@ -316,6 +391,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<UpdateTableResponse> updateTable(UpdateTableRequest request) {
     var L = LogHelper.start(LOG, "UpdateTable");
 
+    // A reparent publishes into the destination namespace and carries its fence; see createTable.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -357,11 +433,16 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
                   var writePolicy = catalogSurfaceWritePolicy();
+                  var desiredNamespaceId =
+                      desired.getNamespaceId().toBuilder()
+                          .setAccountId(pctx.getAccountId())
+                          .build();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
-                          desired.getNamespaceId(), "namespace_id", corr);
+                          desiredNamespaceId, "namespace_id", corr);
                   writePolicy.requireNamespaceInCatalog(
-                      desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
+                      desiredNamespace, desiredNamespaceId, desired.getCatalogId(), corr);
+                  desired = normalizedForPersistence(desired, desiredNamespaceId);
                   if (hintCleaner.shouldClearHints(mask)) {
                     Table.Builder builder = desired.toBuilder();
                     hintCleaner.cleanTableHints(builder, mask, current, builder.build());
@@ -393,8 +474,21 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
+                  // A reparent republishes the table under a different namespace, so it is a
+                  // child-publishing write into the destination and needs the same fence a create
+                  // does; an in-place update touches no namespace and stays unguarded.
+                  boolean reparented =
+                      !current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())
+                          || !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+                  var destinationGuard =
+                      reparented
+                          ? markerStore.namespaceChildGuard(
+                              desiredNamespaceId, desiredNamespace.blobUri())
+                          : BatchGuard.NONE;
+
                   try {
-                    boolean ok = tableRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        tableRepo.update(desired, meta.getPointerVersion(), destinationGuard);
                     if (!ok) {
                       throw tableUpdateConflict(
                           corr,
@@ -403,7 +497,32 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           hasMeaningfulPrecondition(request.getPrecondition()));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.alreadyExists(corr, TABLE_ALREADY_EXISTS, conflictInfo);
+                    // A rename collides on the shared relation claim for the same reasons a create
+                    // does, so it gets the same two answers. The name may be held by rows whose
+                    // relation a corrupt-blob delete already took, and this rename is as able to
+                    // release them as a create is — without it, renaming onto such a name failed
+                    // forever while creating a new table with it succeeded. And a collision that
+                    // survives the release is classified rather than always naming a table.
+                    switch (retryUpdateAfterReclaimingStrandedNames(
+                        desired, meta.getPointerVersion(), destinationGuard)) {
+                      case COMMITTED -> {}
+                      case NAME_HELD ->
+                          throw relationNameConflict(
+                              corr,
+                              pctx.getAccountId(),
+                              desired.getCatalogId(),
+                              desired.getNamespaceId(),
+                              desired.getDisplayName());
+                      // The name was released and then the version moved under us. That is the same
+                      // conflict the unreclaimed path reports for the same storage state, and it is
+                      // retryable — reporting a name collision here made a benign race terminal.
+                      case LOST_UPDATE ->
+                          throw tableUpdateConflict(
+                              corr,
+                              tableId,
+                              meta.getPointerVersion(),
+                              hasMeaningfulPrecondition(request.getPrecondition()));
+                    }
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     throw tableUpdateConflict(
                         corr,
@@ -414,10 +533,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
 
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                  if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
+                    // The destination marker was advanced inside the update batch by the guard.
+                    // The source marker is deliberately left alone: losing a child is not a
+                    // publish,
+                    // so bumping it would only break a concurrent delete of the source namespace.
                   }
 
                   var outMeta = tableRepo.metaForSafe(tableId);
@@ -440,6 +561,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   public Uni<DeleteTableResponse> deleteTable(DeleteTableRequest request) {
     var L = LogHelper.start(LOG, "DeleteTable");
 
+    // A lost pointer CAS on a table that still exists is retryable now, so this body — the pinned
+    // delete and the purge of the table's snapshots, stats and root, all blocking — can run more
+    // than once. run() subscribes on the Mutiny default executor and the retry re-subscribes
+    // through
+    // it, so every attempt is on a worker.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -452,13 +578,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   catalogSurfaceWritePolicy()
                       .requireWritableTableForDelete(tableId, correlationId, callerCares);
 
-                  Table existing = null;
-                  try {
-                    existing = tableRepo.getById(tableId).orElse(null);
-                  } catch (BaseResourceRepository.CorruptionException ignore) {
-                    // marker bump is best-effort; allow delete to proceed even if blob is missing
-                  }
-
                   MutationMeta meta;
                   try {
                     meta = tableRepo.metaFor(tableId);
@@ -470,55 +589,67 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
-                    if (existing != null) {
-                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                    }
-                    purgeSnapshotsAndStats(tableId);
-                    return DeleteTableResponse.newBuilder().setMeta(safe).build();
-                  } catch (BaseResourceRepository.CorruptionException corrupt) {
-                    var safe = tableRepo.metaForSafe(tableId);
-                    if (callerCares && safe.getPointerVersion() == 0L) {
-                      throw GrpcErrors.notFound(
-                          correlationId, TABLE, Map.of("id", tableId.getId()));
-                    }
-                    MutationOps.BaseServiceChecks.enforcePreconditions(
-                        correlationId, safe, request.getPrecondition());
-                    if (!tableRepo.deleteWithPrecondition(tableId, safe.getPointerVersion())) {
-                      if (callerCares) {
-                        throw GrpcErrors.preconditionFailed(
-                            correlationId,
-                            VERSION_MISMATCH,
-                            Map.of(
-                                "expected",
-                                Long.toString(safe.getPointerVersion()),
-                                "actual",
-                                Long.toString(tableRepo.metaForSafe(tableId).getPointerVersion())));
-                      }
-                    }
-                    topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
-                    purgeSnapshotsAndStats(tableId);
+                    recursiveDropper.cleanupDeletedTable(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
+                  // metaFor does not parse the blob, but staging the namespace-scoped durable
+                  // cleanup handle does. If that parse fails, retain the historic corrupt-table
+                  // behavior: the repository can still remove the canonical pointer, and the
+                  // table-id-scoped fallback can purge snapshots, stats and root state without the
+                  // blob. Unlike DeleteNamespace, no owned-state key needs the unreadable value.
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      correlationId, meta, request.getPrecondition());
+                  TableCleanupRepository.DeletePlan cleanupPlan = null;
+                  try {
+                    cleanupPlan =
+                        tableRepo
+                            .getByBlobUri(meta.getBlobUri())
+                            .flatMap(
+                                table -> {
+                                  var namespaceId =
+                                      table.getNamespaceId().toBuilder()
+                                          .setAccountId(tableId.getAccountId())
+                                          .build();
+                                  return markerStore
+                                      .namespacePinnedGuardIfPresent(namespaceId)
+                                      .map(
+                                          namespaceGuard ->
+                                              tableCleanupRepo.planDelete(
+                                                  namespaceId, tableId, namespaceGuard));
+                                })
+                            .orElse(null);
+                  } catch (BaseResourceRepository.CorruptionException corrupt) {
+                    LOG.warnf(
+                        "delete_table_blob_unreadable account_id=%s table_id=%s blob_uri=%s",
+                        tableId.getAccountId(), tableId.getId(), meta.getBlobUri());
+                  }
+                  var plannedCleanup = cleanupPlan;
                   var out =
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
-                          expected -> tableRepo.deleteWithPrecondition(tableId, expected),
+                          expected ->
+                              plannedCleanup == null
+                                  ? tableRepo.deleteWithPrecondition(tableId, expected)
+                                  : tableRepo.deleteWithPrecondition(
+                                      tableId, expected, plannedCleanup.guard()),
                           () -> tableRepo.metaForSafe(tableId),
                           correlationId,
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  topology.evict(tableId);
-                  metadataGraph.invalidate(tableId);
-                  if (existing != null) {
-                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
+                  if (plannedCleanup != null) {
+                    var pending = tableCleanupRepo.pending(plannedCleanup.cleanup());
+                    if (pending.isPresent()) {
+                      recursiveDropper.cleanupDeletedTable(pending.get());
+                      return DeleteTableResponse.newBuilder().setMeta(out).build();
+                    }
                   }
-                  purgeSnapshotsAndStats(tableId);
+                  // A missing namespace uses the table-absence path directly. This is also the
+                  // recovery path when another deleter won the canonical CAS and staged a task
+                  // under the namespace it observed.
+                  recursiveDropper.cleanupDeletedTable(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -526,6 +657,181 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * Re-attempts a create whose name collided, after releasing name rows whose relation is gone.
+   *
+   * <p>A delete that cannot parse its target removes only the canonical pointer — the repository
+   * derives secondary keys from the value, and an unreadable value yields none — so the by-name row
+   * and the shared relation-name claim outlive the table and keep its name reserved. Nothing on the
+   * delete path can clean that up: the namespace those keys are built from lives in the very blob
+   * that could not be read. A create is the first operation that both notices and knows the
+   * namespace, so the reconcile belongs here.
+   *
+   * <p>Only rows whose relation has no canonical pointer left are released, so a live table sharing
+   * the namespace is untouched. Retried once and only when something was actually released.
+   *
+   * <p>Restricted to the kinds this caller may write. The relation-name claim is shared across
+   * kinds, so a stranded view row can be what holds this name — but releasing it is a view write,
+   * which {@code table.write} alone does not buy. Without {@code view.write} the name is reported
+   * as taken, the same answer {@code DeleteNamespace} gives a caller who cannot clear what is in
+   * its way.
+   *
+   * @return how many rows were released
+   */
+  private int reclaimStrandedNames(TableSpec spec, String normName) {
+    var pc = principal.get();
+    var kinds =
+        authz.allows(pc, "view.write")
+            ? RecursiveResourceDropper.ALL_RELATION_KINDS
+            : Set.of(ResourceKind.RK_TABLE);
+    int reclaimed = recursiveDropper.reclaimStrandedRelationNames(namespaceOf(spec), kinds);
+    if (reclaimed > 0) {
+      LOG.infof(
+          "table_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",
+          spec.getNamespaceId().getId(), normName, reclaimed);
+    }
+    return reclaimed;
+  }
+
+  /** The namespace the reconcile works in, scoped to the caller's account. */
+  ai.floedb.floecat.catalog.rpc.Namespace namespaceOf(TableSpec spec) {
+    String accountId = principal.get().getAccountId();
+    return ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+        .setResourceId(spec.getNamespaceId().toBuilder().setAccountId(accountId))
+        .setCatalogId(spec.getCatalogId().toBuilder().setAccountId(accountId))
+        .build();
+  }
+
+  static TableSpec normalizedForPersistence(
+      TableSpec spec, String displayName, ResourceId namespaceId) {
+    return spec.toBuilder().setDisplayName(displayName).setNamespaceId(namespaceId).build();
+  }
+
+  static Table normalizedForPersistence(Table table, ResourceId namespaceId) {
+    return table.toBuilder().setNamespaceId(namespaceId).build();
+  }
+
+  private boolean retryCreateAfterReclaimingStrandedNames(
+      Table table, TableSpec spec, String normName, BatchGuard namespaceGuard) {
+    // A name held by a live relation — a table, or a view through the shared claim — collides on
+    // every attempt, deterministically. Establish that in a bounded number of reads before spending
+    // a sweep of every by-name row in the namespace on it: the sweep only ever releases rows whose
+    // relation is gone, so it has nothing to offer here.
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), normName)) {
+      return false;
+    }
+    if (reclaimStrandedNames(spec, normName) == 0) {
+      return false;
+    }
+    return createOnceMore(table, namespaceGuard);
+  }
+
+  /**
+   * The rename counterpart of {@link #retryCreateAfterReclaimingStrandedNames}: releases name rows
+   * whose relation is gone and retries the update once.
+   *
+   * <p>The reclaim was originally justified by a create being "the first operation that both
+   * notices a stranded name and knows the namespace its keys are built from". A rename notices and
+   * knows the same things, so leaving it out made renaming onto such a name a permanent failure
+   * while creating a new relation with it succeeded — the same name, two answers, decided by which
+   * verb the caller reached for.
+   *
+   * @return which of the three outcomes happened: the retry committed, the name is genuinely held
+   *     by a live relation, or the canonical CAS lost to a concurrent writer. A boolean conflated
+   *     the last two, and the caller answered both with a terminal name collision.
+   */
+  private ReclaimedRetry retryUpdateAfterReclaimingStrandedNames(
+      Table desired, long expectedVersion, BatchGuard destinationGuard) {
+    var spec = specFromTable(desired);
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), desired.getDisplayName())) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+    if (reclaimStrandedNames(spec, desired.getDisplayName()) == 0) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+    try {
+      return tableRepo.update(desired, expectedVersion, destinationGuard)
+          ? ReclaimedRetry.COMMITTED
+          : ReclaimedRetry.LOST_UPDATE;
+    } catch (BaseResourceRepository.NameConflictException stillTaken) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+  }
+
+  /**
+   * What a reclaim-and-retry settled. Three outcomes, because a boolean conflated two of them: the
+   * retry's {@code update} reports false for a lost canonical CAS — an ordinary version race with a
+   * concurrent writer, which has nothing to do with the name — and reading that as "the name is
+   * taken" answered a benign race with a terminal ALREADY_EXISTS. The same false on the path that
+   * never reclaims is classified as an update conflict, so the two paths disagreed about identical
+   * storage state.
+   */
+  private enum ReclaimedRetry {
+    /** The retry committed. */
+    COMMITTED,
+    /** A live relation still owns the name, so the collision is real. */
+    NAME_HELD,
+    /** The retry lost the canonical CAS; the name was released, the version moved. */
+    LOST_UPDATE
+  }
+
+  /**
+   * Builds the conflict error for a relation-name collision reported by the repository.
+   *
+   * <p>The relation-name claim is shared across kinds, so a collision does not mean a table holds
+   * the name — a view can. Re-read the table index to tell them apart: a same-kind table is a
+   * genuine {@code TABLE_ALREADY_EXISTS}, anything else is the kind-agnostic {@code
+   * RELATION_NAME_ALREADY_CLAIMED}. Reporting every collision as an existing table told callers a
+   * table was there when none was, which is the mirror image of what ViewServiceImpl already
+   * avoided.
+   */
+  private StatusRuntimeException relationNameConflict(
+      String corr,
+      String accountId,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String normName) {
+    boolean sameKindTable;
+    try {
+      sameKindTable =
+          tableRepo
+              .getByName(accountId, catalogId.getId(), namespaceId.getId(), normName)
+              .isPresent();
+    } catch (BaseResourceRepository.CorruptionException unresolvable) {
+      // The name is held by a row whose relation cannot be read, and the reclaim could not release
+      // it — the caller may lack the write grant for the kind that owns it. So it is held by
+      // something this call cannot name, which is exactly what the kind-agnostic claim says.
+      // Swallowed deliberately: this method builds an error, and an error path that throws an
+      // INTERNAL of its own replaces a true conflict with a false service defect.
+      sameKindTable = false;
+    }
+    var params =
+        Map.of(
+            "display_name", normName,
+            "catalog_id", catalogId.getId(),
+            "namespace_id", namespaceId.getId());
+    return sameKindTable
+        ? GrpcErrors.alreadyExists(corr, TABLE_ALREADY_EXISTS, params)
+        : GrpcErrors.alreadyExists(corr, RELATION_NAME_ALREADY_CLAIMED, params);
+  }
+
+  /**
+   * One more create attempt, for a caller that has already released the rows holding the name.
+   *
+   * <p>Separate from {@link #retryCreateAfterReclaimingStrandedNames} because that method's
+   * reclaimed-nothing shortcut is wrong for such a caller: it would read the zero as "no stranded
+   * rows, so the name is genuinely taken" when the truth is that this request had already released
+   * them a moment earlier.
+   */
+  private boolean createOnceMore(Table table, BatchGuard namespaceGuard) {
+    try {
+      tableRepo.create(table, namespaceGuard);
+      return true;
+    } catch (BaseResourceRepository.NameConflictException stillTaken) {
+      return false;
+    }
   }
 
   private static void validateTableMaskOrThrow(FieldMask mask, String corr) {
@@ -796,16 +1102,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   .scalar("column_id_algorithm", up.getColumnIdAlgorithm()));
     }
     return c.bytes();
-  }
-
-  private void purgeSnapshotsAndStats(ResourceId tableId) {
-    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
-    pointerStore.deleteByPrefix(prefix);
-    // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
-    // initial state of a table later recreated with the same id. Its blobs are reclaimed by
-    // CasBlobGc once the table drops out of the live set. Routed through the repository so the
-    // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
-    tableRoots.purgeRoot(tableId);
   }
 
   private RuntimeException tableUpdateConflict(

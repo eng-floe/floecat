@@ -392,10 +392,27 @@ public final class Keys {
     return namespaceTableCleanupPrefix(accountId, namespaceId) + encode(req("table_id", tableId));
   }
 
+  public static String namespaceTableCleanupGenerationPointer(
+      String accountId, String namespaceId, String tableId, String generation) {
+    return namespaceTableCleanupPointer(accountId, namespaceId, tableId)
+        + "/"
+        + encode(req("generation", generation));
+  }
+
   public static String namespaceTableCleanupPrefix(String accountId, String namespaceId) {
     String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
     return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/table-cleanup/by-table/";
+  }
+
+  /** Direct lookup for a table's namespace-scoped cleanup task. */
+  public static String tableCleanupPointerByTable(String accountId, String tableId) {
+    return tableCleanupPointerByTablePrefix(accountId) + encode(req("table_id", tableId));
+  }
+
+  public static String tableCleanupPointerByTablePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/table-cleanup/by-table/";
   }
 
   public static String namespacePointerByPath(

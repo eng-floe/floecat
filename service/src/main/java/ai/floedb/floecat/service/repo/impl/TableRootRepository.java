@@ -238,10 +238,19 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
 
   /** Removes the root only while the table pointer remains absent. */
   public void purgeRoot(ResourceId tableId, BatchGuard guard) {
+    purgeRoot(tableId, guard, new BaseResourceRepository.GuardedDeleteProgress());
+  }
+
+  public void purgeRoot(
+      ResourceId tableId,
+      BatchGuard guard,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
     String key = Keys.tableRootByTable(tableId.getAccountId(), tableId.getId());
     var current = pointerStore.get(key).orElse(null);
-    if (current != null) {
-      BaseResourceRepository.deletePointerWithGuard(pointerStore, current, guard, false);
+    if (current != null
+        && BaseResourceRepository.deletePointerWithGuard(
+            pointerStore, current, guard, deleteProgress.hasPriorWrite())) {
+      deleteProgress.recordWrite();
     }
     invalidatePointer(tableId);
   }

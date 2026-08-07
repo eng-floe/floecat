@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -30,6 +32,9 @@ import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.FieldMask;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -56,6 +61,9 @@ class BackendStorageIT {
 
   @GrpcClient("floecat")
   TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("floecat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
 
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
@@ -423,6 +431,879 @@ class BackendStorageIT {
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid2).build());
   }
 
+  /**
+   * A relation whose blob is present but unparseable must not wedge the subtree it lives in.
+   * Clearing damaged state is what a recursive delete is for, so it deletes the table on the
+   * evidence that survives — the by-name row that led to it and the canonical pointer version that
+   * row resolved — rather than failing the whole operation because the content cannot confirm the
+   * namespace it claims.
+   */
+  @Test
+  void recursiveNamespaceDeleteSucceedsWithAnUnparseableTableBlob() {
+    var cat = TestSupport.createCatalog(catalog, "cat_corrupt_" + clock.millis(), "corrupt");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_corrupt"), "corrupt");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var tid = tbl.getResourceId();
+    String byId = Keys.tablePointerById(tid.getAccountId(), tid.getId());
+    String byName =
+        Keys.tablePointerByName(
+            tid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "t");
+
+    // Corrupt in place: the pointer still resolves, but the bytes behind it no longer parse as a
+    // Table (field 31 / wire type 7 is not a valid tag).
+    String blobUri = ptr.get(byId).orElseThrow().getBlobUri();
+    blobs.put(
+        blobUri, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(ns.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(byId).isEmpty(), "the corrupt table's canonical pointer must be removed");
+    assertTrue(ptr.get(byName).isEmpty(), "its by-name row must be removed");
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    ns.getResourceId().getAccountId(), ns.getResourceId().getId()))
+            .isEmpty(),
+        "and the namespace itself must be deletable");
+  }
+
+  /**
+   * The children marker is a pointer row of its own, under /accounts/{a}/namespaces/{n}/ — outside
+   * every prefix the pointer GC and account teardown sweep. Left behind it is unreachable forever,
+   * and the emptiness gate creates one even for a namespace that never had a child.
+   */
+  @Test
+  void deletingANamespaceRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_marker_" + clock.millis(), "marker");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_marker"), "marker ns");
+    String markerKey =
+        Keys.namespaceChildrenMarker(ns.getResourceId().getAccountId(), ns.getResourceId().getId());
+
+    // Publishing a child creates it; the delete below must take it away again.
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        ns.getResourceId(),
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+    assertTrue(ptr.get(markerKey).isPresent(), "a child publish advances the marker");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(ns.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(markerKey).isEmpty(), "the marker row must not outlive its namespace");
+  }
+
+  /**
+   * The same row, reached through the idempotent-success path: the namespace pointer is already
+   * gone, so DeleteNamespace reports OK without deleting anything. That answer is the last
+   * operation that will ever name this namespace, so it has to take the marker with it — the row
+   * lives under {@code /accounts/{a}/namespaces/{n}/}, outside every prefix the pointer GC and
+   * account teardown sweep, and no later delete can be asked to clean up a namespace nothing can
+   * enumerate.
+   */
+  @Test
+  void deletingAnAlreadyGoneNamespaceStillRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_orphmark_" + clock.millis(), "marker");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_orphmark"), "marker ns");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+    String byId = Keys.namespacePointerById(nsId.getAccountId(), nsId.getId());
+
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        nsId,
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+    assertTrue(ptr.get(markerKey).isPresent(), "a child publish advances the marker");
+
+    // Whatever removed the canonical pointer left the marker behind — the shape a partial delete of
+    // an older build, or a delete that could not read the blob, leaves in the store.
+    assertTrue(ptr.delete(byId));
+
+    var response =
+        namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
+    assertEquals(0L, response.getMeta().getPointerVersion(), "idempotent success, nothing deleted");
+    assertTrue(ptr.get(markerKey).isEmpty(), "and the orphaned marker row is reclaimed");
+  }
+
+  /**
+   * A delete that reports a precondition miss must not have written. The emptiness gate reclaims
+   * stranded relation-name rows and the marker advance is a pointer write, and both used to run
+   * before the caller's condition was ever checked on the non-recursive path — so a stale-etag
+   * delete answered "nothing committed" having moved the fence. That advance is not merely untidy:
+   * a concurrent legitimate delete captured the old version, and its own advance then loses, making
+   * it report NAMESPACE_CHILDREN_CHANGED with no child anywhere in sight.
+   */
+  @Test
+  void aNonRecursiveDeleteThatFailsItsPreconditionDoesNotAdvanceTheFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_precfence_" + clock.millis(), "precondition");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "ns", List.of(), "ns");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+
+    // Publish a table and remove it again: the namespace ends up empty, so the delete gets as far
+    // as the marker advance, with the marker live at a version worth watching.
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            nsId,
+            "t",
+            "s3://b/precfence",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    TestSupport.deleteTable(table, nsId, tbl.getResourceId());
+    long markerBefore = ptr.get(markerKey).orElseThrow().getVersion();
+
+    var stale =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                namespace.deleteNamespace(
+                    DeleteNamespaceRequest.newBuilder()
+                        .setNamespaceId(nsId)
+                        .setPrecondition(
+                            Precondition.newBuilder()
+                                .setExpectedVersion(123456L)
+                                .setExpectedEtag("bogus")
+                                .build())
+                        .build()));
+    assertEquals(Status.Code.FAILED_PRECONDITION, stale.getStatus().getCode());
+
+    assertEquals(
+        markerBefore,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "a delete that reported a precondition miss must not have advanced the fence");
+    assertTrue(
+        ptr.get(Keys.namespacePointerById(nsId.getAccountId(), nsId.getId())).isPresent(),
+        "and the namespace it refused to delete is still there");
+  }
+
+  /**
+   * The catalog half of the same rule. Its marker sits at {@code
+   * /accounts/{a}/catalogs/{c}/markers/children} — under the catalog root, but under neither
+   * pointer family, and the account teardown sweep is scoped to those two families precisely
+   * because the root also holds every nested namespace, table and view. So nothing but this
+   * reclaims the row.
+   */
+  @Test
+  void deletingACatalogRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_catmarker_" + clock.millis(), "marker");
+    var catId = cat.getResourceId();
+    String markerKey = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+
+    TestSupport.createNamespace(namespace, catId, "ns", List.of("db_catmarker"), "ns");
+    assertTrue(
+        ptr.get(markerKey).isPresent(), "publishing a namespace advances the catalog marker");
+
+    // That create materialised the "db_catmarker" ancestor too, so empty the catalog by dropping
+    // the tree from its root — DeleteCatalog refuses a catalog that still holds a namespace.
+    var root =
+        TestSupport.resolveNamespaceId(directory, cat.getDisplayName(), List.of("db_catmarker"));
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(root).setRecursive(true).build());
+    catalog.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(catId).build());
+
+    assertTrue(ptr.get(markerKey).isEmpty(), "the marker row must not outlive its catalog");
+  }
+
+  /** And through the idempotent-success path, as for namespaces. */
+  @Test
+  void deletingAnAlreadyGoneCatalogStillRemovesItsChildrenMarker() {
+    var cat = TestSupport.createCatalog(catalog, "cat_catorph_" + clock.millis(), "marker");
+    var catId = cat.getResourceId();
+    String markerKey = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+    String byId = Keys.catalogPointerById(catId.getAccountId(), catId.getId());
+
+    var ns = TestSupport.createNamespace(namespace, catId, "ns", List.of("db_catorph"), "ns");
+    assertTrue(
+        ptr.get(markerKey).isPresent(), "publishing a namespace advances the catalog marker");
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+
+    // Whatever removed the canonical pointer left the marker behind.
+    assertTrue(ptr.delete(byId));
+
+    var response =
+        catalog.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(catId).build());
+    assertEquals(0L, response.getMeta().getPointerVersion(), "idempotent success, nothing deleted");
+    assertTrue(ptr.get(markerKey).isEmpty(), "and the orphaned marker row is reclaimed");
+  }
+
+  /**
+   * Deleting the corrupt namespace directly cannot work — its children are keyed by a catalog id
+   * that only the unreadable blob carries — but it must not look like a service defect either. It
+   * reports a conflict naming the namespace, and the recursive delete of its parent is what
+   * actually clears it.
+   */
+  @Test
+  void deletingANamespaceWithAnUnreadableBlobIsRefusedButRecoverable() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsunread_" + clock.millis(), "corrupt");
+    var parent =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "parent", List.of("db_unread"), "parent");
+    var child =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "child", List.of("db_unread", "parent"), "child");
+    String childById =
+        Keys.namespacePointerById(
+            child.getResourceId().getAccountId(), child.getResourceId().getId());
+    blobs.put(
+        ptr.get(childById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    // Refused, and refused in a shape the caller can act on: FAILED_PRECONDITION, which this
+    // service
+    // does not use for contention, so a client retry policy will not loop on a state no retry can
+    // change. Not INTERNAL (a service defect), and not ABORTED (retry and it will work).
+    var refused =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                namespace.deleteNamespace(
+                    DeleteNamespaceRequest.newBuilder()
+                        .setNamespaceId(child.getResourceId())
+                        .build()));
+    assertEquals(Status.Code.FAILED_PRECONDITION, refused.getStatus().getCode());
+    // And it says what is actually wrong rather than borrowing "contains tables, views…".
+    assertTrue(
+        refused.getStatus().getDescription().contains("metadata cannot be read"),
+        () -> "unexpected message: " + refused.getStatus().getDescription());
+    assertTrue(ptr.get(childById).isPresent(), "and nothing was removed");
+
+    // The documented recovery works: the parent's recursive delete reaches it by its by-path row.
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(parent.getResourceId())
+            .setRecursive(true)
+            .build());
+    assertTrue(ptr.get(childById).isEmpty());
+  }
+
+  /**
+   * Deepest-first has to survive a sibling whose name extends another's. A by-path key ends at its
+   * last segment, so {@code orders} < {@code orders-2024} < {@code orders/archive} in the order the
+   * store scans — the sibling lands between a namespace and its own child. A subtree walk that
+   * reads that as "orders is finished" deletes it while its child is still there, and the emptiness
+   * gate then refuses the root on that attempt and on every retry, leaving a partial teardown that
+   * no retry can finish.
+   *
+   * <p>Against the real store, so the ordering under test is the store's and not a fixture's.
+   */
+  @Test
+  void recursiveDeleteHandlesASiblingSortingBetweenANamespaceAndItsChild() {
+    var cat = TestSupport.createCatalog(catalog, "cat_sibsort_" + clock.millis(), "sibling sort");
+    var catId = cat.getResourceId();
+    var root = TestSupport.createNamespace(namespace, catId, "db", List.of(), "root");
+
+    var orders = TestSupport.createNamespace(namespace, catId, "orders", List.of("db"), "orders");
+    var archive =
+        TestSupport.createNamespace(
+            namespace, catId, "archive", List.of("db", "orders"), "under orders");
+    var sibling =
+        TestSupport.createNamespace(
+            namespace, catId, "orders-2024", List.of("db"), "sorts between the two");
+
+    // The premise, from the keys themselves rather than by assertion of intent.
+    String ordersKey =
+        Keys.namespacePointerByPath(catId.getAccountId(), catId.getId(), List.of("db", "orders"));
+    String siblingKey =
+        Keys.namespacePointerByPath(
+            catId.getAccountId(), catId.getId(), List.of("db", "orders-2024"));
+    String archiveKey =
+        Keys.namespacePointerByPath(
+            catId.getAccountId(), catId.getId(), List.of("db", "orders", "archive"));
+    assertTrue(
+        ordersKey.compareTo(siblingKey) < 0 && siblingKey.compareTo(archiveKey) < 0,
+        "the sibling must sort between the namespace and its child for this test to mean anything");
+
+    // A table in the deepest namespace, so a half-finished teardown would be visible as an orphan.
+    TestSupport.createTable(
+        table,
+        catId,
+        archive.getResourceId(),
+        "t",
+        "s3://b/p",
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+        "d");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(root.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    for (var gone :
+        List.of(
+            root.getResourceId(),
+            orders.getResourceId(),
+            archive.getResourceId(),
+            sibling.getResourceId())) {
+      assertTrue(
+          ptr.get(Keys.namespacePointerById(gone.getAccountId(), gone.getId())).isEmpty(),
+          "namespace " + gone.getId() + " must be gone");
+    }
+    assertTrue(ptr.get(ordersKey).isEmpty());
+    assertTrue(ptr.get(siblingKey).isEmpty());
+    assertTrue(ptr.get(archiveKey).isEmpty());
+  }
+
+  /**
+   * A parent whose blob cannot be read must not make its subtree unusable. The child-publish fence
+   * needs only the parent's id, which its by-path row carries, so resolving the parent through its
+   * content would fail every create beneath it with INTERNAL — for a reason that has nothing to do
+   * with the write being attempted.
+   */
+  @Test
+  void createNamespaceUnderAParentWhoseBlobCannotBeReadStillWorks() {
+    var cat = TestSupport.createCatalog(catalog, "cat_unreadparent_" + clock.millis(), "parent");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(namespace, catId, "parent", List.of("db_unreadparent"), "p");
+    var parentId = parent.getResourceId();
+
+    String parentById = Keys.namespacePointerById(parentId.getAccountId(), parentId.getId());
+    blobs.put(
+        ptr.get(parentById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    var child =
+        TestSupport.createNamespace(
+            namespace, catId, "child", List.of("db_unreadparent", "parent"), "under a corrupt p");
+
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    child.getResourceId().getAccountId(), child.getResourceId().getId()))
+            .isPresent(),
+        "the child must be published even though its parent's blob is unreadable");
+  }
+
+  /**
+   * The namespace version of the same hazard, and worse: descendants are dropped deepest-first, so
+   * failing on an unparseable namespace blob would abort after everything below it was already
+   * destroyed, leaving the tree half torn down.
+   */
+  @Test
+  void recursiveNamespaceDeleteSucceedsWithAnUnparseableChildNamespaceBlob() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nscorrupt_" + clock.millis(), "corrupt");
+    var parent =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "parent", List.of("db_nscorrupt"), "parent");
+    var child =
+        TestSupport.createNamespace(
+            namespace,
+            cat.getResourceId(),
+            "child",
+            List.of("db_nscorrupt", "parent"),
+            "child of parent");
+    String childById =
+        Keys.namespacePointerById(
+            child.getResourceId().getAccountId(), child.getResourceId().getId());
+    String parentById =
+        Keys.namespacePointerById(
+            parent.getResourceId().getAccountId(), parent.getResourceId().getId());
+
+    // The child's pointer still resolves; its bytes no longer parse as a Namespace.
+    String blobUri = ptr.get(childById).orElseThrow().getBlobUri();
+    blobs.put(
+        blobUri, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(parent.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(childById).isEmpty(), "the corrupt child namespace must be removed");
+    assertTrue(ptr.get(parentById).isEmpty(), "and its parent with it");
+  }
+
+  /**
+   * The children marker is the child-publish fence and nothing else, so removing a relation must
+   * leave it where it is.
+   *
+   * <p>{@code DeleteNamespace} reads the marker, scans for children, then advances it from the
+   * version it read, and its delete batch asserts that same version. A relation delete that bumped
+   * the marker landed in that window as "a child was published" — which is unretryable by design,
+   * since only the caller's scan can decide whether the delete is still legal — so a plain
+   * namespace delete racing nothing but a table or view going away failed with
+   * NAMESPACE_CHILDREN_CHANGED. Asserting the marker directly keeps the race out of the test: the
+   * window cannot be hit deterministically, but the bump that makes it hittable can be.
+   */
+  @Test
+  void deletingARelationDoesNotAdvanceTheNamespaceChildFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_fence_" + clock.millis(), "fence");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_fence"), "fence");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            nsId,
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var vw = TestSupport.createView(view, cat.getResourceId(), nsId, "v", "select 1", "d");
+
+    // Both publishes advanced it, in their own batches — that half of the protocol is what makes a
+    // stale emptiness scan detectable.
+    long afterPublish = ptr.get(markerKey).orElseThrow().getVersion();
+    assertTrue(afterPublish > 0L, "publishing a child must advance the fence");
+
+    TestSupport.deleteTable(table, nsId, tbl.getResourceId());
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "deleting a table must not advance the fence");
+
+    TestSupport.deleteView(view, vw.getResourceId());
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "deleting a view must not advance the fence");
+
+    // And the emptied namespace is still deletable through the plain path.
+    namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
+    assertTrue(ptr.get(Keys.namespacePointerById(nsId.getAccountId(), nsId.getId())).isEmpty());
+  }
+
+  /**
+   * The namespace half of the same rule: a child namespace leaving its parent must not advance the
+   * parent's children marker, nor the catalog's.
+   *
+   * <p>DeleteCatalog runs the same read-scan-advance sequence over the catalog marker, and reports
+   * CATALOG_CHILDREN_CHANGED when the advance loses, so a catalog delete racing nothing but its
+   * last namespace going away failed the same way a namespace delete did.
+   */
+  @Test
+  void deletingANamespaceDoesNotAdvanceItsParentOrCatalogFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsfence_" + clock.millis(), "fence");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(
+            namespace, catId, "parent", List.of("db_nsfence"), "parent of child");
+    var child =
+        TestSupport.createNamespace(
+            namespace, catId, "child", List.of("db_nsfence", "parent"), "child");
+
+    var parentId = parent.getResourceId();
+    String parentMarker = Keys.namespaceChildrenMarker(parentId.getAccountId(), parentId.getId());
+    String catalogMarker = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+
+    long parentAfterPublish = ptr.get(parentMarker).orElseThrow().getVersion();
+    long catalogAfterPublish = ptr.get(catalogMarker).orElseThrow().getVersion();
+    assertTrue(
+        parentAfterPublish > 0L, "publishing a child namespace must advance the parent fence");
+    assertTrue(catalogAfterPublish > 0L, "and the catalog fence");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(child.getResourceId()).build());
+
+    assertEquals(
+        parentAfterPublish,
+        ptr.get(parentMarker).orElseThrow().getVersion(),
+        "deleting a child namespace must not advance the parent fence");
+    assertEquals(
+        catalogAfterPublish,
+        ptr.get(catalogMarker).orElseThrow().getVersion(),
+        "deleting a child namespace must not advance the catalog fence");
+
+    // And the emptied parent, then the emptied catalog, are still deletable.
+    namespace.deleteNamespace(DeleteNamespaceRequest.newBuilder().setNamespaceId(parentId).build());
+    assertTrue(
+        ptr.get(Keys.namespacePointerById(parentId.getAccountId(), parentId.getId())).isEmpty());
+  }
+
+  /**
+   * A corrupt-blob delete removes the table's canonical pointer but leaves its by-name pointer, and
+   * that row is what every emptiness check counts. Nothing can resolve the relation any more, so
+   * without reconciling the leftover row the namespace would report NOT_EMPTY forever — neither a
+   * plain nor a recursive delete could ever clear it.
+   */
+  @Test
+  void namespaceStillDeletableAfterCorruptBlobTableDelete() {
+    var cat = TestSupport.createCatalog(catalog, "cat_stranded_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_stranded"), "stranded");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var tid = tbl.getResourceId();
+
+    String byName =
+        Keys.tablePointerByName(
+            tid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "t");
+    String byId = Keys.tablePointerById(tid.getAccountId(), tid.getId());
+
+    // Delete the blob out from under the table, then delete it: the canonical pointer goes...
+    assertTrue(blobs.delete(ptr.get(byId).orElseThrow().getBlobUri()));
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid).build());
+    assertTrue(ptr.get(byId).isEmpty());
+    // The delete could not parse the table, so the repository removed the canonical pointer alone:
+    // the by-name row survives, because the keys to remove it with live in the blob that could not
+    // be read. The name is therefore still reserved at this point.
+    assertTrue(ptr.get(byName).isPresent());
+
+    // What must not happen is the name staying reserved for good. A create knows the namespace, so
+    // it reconciles the orphaned row and succeeds instead of reporting ALREADY_EXISTS.
+    var recreated =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "recreated");
+    assertNotEquals(
+        tid.getId(), recreated.getResourceId().getId(), "a new table, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new table");
+
+    // And the namespace is still deletable afterwards.
+    TestSupport.deleteTable(table, ns.getResourceId(), recreated.getResourceId());
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+
+    assertTrue(ptr.get(byName).isEmpty());
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    ns.getResourceId().getAccountId(), ns.getResourceId().getId()))
+            .isEmpty());
+  }
+
+  /**
+   * The same recovery, for a create that carries an idempotency key.
+   *
+   * <p>That path takes an entirely separate branch through {@code createTable}, and it had neither
+   * half of the reconcile: not the guard around the by-name read, which itself hits the unreadable
+   * blob, and not the retry after the name conflict. So a keyed create was the one caller with no
+   * way back from a name a corrupt-blob delete had reserved — ALREADY_EXISTS forever, for a table
+   * that does not exist, while the byte-identical request without a key recovered on the first
+   * attempt.
+   */
+  @Test
+  void aKeyedCreateAlsoRecoversANameStrandedByACorruptBlobDelete() {
+    var cat = TestSupport.createCatalog(catalog, "cat_keyedstrand_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_keyedstrand"), "stranded");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var tid = tbl.getResourceId();
+    String byName =
+        Keys.tablePointerByName(
+            tid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "t");
+
+    assertTrue(
+        blobs.delete(
+            ptr.get(Keys.tablePointerById(tid.getAccountId(), tid.getId()))
+                .orElseThrow()
+                .getBlobUri()));
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid).build());
+    assertTrue(ptr.get(byName).isPresent(), "the name is reserved by the stranded row");
+
+    var recreated =
+        table
+            .createTable(
+                CreateTableRequest.newBuilder()
+                    .setSpec(
+                        TableSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("t")
+                            .setUpstream(
+                                UpstreamRef.newBuilder()
+                                    .setFormat(TableFormat.TF_ICEBERG)
+                                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID))
+                            .setSchemaJson(
+                                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}"))
+                    .setIdempotency(IdempotencyKey.newBuilder().setKey("keyed-strand-1"))
+                    .build())
+            .getTable();
+
+    assertNotEquals(
+        tid.getId(), recreated.getResourceId().getId(), "a new table, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new table");
+  }
+
+  /**
+   * The view half of the same recovery. A corrupt-blob DeleteView strands the by-name row and the
+   * relation-name claim exactly as a table delete does, and CreateView is likewise the first
+   * operation that both notices and knows the namespace those keys are built from. Without the
+   * reconcile the name is unusable for good: the pre-check read fails with INTERNAL on the
+   * unreadable row, and the create behind it reports the name as taken.
+   */
+  @Test
+  void viewNameIsReusableAfterCorruptBlobViewDelete() {
+    var cat = TestSupport.createCatalog(catalog, "cat_vstranded_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_vstranded"), "stranded");
+    var vw =
+        TestSupport.createView(view, cat.getResourceId(), ns.getResourceId(), "v", "select 1", "d");
+    var vid = vw.getResourceId();
+
+    String byName =
+        Keys.viewPointerByName(
+            vid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "v");
+    String byId = Keys.viewPointerById(vid.getAccountId(), vid.getId());
+
+    assertTrue(blobs.delete(ptr.get(byId).orElseThrow().getBlobUri()));
+    view.deleteView(DeleteViewRequest.newBuilder().setViewId(vid).build());
+    assertTrue(ptr.get(byId).isEmpty());
+    assertTrue(ptr.get(byName).isPresent(), "the by-name row outlives the unreadable view");
+
+    var recreated =
+        TestSupport.createView(
+            view, cat.getResourceId(), ns.getResourceId(), "v", "select 2", "again");
+    assertNotEquals(
+        vid.getId(), recreated.getResourceId().getId(), "a new view, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new view");
+
+    // And the namespace is still deletable afterwards.
+    TestSupport.deleteView(view, recreated.getResourceId());
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+    assertTrue(ptr.get(byName).isEmpty());
+  }
+
+  /**
+   * A rename onto a stranded name recovers it, the same way a create does.
+   *
+   * <p>The reclaim was justified by a create being the first operation that both notices a stranded
+   * name and knows the namespace its keys are built from. A rename notices and knows the same
+   * things, so leaving it out gave one name two answers depending on the verb: creating a new table
+   * with it succeeded, renaming an existing table onto it failed forever.
+   */
+  @Test
+  void aRenameOntoAStrandedNameRecoversItLikeACreateDoes() {
+    var cat = TestSupport.createCatalog(catalog, "cat_renstrand_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_renstrand"), "stranded");
+    var doomed =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "taken",
+            "s3://b/taken",
+            "{\"cols\":[]}",
+            "d");
+    var mover =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "mover",
+            "s3://b/mover",
+            "{\"cols\":[]}",
+            "d");
+
+    // Strand "taken": drop the blob, delete the table, and the by-name row outlives it.
+    var doomedId = doomed.getResourceId();
+    assertTrue(
+        blobs.delete(
+            ptr.get(Keys.tablePointerById(doomedId.getAccountId(), doomedId.getId()))
+                .orElseThrow()
+                .getBlobUri()));
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(doomedId).build());
+    String takenByName =
+        Keys.tablePointerByName(
+            doomedId.getAccountId(),
+            cat.getResourceId().getId(),
+            ns.getResourceId().getId(),
+            "taken");
+    assertTrue(ptr.get(takenByName).isPresent(), "the name is reserved by the stranded row");
+
+    var renamed =
+        table
+            .updateTable(
+                UpdateTableRequest.newBuilder()
+                    .setTableId(mover.getResourceId())
+                    .setSpec(TableSpec.newBuilder().setDisplayName("taken"))
+                    .setUpdateMask(FieldMask.newBuilder().addPaths("display_name"))
+                    .build())
+            .getTable();
+
+    assertEquals("taken", renamed.getDisplayName());
+    assertEquals(
+        mover.getResourceId().getId(),
+        ptr.get(takenByName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the renamed table");
+  }
+
+  /**
+   * The relation-name claim is shared across kinds, so a name held by a view collides with a table
+   * create. Reporting that as TABLE_ALREADY_EXISTS named a table that is not there; the
+   * kind-agnostic code is what tells the caller what actually holds the name. ViewServiceImpl
+   * classified its own side already — this is the mirror it was missing, and the same
+   * classification now covers a rename into the name as well as a create.
+   */
+  @Test
+  void aNameHeldByAViewIsReportedAsAClaimRatherThanAnExistingTable() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, "cat_xkind_" + clock.millis(), "xkind");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_xkind"), "xkind");
+    TestSupport.createView(
+        view, cat.getResourceId(), ns.getResourceId(), "shared", "select 1", "held by a view");
+
+    var onCreate =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                TestSupport.createTable(
+                    table,
+                    cat.getResourceId(),
+                    ns.getResourceId(),
+                    "shared",
+                    "s3://b/p",
+                    "{\"cols\":[]}",
+                    "d"));
+    TestSupport.assertGrpcAndMc(
+        onCreate, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already claimed");
+
+    // And renaming an existing table onto that name is classified the same way.
+    var other =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "other",
+            "s3://b/other",
+            "{\"cols\":[]}",
+            "d");
+    var onRename =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                table.updateTable(
+                    UpdateTableRequest.newBuilder()
+                        .setTableId(other.getResourceId())
+                        .setSpec(TableSpec.newBuilder().setDisplayName("shared"))
+                        .setUpdateMask(FieldMask.newBuilder().addPaths("display_name"))
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        onRename, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already claimed");
+  }
+
+  /**
+   * The view half of the keyed-create recovery. CreateView's idempotency-key branch is a separate
+   * path with its own conflict handling, and it had neither the guard around the by-name read nor
+   * the retry after the name conflict — so a keyed request could not recover a name a corrupt-blob
+   * delete had reserved, while the identical unkeyed request could. The table side already worked;
+   * this is the sibling that was missed.
+   */
+  @Test
+  void aKeyedViewCreateAlsoRecoversAStrandedName() {
+    var cat = TestSupport.createCatalog(catalog, "cat_vkeyed_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_vkeyed"), "stranded");
+    var vw =
+        TestSupport.createView(view, cat.getResourceId(), ns.getResourceId(), "v", "select 1", "d");
+    var vid = vw.getResourceId();
+    String byName =
+        Keys.viewPointerByName(
+            vid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "v");
+
+    assertTrue(
+        blobs.delete(
+            ptr.get(Keys.viewPointerById(vid.getAccountId(), vid.getId()))
+                .orElseThrow()
+                .getBlobUri()));
+    view.deleteView(DeleteViewRequest.newBuilder().setViewId(vid).build());
+    assertTrue(ptr.get(byName).isPresent(), "the name is reserved by the stranded row");
+
+    var recreated =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("v")
+                            .setDescription("again")
+                            .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("select 2"))
+                            .addOutputColumns(
+                                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+                                    .setName("_col0")
+                                    .setType(
+                                        ai.floedb.floecat.types.LogicalTypeProtoAdapter
+                                            .parseToProto("STRING"))
+                                    .setNullable(true)))
+                    .setIdempotency(IdempotencyKey.newBuilder().setKey("keyed-vstrand-1"))
+                    .build())
+            .getView();
+
+    assertNotEquals(
+        vid.getId(), recreated.getResourceId().getId(), "a new view, not the corrupt one");
+    assertEquals(
+        recreated.getResourceId().getId(),
+        ptr.get(byName).orElseThrow().getResourceId().getId(),
+        "the name now resolves to the new view");
+  }
+
   @Test
   void casContentionTwoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();
@@ -532,6 +1413,117 @@ class BackendStorageIT {
     TestSupport.deleteTable(table, ns.getResourceId(), tableA.getResourceId());
     int after = ptr.countByPrefix(prefix);
     assertEquals(before + 1, after);
+  }
+
+  /**
+   * A create that collides with an identical existing table returns that table without publishing
+   * anything, so it must not move the children marker either.
+   *
+   * <p>The read that finds the existing table is already stale when the bump would happen: a
+   * concurrent DeleteTable can have removed it in between, leaving a legal DeleteNamespace
+   * mid-flight over a namespace its scan found empty. A bump landing between that delete's marker
+   * advance and its CAS batch fails it with NAMESPACE_CHILDREN_CHANGED, which is not retryable — on
+   * behalf of a create that created nothing. Asserting the marker directly keeps that race out of
+   * the test.
+   */
+  @Test
+  void collidingIdenticalCreateDoesNotAdvanceTheNamespaceChildFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_replayfence_" + clock.millis(), "fence");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_replayfence"), "fence");
+    var nsId = ns.getResourceId();
+    String markerKey = Keys.namespaceChildrenMarker(nsId.getAccountId(), nsId.getId());
+
+    var spec =
+        TableSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(nsId)
+            .setDisplayName("t")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+            .setDescription("d")
+            .build();
+
+    var first =
+        table.createTable(
+            CreateTableRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("replay-a").build())
+                .build());
+    long afterPublish = ptr.get(markerKey).orElseThrow().getVersion();
+    assertTrue(afterPublish > 0L, "the real publish advances the fence");
+
+    // A different key, so the idempotency record cannot answer this and the create is actually
+    // attempted: it collides on the name, matches the existing table's fingerprint, and replays it.
+    var replayed =
+        table.createTable(
+            CreateTableRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("replay-b").build())
+                .build());
+    assertEquals(
+        first.getTable().getResourceId().getId(),
+        replayed.getTable().getResourceId().getId(),
+        "the collision replays the existing table");
+    assertEquals(
+        afterPublish,
+        ptr.get(markerKey).orElseThrow().getVersion(),
+        "a create that published nothing must not advance the fence");
+  }
+
+  /**
+   * The namespace half of the same rule: a CreateNamespace that collides with an identical existing
+   * namespace publishes nothing, so neither the parent's fence nor the catalog's may move. The read
+   * that found the existing namespace is stale by then, exactly as in the table case, so a bump can
+   * fail a legal delete of the parent or the catalog on behalf of a create that created nothing.
+   */
+  @Test
+  void collidingIdenticalNamespaceCreateDoesNotAdvanceAnyFence() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nsreplay_" + clock.millis(), "fence");
+    var catId = cat.getResourceId();
+    var parent =
+        TestSupport.createNamespace(namespace, catId, "parent", List.of("db_nsreplay"), "p");
+    var parentId = parent.getResourceId();
+
+    var spec =
+        NamespaceSpec.newBuilder()
+            .setCatalogId(catId)
+            .addAllPath(List.of("db_nsreplay", "parent"))
+            .setDisplayName("child")
+            .setDescription("c")
+            .build();
+    var first =
+        namespace.createNamespace(
+            CreateNamespaceRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("ns-replay-a").build())
+                .build());
+
+    String parentMarker = Keys.namespaceChildrenMarker(parentId.getAccountId(), parentId.getId());
+    String catalogMarker = Keys.catalogChildrenMarker(catId.getAccountId(), catId.getId());
+    long parentAfterPublish = ptr.get(parentMarker).orElseThrow().getVersion();
+    long catalogAfterPublish = ptr.get(catalogMarker).orElseThrow().getVersion();
+
+    // A different key, so the idempotency record cannot answer this: the create is attempted, hits
+    // the name conflict, matches the existing namespace's fingerprint, and replays it.
+    var replayed =
+        namespace.createNamespace(
+            CreateNamespaceRequest.newBuilder()
+                .setSpec(spec)
+                .setIdempotency(IdempotencyKey.newBuilder().setKey("ns-replay-b").build())
+                .build());
+    assertEquals(
+        first.getNamespace().getResourceId().getId(),
+        replayed.getNamespace().getResourceId().getId(),
+        "the collision replays the existing namespace");
+    assertEquals(
+        parentAfterPublish,
+        ptr.get(parentMarker).orElseThrow().getVersion(),
+        "a create that published nothing must not advance the parent fence");
+    assertEquals(
+        catalogAfterPublish,
+        ptr.get(catalogMarker).orElseThrow().getVersion(),
+        "nor the catalog fence");
   }
 
   @Test

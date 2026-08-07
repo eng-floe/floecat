@@ -43,7 +43,12 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
@@ -66,6 +71,9 @@ class TableServiceImplSystemTableTest {
   private TableServiceImpl svc;
 
   private TableRepository tableRepo;
+  private TableCleanupRepository tableCleanupRepo;
+  private RecursiveResourceDropper recursiveDropper;
+  private MarkerStore markerStore;
   private PrincipalProvider principal;
   private Authorizer authz;
   private EngineHintSchemaCleaner hintCleaner;
@@ -80,6 +88,9 @@ class TableServiceImplSystemTableTest {
 
     // Mockito deps
     tableRepo = mock(TableRepository.class);
+    tableCleanupRepo = mock(TableCleanupRepository.class);
+    recursiveDropper = mock(RecursiveResourceDropper.class);
+    markerStore = mock(MarkerStore.class);
     principal = mock(PrincipalProvider.class);
     authz = mock(Authorizer.class);
     hintCleaner = mock(EngineHintSchemaCleaner.class);
@@ -90,6 +101,9 @@ class TableServiceImplSystemTableTest {
 
     // Wire required fields (package-private access: test in same package)
     svc.tableRepo = tableRepo;
+    svc.tableCleanupRepo = tableCleanupRepo;
+    svc.recursiveDropper = recursiveDropper;
+    svc.markerStore = markerStore;
     svc.principal = principal;
     svc.authz = authz;
     svc.overlay = overlay;
@@ -100,6 +114,188 @@ class TableServiceImplSystemTableTest {
     // Minimal principal + authz behavior
     var pc = TestPrincipals.stubPrincipal(principal, authz);
     when(hintCleaner.shouldClearHints(any())).thenReturn(false);
+  }
+
+  @Test
+  void deleteTableStagesCleanupAtomicallyWithRemovingThePointer() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table")
+            .build();
+    overlay.addNode(userTableNode(tableId, catalogId, namespaceId));
+    var table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId.toBuilder().clearAccountId())
+            .setDisplayName("orders")
+            .build();
+    var cleanup =
+        new TableCleanupRepository.Cleanup(
+            namespaceId, tableId, Keys.namespaceTableCleanupPointer("acct", "ns", "table"), 1L);
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(7L).setBlobUri("blob://table").build());
+    when(tableRepo.getByBlobUri("blob://table")).thenReturn(Optional.of(table));
+    var namespacePin = mock(BatchGuard.class);
+    var deleteGuard = mock(BatchGuard.class);
+    var cleanupPlan = new TableCleanupRepository.DeletePlan(cleanup, deleteGuard);
+    when(markerStore.namespacePinnedGuardIfPresent(namespaceId))
+        .thenReturn(Optional.of(namespacePin));
+    when(tableCleanupRepo.planDelete(namespaceId, tableId, namespacePin)).thenReturn(cleanupPlan);
+    when(tableRepo.deleteWithPrecondition(tableId, 7L, deleteGuard)).thenReturn(true);
+    when(tableCleanupRepo.pending(cleanup)).thenReturn(Optional.of(cleanup));
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(0L).build());
+
+    svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build())
+        .await()
+        .indefinitely();
+
+    var order = org.mockito.Mockito.inOrder(tableCleanupRepo, tableRepo, recursiveDropper);
+    order.verify(tableCleanupRepo).planDelete(namespaceId, tableId, namespacePin);
+    order.verify(tableRepo).deleteWithPrecondition(tableId, 7L, deleteGuard);
+    order.verify(recursiveDropper).cleanupDeletedTable(cleanup);
+  }
+
+  @Test
+  void deleteTableUsesTableScopedCleanupWhenNamespaceIsAlreadyAbsent() {
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("gone-ns")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table")
+            .build();
+    var table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .setId("cat"))
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .build();
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(7L).setBlobUri("blob://table").build());
+    when(tableRepo.getByBlobUri("blob://table")).thenReturn(Optional.of(table));
+    when(markerStore.namespacePinnedGuardIfPresent(namespaceId)).thenReturn(Optional.empty());
+    when(tableRepo.deleteWithPrecondition(tableId, 7L)).thenReturn(true);
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(0L).build());
+
+    svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build())
+        .await()
+        .indefinitely();
+
+    verify(tableCleanupRepo, never()).planDelete(any(), any(), any());
+    verify(tableRepo).deleteWithPrecondition(tableId, 7L);
+    verify(recursiveDropper).cleanupDeletedTable(tableId);
+  }
+
+  @Test
+  void conditionalDeleteReturnsNotFoundWhenAnotherDeleteWinsTheCas() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-race")
+            .build();
+    overlay.addNode(userTableNode(tableId, catalogId, namespaceId));
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(tableRepo.deleteWithPrecondition(tableId, 7L)).thenReturn(false);
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(0L).build());
+
+    var failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteTable(
+                        DeleteTableRequest.newBuilder()
+                            .setTableId(tableId)
+                            .setPrecondition(
+                                Precondition.newBuilder().setExpectedVersion(7L).build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, failure.getStatus().getCode());
+    verify(recursiveDropper, never()).cleanupDeletedTable(tableId);
+  }
+
+  @Test
+  void deleteTableWithUnreadableBlobStillDeletesAndPurgesByTableId() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("corrupt")
+            .build();
+    overlay.addNode(userTableNode(tableId, catalogId, namespaceId));
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(7L).setBlobUri("blob://corrupt").build());
+    when(tableRepo.getByBlobUri("blob://corrupt"))
+        .thenThrow(new BaseResourceRepository.CorruptionException("parse failed"));
+    when(tableRepo.deleteWithPrecondition(tableId, 7L)).thenReturn(true);
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(0L).build());
+
+    svc.deleteTable(DeleteTableRequest.newBuilder().setTableId(tableId).build())
+        .await()
+        .indefinitely();
+
+    verify(tableCleanupRepo, never()).prepare(any(), any());
+    verify(tableRepo).deleteWithPrecondition(tableId, 7L);
+    verify(recursiveDropper).cleanupDeletedTable(tableId);
   }
 
   @Test
@@ -283,7 +479,7 @@ class TableServiceImplSystemTableTest {
             StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verify(tableRepo, never()).update(any(), anyLong());
+    verify(tableRepo, never()).update(any(), anyLong(), any());
   }
 
   @Test
@@ -334,7 +530,7 @@ class TableServiceImplSystemTableTest {
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(true);
+    when(tableRepo.update(any(Table.class), anyLong(), any())).thenReturn(true);
 
     var req =
         UpdateTableRequest.newBuilder()
@@ -350,7 +546,7 @@ class TableServiceImplSystemTableTest {
     svc.updateTable(req).await().indefinitely();
 
     ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
-    verify(tableRepo).update(tableCaptor.capture(), anyLong());
+    verify(tableRepo).update(tableCaptor.capture(), anyLong(), any());
     Table updated = tableCaptor.getValue();
     assertEquals("new", updated.getPropertiesMap().get("external"));
     assertEquals("2", updated.getPropertiesMap().get(ManagedTableProperties.FORMAT_VERSION));
@@ -402,7 +598,9 @@ class TableServiceImplSystemTableTest {
             MutationMeta.newBuilder().setPointerVersion(7L).build(),
             MutationMeta.newBuilder().setPointerVersion(8L).build());
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false, true);
+    // The guarded overload: an update publishes into its namespace and so carries that namespace's
+    // fence, whether or not this particular update reparents (see MarkerStore#namespaceChildGuard).
+    when(tableRepo.update(any(Table.class), anyLong(), any())).thenReturn(false, true);
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(9L).build());
 
@@ -416,7 +614,7 @@ class TableServiceImplSystemTableTest {
     svc.updateTable(req).await().indefinitely();
 
     ArgumentCaptor<Long> versionCaptor = ArgumentCaptor.forClass(Long.class);
-    verify(tableRepo, times(2)).update(any(Table.class), versionCaptor.capture());
+    verify(tableRepo, times(2)).update(any(Table.class), versionCaptor.capture(), any());
     assertEquals(List.of(7L, 8L), versionCaptor.getAllValues());
   }
 
@@ -464,7 +662,7 @@ class TableServiceImplSystemTableTest {
     when(tableRepo.metaFor(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false);
+    when(tableRepo.update(any(Table.class), anyLong(), any())).thenReturn(false);
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
 
@@ -481,7 +679,7 @@ class TableServiceImplSystemTableTest {
             StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(tableRepo).update(any(Table.class), anyLong());
+    verify(tableRepo).update(any(Table.class), anyLong(), any());
   }
 
   private UserTableNode userTableNode(

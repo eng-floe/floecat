@@ -49,6 +49,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -76,6 +77,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject CatalogRepository catalogRepo;
   @Inject ConnectorRepository connectorRepo;
   @Inject StorageAuthorityRepository storageAuthorityRepo;
+  @Inject TableCleanupRepository tableCleanupRepo;
   @Inject TransactionRepository transactionRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -592,10 +594,19 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           transactionRepo.deleteAccountResources(accountKey, accountGone, deleteProgress);
       summary.transactionPointerRowsDeleted = transactionCleanup.pointersDeleted();
       summary.transactionBlobsDeleted = transactionCleanup.blobsDeleted();
+      // A missing namespace path can leave a table cleanup task reachable only through its direct
+      // account-wide index (or vice versa). Execute every described cleanup before the raw
+      // residual sweep removes those last durable handles.
+      tableCleanupRepo.forEachResidualTableId(
+          accountKey,
+          tableId ->
+              summary.snapshotPointerRowsDeleted +=
+                  recursiveDropper.cleanupDeletedTable(tableId, accountGone, deleteProgress));
       summary.residualIndexRowsDeleted =
           connectorRepo.deleteResidualRows(accountKey, accountGone, deleteProgress)
               + storageAuthorityRepo.deleteResidualRows(accountKey, accountGone, deleteProgress)
-              + catalogRepo.deleteResidualRows(accountKey, accountGone, deleteProgress);
+              + catalogRepo.deleteResidualRows(accountKey, accountGone, deleteProgress)
+              + tableCleanupRepo.deleteResidualRows(accountKey, accountGone, deleteProgress);
       // A connector or storage-authority pointer can disappear before its external secret delete
       // completes. The staged cleanup handles survive pointer deletion, so this pass can finish
       // tasks left by a crash and tasks whose pointer only the residual sweep managed to remove.

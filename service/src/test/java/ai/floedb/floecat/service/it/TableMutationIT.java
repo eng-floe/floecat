@@ -658,6 +658,25 @@ class TableMutationIT {
   }
 
   @Test
+  void createTableScopesNamespaceIdWhenTheRequestOmitsAccountId() {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_unscoped_ns", "scope");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "namespace");
+    var spec =
+        TableSpec.newBuilder()
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId().toBuilder().clearAccountId())
+            .setDisplayName("unscoped_namespace_table")
+            .setSchemaJson(SchemaParser.toJson(SCHEMA_V1))
+            .build();
+
+    var created = table.createTable(CreateTableRequest.newBuilder().setSpec(spec).build());
+
+    assertEquals(ns.getResourceId().getId(), created.getTable().getNamespaceId().getId());
+  }
+
+  @Test
   void tableMove() throws Exception {
     var catName = tablePrefix + "cat2";
     var cat = TestSupport.createCatalog(catalog, catName, "tcat2");

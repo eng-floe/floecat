@@ -331,6 +331,14 @@ public class MarkerStore {
         expectedPointerVersion);
   }
 
+  /** Returns a pin-only guard for a live namespace, without advancing its children marker. */
+  public Optional<BatchGuard> namespacePinnedGuardIfPresent(ResourceId namespaceId) {
+    String key = Keys.namespacePointerById(namespaceId.getAccountId(), namespaceId.getId());
+    return pointerStore
+        .get(key)
+        .map(pointer -> new NamespacePinnedGuard(namespaceId.getId(), key, pointer.getVersion()));
+  }
+
   /**
    * Pins a table-owned publication to the exact live table definition it was issued against. Table
    * deletion removes that canonical pointer before sweeping snapshots and root state, so a

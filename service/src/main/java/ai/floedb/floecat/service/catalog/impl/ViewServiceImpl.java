@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
@@ -50,6 +51,8 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -74,6 +77,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
+  @Inject MarkerStore markerStore;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject CatalogOverlay overlay;
   @Inject EngineHintSchemaCleaner hintCleaner;
 
@@ -146,10 +151,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<CreateViewResponse> createView(CreateViewRequest request) {
     var L = LogHelper.start(LOG, "CreateView");
 
+    // Carries the namespace fence, so a retryable guard break is ordinary here; see
+    // TableServiceImpl#createTable.
     return mapFailures(
             runWithRetry(
                 () -> {
                   var pc = principal.get();
+                  var accountId = pc.getAccountId();
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "view.write");
 
@@ -171,10 +179,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var writePolicy = catalogSurfaceWritePolicy();
                   writePolicy.requireWritableCatalog(catalogId, "spec.catalog_id", corr);
 
-                  var namespaceId = spec.getNamespaceId();
+                  var namespaceId =
+                      spec.getNamespaceId().toBuilder().setAccountId(accountId).build();
                   var namespace =
                       writePolicy.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
                   writePolicy.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
+                  var namespaceGuard =
+                      markerStore.namespaceChildGuard(namespaceId, namespace.blobUri());
 
                   var tsNow = nowTs();
 
@@ -190,34 +201,51 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
 
-                  var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
+                  var normalizedSpec = normalizedForPersistence(spec, normName, namespaceId);
                   var fingerprint = canonicalFingerprint(normalizedSpec);
 
-                  var accountId = pc.getAccountId();
                   var viewResourceId = randomResourceId(accountId, ResourceKind.RK_VIEW);
 
                   var viewBuilder =
                       View.newBuilder()
                           .setResourceId(viewResourceId)
-                          .setCatalogId(spec.getCatalogId())
-                          .setNamespaceId(spec.getNamespaceId())
+                          .setCatalogId(normalizedSpec.getCatalogId())
+                          .setNamespaceId(normalizedSpec.getNamespaceId())
                           .setDisplayName(normName)
-                          .setDescription(spec.getDescription())
+                          .setDescription(normalizedSpec.getDescription())
                           .setCreatedAt(tsNow)
-                          .putAllProperties(spec.getPropertiesMap())
-                          .addAllBaseRelations(spec.getBaseRelationsList())
-                          .addAllCreationSearchPath(spec.getCreationSearchPathList())
+                          .putAllProperties(normalizedSpec.getPropertiesMap())
+                          .addAllBaseRelations(normalizedSpec.getBaseRelationsList())
+                          .addAllCreationSearchPath(normalizedSpec.getCreationSearchPathList())
                           .addAllOutputColumns(outputColumns);
-                  applySqlDefinitions(viewBuilder, spec, corr);
+                  applySqlDefinitions(viewBuilder, normalizedSpec, corr);
                   var view = viewBuilder.build();
 
                   if (idempotencyKey == null) {
-                    var existing =
-                        viewRepo.getByName(
-                            accountId,
-                            spec.getCatalogId().getId(),
-                            spec.getNamespaceId().getId(),
-                            normName);
+                    Optional<View> existing;
+                    try {
+                      existing =
+                          viewRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    } catch (BaseResourceRepository.CorruptionException dangling) {
+                      // The name resolves to a row whose blob is unreadable. A delete that could
+                      // not
+                      // parse its target removes the canonical pointer alone — the secondary keys
+                      // are
+                      // derived from the value — so this row can outlive the view and keep its name
+                      // reserved. Release provably orphaned rows and re-ask; if the name is still
+                      // held, the row belongs to something live and the read genuinely failed.
+                      reclaimStrandedNames(spec, normName);
+                      existing =
+                          viewRepo.getByName(
+                              accountId,
+                              spec.getCatalogId().getId(),
+                              spec.getNamespaceId().getId(),
+                              normName);
+                    }
                     if (existing.isPresent()) {
                       throw GrpcErrors.alreadyExists(
                           corr,
@@ -228,12 +256,24 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      viewRepo.create(view);
+                      // The namespace guard advances the children marker inside the create batch
+                      // and pins the namespace pointer, so this view and a concurrent
+                      // DeleteNamespace cannot both commit (see BatchGuard).
+                      viewRepo.create(view, namespaceGuard);
                     } catch (BaseResourceRepository.NameConflictException nce) {
+                      // The name may be held by a row whose relation no longer exists, for the same
+                      // reason as above, and a create is the first operation that both notices and
+                      // knows the namespace those keys are built from. Reconcile provably orphaned
+                      // rows and try once more before reporting the name as taken.
+                      //
                       // The shared relation-name claim enforces cross-kind uniqueness (see
                       // TransactionIntentApplierSupport#buildRelationClaimUpsertOp), so this fires
                       // when the name is held by any relation, not only a same-kind view.
-                      throw relationNameConflict(corr, accountId, spec, normName);
+                      if (!retryCreateAfterReclaimingStrandedNames(
+                          view, spec, normName, namespaceGuard)) {
+                        throw relationNameConflict(
+                            corr, accountId, spec.getCatalogId(), spec.getNamespaceId(), normName);
+                      }
                     }
                     metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
@@ -251,14 +291,37 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   () -> fingerprint,
                                   () -> {
                                     try {
-                                      viewRepo.create(view);
+                                      viewRepo.create(view, namespaceGuard);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt =
-                                          viewRepo.getByName(
-                                              accountId,
-                                              spec.getCatalogId().getId(),
-                                              spec.getNamespaceId().getId(),
-                                              normName);
+                                      // Same two hazards as the unkeyed path above, and the same
+                                      // handling: the name may be held by a row whose relation is
+                                      // already gone, and the read that would tell us may itself
+                                      // hit
+                                      // that unreadable blob. Left out here, a keyed create was the
+                                      // one caller with no way back from a name a corrupt-blob
+                                      // delete
+                                      // had reserved, while the identical unkeyed request
+                                      // recovered.
+                                      Optional<View> existingOpt;
+                                      boolean releasedHere = false;
+                                      try {
+                                        existingOpt =
+                                            viewRepo.getByName(
+                                                accountId,
+                                                spec.getCatalogId().getId(),
+                                                spec.getNamespaceId().getId(),
+                                                normName);
+                                      } catch (
+                                          BaseResourceRepository.CorruptionException dangling) {
+                                        reclaimStrandedNames(spec, normName);
+                                        releasedHere = true;
+                                        existingOpt =
+                                            viewRepo.getByName(
+                                                accountId,
+                                                spec.getCatalogId().getId(),
+                                                spec.getNamespaceId().getId(),
+                                                normName);
+                                      }
                                       if (existingOpt.isPresent()) {
                                         var existingSpec = specFromView(existingOpt.get());
                                         if (Arrays.equals(
@@ -271,11 +334,25 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      // A same-kind view with a different fingerprint is a genuine
-                                      // VIEW_ALREADY_EXISTS; an absent view means the shared claim
-                                      // is
-                                      // held by another relation kind (see relationNameConflict).
-                                      throw relationNameConflict(corr, accountId, spec, normName);
+                                      // Nothing resolves the name, or it resolves to a different
+                                      // view: try once more with the orphaned rows released —
+                                      // unless
+                                      // the read above already released them — and only then report
+                                      // the conflict. A same-kind view with a different fingerprint
+                                      // is a genuine VIEW_ALREADY_EXISTS; an absent view means the
+                                      // shared claim is held by another relation kind (see
+                                      // relationNameConflict).
+                                      if (!(releasedHere
+                                          ? createOnceMore(view, namespaceGuard)
+                                          : retryCreateAfterReclaimingStrandedNames(
+                                              view, spec, normName, namespaceGuard))) {
+                                        throw relationNameConflict(
+                                            corr,
+                                            accountId,
+                                            spec.getCatalogId(),
+                                            spec.getNamespaceId(),
+                                            normName);
+                                      }
                                     }
                                     metadataGraph.invalidate(viewResourceId);
                                     topology.evictRelationRefs(view.getNamespaceId());
@@ -305,6 +382,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<UpdateViewResponse> updateView(UpdateViewRequest request) {
     var L = LogHelper.start(LOG, "UpdateView");
 
+    // A reparent publishes into the destination namespace and carries its fence; see createView.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -339,11 +417,16 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
                   var writePolicy = catalogSurfaceWritePolicy();
+                  var desiredNamespaceId =
+                      desired.getNamespaceId().toBuilder()
+                          .setAccountId(pctx.getAccountId())
+                          .build();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
-                          desired.getNamespaceId(), "namespace_id", corr);
+                          desiredNamespaceId, "namespace_id", corr);
                   writePolicy.requireNamespaceInCatalog(
-                      desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
+                      desiredNamespace, desiredNamespaceId, desired.getCatalogId(), corr);
+                  desired = normalizedForPersistence(desired, desiredNamespaceId);
                   if (hintCleaner.shouldClearHints(mask)) {
                     View.Builder builder = desired.toBuilder();
                     hintCleaner.cleanViewHints(builder, mask, current, builder.build());
@@ -375,8 +458,21 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
+                  // A reparent republishes the view under a different namespace, so it is a
+                  // child-publishing write into the destination and needs the same fence a create
+                  // does; an in-place update touches no namespace and stays unguarded.
+                  boolean reparented =
+                      !current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())
+                          || !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+                  var destinationGuard =
+                      reparented
+                          ? markerStore.namespaceChildGuard(
+                              desiredNamespaceId, desiredNamespace.blobUri())
+                          : BatchGuard.NONE;
+
                   try {
-                    boolean ok = viewRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        viewRepo.update(desired, meta.getPointerVersion(), destinationGuard);
                     if (!ok) {
                       var nowMeta = viewRepo.metaForSafe(viewId);
                       throw GrpcErrors.preconditionFailed(
@@ -387,7 +483,33 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, conflictInfo);
+                    // A rename collides on the shared relation claim for the same reasons a create
+                    // does, so it gets the same two answers: release name rows whose relation a
+                    // corrupt-blob delete already took, and classify what survives. See
+                    // TableServiceImpl.
+                    switch (retryUpdateAfterReclaimingStrandedNames(
+                        desired, meta.getPointerVersion(), destinationGuard)) {
+                      case COMMITTED -> {}
+                      case NAME_HELD ->
+                          throw relationNameConflict(
+                              corr,
+                              pctx.getAccountId(),
+                              desired.getCatalogId(),
+                              desired.getNamespaceId(),
+                              desired.getDisplayName());
+                      // The name was released and then the version moved under us — the same
+                      // conflict the unreclaimed path reports for the same storage state, and
+                      // retryable, where a name collision here would be terminal.
+                      case LOST_UPDATE -> {
+                        var nowMeta = viewRepo.metaForSafe(viewId);
+                        throw GrpcErrors.preconditionFailed(
+                            corr,
+                            VERSION_MISMATCH,
+                            Map.of(
+                                "expected", Long.toString(meta.getPointerVersion()),
+                                "actual", Long.toString(nowMeta.getPointerVersion())));
+                      }
+                    }
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = viewRepo.metaForSafe(viewId);
                     throw GrpcErrors.preconditionFailed(
@@ -398,8 +520,12 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
                   topology.evict(viewId);
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                  if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
+                    // The destination marker was advanced inside the update batch by the guard.
+                    // The source marker is deliberately left alone: losing a child is not a
+                    // publish,
+                    // so bumping it would only break a concurrent delete of the source namespace.
                   }
                   metadataGraph.invalidate(viewId);
 
@@ -418,6 +544,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   public Uni<DeleteViewResponse> deleteView(DeleteViewRequest request) {
     var L = LogHelper.start(LOG, "DeleteView");
 
+    // Retryable on a lost pointer CAS, and the body blocks on storage: see deleteTable.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -458,6 +585,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   topology.evict(viewId);
                   metadataGraph.invalidate(viewId);
+                  // No children-marker bump: a view leaving its namespace is not a child publish,
+                  // and advancing the fence would break a concurrent DeleteNamespace unretryably.
+                  // See RecursiveResourceDropper#cleanupDeletedTable.
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -640,6 +770,137 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   /**
+   * Releases by-name rows and relation-name claims in this namespace whose relation no longer
+   * exists, so a name stranded by a corrupt-blob delete does not stay reserved for good.
+   *
+   * <p>A delete that cannot parse its target removes only the canonical pointer — the repository
+   * derives secondary keys from the value, and an unreadable value yields none — so the row
+   * survives the view and keeps its name. Nothing on the delete path can clean that up: the
+   * namespace those keys are built from lives in the very blob that could not be read. A create is
+   * the first operation that both notices and knows the namespace, which is why the reconcile lives
+   * here, as it does in {@code TableServiceImpl}.
+   *
+   * <p>Only rows whose relation has no canonical pointer left are released, so a live relation
+   * sharing the namespace is untouched. The relation-name claim is shared across kinds, so a
+   * stranded table row can be what holds this view's name — but releasing it is a table write, so
+   * the sweep reaches tables only when this caller holds {@code table.write}. Without it the name
+   * is reported as taken, the same answer {@code DeleteNamespace} gives a caller who cannot clear
+   * what is in its way.
+   *
+   * @return how many rows were released
+   */
+  private int reclaimStrandedNames(ViewSpec spec, String normName) {
+    var pc = principal.get();
+    var kinds =
+        authz.allows(pc, "table.write")
+            ? RecursiveResourceDropper.ALL_RELATION_KINDS
+            : Set.of(ResourceKind.RK_VIEW);
+    int reclaimed = recursiveDropper.reclaimStrandedRelationNames(namespaceOf(spec), kinds);
+    if (reclaimed > 0) {
+      LOG.infof(
+          "view_create_reclaimed_stranded_names namespace_id=%s display_name=%s rows=%d",
+          spec.getNamespaceId().getId(), normName, reclaimed);
+    }
+    return reclaimed;
+  }
+
+  /** The namespace the reconcile works in, scoped to the caller's account. */
+  ai.floedb.floecat.catalog.rpc.Namespace namespaceOf(ViewSpec spec) {
+    String accountId = principal.get().getAccountId();
+    return ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+        .setResourceId(spec.getNamespaceId().toBuilder().setAccountId(accountId))
+        .setCatalogId(spec.getCatalogId().toBuilder().setAccountId(accountId))
+        .build();
+  }
+
+  static ViewSpec normalizedForPersistence(
+      ViewSpec spec, String displayName, ResourceId namespaceId) {
+    return spec.toBuilder().setDisplayName(displayName).setNamespaceId(namespaceId).build();
+  }
+
+  static View normalizedForPersistence(View view, ResourceId namespaceId) {
+    return view.toBuilder().setNamespaceId(namespaceId).build();
+  }
+
+  /**
+   * Re-attempts a create whose name collided, after releasing name rows whose relation is gone.
+   * Retried once, and only when something was actually released.
+   *
+   * @return true when the retry committed the create
+   */
+  private boolean retryCreateAfterReclaimingStrandedNames(
+      View view, ViewSpec spec, String normName, BatchGuard namespaceGuard) {
+    // A name held by a live relation — a view, or a table through the shared claim — collides
+    // deterministically, and the sweep only releases rows whose relation is gone. Rule that out in
+    // a
+    // bounded number of reads rather than scanning the namespace for it. See TableServiceImpl.
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), normName)) {
+      return false;
+    }
+    if (reclaimStrandedNames(spec, normName) == 0) {
+      return false;
+    }
+    return createOnceMore(view, namespaceGuard);
+  }
+
+  /**
+   * One more create attempt, for a caller that has already released the rows holding the name.
+   *
+   * <p>Separate from {@link #retryCreateAfterReclaimingStrandedNames} because that method's
+   * reclaimed-nothing shortcut is wrong for such a caller: it would read the zero as "no stranded
+   * rows, so the name is genuinely taken" when this request had already released them a moment
+   * earlier. See TableServiceImpl, which has the same pair for the same reason.
+   */
+  private boolean createOnceMore(View view, BatchGuard namespaceGuard) {
+    try {
+      viewRepo.create(view, namespaceGuard);
+      return true;
+    } catch (BaseResourceRepository.NameConflictException stillTaken) {
+      return false;
+    }
+  }
+
+  /**
+   * The rename counterpart of {@link #retryCreateAfterReclaimingStrandedNames}: releases name rows
+   * whose relation is gone and retries the update once. A rename notices a stranded name and knows
+   * the namespace its keys are built from exactly as a create does, so leaving it out made renaming
+   * onto such a name fail forever while creating a new view with it succeeded. See
+   * TableServiceImpl.
+   */
+  private ReclaimedRetry retryUpdateAfterReclaimingStrandedNames(
+      View desired, long expectedVersion, BatchGuard destinationGuard) {
+    var spec = specFromView(desired);
+    if (recursiveDropper.relationNameHeld(namespaceOf(spec), desired.getDisplayName())) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+    if (reclaimStrandedNames(spec, desired.getDisplayName()) == 0) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+    try {
+      return viewRepo.update(desired, expectedVersion, destinationGuard)
+          ? ReclaimedRetry.COMMITTED
+          : ReclaimedRetry.LOST_UPDATE;
+    } catch (BaseResourceRepository.NameConflictException stillTaken) {
+      return ReclaimedRetry.NAME_HELD;
+    }
+  }
+
+  /**
+   * What a reclaim-and-retry settled; the view counterpart of the table enum, and there for the
+   * same reason. A boolean read a lost canonical CAS — a version race with a concurrent writer,
+   * nothing to do with the name — as "the name is taken", turning a benign race into a terminal
+   * ALREADY_EXISTS that the path which never reclaims reports as a retryable version mismatch.
+   */
+  private enum ReclaimedRetry {
+    /** The retry committed. */
+    COMMITTED,
+    /** A live relation still owns the name, so the collision is real. */
+    NAME_HELD,
+    /** The retry lost the canonical CAS; the name was released, the version moved. */
+    LOST_UPDATE
+  }
+
+  /**
    * Builds the conflict error for a relation-name collision detected by {@code viewRepo.create}.
    * The shared relation-name claim is kind-agnostic, so re-read the view index to tell the two
    * cases apart: a same-kind view maps to {@code VIEW_ALREADY_EXISTS}, while a name held by another
@@ -647,17 +908,29 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
    * rather than misreporting a table as an existing view.
    */
   private StatusRuntimeException relationNameConflict(
-      String corr, String accountId, ViewSpec spec, String normName) {
-    boolean sameKindView =
-        viewRepo
-            .getByName(
-                accountId, spec.getCatalogId().getId(), spec.getNamespaceId().getId(), normName)
-            .isPresent();
+      String corr,
+      String accountId,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      String normName) {
+    boolean sameKindView;
+    try {
+      sameKindView =
+          viewRepo
+              .getByName(accountId, catalogId.getId(), namespaceId.getId(), normName)
+              .isPresent();
+    } catch (BaseResourceRepository.CorruptionException unresolvable) {
+      // Held by a row whose relation cannot be read and that the reclaim could not release, so it
+      // is
+      // held by something this call cannot name — which is what the kind-agnostic claim says.
+      // Swallowed deliberately; see TableServiceImpl for why an error path must not throw its own.
+      sameKindView = false;
+    }
     var params =
         Map.of(
             "display_name", normName,
-            "catalog_id", spec.getCatalogId().getId(),
-            "namespace_id", spec.getNamespaceId().getId());
+            "catalog_id", catalogId.getId(),
+            "namespace_id", namespaceId.getId());
     return sameKindView
         ? GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, params)
         : GrpcErrors.alreadyExists(corr, RELATION_NAME_ALREADY_CLAIMED, params);

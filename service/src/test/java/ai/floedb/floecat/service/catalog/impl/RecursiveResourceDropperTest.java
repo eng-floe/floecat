@@ -17,6 +17,7 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -161,7 +162,7 @@ class RecursiveResourceDropperTest {
     dropper.markerStore = markerStore;
     dropper.pointerStore = pointerStore;
 
-    when(tableCleanupRepo.prepare(any(), any()))
+    when(tableCleanupRepo.prepare(any(), any(), any()))
         .thenAnswer(
             invocation -> {
               ResourceId namespaceId = invocation.getArgument(0);
@@ -548,7 +549,7 @@ class RecursiveResourceDropperTest {
     when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
         .thenReturn(true);
     // Four snapshot pointer rows under this table's prefix.
-    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any())).thenReturn(4);
+    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any(), any())).thenReturn(4);
 
     var summary =
         dropper.dropNamespaceContents(
@@ -557,7 +558,7 @@ class RecursiveResourceDropperTest {
     assertEquals(1, summary.tablesDeleted);
     // Rows removed, not tables swept — the two are only equal by coincidence.
     assertEquals(4, summary.snapshotPointerRowsDeleted);
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
     // Never the unconditional by-id delete, which would resolve the table's CURRENT pointer.
     verify(tableRepo, never()).delete(any());
   }
@@ -578,8 +579,8 @@ class RecursiveResourceDropperTest {
 
     verify(tableRepo, never()).delete(any());
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
-    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any());
-    verify(tableRoots, never()).purgeRoot(any(), any());
+    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any(), any());
+    verify(tableRoots, never()).purgeRoot(any(), any(), any());
   }
 
   /**
@@ -640,8 +641,8 @@ class RecursiveResourceDropperTest {
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     // The purge runs anyway. Idempotent, and the pointer is provably absent, which is the only
     // condition it needs.
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
-    verify(tableCleanupRepo).deleteSnapshotPointers(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
+    verify(tableCleanupRepo).deleteSnapshotPointers(eq(TABLE_ID), any(), any());
   }
 
   @Test
@@ -657,8 +658,8 @@ class RecursiveResourceDropperTest {
             dropper.dropNamespaceContents(
                 root, ROOT_POINTER_VERSION, new RecursiveResourceDropper.DropSummary()));
 
-    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any());
-    verify(tableRoots, never()).purgeRoot(any(), any());
+    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any(), any());
+    verify(tableRoots, never()).purgeRoot(any(), any(), any());
   }
 
   @Test
@@ -696,7 +697,7 @@ class RecursiveResourceDropperTest {
     verify(namespaceRepo, never()).delete(any(), any());
     verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
-    verify(tableRoots, never()).purgeRoot(any(), any());
+    verify(tableRoots, never()).purgeRoot(any(), any(), any());
   }
 
   /** A malformed placement row cannot be removed without proving its canonical namespace absent. */
@@ -823,7 +824,7 @@ class RecursiveResourceDropperTest {
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     // The owned-state purge still runs on the strength of the absent pointer, so whatever the
     // delete that left this row behind did not get to does not outlive the namespace.
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
   }
 
   @Test
@@ -880,10 +881,12 @@ class RecursiveResourceDropperTest {
    */
   @Test
   void guardedDropCountsATableWhoseCleanupFailedAfterTheDeleteCommitted() {
+    var subtreePin = mock(BatchGuard.class);
+    when(markerStore.namespacePinnedGuard(ROOT_NS, ROOT_POINTER_VERSION)).thenReturn(subtreePin);
     when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
         .thenReturn(true);
     // Storage gives out during the purge that follows the delete.
-    when(tableCleanupRepo.deleteSnapshotPointers(any(), any()))
+    when(tableCleanupRepo.deleteSnapshotPointers(any(), any(), any()))
         .thenThrow(new RuntimeException("storage down"));
 
     var summary = new RecursiveResourceDropper.DropSummary();
@@ -893,6 +896,31 @@ class RecursiveResourceDropperTest {
 
     assertEquals(
         1, summary.tablesDeleted, "a committed delete must survive a later cleanup failure");
+    verify(tableCleanupRepo).prepare(ROOT_NS, TABLE_ID, subtreePin);
+  }
+
+  @Test
+  void cleanupByTableIdSharesDeleteProgressAcrossTaskAndFallbackPhases() {
+    var task =
+        new TableCleanupRepository.Cleanup(
+            ROOT_NS, TABLE_ID, Keys.namespaceTableCleanupPointer("acct", "ns", "tbl"), 1L);
+    doAnswer(
+            invocation -> {
+              Consumer<TableCleanupRepository.Cleanup> consumer = invocation.getArgument(3);
+              consumer.accept(task);
+              return null;
+            })
+        .when(tableCleanupRepo)
+        .forTable(eq(TABLE_ID), any(), any(), any());
+    when(tableCleanupRepo.claimedGuard(task)).thenReturn(BatchGuard.NONE);
+    when(tableCleanupRepo.tableAbsentGuard(TABLE_ID)).thenReturn(BatchGuard.NONE);
+    var progress = ArgumentCaptor.forClass(BaseResourceRepository.GuardedDeleteProgress.class);
+
+    dropper.cleanupDeletedTable(TABLE_ID);
+
+    verify(tableCleanupRepo, org.mockito.Mockito.times(2))
+        .deleteSnapshotPointers(eq(TABLE_ID), any(), progress.capture());
+    assertSame(progress.getAllValues().get(0), progress.getAllValues().get(1));
   }
 
   @Test
@@ -900,7 +928,9 @@ class RecursiveResourceDropperTest {
     var task =
         new TableCleanupRepository.Cleanup(
             ROOT_NS, TABLE_ID, Keys.namespaceTableCleanupPointer("acct", "ns", "tbl"), 1L);
-    org.mockito.Mockito.doReturn(task).when(tableCleanupRepo).prepare(eq(ROOT_NS), eq(TABLE_ID));
+    org.mockito.Mockito.doReturn(task)
+        .when(tableCleanupRepo)
+        .prepare(eq(ROOT_NS), eq(TABLE_ID), any());
     org.mockito.Mockito.doReturn(Optional.of(task)).when(tableCleanupRepo).claim(eq(task), any());
     when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
         .thenReturn(true);
@@ -927,7 +957,7 @@ class RecursiveResourceDropperTest {
             })
         .when(tableCleanupRepo)
         .forEach(eq(ROOT_NS), any());
-    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any()))
+    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any(), any()))
         .thenThrow(new RuntimeException("storage down"))
         .thenReturn(3);
 
@@ -945,7 +975,7 @@ class RecursiveResourceDropperTest {
     verify(tableRepo, org.mockito.Mockito.times(1))
         .deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any());
     verify(tableCleanupRepo).complete(eq(task));
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
   }
 
   /** Readable blob: the content named the namespace at the version being deleted, so no row pin. */
@@ -1170,7 +1200,7 @@ class RecursiveResourceDropperTest {
     // The orphan-to-be is destroyed, and its owned state with it.
     assertEquals(2, summary.tablesDeleted);
     verify(tableRepo).deleteWithPrecondition(eq(childTableId), eq(4L), any());
-    verify(tableRoots).purgeRoot(eq(childTableId), any());
+    verify(tableRoots).purgeRoot(eq(childTableId), any(), any());
     // Order matters: the by-path row is the only handle left for finding this namespace, so it must
     // not be released until its relations are gone.
     var inOrder = org.mockito.Mockito.inOrder(tableRepo, pointerStore);
@@ -1436,7 +1466,7 @@ class RecursiveResourceDropperTest {
     assertEquals(1, summary.tablesDeleted);
     // Still pinned to the observed version, so a table reparented out of the subtree loses the CAS.
     verify(tableRepo).deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any());
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
     // ...and the by-name row the emptiness gate counts is released.
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
@@ -1560,7 +1590,7 @@ class RecursiveResourceDropperTest {
   void unguardedDropPurgesOwnedStateWhenTheTablePointerIsAlreadyGone() {
     when(tableRepo.delete(eq(TABLE_ID), any())).thenReturn(false);
     when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta("", 0L));
-    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any())).thenReturn(2);
+    when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any(), any())).thenReturn(2);
 
     var summary = dropper.dropNamespaceContentsForTeardown(root);
 
@@ -1568,7 +1598,7 @@ class RecursiveResourceDropperTest {
     // because it is the call that destroyed them.
     assertEquals(0, summary.tablesDeleted);
     assertEquals(2, summary.snapshotPointerRowsDeleted);
-    verify(tableRoots).purgeRoot(eq(TABLE_ID), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID), any(), any());
   }
 
   /**
@@ -1591,8 +1621,8 @@ class RecursiveResourceDropperTest {
         () -> dropper.dropNamespaceContentsForTeardown(root));
 
     // Nothing of the surviving table was purged on the way out.
-    verify(tableRoots, never()).purgeRoot(any(), any());
-    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any());
+    verify(tableRoots, never()).purgeRoot(any(), any(), any());
+    verify(tableCleanupRepo, never()).deleteSnapshotPointers(any(), any(), any());
   }
 
   @Test

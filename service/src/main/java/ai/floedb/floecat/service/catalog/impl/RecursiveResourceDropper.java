@@ -222,44 +222,84 @@ public class RecursiveResourceDropper {
    *     tables it called this for.
    */
   public int cleanupDeletedTable(ResourceId tableId) {
-    return cleanupDeletedTable(tableId, tableCleanupRepo.tableAbsentGuard(tableId));
+    return cleanupDeletedTable(
+        tableId, BatchGuard.NONE, new BaseResourceRepository.GuardedDeleteProgress());
   }
 
-  private int cleanupDeletedTable(ResourceId tableId, BatchGuard cleanupGuard) {
+  /** Account-wide recovery for a table named only by a residual cleanup handle. */
+  public int cleanupDeletedTable(
+      ResourceId tableId,
+      BatchGuard base,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
+    int[] deleted = {0};
+    tableCleanupRepo.forTable(
+        tableId,
+        base,
+        deleteProgress,
+        cleanup -> deleted[0] += cleanupDeletedTable(cleanup, base, deleteProgress));
+    return deleted[0]
+        + purgeDeletedTableState(
+            tableId,
+            BatchGuard.all(base, tableCleanupRepo.tableAbsentGuard(tableId)),
+            deleteProgress);
+  }
+
+  private int purgeDeletedTableState(
+      ResourceId tableId,
+      BatchGuard cleanupGuard,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
     topology.evict(tableId);
     metadataGraph.invalidate(tableId);
     // Snapshot-scoped stats pointers live under this prefix and go with it. Stats-generation blobs
     // are left to the GC lifecycle that owns them.
-    int snapshotRows = tableCleanupRepo.deleteSnapshotPointers(tableId, cleanupGuard);
-    tableRoots.purgeRoot(tableId, cleanupGuard);
+    int snapshotRows =
+        tableCleanupRepo.deleteSnapshotPointers(tableId, cleanupGuard, deleteProgress);
+    tableRoots.purgeRoot(tableId, cleanupGuard, deleteProgress);
     tableCleanupRepo.deletePointer(
-        Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()), cleanupGuard);
+        Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()),
+        cleanupGuard,
+        deleteProgress);
     return snapshotRows;
   }
 
   /** Consumes a task staged by public DeleteTable. */
   public int cleanupDeletedTable(TableCleanupRepository.Cleanup cleanup) {
-    return cleanupDeletedTable(cleanup, BatchGuard.NONE);
+    return cleanupDeletedTable(
+        cleanup, BatchGuard.NONE, new BaseResourceRepository.GuardedDeleteProgress());
   }
 
   /** Drains stale or pending table cleanup handles before a plain namespace emptiness decision. */
   public int cleanupDeletedTablesInNamespace(ResourceId namespaceId) {
     int[] deleted = {0};
     tableCleanupRepo.forEach(
-        namespaceId, cleanup -> deleted[0] += cleanupDeletedTable(cleanup, BatchGuard.NONE));
+        namespaceId,
+        cleanup ->
+            deleted[0] +=
+                cleanupDeletedTable(
+                    cleanup, BatchGuard.NONE, new BaseResourceRepository.GuardedDeleteProgress()));
     return deleted[0];
   }
 
   /** Consumes a durable handle only after atomically proving the table pointer is still absent. */
   private int cleanupDeletedTable(TableCleanupRepository.Cleanup cleanup, BatchGuard subtreePin) {
+    return cleanupDeletedTable(
+        cleanup, subtreePin, new BaseResourceRepository.GuardedDeleteProgress());
+  }
+
+  private int cleanupDeletedTable(
+      TableCleanupRepository.Cleanup cleanup,
+      BatchGuard subtreePin,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
     var claimed = tableCleanupRepo.claim(cleanup, subtreePin);
     if (claimed.isEmpty()) {
       return 0;
     }
+    deleteProgress.recordWrite();
     int snapshotRows =
-        cleanupDeletedTable(
+        purgeDeletedTableState(
             claimed.get().tableId(),
-            BatchGuard.all(subtreePin, tableCleanupRepo.claimedGuard(claimed.get())));
+            BatchGuard.all(subtreePin, tableCleanupRepo.claimedGuard(claimed.get())),
+            deleteProgress);
     tableCleanupRepo.complete(claimed.get());
     return snapshotRows;
   }
@@ -1070,7 +1110,7 @@ public class RecursiveResourceDropper {
               tableRepo::metaForSafe,
               blobUri -> tableRepo.getByBlobUri(blobUri).map(Table::getNamespaceId));
       if (pinned.isEmpty()) {
-        var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+        var cleanup = tableCleanupRepo.prepare(namespaceId, tableId, subtreePin);
         // Already gone — a concurrent DeleteTable won, or the canonical pointer was removed on its
         // own by a corrupt-blob delete. Either way the by-name row this scan followed is now
         // orphaned index state, and the emptiness gate counts it, so release it here rather than
@@ -1089,7 +1129,7 @@ public class RecursiveResourceDropper {
         summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin);
         return;
       }
-      var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+      var cleanup = tableCleanupRepo.prepare(namespaceId, tableId, subtreePin);
       // Delete pinned to the exact pointer version the membership check observed. Any concurrent
       // mutation — crucially a reparent that moved this table out of the subtree — advances the
       // canonical pointer, so the CAS fails and no owned state is purged. Deleting by id alone
@@ -1129,7 +1169,7 @@ public class RecursiveResourceDropper {
       return;
     }
 
-    var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+    var cleanup = tableCleanupRepo.prepare(namespaceId, tableId, subtreePin);
     boolean committed = tableRepo.delete(tableId, subtreePin);
     // Counted the moment it commits, before any of the cleanup below, which can throw — see the
     // guarded branch above. A retried teardown must not count a deletion an earlier pass performed,
