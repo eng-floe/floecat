@@ -1680,11 +1680,23 @@ history in blobs while enabling fast name-based resolution via pointers.</p>
 /accounts/{account_id}/catalog-overlays/by-id/{overlay_id}
 /accounts/{account_id}/catalog-overlays/by-name/{overlay_name}
 /accounts/{account_id}/catalog-overlays/by-integration/{integration_id}/{overlay_id}
+/accounts/{account_id}/sql-catalogs/by-name/{catalog_or_overlay_name}
 /accounts/{account_id}/idempotency/{operation}/{key}
 /accounts/{account_id}/deleting
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
 </code></pre></div>
+<p>The <code>sql-catalogs/by-name</code> pointer is a shared reservation written atomically with either a Catalog
+or CatalogOverlay pointer set. It enforces one top-level SQL catalog namespace across both resource
+kinds and is moved or removed in the same transaction as rename, replacement, or deletion.</p>
+<p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
+<div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}:{credential_generation}
+</code></pre></div>
+<p>The key is derived internally from the persisted integration identity and credential generation; it
+is not present in the resource payload. A new secret is written before publishing the matching
+generation; an old secret is deleted only after the resource mutation commits. Definite failures
+delete an unpublished generation. Reclamation after acknowledgement-uncertain failures is deferred
+to a later PR and is not implemented here.</p>
 <p>Stats target identity is encoded in <code>{target_id}</code> and is the storage key component for all
 persisted table/column/expression stats at a given <code>(table_id, snapshot_id)</code>.</p>
 <p>Constraint storage semantics:</p>

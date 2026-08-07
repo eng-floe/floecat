@@ -1756,11 +1756,15 @@ manifest entry without its <code>stats_generation_ref</code> is not yet query-vi
 to the newest finalized snapshot at or before it instead, so logical metadata can move current
 without exposing an unfinalized scan.</p>
 <p>The gRPC service (Quarkus) enforces tenancy, authorization, idempotency, and transactional CRUD for
-catalog integrations and overlays. These resources are intentionally operationally inert: this API
-does not define credentials, connectivity, adapter selection, validation, reconciliation, or
-lifecycle cleanup. Legacy connectors remain unchanged and are not part of either new contract.</p>
+catalog integrations and overlays. Catalog integrations include typed, non-secret authentication
+configuration plus write-only credential create/rotation primitives; secret payloads are stored
+separately and never returned. A typed credential-store resolver derives the internal secret key
+from integration identity and credential generation for follow-on clients. The resources remain operationally inert: this API does not perform
+connectivity validation, adapter selection, or reconciliation. Legacy connectors remain unchanged
+and are not part of either new contract.</p>
 <p>An overlay is itself the top-level, read-only SQL catalog; it does not reference a separate Catalog
-resource. Overlay creation is conditioned on the current integration pointer version and advances a
+resource. Catalogs and overlays atomically reserve names in one account-scoped top-level SQL catalog
+namespace. Overlay creation is conditioned on the current integration pointer version and advances a
 fixed integration dependency marker in the same transaction. Integration deletion checks both the
 strongly consistent dependent-overlay index and that marker, closing concurrent
 overlay-create/integration-delete races. Account deletion removes overlays before integrations.</p>
