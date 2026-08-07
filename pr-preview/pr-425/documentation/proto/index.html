@@ -1936,8 +1936,10 @@ CLI, and reconciler.</p>
 <li><strong><code>connector/connector.proto</code></strong> – Connector management RPCs plus reconciliation job tracking and
   validation routines.</li>
 <li><strong><code>integration/*.proto</code></strong> – External catalog identity and SQL catalog overlay CRUD APIs,
-  including segment-based namespace filters. These contracts deliberately contain no Connector,
-  credential, connectivity, validation, or reconciliation types.</li>
+  including segment-based namespace filters, typed catalog authentication configuration, write-only
+  credential payloads, non-secret configured/generation state, and credential rotation. These contracts are
+  independent of Connector and deliberately contain no connectivity-validation or reconciliation
+  operations.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
   snapshot pin metadata sent down to the SQL planner.</li>
 <li><strong><code>query/system_objects_registry.proto</code></strong> – <code>GetSystemObjects</code> plus message definitions for builtin functions,

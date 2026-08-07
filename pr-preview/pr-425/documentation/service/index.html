@@ -2060,24 +2060,42 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   descendants. Retrying a committed account delete resumes cleanup using the deletion record's
   original mutation metadata.</li>
 <li><strong>CatalogIntegrationsImpl</strong> – Provides CRUD for external catalog identity records. The contract is
-  intentionally independent of legacy Connectors and contains no credential, adapter,
-  connectivity-validation, authentication, or reconciliation behavior. Catalog endpoint URIs must
+  intentionally independent of legacy Connectors. It persists typed non-secret authentication
+  configuration for OAuth client credentials, bearer tokens, AWS assume-role/access-key, and AWS
+  SigV4. Secret values are accepted only in write-only credential messages, stored through the
+  SecretsManager under a deterministic integration-ID/credential-generation key, and never included
+  in resource responses. A typed credential-store resolver is available to follow-on catalog clients. A dedicated
+  authentication update RPC replaces configuration and rotates credentials while advancing a
+  visible credential generation. Unity integrations accept OAuth or bearer authentication; Iceberg
+  REST integrations accept the structurally valid authentication forms needed by the SQL contract.
+  Vendor/endpoint-specific compatibility is intentionally deferred to adapter selection and
+  validation in a follow-on change; this service does not yet perform connectivity validation or
+  reconciliation. Catalog endpoint URIs must
   be hierarchical HTTP(S) URLs and cannot contain user-info, secret-bearing query parameters, or
   fragments. Type and endpoint are immutable through update. The API exposes <code>CM_REPLACE</code> and
-  <code>CM_RETURN_EXISTING</code> as primitives for a future SQL layer's <code>OR REPLACE</code> and <code>IF NOT EXISTS</code>.
+  <code>CM_RETURN_EXISTING</code> as primitives for a SQL layer's <code>OR REPLACE</code> and <code>IF NOT EXISTS</code>.
   Replacement publishes a new resource identity and atomically swaps the name pointer before the
   old identity is removed. Integration replacement is rejected while overlays depend on the old
   identity. Cascading delete uses a durable fence so retries resume dependent-overlay cleanup before
   removing the integration, dependency marker, and fence together. Idempotent creates publish the
   immutable success receipt in the same pointer transaction as the resource, so a retry never
-  rebuilds its response from subsequently mutable state.
+  rebuilds its response from subsequently mutable state. Creates carrying credentials support
+  idempotency. Secret values are excluded from durable request fingerprints and receipts, so the
+  first successfully published credential value wins for retries of the same key. Credential writes
+  happen before resource publication; definite publication failures remove the unpublished
+  generation, and replaced credentials are deleted only after the resource CAS commits. If the
+  publication acknowledgement is uncertain, the new secret is retained so a visible integration can
+  never reference a deleted secret. Reclamation of such unreferenced generations is planned for a
+  later PR and is not implemented here.
   Get accepts either resource ID or
   exact SQL name. Reads require
   <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>, and cascading deletion of
   dependent overlays also requires <code>catalog-overlay.write</code>.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Makes an integration and optional upstream namespace filters available
   as a top-level, read-only SQL catalog. It does not reference or manage a separate Catalog
-  resource. Creating an overlay atomically publishes its pointers while requiring the integration
+  resource. Catalog and overlay repositories share an account-scoped SQL-catalog name reservation,
+  so creates, renames, replacements, and deletes cannot expose duplicate top-level SQL names across
+  the two resource kinds. Creating an overlay atomically publishes its pointers while requiring the integration
   pointer to remain at its validated version, and advances the integration dependency marker in the
   same transaction. <code>CM_REPLACE</code> atomically swaps in a new overlay identity and may bind it to
   another integration while advancing both dependency markers; <code>CM_RETURN_EXISTING</code>
