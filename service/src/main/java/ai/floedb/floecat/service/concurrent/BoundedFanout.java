@@ -232,6 +232,14 @@ final class BoundedFanout {
       if (runtime.cancellationObserved()) {
         surfaceSubmissionFailure(cancelled(), runtime, active, outcomes, ordered);
       }
+      // A task can complete while the initial window is still being submitted. fillWindow then
+      // records that terminal slot before the next submission, leaving an open permit when it
+      // returns at its per-call submission cap. Refill that opening before invoking the ordered
+      // consumer, just as the main completion loop does.
+      next = fillWindow(items, permits, next, active, outcomes, ordered, runtime);
+      if (runtime.cancellationObserved()) {
+        surfaceSubmissionFailure(cancelled(), runtime, active, outcomes, ordered);
+      }
       ordered.deliverReady();
       while (!active.isEmpty()) {
         CompletionSlot<O> slot;
