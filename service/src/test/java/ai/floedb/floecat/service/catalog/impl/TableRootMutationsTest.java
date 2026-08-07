@@ -47,7 +47,9 @@ class TableRootMutationsTest {
   @BeforeEach
   void setUp() {
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    committer = new TableRootCommitter(roots);
+    committer =
+        new TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
   }
 
   private static BlobRef ref(String uri) {

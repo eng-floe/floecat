@@ -65,6 +65,7 @@ class QueryContextStoreImplTest {
     store.maxSize = 1000L;
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
+    store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
     store.init();
   }
 

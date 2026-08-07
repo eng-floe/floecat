@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.ArrayList;
@@ -63,7 +64,7 @@ class TableRootCommitterTest {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     roots = new TableRootRepository(pointers, blobs);
-    committer = new TableRootCommitter(roots);
+    committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
   }
 
   private static BlobRef ref(String uri) {
@@ -200,7 +201,7 @@ class TableRootCommitterTest {
         .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
     when(failing.update(any(), anyLong()))
         .thenThrow(new BaseResourceRepository.NotFoundException("pointer gone"));
-    var failingCommitter = new TableRootCommitter(failing);
+    var failingCommitter = new TableRootCommitter(failing, new TableBlobReachabilityGuard());
 
     assertThrows(
         TableRootCommitter.CommitFailedException.class,
@@ -219,7 +220,7 @@ class TableRootCommitterTest {
     when(contended.getByBlobUriLive("s3://t/root.pb"))
         .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
     when(contended.update(any(), anyLong())).thenReturn(false); // never wins
-    var contendedCommitter = new TableRootCommitter(contended);
+    var contendedCommitter = new TableRootCommitter(contended, new TableBlobReachabilityGuard());
 
     assertThrows(
         TableRootCommitter.CommitFailedException.class,

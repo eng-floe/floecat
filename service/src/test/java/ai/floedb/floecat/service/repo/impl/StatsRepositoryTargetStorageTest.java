@@ -1984,6 +1984,32 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void generationGcDiscoversAndReclaimsObjectOnlyOrphan() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 782L;
+    String generationId = "crashed-upload";
+    String orphan =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/target/stats.pb";
+    blobStore.put(orphan, new byte[] {1}, "application/x-protobuf");
+
+    StatsRepository.GenerationGcResult result =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, Long.MAX_VALUE, 0L, 100, Long.MAX_VALUE);
+
+    assertThat(result.generationsReclaimed()).isEqualTo(1);
+    assertThat(blobStore.head(orphan)).isEmpty();
+    assertThat(
+            pointerStore.get(
+                Keys.snapshotTargetStatsDeletedGenerationFencePointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isPresent();
+  }
+
+  @Test
   void generationGcNeverDeletesAnObjectYoungerThanTheFrozenPassStart() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

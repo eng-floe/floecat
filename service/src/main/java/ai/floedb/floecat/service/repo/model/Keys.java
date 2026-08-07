@@ -299,6 +299,10 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/storage-authorities/by-id/";
   }
 
+  public static String storageAuthorityRootPrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/storage-authorities/";
+  }
+
   public static String storageAuthorityPointerByName(String accountId, String displayName) {
     String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
@@ -752,6 +756,10 @@ public final class Keys {
     long sid = reqNonNegative("snapshot_id", snapshotId);
     return String.format(
         "/accounts/%s/tables/%s/target-stats/%019d/", encode(tid), encode(tbid), sid);
+  }
+
+  public static String tableTargetStatsBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "target-stats/";
   }
 
   public static String snapshotIndexArtifactDirectoryPointer(
@@ -1665,6 +1673,39 @@ public final class Keys {
         snapshotId, percentDecode(manifestUri.substring(generationStart, generationEnd)));
   }
 
+  /** Recovers a generation identity from a generation object-store common prefix. */
+  public static GenerationKey generationFromGenerationBlobPrefix(String generationPrefix) {
+    if (generationPrefix == null) {
+      return null;
+    }
+    String marker = "/target-stats/";
+    int markerAt = generationPrefix.indexOf(marker);
+    if (markerAt < 0) {
+      return null;
+    }
+    int snapshotStart = markerAt + marker.length();
+    int snapshotEnd = generationPrefix.indexOf("/generations/", snapshotStart);
+    if (snapshotEnd < 0) {
+      return null;
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(generationPrefix.substring(snapshotStart, snapshotEnd));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int generationStart = snapshotEnd + "/generations/".length();
+    int generationEnd = generationPrefix.indexOf('/', generationStart);
+    if (generationEnd < 0) {
+      generationEnd = generationPrefix.length();
+    }
+    if (generationEnd <= generationStart) {
+      return null;
+    }
+    return new GenerationKey(
+        snapshotId, percentDecode(generationPrefix.substring(generationStart, generationEnd)));
+  }
+
   /** One stats generation's identity within a table, as encoded in its pointer keys. */
   public record GenerationKey(long snapshotId, String generationId) {}
 
@@ -1784,6 +1825,10 @@ public final class Keys {
           seg.length == 6 && "connector".equals(seg[4])
               ? connectorPointerById(account, percentDecode(seg[3]))
               : null;
+      case "storage-authorities" ->
+          seg.length == 6 && "storage-authority".equals(seg[4])
+              ? storageAuthorityPointerById(account, percentDecode(seg[3]))
+              : null;
       case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
       default -> null;
     };
@@ -1800,6 +1845,10 @@ public final class Keys {
         return seg.length == 6 ? tableRootByTable(account, table) : null;
       case "snapshots":
         {
+          // snapshots/current/<sha>.pb
+          if (seg.length == 7 && "current".equals(seg[5])) {
+            return currentSnapshotPointerByTable(account, table);
+          }
           // snapshots/<snapshot_id>/snapshot/<sha>.pb
           Long sid = parseSnapshotId(seg[5]);
           if (sid == null) {

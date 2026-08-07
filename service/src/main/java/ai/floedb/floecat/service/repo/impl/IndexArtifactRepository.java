@@ -103,15 +103,6 @@ public class IndexArtifactRepository {
     this.reachabilityGuard = reachabilityGuard;
   }
 
-  public IndexArtifactRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this(pointerStore, blobStore, blobCache, TableBlobReachabilityGuard.shared());
-  }
-
-  public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
-  }
-
   public void putIndexArtifact(IndexArtifactRecord value) {
     requireValidRecord(value);
     ResourceId tableId = value.getTableId();

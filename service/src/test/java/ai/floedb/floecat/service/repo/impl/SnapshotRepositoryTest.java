@@ -472,7 +472,9 @@ class SnapshotRepositoryTest {
     seedRootWithCurrency(tableRid, 2L, newerTime);
 
     var roots = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     committer.commit(
         tableRid,
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.setStatsGeneration(
@@ -638,7 +640,9 @@ class SnapshotRepositoryTest {
 
     // Commit a root whose entry references the ORIGINAL blob (rootRefUri), currency = 9.
     var rootsRepo = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(rootsRepo);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            rootsRepo, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     committer.commit(
         tableRid,
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
@@ -753,7 +757,9 @@ class SnapshotRepositoryTest {
     }
 
     var roots = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
       var entry =
           ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
@@ -880,7 +886,9 @@ class SnapshotRepositoryTest {
 
   private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {
     var roots = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     for (Snapshot snap : snapshotRepo.list(tableId, 100, "", new StringBuilder())) {
       committer.commit(
           tableId,

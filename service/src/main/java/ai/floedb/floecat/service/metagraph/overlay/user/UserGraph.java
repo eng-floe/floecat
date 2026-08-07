@@ -41,6 +41,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import com.google.protobuf.Timestamp;
@@ -152,7 +153,7 @@ public final class UserGraph {
         tableRepo,
         viewRepo,
         tableRootRepo,
-        new TableRootCommitter(tableRootRepo),
+        new TableRootCommitter(tableRootRepo, new TableBlobReachabilityGuard()),
         observability,
         principal,
         cacheMaxSize,
@@ -183,7 +184,7 @@ public final class UserGraph {
         tableRepo,
         viewRepo,
         tableRootRepo,
-        new TableRootCommitter(tableRootRepo),
+        new TableRootCommitter(tableRootRepo, new TableBlobReachabilityGuard()),
         observability,
         new PrincipalProvider() {
           @Override

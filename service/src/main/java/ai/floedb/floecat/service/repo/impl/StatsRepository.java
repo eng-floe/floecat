@@ -216,6 +216,11 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
+  public void beginStatsGeneration(ResourceId tableId, long snapshotId, String generationId) {
+    ensureWritableGeneration(tableId, snapshotId, requireGenerationId(generationId));
+  }
+
+  @Override
   public void replaceTargetStatsInGeneration(
       ResourceId tableId,
       long snapshotId,
@@ -1644,10 +1649,22 @@ public class StatsRepository implements StatsStore {
   public static final class GenerationGcContinuation {
     private java.util.LinkedHashSet<Keys.GenerationKey> discovered =
         new java.util.LinkedHashSet<>();
+    private final java.util.Set<Keys.GenerationKey> pointerBacked = new java.util.HashSet<>();
     private final int maxCandidates;
     private List<Keys.GenerationKey> candidates = List.of();
     private String pointerToken = "";
     private int candidateIndex;
+    private boolean pointerScanComplete;
+    private String snapshotPrefixToken = "";
+    private String snapshotPrefixNextToken = "";
+    private List<String> snapshotPrefixPage = List.of();
+    private int snapshotPrefixIndex;
+    private boolean snapshotPrefixPageLoaded;
+    private String generationPrefixToken = "";
+    private String manifestBlobToken = "";
+    private boolean generationPrefixScanComplete;
+    private boolean manifestBlobScanComplete;
+    private boolean blobScanComplete;
     private boolean scanComplete;
 
     public GenerationGcContinuation() {
@@ -1681,6 +1698,11 @@ public class StatsRepository implements StatsStore {
       }
       discovered.add(generation);
     }
+
+    private void discoverFromPointer(Keys.GenerationKey generation) {
+      discover(generation);
+      pointerBacked.add(generation);
+    }
   }
 
   public static final class GenerationGcCapacityExceededException extends RuntimeException {
@@ -1698,7 +1720,7 @@ public class StatsRepository implements StatsStore {
       ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
     java.util.Objects.requireNonNull(continuation, "continuation");
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
-    while (!continuation.scanComplete) {
+    while (!continuation.pointerScanComplete) {
       if (System.currentTimeMillis() >= deadlineMs) {
         return false;
       }
@@ -1713,7 +1735,7 @@ public class StatsRepository implements StatsStore {
         }
         Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
         if (generation != null) {
-          continuation.discover(generation);
+          continuation.discoverFromPointer(generation);
         }
       }
       if (!pageComplete) {
@@ -1721,9 +1743,91 @@ public class StatsRepository implements StatsStore {
       }
       continuation.pointerToken = next.toString();
       if (continuation.pointerToken.isBlank()) {
-        continuation.scanComplete = true;
-        continuation.candidates = List.copyOf(continuation.discovered);
-        continuation.discovered = null;
+        continuation.pointerScanComplete = true;
+      }
+    }
+    if (!discoverGenerationBlobKeys(tableId, deadlineMs, continuation)) {
+      return false;
+    }
+    if (!continuation.scanComplete) {
+      continuation.scanComplete = true;
+      continuation.candidates = List.copyOf(continuation.discovered);
+      continuation.discovered = null;
+    }
+    return true;
+  }
+
+  private boolean discoverGenerationBlobKeys(
+      ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
+    String tablePrefix = Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId());
+    while (!continuation.blobScanComplete) {
+      if (System.currentTimeMillis() >= deadlineMs) {
+        return false;
+      }
+      if (!continuation.snapshotPrefixPageLoaded) {
+        BlobStore.Page page =
+            blobStore.listPrefixes(tablePrefix, 500, continuation.snapshotPrefixToken);
+        continuation.snapshotPrefixPage = List.copyOf(page.keys());
+        continuation.snapshotPrefixIndex = 0;
+        continuation.snapshotPrefixNextToken = blankToEmpty(page.nextToken());
+        continuation.snapshotPrefixPageLoaded = true;
+      }
+      while (continuation.snapshotPrefixIndex < continuation.snapshotPrefixPage.size()) {
+        if (System.currentTimeMillis() >= deadlineMs) {
+          return false;
+        }
+        String snapshotPrefix =
+            continuation.snapshotPrefixPage.get(continuation.snapshotPrefixIndex);
+        if (!continuation.generationPrefixScanComplete) {
+          BlobStore.Page page =
+              blobStore.listPrefixes(
+                  snapshotPrefix + "generations/", 500, continuation.generationPrefixToken);
+          for (String generationPrefix : page.keys()) {
+            if (System.currentTimeMillis() >= deadlineMs) {
+              return false;
+            }
+            Keys.GenerationKey generation =
+                Keys.generationFromGenerationBlobPrefix(generationPrefix);
+            if (generation != null) {
+              continuation.discover(generation);
+            }
+          }
+          continuation.generationPrefixToken = blankToEmpty(page.nextToken());
+          if (!continuation.generationPrefixToken.isBlank()) {
+            continue;
+          }
+          continuation.generationPrefixScanComplete = true;
+        }
+        if (!continuation.manifestBlobScanComplete) {
+          BlobStore.Page page =
+              blobStore.list(snapshotPrefix + "manifests/", 500, continuation.manifestBlobToken);
+          for (String manifestUri : page.keys()) {
+            if (System.currentTimeMillis() >= deadlineMs) {
+              return false;
+            }
+            Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
+            if (generation != null) {
+              continuation.discover(generation);
+            }
+          }
+          continuation.manifestBlobToken = blankToEmpty(page.nextToken());
+          if (!continuation.manifestBlobToken.isBlank()) {
+            continue;
+          }
+          continuation.manifestBlobScanComplete = true;
+        }
+        continuation.snapshotPrefixIndex++;
+        continuation.generationPrefixToken = "";
+        continuation.manifestBlobToken = "";
+        continuation.generationPrefixScanComplete = false;
+        continuation.manifestBlobScanComplete = false;
+      }
+      if (continuation.snapshotPrefixNextToken.isBlank()) {
+        continuation.blobScanComplete = true;
+      } else {
+        continuation.snapshotPrefixToken = continuation.snapshotPrefixNextToken;
+        continuation.snapshotPrefixPage = List.of();
+        continuation.snapshotPrefixPageLoaded = false;
       }
     }
     return true;
@@ -1818,9 +1922,30 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue;
       }
-      // One HEAD answers both existence and age: absent means unpublished (an in-flight replace
-      // writes records before publishing) or already reclaimed.
+      boolean orphanWithoutLifecycle = lifecycle == null;
+      if (orphanWithoutLifecycle && continuation.pointerBacked.contains(candidate)) {
+        // Legacy/in-flight generations can have target pointers before a lifecycle marker. They
+        // are not object-only crash residue and remain owned by their explicit publisher cleanup.
+        continuation.candidateIndex++;
+        continue;
+      }
+      // Prefer the manifest as the age fence. Legacy/crashed remote work can have upload objects
+      // but no manifest or lifecycle marker, so use an upload object as the repair-scan anchor.
       var header = blobStore.head(manifestUri).orElse(null);
+      if (header == null && orphanWithoutLifecycle) {
+        String generationBlobPrefix =
+            Keys.snapshotTargetStatsGenerationBlobPrefix(
+                accountId, tableId.getId(), snapshotId, generationId);
+        List<String> abandonedUploadKeys =
+            blobStore.list(generationBlobPrefix + "worker-uploads/", 1, "").keys();
+        if (abandonedUploadKeys.isEmpty()) {
+          abandonedUploadKeys =
+              blobStore.list(generationBlobPrefix + "finalizer-outputs/", 1, "").keys();
+        }
+        if (!abandonedUploadKeys.isEmpty()) {
+          header = blobStore.head(abandonedUploadKeys.get(0)).orElse(null);
+        }
+      }
       if (header == null) {
         continuation.candidateIndex++;
         continue;
@@ -1852,14 +1977,20 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
-      if (!claimPublishedGenerationForGc(tableId, snapshotId, generationId)) {
+      boolean claimed =
+          orphanWithoutLifecycle
+              ? claimOrphanGenerationForGc(tableId, snapshotId, generationId)
+              : claimPublishedGenerationForGc(tableId, snapshotId, generationId);
+      if (!claimed) {
         continuation.candidateIndex++;
         continue;
       }
       if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
           || isProtectedManifestUri.test(manifestUri)
           || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
-        restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+        if (!orphanWithoutLifecycle) {
+          restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+        }
         continuation.candidateIndex++;
         continue;
       }
@@ -2129,6 +2260,19 @@ public class StatsRepository implements StatsStore {
     }
     throw new StorageAbortRetryableException(
         "stats generation GC claim conflicted repeatedly: " + generationId);
+  }
+
+  /**
+   * Claims a keyspace discovered only in object storage. CAS from absent is the publication fence:
+   * a current writer registers WRITING before receiving its upload prefix, while a legacy writer
+   * racing this repair either registers first or observes DELETING and cannot publish.
+   */
+  private boolean claimOrphanGenerationForGc(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    Pointer deleting =
+        PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_DELETING, 1L);
+    return pointerStore.compareAndSet(lifecyclePointer, 0L, deleting);
   }
 
   private void restoreGenerationPublishedAfterFailedGcClaim(

@@ -48,26 +48,13 @@ public class TableRootCommitter {
   private static final int MAX_COMMIT_ATTEMPTS = 4;
 
   private final TableRootRepository roots;
-  private final TableRootSynthesizer synthesizer;
   private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public TableRootCommitter(
-      TableRootRepository roots,
-      TableRootSynthesizer synthesizer,
-      TableBlobReachabilityGuard reachabilityGuard) {
+      TableRootRepository roots, TableBlobReachabilityGuard reachabilityGuard) {
     this.roots = roots;
-    this.synthesizer = synthesizer;
     this.reachabilityGuard = reachabilityGuard;
-  }
-
-  public TableRootCommitter(TableRootRepository roots, TableRootSynthesizer synthesizer) {
-    this(roots, synthesizer, TableBlobReachabilityGuard.shared());
-  }
-
-  /** Without legacy synthesis (unit tests exercising pure commit semantics). */
-  public TableRootCommitter(TableRootRepository roots) {
-    this(roots, null);
   }
 
   /** A root commit could not be applied; the calling mutation must fail. */
@@ -91,11 +78,7 @@ public class TableRootCommitter {
     TableRoot apply(Optional<TableRoot> current);
   }
 
-  /**
-   * Materializes the table's root without mutating it: a stored root is returned as-is, a legacy
-   * table gets its history synthesized and committed, and an unknown table yields empty. The
-   * read-side entry point for lazy migration.
-   */
+  /** Returns the stored root without mutating it, or empty when the table has no root. */
   public Optional<TableRoot> ensureRoot(ResourceId tableId) {
     return commit(tableId, current -> current.orElse(null));
   }
@@ -104,13 +87,6 @@ public class TableRootCommitter {
    * Applies {@code mutator} to the table's root under CAS, retrying with fresh reads on contention.
    * Returns the committed root (or the untouched current root on a mutator no-op; empty only when
    * the table has no root and the mutator declined to create one).
-   *
-   * <p>Backward compatibility: when no root is stored yet, the mutator receives a root synthesized
-   * from the table's legacy pointer families (its full snapshot history, currency, stats and
-   * constraints refs), and the first commit persists that history together with the mutation — a
-   * pre-existing deployment migrates lazily, table by table, with no ops step. A pure synthesis
-   * (mutator no-op over a synthesized root) is still persisted: materializing the history IS the
-   * commit.
    */
   public Optional<TableRoot> commit(ResourceId tableId, RootMutator mutator) {
     return reachabilityGuard.publishing(tableId, () -> commitGuarded(tableId, mutator));
@@ -150,15 +126,11 @@ public class TableRootCommitter {
               "root pointer moved mid-read for table " + tableId.getId());
         }
         boolean fromStore = stored.isPresent();
-        Optional<TableRoot> current =
-            (fromStore || synthesizer == null) ? stored : synthesizer.synthesize(tableId);
+        Optional<TableRoot> current = stored;
 
         TableRoot produced = mutator.apply(current);
         if (produced == null) {
-          if (fromStore || current.isEmpty()) {
-            return current; // no-op on a stored root, or nothing exists at all
-          }
-          produced = current.get(); // no-op mutation, but the synthesized history must persist
+          return current;
         } else if (fromStore && current.get().equals(produced)) {
           return current; // no-op: nothing to commit
         }

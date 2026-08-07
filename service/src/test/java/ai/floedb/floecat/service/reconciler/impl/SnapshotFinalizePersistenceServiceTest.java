@@ -77,7 +77,9 @@ class SnapshotFinalizePersistenceServiceTest {
         .thenReturn(
             Optional.of(
                 CurrentSnapshotPointer.newBuilder().setTableId(tableId).setSnapshotId(5).build()));
-    var committer = new TableRootCommitter(roots);
+    var committer =
+        new TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     persistence.rootWriter =
         new TableRootWriter(roots, committer, null, snapshotRepo, null, persistence.statsStore);
 
