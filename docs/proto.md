@@ -6,6 +6,13 @@ structures for resource identifiers, catalog services, query lifecycle metadata,
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
+### Remote executor versioning
+
+Snapshot plans now require one immutable file execution plan for every declared file path. Remote
+planner/finalizer executors and the control plane must therefore be cut over together after existing
+leases are drained. Rolling or split deployments containing both plan revisions are unsupported;
+there is intentionally no empty-plan compatibility fallback.
+
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
 `connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
 under the `ai.floedb.floecat.*.rpc` packages and are consumed by the Quarkus service, connectors,

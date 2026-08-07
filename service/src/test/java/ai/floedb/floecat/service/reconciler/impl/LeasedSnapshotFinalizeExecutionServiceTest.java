@@ -175,10 +175,19 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
             .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
             .build();
+    String sharedPath = "s3://bucket/delete.parquet";
+    var sharedStatsRecord =
+        ai.floedb.floecat.catalog.rpc.TargetStatsRecord.newBuilder()
+            .setTarget(StatsTargetIdentity.fileTarget(sharedPath))
+            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "shared-source")
+            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
+            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
+            .build();
     byte[] payload =
         ReusableArtifactBundlePayload.newBuilder()
             .setFormatVersion(1)
             .addFileStats(statsRecord)
+            .addFileStats(sharedStatsRecord)
             .build()
             .toByteArray();
     byte[] payloadDigest = MessageDigest.getInstance("SHA-256").digest(payload);
@@ -204,6 +213,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             List.of(
                 artifact.toBuilder()
                     .setTargetStorageId(StatsTargetIdentity.storageId(statsRecord.getTarget()))
+                    .build(),
+                artifact.toBuilder()
+                    .setTargetStorageId(
+                        StatsTargetIdentity.storageId(sharedStatsRecord.getTarget()))
                     .build()),
             List.of());
     when(blobs.get(uri)).thenReturn(payload);
@@ -344,6 +357,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(service.statsStore.isPreparedFileGroup(
             any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
         .thenReturn(true);
+    when(service.snapshotRepo.recordReuseManifest(
+            any(), anyLong(), anyString(), anyLong(), any(byte[].class), anyString()))
+        .thenReturn(true);
     when(persistence.prepareStatsGenerationForPublication(
             any(), anyLong(), anyString(), anyBoolean()))
         .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
@@ -403,6 +419,34 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 Keys.snapshotTargetStatsManifestBlobUri(
                     ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "full-rescan-parent-job")));
     verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
+  }
+
+  @Test
+  void deletedSnapshotCompletesWithoutAdvancingCurrent() {
+    SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes());
+    when(service.snapshotRepo.recordReuseManifest(
+            any(), anyLong(), anyString(), anyLong(), any(byte[].class), anyString()))
+        .thenReturn(false);
+
+    service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
+
+    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(jobs)
+        .completeSnapshotFinalizeSuccess(
+            eq(FINALIZE_JOB_ID),
+            eq(LEASE_EPOCH),
+            anyString(),
+            anyString(),
+            anyLong(),
+            anyString(),
+            anyInt(),
+            anyInt(),
+            anyLong(),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyString());
   }
 
   @Test

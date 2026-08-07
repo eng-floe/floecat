@@ -142,6 +142,15 @@ public class TableRootSynthesizer {
       // time, snapshot id as tiebreak) over the entries that actually made the manifest.
       newestEntry(manifestHead).ifPresent(e -> root.setCurrentSnapshotId(e.getSnapshotId()));
     }
+    if (root.hasCurrentSnapshotId() && manifestHead != null) {
+      SnapshotManifests.Chain indexed = SnapshotManifests.chain(roots, tableId, manifestHead);
+      indexed
+          .findEntry(root.getCurrentSnapshotId())
+          .ifPresent(
+              current ->
+                  root.addAllReusableSnapshotCandidates(
+                      SnapshotManifests.latestReusableCandidates(indexed, current, 2)));
+    }
     return Optional.of(root.build());
   }
 

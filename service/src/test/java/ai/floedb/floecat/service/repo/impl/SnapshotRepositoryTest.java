@@ -684,11 +684,13 @@ class SnapshotRepositoryTest {
     snapshotRepo.create(original);
 
     byte[] digest = new byte[32];
-    snapshotRepo.recordReuseManifest(
-        tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb");
+    assertTrue(
+        snapshotRepo.recordReuseManifest(
+            tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb"));
     Snapshot updated = snapshotRepo.getById(tableRid, 42L).orElseThrow();
-    snapshotRepo.recordReuseManifest(
-        tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb");
+    assertTrue(
+        snapshotRepo.recordReuseManifest(
+            tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb"));
     Snapshot replayed = snapshotRepo.getById(tableRid, 42L).orElseThrow();
 
     assertEquals("value", updated.getSummaryOrThrow("existing"));
@@ -699,6 +701,15 @@ class SnapshotRepositoryTest {
         "/stats/generation.pb", updated.getReuseManifestRef().getStatsGenerationManifestUri());
     assertEquals(updated, replayed);
     assertEquals(updated, snapshotRepo.getById(tableRid, 42L).orElseThrow());
+  }
+
+  @Test
+  void recordReuseManifestReturnsFalseWhenSnapshotWasDeleted() {
+    var tableRid = newSeededTable();
+
+    assertFalse(
+        snapshotRepo.recordReuseManifest(
+            tableRid, 42L, "/reuse/manifest.pb", 123L, new byte[32], "/stats/generation.pb"));
   }
 
   @Test
@@ -740,8 +751,14 @@ class SnapshotRepositoryTest {
           ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
               roots, tableRid, entry.build(), null, false));
     }
+    var currentEntry =
+        SnapshotManifests.findEntry(
+                roots, roots.get(tableRid).orElseThrow().getSnapshotManifestRef(), 3L)
+            .orElseThrow();
     committer.commit(
-        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(3L).build());
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.resync(
+            roots, tableRid, null, currentEntry, java.util.Set.of(1L, 2L, 3L), null));
 
     assertEquals(
         2L,

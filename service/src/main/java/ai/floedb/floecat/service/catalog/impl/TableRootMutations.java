@@ -86,10 +86,12 @@ public final class TableRootMutations {
             "snapshot %d of table %s has no upstream_created_at and lost the currency advance",
             merged.getSnapshotId(), tableId.getId());
       }
-      TableRoot.Builder next = base.toBuilder().setSnapshotManifestRef(chain.upsert(merged));
+      BlobRef nextHead = chain.upsert(merged);
+      TableRoot.Builder next = base.toBuilder().setSnapshotManifestRef(nextHead);
       if (advanceNow) {
         next.setCurrentSnapshotId(merged.getSnapshotId());
       }
+      refreshReusableSnapshotCandidates(next, chain.withHead(nextHead));
       return next.build();
     };
   }
@@ -120,6 +122,7 @@ public final class TableRootMutations {
       if (base.hasCurrentSnapshotId() && base.getCurrentSnapshotId() == snapshotId) {
         next.clearCurrentSnapshotId();
       }
+      refreshReusableSnapshotCandidates(next, SnapshotManifests.chain(roots, tableId, newHead));
       return next.build();
     };
   }
@@ -249,6 +252,7 @@ public final class TableRootMutations {
       } else {
         next.setSnapshotManifestRef(head);
       }
+      refreshReusableSnapshotCandidates(next, chain.withHead(head));
       return next.build();
     };
   }
@@ -348,8 +352,26 @@ public final class TableRootMutations {
       if (advanceNow) {
         next.setCurrentSnapshotId(changed.getSnapshotId());
       }
+      if (advanceOnChange) {
+        BlobRef nextHead = entryChanged ? next.getSnapshotManifestRef() : manifestHead(base);
+        refreshReusableSnapshotCandidates(next, chain.withHead(nextHead));
+      }
       return next.build();
     };
+  }
+
+  private static void refreshReusableSnapshotCandidates(
+      TableRoot.Builder root, SnapshotManifests.Chain chain) {
+    root.clearReusableSnapshotCandidates();
+    if (!root.hasCurrentSnapshotId()) {
+      return;
+    }
+    chain
+        .findEntry(root.getCurrentSnapshotId())
+        .ifPresent(
+            current ->
+                root.addAllReusableSnapshotCandidates(
+                    SnapshotManifests.latestReusableCandidates(chain, current, 2)));
   }
 
   /**

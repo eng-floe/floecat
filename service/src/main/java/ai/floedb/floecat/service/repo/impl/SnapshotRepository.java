@@ -215,7 +215,7 @@ public class SnapshotRepository {
   }
 
   /** Records the system-owned finalized reuse manifest without replacing concurrent updates. */
-  public void recordReuseManifest(
+  public boolean recordReuseManifest(
       ResourceId tableId,
       long snapshotId,
       String uri,
@@ -234,9 +234,10 @@ public class SnapshotRepository {
     SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
     for (int attempt = 0; attempt < 8; attempt++) {
       MutationMeta meta = repo.pointerMetaForSafe(key);
-      Snapshot current =
-          repo.getByKey(key)
-              .orElseThrow(() -> new IllegalStateException("snapshot not found: " + snapshotId));
+      Snapshot current = repo.getByKey(key).orElse(null);
+      if (current == null) {
+        return false;
+      }
       Snapshot next =
           current.toBuilder()
               .setReuseManifestRef(
@@ -247,7 +248,7 @@ public class SnapshotRepository {
                       .setStatsGenerationManifestUri(statsGenerationManifestUri))
               .build();
       if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
-        return;
+        return true;
       }
       if (attempt < 7) {
         backoffCurrentPointerAdvance(attempt);
@@ -412,17 +413,16 @@ public class SnapshotRepository {
         || !lookup.root().hasSnapshotManifestRef()) {
       return Optional.empty();
     }
-    var head = lookup.root().getSnapshotManifestRef();
-    Optional<SnapshotManifestEntry> committedCurrent =
-        SnapshotManifests.findEntry(roots, head, lookup.root().getCurrentSnapshotId());
-    if (committedCurrent.isEmpty()) {
-      return Optional.empty();
+    for (SnapshotManifestEntry entry : lookup.root().getReusableSnapshotCandidatesList()) {
+      if (excludedSnapshotId != null && entry.getSnapshotId() == excludedSnapshotId) {
+        continue;
+      }
+      if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
+        return Optional.empty();
+      }
+      return getByBlobUri(entry.getSnapshotRef().getUri()).filter(Snapshot::hasReuseManifestRef);
     }
-    return SnapshotManifests.latestReusableCurrent(
-            roots, head, committedCurrent.get(), excludedSnapshotId)
-        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
-        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()))
-        .filter(Snapshot::hasReuseManifestRef);
+    return Optional.empty();
   }
 
   private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {
