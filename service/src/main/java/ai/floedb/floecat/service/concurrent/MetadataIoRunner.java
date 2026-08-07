@@ -446,7 +446,7 @@ public class MetadataIoRunner {
       return;
     }
     if (!ownedRuntime.close()) {
-      LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
+      LOG.warn("metadata I/O executor did not terminate during shutdown");
     }
   }
 
@@ -482,7 +482,7 @@ public class MetadataIoRunner {
     SHARED.compareAndSet(null, createSharedRuntime());
     RuntimeState closing = SHARED.get();
     if (closing != null && !closing.close()) {
-      LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
+      LOG.warn("metadata I/O executor did not terminate during shutdown");
     }
   }
 

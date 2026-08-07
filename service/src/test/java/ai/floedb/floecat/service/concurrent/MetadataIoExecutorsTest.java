@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.concurrent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -147,6 +148,39 @@ class MetadataIoExecutorsTest {
           "the task that never ran must be among the discarded ones");
     } finally {
       release.countDown();
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  void anInterruptedShutdownWaitReportsThePoolsActualState() throws Exception {
+    // close() running on one of the pool's own workers is the reachable case: shutdownNow
+    // interrupts the closer, awaitTermination throws at once, and that worker is still inside this
+    // method -- so the pool has not terminated. Reporting true there suppresses the caller's
+    // warning exactly when a store call ignoring interruption is holding the pool open.
+    var pool = MetadataIoExecutors.newBoundedDaemonPool(1, 2, "interrupted-shutdown-");
+    var blocked = new UninterruptibleBlocker();
+    var reported = new AtomicReference<Boolean>();
+    try {
+      pool.execute(blocked::await);
+      assertTrue(blocked.started.await(5, TimeUnit.SECONDS));
+      Thread closer =
+          new Thread(
+              () -> {
+                Thread.currentThread().interrupt(); // stand in for shutdownNow hitting the closer
+                reported.set(
+                    MetadataIoExecutors.shutdownNowAndAwait(
+                        pool, discarded -> {}, 5, TimeUnit.SECONDS));
+              },
+              "interrupted-closer");
+      closer.start();
+      closer.join(TimeUnit.SECONDS.toMillis(10));
+
+      assertNotNull(reported.get(), "the closer must have returned");
+      assertFalse(reported.get(), "an aborted wait must not be reported as confirmed termination");
+      assertFalse(pool.isTerminated(), "the uninterruptible task is still holding the pool open");
+    } finally {
+      blocked.release.countDown();
       pool.shutdownNow();
     }
   }

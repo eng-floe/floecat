@@ -78,7 +78,7 @@ final class MetadataIoExecutors {
   /**
    * Interrupt live work, hand the tasks discarded from the queue to {@code onDiscarded}, and await
    * no longer than the supplied bound. Returns whether the pool terminated. Interruption restores
-   * the caller's interrupt status and returns {@code true}.
+   * the caller's interrupt status and reports the pool's actual state.
    *
    * <p>The discarded tasks are passed out rather than released here: what a queued task owns is the
    * submitter's concern, and this class stays a pool factory that knows nothing about admission.
@@ -90,11 +90,13 @@ final class MetadataIoExecutors {
       return executor.awaitTermination(timeout, unit);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      // Distinct from a timeout: the awaiting thread was interrupted, which happens when close()
-      // runs on one of the pool's own workers and shutdownNow interrupts the closer. Reporting it
-      // as a timeout would tell an operator the pool failed to drain when it never got to wait.
+      // The wait was aborted, not completed, so the pool's own state is the only honest answer.
+      // This happens when close() runs on one of the pool's workers and shutdownNow interrupts the
+      // closer -- and that worker is by definition still inside this method, so the pool has not
+      // terminated. Returning true suppressed the caller's warning in exactly the case it exists
+      // for: a store call that ignores interruption holding the pool open.
       LOG.debug("interrupted while awaiting metadata I/O executor termination");
-      return true;
+      return executor.isTerminated();
     }
   }
 }
