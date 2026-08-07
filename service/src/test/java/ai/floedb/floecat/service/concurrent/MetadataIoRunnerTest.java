@@ -61,6 +61,56 @@ class MetadataIoRunnerTest {
   private static final CancellableCallRunner.FailureMessages FAILURES =
       new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
 
+  @ParameterizedTest
+  @ValueSource(strings = {"", "   ", "\t"})
+  void aBlankConfiguredCapacityFailsStartup(String blank) {
+    // Declared and resolved, just empty. configuredCapacity() reads it as an empty Optional and
+    // hands back the default ceiling, so without this an operator who blanked the key — a stray
+    // "FLOECAT_QUERY_METADATA_IO_MAX_CONCURRENCY=" in a deployment — boots on 64 having asked for
+    // something else, which is the outcome the whole validator exists to prevent.
+    withCapacityProperty(
+        blank,
+        () ->
+            assertThrows(
+                IllegalStateException.class, MetadataIoRunner::validateConfiguredCapacity));
+  }
+
+  @Test
+  void theAdmissionGaugesReadAnUntouchedRuntimeThroughTheDrainWindow() {
+    // The likely shape today, not an edge case: no caller routes store I/O through this tier yet,
+    // so a process that shuts down before its first scrape never resolved a runtime at all. The
+    // gauges are still registered, and with nothing installed they would publish NaN.
+    // Get to the state a fresh process is in: close whatever an earlier test installed, then
+    // reopen to drop the dead reference, leaving SHARED genuinely empty. Without this the runtime
+    // an earlier test left behind satisfies the gauges and the test passes without ever reaching
+    // the case it names.
+    MetadataIoRunner.closeSharedRuntimeIfStarted();
+    MetadataIoRunner.reopenSharedRuntime();
+    MetadataIoRunner.closeSharedRuntimeIfStarted();
+    try {
+      MetadataIoRunner untouched = new MetadataIoRunner();
+      assertTrue(untouched.capacity() > 0, "capacity is configured, not observed");
+      assertEquals(0, untouched.permitsInUse());
+      assertEquals(0, untouched.admissionWaiters());
+    } finally {
+      MetadataIoRunner.reopenSharedRuntime();
+    }
+  }
+
+  private static void withCapacityProperty(String value, Runnable body) {
+    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+    try {
+      System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, value);
+      body.run();
+    } finally {
+      if (previous == null) {
+        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+      } else {
+        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
+      }
+    }
+  }
+
   @Test
   void anUnresolvableConfiguredCapacityFailsStartup() {
     // getOptionalValue reports a declared-but-unexpanded ${VAR} as an empty Optional rather than

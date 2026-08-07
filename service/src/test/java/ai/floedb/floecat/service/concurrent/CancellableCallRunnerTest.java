@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,11 +44,8 @@ import org.junit.jupiter.api.Test;
 class CancellableCallRunnerTest {
 
   /**
-   * Counts admissions that had to wait. Each test owns one, so the accounting stays with the pool
-   * under test instead of a process-wide counter.
-   */
-  /**
    * Saturated-admission count for the pool under test; asserted where saturation is the subject.
+   * Each test owns one, so the accounting stays with the pool instead of a process-wide counter.
    */
   private final java.util.concurrent.atomic.AtomicInteger saturations =
       new java.util.concurrent.atomic.AtomicInteger();
@@ -145,8 +143,21 @@ class CancellableCallRunnerTest {
     var gate = new CountDownLatch(1);
     ThreadPoolExecutor pool = MetadataIoExecutors.newBoundedDaemonPool(1, 4, "discard-test-");
     var outcome = new AtomicReference<Throwable>();
+    var occupantFailure = new AtomicReference<Throwable>();
     try {
-      pool.execute(() -> awaitLatch(gate));
+      // Not awaitLatch: the shutdownNow this test stages interrupts this worker by design, and
+      // awaitLatch turns that into an AssertionError thrown on the pool thread — printed by
+      // surefire, invisible to JUnit, and indistinguishable from a real worker failure.
+      pool.execute(
+          () -> {
+            try {
+              gate.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException expected) {
+              Thread.currentThread().interrupt();
+            } catch (Throwable unexpected) {
+              occupantFailure.set(unexpected);
+            }
+          });
       Thread caller =
           new Thread(
               () -> {
@@ -180,6 +191,7 @@ class CancellableCallRunnerTest {
       assertFalse(
           reasonChain(outcome.get()).contains("cancelled"),
           "the request was never cancelled: " + reasonChain(outcome.get()));
+      assertNull(occupantFailure.get(), "the pool occupant must not have failed unexpectedly");
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new AssertionError(e);

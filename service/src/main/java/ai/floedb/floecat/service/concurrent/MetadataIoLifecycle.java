@@ -41,13 +41,14 @@ public class MetadataIoLifecycle {
    * Reject a malformed concurrency value before the service accepts traffic, so a typo fails the
    * deployment instead of silently running on the default ceiling.
    */
-  // Ordered ahead of any observer that touches a MetadataIoRunner: the previous lifecycle's
-  // shutdown left a sentinel installed, and constructing one before it is cleared gets
-  // RejectedExecutionException. MetadataIoMetrics is one such observer. Deliberately behind
+  // Ordered ahead of any observer that reads through a MetadataIoRunner: the previous lifecycle's
+  // shutdown left the latch up, so the runtime resolves to the closed instance until this lowers
+  // it. MetadataIoMetrics is one such observer. Deliberately behind
   // KvStoreProducer.BOOTSTRAP_PRIORITY, which reserves 1 to run first.
   void validateMetadataIoConfig(@Observes @Priority(2) StartupEvent event) {
-    // Re-arm first: the previous lifecycle's shutdown left a sentinel installed so no pool could be
-    // built after its ShutdownEvent. Without this the restarted application refuses every call.
+    // Re-arm first: the previous lifecycle's shutdown left the latch up so no pool could be built
+    // after its ShutdownEvent. Without this the restarted application never replaces the closed
+    // runtime and refuses every call.
     MetadataIoRunner.reopenSharedRuntime();
     MetadataIoRunner.validateConfiguredCapacity();
   }

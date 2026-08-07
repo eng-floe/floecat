@@ -57,9 +57,9 @@ public class MetadataIoRunner {
    *
    * <p>Never cache the shared runtime in a field: a facade outlives it. The
    * {@code @ApplicationScoped} bean and any long-held reference would keep serving the instance
-   * captured at construction, which a shutdown closes for good — {@code closed} is sticky and
-   * {@link #reopenSharedRuntime()} only clears the sentinel, it cannot revive a closed runtime.
-   * Resolve per use instead.
+   * captured at construction, which a shutdown closes for good — {@code closed} is sticky, and
+   * {@link #reopenSharedRuntime()} lowers a flag; it cannot revive a closed runtime. Resolve per
+   * use instead.
    */
   private final RuntimeState ownedRuntime;
 
@@ -133,8 +133,8 @@ public class MetadataIoRunner {
    * running inline, so nesting admission across two runtimes can block. The single shared runtime
    * makes that unreachable in production.
    */
-  private boolean holdsPermitFromThisRuntime() {
-    return IN_ADMITTED_OP.get() == runtime();
+  private static boolean holdsPermit(RuntimeState resolved) {
+    return IN_ADMITTED_OP.get() == resolved;
   }
 
   /**
@@ -279,8 +279,9 @@ public class MetadataIoRunner {
    * or an already-interrupted caller must stop a nested read too: otherwise re-entry starts store
    * I/O in exactly the states where {@code acquire} refuses to.
    */
-  private void rejectIfUnusable(BooleanSupplier cancelled, FailureMessages failureMessages) {
-    if (runtime().isClosed()) {
+  private static void rejectIfUnusable(
+      RuntimeState granting, BooleanSupplier cancelled, FailureMessages failureMessages) {
+    if (granting.isClosed()) {
       // In flight by construction — this only runs on a thread already holding a permit — so
       // closure is a cancellation here, not a rejected submission. Throwing the rejection type
       // would put a spurious INTERNAL next to the clean cancellations an identical non-nested call
@@ -346,7 +347,10 @@ public class MetadataIoRunner {
               + "\" but could not be resolved");
     }
     if (raw.isBlank()) {
-      return;
+      // Declared and resolved, just empty. Only a missing raw value means absent; reaching here
+      // means an operator set the key, and configuredCapacity() would read it as empty and hand
+      // back the default ceiling they were trying to change.
+      throw new IllegalStateException(MAX_CONCURRENCY_PROPERTY + " is set to a blank value");
     }
     int parsed;
     try {
@@ -374,15 +378,17 @@ public class MetadataIoRunner {
       BooleanSupplier cancelled,
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
-    if (holdsPermitFromThisRuntime()) {
+    // Resolved once, and for the same reason on both paths: two calls to runtime() can straddle a
+    // restart. Non-re-entrant that hands one call the executor and the semaphore of different
+    // runtimes; re-entrant, rejectIfUnusable would read a replacement's open `closed` flag and let
+    // the nested read proceed on a permit from the torn-down runtime it exists to stop.
+    RuntimeState current = runtime();
+    if (holdsPermit(current)) {
       // Re-entrant: reuse this thread's permit and run inline. Apply the same gates a fresh
       // admission would, or a nested read starts store I/O in states where an outer call could not.
-      rejectIfUnusable(cancelled, failureMessages);
+      rejectIfUnusable(current, cancelled, failureMessages);
       return operation.get();
     }
-    // Resolved once: two calls to runtime() could straddle a restart and hand the executor and the
-    // semaphore of different runtimes to the same call.
-    RuntimeState current = runtime();
     return CancellableCallRunner.call(
         current.executor(),
         current.permits,
@@ -396,13 +402,13 @@ public class MetadataIoRunner {
   /** Run one blocking call off-thread without imposing cancellation or a new deadline. */
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
-    if (holdsPermitFromThisRuntime()) {
+    RuntimeState current = runtime();
+    if (holdsPermit(current)) {
       // Re-entrant, and gated like a fresh admission minus request cancellation, which this entry
       // point deliberately does not impose.
-      rejectIfUnusable(null, failureMessages);
+      rejectIfUnusable(current, null, failureMessages);
       return operation.get();
     }
-    RuntimeState current = runtime();
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),
         current.permits,
@@ -469,6 +475,11 @@ public class MetadataIoRunner {
     // Latch before reading, so a creator that has not yet checked cannot get past it. One that
     // already did still loses: it re-checks after winning the CAS and closes what it built.
     SHUTDOWN_LATCHED.set(true);
+    // Leave something readable behind even if nothing ever resolved a runtime. The gauges are
+    // registered at startup and no caller routes store I/O through this tier yet, so a first scrape
+    // during the drain is exactly the likely case; with nothing installed it would publish NaN.
+    // Never started, so this closes without touching a pool.
+    SHARED.compareAndSet(null, createSharedRuntime());
     RuntimeState closing = SHARED.get();
     if (closing != null && !closing.close()) {
       LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
@@ -489,6 +500,10 @@ public class MetadataIoRunner {
    */
   static void reopenSharedRuntime() {
     SHUTDOWN_LATCHED.set(false);
+    // Drop the dead reference too. sharedRuntime() would replace it on the next resolution anyway,
+    // so this changes no outcome; it just stops a closed runtime being pinned until someone happens
+    // to ask, and leaves the next lifecycle in the same state a fresh process starts in.
+    SHARED.updateAndGet(current -> current != null && current.isClosed() ? null : current);
   }
 
   private static RuntimeState createSharedRuntime() {
@@ -500,9 +515,10 @@ public class MetadataIoRunner {
    *
    * <p>Not a {@code static final} holder: {@code closed} is sticky, and Quarkus reuses the runtime
    * classloader across dev-mode reloads and {@code @QuarkusTest} restarts. A one-shot holder would
-   * hand every call in the restarted application a closed runtime. Cleared on shutdown so the next
-   * caller builds a fresh one; still lazy, so an application that never reads metadata never starts
-   * a pool.
+   * hand every call in the restarted application a closed runtime. Not cleared on shutdown — the
+   * closed instance stays installed so the drain window still has something to read — and replaced
+   * by {@link #sharedRuntime()} once {@link #reopenSharedRuntime()} lowers the latch. Still lazy,
+   * so an application that never reads metadata never starts a pool.
    */
   private static final java.util.concurrent.atomic.AtomicReference<RuntimeState> SHARED =
       new java.util.concurrent.atomic.AtomicReference<>();
