@@ -120,6 +120,32 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
+  /** A guard broke after an earlier step in the same operation had already committed. */
+  public static class BatchGuardFailedAfterWriteException extends BatchGuardFailedException {
+    public BatchGuardFailedAfterWriteException(String msg) {
+      super(msg);
+    }
+  }
+
+  /** Shared write state for a logical sequence of guarded pointer sweeps. */
+  public static final class GuardedDeleteProgress {
+    private boolean priorWrite;
+
+    public GuardedDeleteProgress() {}
+
+    public GuardedDeleteProgress(boolean priorWrite) {
+      this.priorWrite = priorWrite;
+    }
+
+    public boolean hasPriorWrite() {
+      return priorWrite;
+    }
+
+    public void recordWrite() {
+      priorWrite = true;
+    }
+  }
+
   public static class NotFoundException extends RepoException {
     public NotFoundException(String msg) {
       super(msg);
@@ -568,24 +594,19 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
-   * Removes every pointer row under {@code prefix}, whatever it names, and reports how many went.
-   *
-   * <p>For teardown of a whole subtree only. A per-resource delete cannot always leave the index
-   * clean: when the resource's blob is unreadable, the delete has no way to learn which secondary
-   * keys that blob named, so it removes the canonical pointer and leaves the by-name rows behind.
-   * Those rows name something that no longer exists and no per-resource path will ever revisit
-   * them. A caller destroying everything under the prefix can say so directly.
-   */
-  public int deleteByPrefix(String prefix) {
-    return observeRepository("delete_by_prefix", () -> pointerStore.deleteByPrefix(prefix));
-  }
-
-  /**
    * Removes rows under {@code prefix} one versioned row at a time, with {@code guard} in the same
    * batch as every removal. A bulk prefix delete cannot carry a guard and is therefore unsafe when
    * the prefix's owner id can be reused while the sweep is running.
    */
   public int deleteByPrefix(String prefix, BatchGuard guard) {
+    return deleteByPrefix(prefix, guard, new GuardedDeleteProgress());
+  }
+
+  /**
+   * As {@link #deleteByPrefix(String, BatchGuard)}, sharing prior-write state with adjacent
+   * prefixes in the same logical operation.
+   */
+  public int deleteByPrefix(String prefix, BatchGuard guard, GuardedDeleteProgress deleteProgress) {
     return observeRepository(
         "delete_by_prefix_guarded",
         () -> {
@@ -594,9 +615,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           String token = "";
           while (true) {
             var next = new StringBuilder();
-            for (var row : pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
-              if (deletePointerWithGuard(pointerStore, row, guard, deleted > 0)) {
+            for (var row :
+                pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next, true)) {
+              if (deletePointerWithGuard(
+                  pointerStore, row, guard, deleteProgress.hasPriorWrite())) {
                 deleted++;
+                deleteProgress.recordWrite();
               }
             }
             token = next.toString();

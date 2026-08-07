@@ -26,11 +26,13 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -52,6 +54,8 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -142,6 +146,7 @@ class StorageAuthorityServiceImplTest {
     service.connectorRepo = connectorRepo;
     service.snapshotRepo = snapshotRepo;
     service.reconcileJobs = reconcileJobs;
+    service.markerStore = mock(ai.floedb.floecat.service.repo.util.MarkerStore.class);
     service.blobStoreType = "s3";
     service.blobBucket = "floecat-dev";
     service.storageAwsRegion = "us-east-1";
@@ -166,14 +171,22 @@ class StorageAuthorityServiceImplTest {
         .thenAnswer(_ -> MutationMeta.newBuilder().setPointerVersion(version.get()).build());
     when(repo.metaForSafe(AUTHORITY_ID))
         .thenAnswer(_ -> MutationMeta.newBuilder().setPointerVersion(version.get()).build());
-    when(repo.update(any(StorageAuthority.class), anyLong()))
+    when(service.markerStore.accountLiveGuard("acct")).thenReturn(Optional.of(BatchGuard.NONE));
+    when(repo.update(any(StorageAuthority.class), anyLong(), eq(BatchGuard.NONE)))
         .thenAnswer(
             invocation -> {
               state.set(invocation.getArgument(0, StorageAuthority.class));
               version.incrementAndGet();
               return true;
             });
-    when(repo.deleteWithPrecondition(eq(AUTHORITY_ID), anyLong())).thenReturn(true);
+    when(repo.credentialCleanupReadyGuard(AUTHORITY_ID)).thenReturn(BatchGuard.NONE);
+    when(repo.deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), eq(BatchGuard.NONE)))
+        .thenReturn(true);
+    var credentialCleanup =
+        new StorageAuthorityRepository.CredentialCleanup(AUTHORITY_ID, "/cleanup/sa-1", 1L);
+    when(repo.prepareCredentialCleanup(AUTHORITY_ID)).thenReturn(credentialCleanup);
+    when(repo.claimCredentialCleanup(credentialCleanup, BatchGuard.NONE))
+        .thenReturn(Optional.of(credentialCleanup));
     when(repo.list(eq("acct"), anyInt(), any(), any()))
         .thenReturn(java.util.List.of(currentAuthority()));
     when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentTable()));
@@ -237,14 +250,36 @@ class StorageAuthorityServiceImplTest {
         .await()
         .indefinitely();
 
-    verify(repo).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong());
+    verify(repo).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), eq(BatchGuard.NONE));
     assertEquals("sa-1", secretsManager.lastSecretId);
+  }
+
+  @Test
+  void createGuardFailureDeletesTheCredentialStoredBeforePublication() {
+    var authority = currentAuthority();
+    var spec =
+        StorageAuthoritySpec.newBuilder()
+            .setDisplayName("warehouse")
+            .setLocationPrefix("s3://warehouse")
+            .setCredentials(
+                AuthCredentials.newBuilder()
+                    .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("secret")))
+            .build();
+    var failure = new BaseResourceRepository.BatchGuardFailedException("account changed");
+    doThrow(failure).when(repo).create(authority, BatchGuard.NONE);
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedException.class,
+        () -> service.createWithCredentialCleanup(authority, spec, BatchGuard.NONE));
+
+    assertTrue(secretsManager.deleteCalled);
+    assertEquals(AUTHORITY_ID.getId(), secretsManager.lastSecretId);
   }
 
   @Test
   void deleteRetriesAnUnconditionalConcurrentMutation() {
     AtomicInteger attempts = new AtomicInteger();
-    when(repo.deleteWithPrecondition(eq(AUTHORITY_ID), anyLong()))
+    when(repo.deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), eq(BatchGuard.NONE)))
         .thenAnswer(
             _ -> {
               if (attempts.getAndIncrement() == 0) {
@@ -260,8 +295,51 @@ class StorageAuthorityServiceImplTest {
         .await()
         .indefinitely();
 
-    verify(repo, times(2)).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong());
+    verify(repo, times(2)).deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), eq(BatchGuard.NONE));
     assertTrue(secretsManager.deleteCalled);
+  }
+
+  @Test
+  void deleteResumesPendingCredentialCleanupWhenAuthorityIsAlreadyAbsent() {
+    var pending =
+        new StorageAuthorityRepository.CredentialCleanup(AUTHORITY_ID, "/cleanup/sa-1", 1L);
+    version.set(0L);
+    when(repo.metaFor(AUTHORITY_ID))
+        .thenThrow(new BaseResourceRepository.NotFoundException("authority absent"));
+    when(repo.pendingCredentialCleanup(AUTHORITY_ID)).thenReturn(Optional.of(pending));
+    when(repo.claimCredentialCleanup(pending, BatchGuard.NONE)).thenReturn(Optional.of(pending));
+
+    var response =
+        service
+            .deleteStorageAuthority(
+                DeleteStorageAuthorityRequest.newBuilder().setAuthorityId(AUTHORITY_ID).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(0L, response.getMeta().getPointerVersion());
+    assertTrue(secretsManager.deleteCalled);
+    verify(repo).completeCredentialCleanup(pending);
+    verify(repo, never()).prepareCredentialCleanup(AUTHORITY_ID);
+    verify(repo, never())
+        .deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), any(BatchGuard.class));
+  }
+
+  @Test
+  void staleDeletePreconditionDoesNotStageCredentialCleanup() {
+    var request =
+        DeleteStorageAuthorityRequest.newBuilder()
+            .setAuthorityId(AUTHORITY_ID)
+            .setPrecondition(Precondition.newBuilder().setExpectedVersion(99L))
+            .build();
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> service.deleteStorageAuthority(request).await().indefinitely());
+
+    verify(repo, never()).prepareCredentialCleanup(AUTHORITY_ID);
+    verify(repo, never())
+        .deleteWithPrecondition(eq(AUTHORITY_ID), anyLong(), any(BatchGuard.class));
+    assertFalse(secretsManager.deleteCalled);
   }
 
   @Test

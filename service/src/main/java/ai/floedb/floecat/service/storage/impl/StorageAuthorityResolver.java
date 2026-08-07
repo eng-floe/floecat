@@ -45,7 +45,7 @@ import software.amazon.awssdk.services.sts.model.Credentials;
 
 @ApplicationScoped
 public class StorageAuthorityResolver {
-  static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
+  public static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
 
   @Inject SecretsManager secretsManager;
 

@@ -154,7 +154,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(service.idempotencyStore.get(anyString())).thenReturn(Optional.empty());
     when(service.idempotencyStore.createPending(
             anyString(), anyString(), anyString(), anyString(), any(), any()))
-        .thenReturn(true);
+        .thenReturn(new IdempotencyRepository.PendingClaim(true, 1L, "/idempotency/claim", 1L));
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.beginSnapshotFinalizeCommit(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(service.statsStore.isPreparedFileGroup(
@@ -198,7 +198,16 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(service.idempotencyStore, never())
         .finalizeSuccess(
-            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+            anyString(),
+            anyString(),
+            any(),
+            anyString(),
+            anyString(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any());
     verify(persistence)
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());

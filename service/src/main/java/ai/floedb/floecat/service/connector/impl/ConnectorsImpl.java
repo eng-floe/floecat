@@ -64,6 +64,9 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.CredentialCleanupState;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -87,6 +90,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CredentialResolver credentialResolver;
+  @Inject MarkerStore markerStore;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -379,6 +383,20 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (spec.hasSource()) builder.setSource(spec.getSource());
                   builder.setDestination(destB.build());
 
+                  // Publish under the account, not merely into its key prefix: without this the
+                  // connector can commit after DeleteAccount has swept that prefix, leaving a live
+                  // connector — and its external credential — under an account that no longer
+                  // exists. See MarkerStore#accountLiveGuard.
+                  var accountLive =
+                      markerStore
+                          .accountLiveGuard(accountId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr,
+                                      GeneratedErrorMessages.MessageKey.ACCOUNT,
+                                      Map.of("id", accountId)));
+
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
@@ -389,16 +407,30 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     }
                     boolean storedCredentials = hasAuthCredentials(spec.getAuth());
                     String secretId = connectorId.getId();
-                    AuthConfig storedAuth =
-                        storeAuthCredentials(spec.getAuth(), accountId, connectorId.getId());
+                    CredentialCleanupState.Write credentialWrite =
+                        storedCredentials
+                            ? connectorRepo.beginCredentialWrite(connectorId, 0L, accountLive)
+                            : null;
+                    AuthConfig storedAuth;
+                    try {
+                      storedAuth =
+                          storeAuthCredentials(spec.getAuth(), accountId, connectorId.getId());
+                    } catch (RuntimeException storeFailed) {
+                      abortCredentialCreate(
+                          credentialWrite, accountId, secretId, storedCredentials, storeFailed);
+                      throw storeFailed;
+                    }
                     ensureNoStoredCredentials(storedAuth);
                     var connector = builder.setAuth(storedAuth).build();
                     try {
-                      connectorRepo.create(connector);
+                      createWithCredentialCleanup(
+                          connector,
+                          accountLive,
+                          accountId,
+                          secretId,
+                          storedCredentials,
+                          credentialWrite);
                     } catch (BaseResourceRepository.NameConflictException nce) {
-                      if (storedCredentials) {
-                        credentialResolver.delete(accountId, secretId);
-                      }
                       throw GrpcErrors.alreadyExists(
                           corr,
                           GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
@@ -420,19 +452,38 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   idempotencyKey,
                                   () -> fp,
                                   () -> {
-                                    AuthConfig storedAuth =
-                                        storeAuthCredentials(
-                                            spec.getAuth(), accountId, connectorId.getId());
                                     boolean storedCredentials = hasAuthCredentials(spec.getAuth());
                                     String secretId = connectorId.getId();
+                                    CredentialCleanupState.Write credentialWrite =
+                                        storedCredentials
+                                            ? connectorRepo.beginCredentialWrite(
+                                                connectorId, 0L, accountLive)
+                                            : null;
+                                    AuthConfig storedAuth;
+                                    try {
+                                      storedAuth =
+                                          storeAuthCredentials(
+                                              spec.getAuth(), accountId, connectorId.getId());
+                                    } catch (RuntimeException storeFailed) {
+                                      abortCredentialCreate(
+                                          credentialWrite,
+                                          accountId,
+                                          secretId,
+                                          storedCredentials,
+                                          storeFailed);
+                                      throw storeFailed;
+                                    }
                                     ensureNoStoredCredentials(storedAuth);
                                     var connector = builder.setAuth(storedAuth).build();
                                     try {
-                                      connectorRepo.create(connector);
+                                      createWithCredentialCleanup(
+                                          connector,
+                                          accountLive,
+                                          accountId,
+                                          secretId,
+                                          storedCredentials,
+                                          credentialWrite);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
-                                      if (storedCredentials) {
-                                        credentialResolver.delete(accountId, secretId);
-                                      }
                                       var existingOpt = connectorRepo.getByName(accountId, display);
                                       if (existingOpt.isPresent()) {
                                         var existingSpec = specFromConnector(existingOpt.get());
@@ -530,17 +581,62 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   validatePersistedAuthConfig(desired.getAuth(), corr);
                   validateReconcilePolicy(desired.getPolicy(), corr);
                   String accountId = pc.getAccountId();
+                  var accountLive =
+                      markerStore
+                          .accountLiveGuard(accountId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr,
+                                      GeneratedErrorMessages.MessageKey.ACCOUNT,
+                                      Map.of("id", accountId)));
                   String secretId = connectorId.getId();
                   boolean authTouched =
                       maskTargets(normalizedMask, "auth")
                           || maskTargets(normalizedMask, "auth.credentials");
                   boolean incomingHasCredentials = hasAuthCredentials(desired.getAuth());
                   Optional<AuthCredentials> priorCredentials = Optional.empty();
+                  CredentialCleanupState.Write credentialWrite = null;
                   AuthConfig storedAuth = desired.getAuth();
                   if (incomingHasCredentials) {
-                    priorCredentials = credentialResolver.resolve(accountId, secretId);
-                    storedAuth =
-                        storeAuthCredentials(desired.getAuth(), accountId, connectorId.getId());
+                    credentialWrite =
+                        connectorRepo.beginCredentialWrite(
+                            connectorId, meta.getPointerVersion(), accountLive);
+                  } else if (authTouched) {
+                    // This handle is intentionally retained after a successful update. If account
+                    // teardown removes the connector while the external secret write is in flight,
+                    // it remains an enumerable, durable instruction to delete that secret even
+                    // after the connector pointer itself is gone.
+                    connectorRepo.prepareCredentialCleanup(connectorId);
+                  }
+                  if (incomingHasCredentials) {
+                    try {
+                      priorCredentials = credentialResolver.resolve(accountId, secretId);
+                    } catch (RuntimeException resolveFailed) {
+                      try {
+                        connectorRepo.abortCredentialWrite(credentialWrite);
+                      } catch (RuntimeException releaseFailed) {
+                        resolveFailed.addSuppressed(releaseFailed);
+                      }
+                      throw resolveFailed;
+                    }
+                    try {
+                      storedAuth =
+                          storeAuthCredentials(desired.getAuth(), accountId, connectorId.getId());
+                    } catch (RuntimeException storeFailed) {
+                      try {
+                        compensateCredentialWrite(
+                            connectorId,
+                            accountLive,
+                            priorCredentials,
+                            accountId,
+                            secretId,
+                            credentialWrite);
+                      } catch (RuntimeException compensateFailed) {
+                        storeFailed.addSuppressed(compensateFailed);
+                      }
+                      throw storeFailed;
+                    }
                     if (storedAuth != desired.getAuth()) {
                       desired = desired.toBuilder().setAuth(storedAuth).build();
                     }
@@ -548,7 +644,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   ensureNoStoredCredentials(desired.getAuth());
                   boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
 
-                  if (desired.equals(current)) {
+                  if (desired.equals(current) && credentialWrite == null) {
                     if (shouldDeleteSecret) {
                       credentialResolver.delete(accountId, secretId);
                     }
@@ -571,12 +667,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   }
 
                   try {
-                    boolean ok = connectorRepo.update(desired, meta.getPointerVersion());
+                    var updateGuard =
+                        credentialWrite == null
+                            ? accountLive
+                            : BatchGuard.all(
+                                accountLive,
+                                connectorRepo.credentialWriteCommitGuard(credentialWrite));
+                    boolean ok =
+                        connectorRepo.update(desired, meta.getPointerVersion(), updateGuard);
                     if (!ok) {
                       var nowMeta = connectorRepo.metaForSafe(connectorId);
-                      if (incomingHasCredentials) {
-                        restoreCredentials(accountId, secretId, priorCredentials);
-                      }
                       throw GrpcErrors.preconditionFailed(
                           corr,
                           GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
@@ -586,7 +686,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     if (incomingHasCredentials) {
-                      restoreCredentials(accountId, secretId, priorCredentials);
+                      compensateCredentialWrite(
+                          connectorId,
+                          accountLive,
+                          priorCredentials,
+                          accountId,
+                          secretId,
+                          credentialWrite);
                     }
                     throw GrpcErrors.alreadyExists(
                         corr,
@@ -595,14 +701,44 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = connectorRepo.metaForSafe(connectorId);
                     if (incomingHasCredentials) {
-                      restoreCredentials(accountId, secretId, priorCredentials);
+                      compensateCredentialWrite(
+                          connectorId,
+                          accountLive,
+                          priorCredentials,
+                          accountId,
+                          secretId,
+                          credentialWrite);
                     }
                     throw GrpcErrors.preconditionFailed(
                         corr,
                         GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
                         Map.of(
-                            "expected", Long.toString(meta.getPointerVersion()),
-                            "actual", Long.toString(nowMeta.getPointerVersion())));
+                            "expected",
+                            Long.toString(meta.getPointerVersion()),
+                            "actual",
+                            Long.toString(nowMeta.getPointerVersion())));
+                  } catch (BaseResourceRepository.BatchGuardFailedException accountGone) {
+                    if (incomingHasCredentials) {
+                      compensateCredentialWrite(
+                          connectorId,
+                          accountLive,
+                          priorCredentials,
+                          accountId,
+                          secretId,
+                          credentialWrite);
+                    }
+                    throw accountGone;
+                  } catch (RuntimeException updateFailed) {
+                    if (incomingHasCredentials) {
+                      compensateCredentialWrite(
+                          connectorId,
+                          accountLive,
+                          priorCredentials,
+                          accountId,
+                          secretId,
+                          credentialWrite);
+                    }
+                    throw updateFailed;
                   }
 
                   if (shouldDeleteSecret) {
@@ -628,6 +764,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   public Uni<DeleteConnectorResponse> deleteConnector(DeleteConnectorRequest request) {
     var L = LogHelper.start(LOG, "DeleteConnector");
 
+    // Retryable on a lost pointer CAS: see TableServiceImpl#deleteTable.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -645,6 +782,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = connectorRepo.metaForSafe(connectorId);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (safe.getPointerVersion() == 0L) {
+                      // The pointer is gone, so durable cleanup handles are now the only route to
+                      // an external secret left by an earlier delete or credential update. Drain
+                      // them before rendering either NOT_FOUND or idempotent success.
+                      cleanupCredentials(
+                          pc.getAccountId(),
+                          connectorRepo.pendingCredentialCleanups(connectorId),
+                          BatchGuard.NONE);
+                    }
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(
                           corr,
@@ -656,19 +802,36 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  String secretId = connectorId.getId();
+                  // Gate before staging. deleteWithPreconditions enforces this again and remains
+                  // the authority, but it does so after the staging write has already committed —
+                  // so a stale etag would leave a durable row behind and still answer
+                  // VERSION_MISMATCH, telling the caller nothing happened when something did. The
+                  // row is inert while the connector lives, which makes this a contract defect
+                  // rather than a data one, and that contract is the same one the namespace delete
+                  // path was reworked to keep.
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+
+                  var credentialCleanups = connectorRepo.prepareCredentialCleanup(connectorId);
+                  var credentialReady = connectorRepo.credentialCleanupReadyGuard(connectorId);
 
                   var out =
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
-                          expected -> connectorRepo.deleteWithPrecondition(connectorId, expected),
+                          expected ->
+                              connectorRepo.deleteWithPrecondition(
+                                  connectorId, expected, credentialReady),
                           () -> connectorRepo.metaForSafe(connectorId),
                           corr,
                           "connector",
                           Map.of("id", connectorId.getId()));
 
-                  credentialResolver.delete(pc.getAccountId(), secretId);
+                  if (out.getPointerVersion() == 0L
+                      || (out.getPointerVersion() == meta.getPointerVersion()
+                          && out.getEtag().equals(meta.getEtag()))) {
+                    cleanupCredentials(pc.getAccountId(), credentialCleanups, BatchGuard.NONE);
+                  }
 
                   return DeleteConnectorResponse.newBuilder().setMeta(out).build();
                 }),
@@ -783,6 +946,86 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
   }
 
+  private void compensateCredentialWrite(
+      ResourceId connectorId,
+      BatchGuard accountLive,
+      Optional<AuthCredentials> priorCredentials,
+      String accountId,
+      String secretId,
+      CredentialCleanupState.Write credentialWrite) {
+    boolean committed = false;
+    try {
+      committed = connectorRepo.credentialWriteCommitted(credentialWrite);
+      if (committed) {
+        return;
+      }
+      if (connectorRepo.metaForSafe(connectorId).getPointerVersion() == 0L
+          || accountLive.reevaluate() == BatchGuard.Outcome.BROKEN) {
+        // The delete side owns cleanup now. Never restore a secret beneath an absent resource or
+        // account; the durable handle above lets teardown find a write that raced its pointer scan.
+        credentialResolver.delete(accountId, secretId);
+        return;
+      }
+      restoreCredentials(accountId, secretId, priorCredentials);
+    } finally {
+      // Deletion pins cleanup-ready into its pointer-removal batch, so releasing writer ownership
+      // is what lets a teardown that observed this in-flight write make progress.
+      if (!committed) {
+        connectorRepo.abortCredentialWrite(credentialWrite);
+      }
+    }
+  }
+
+  private void abortCredentialCreate(
+      CredentialCleanupState.Write credentialWrite,
+      String accountId,
+      String secretId,
+      boolean storedCredentials,
+      RuntimeException failure) {
+    if (!storedCredentials) {
+      return;
+    }
+    if (connectorRepo.credentialWriteCommitted(credentialWrite)) {
+      return;
+    }
+    boolean secretDeleted = false;
+    try {
+      credentialResolver.delete(accountId, secretId);
+      secretDeleted = true;
+    } catch (RuntimeException cleanupFailed) {
+      failure.addSuppressed(cleanupFailed);
+    }
+    try {
+      if (secretDeleted) {
+        connectorRepo.abortCredentialCreate(credentialWrite);
+      } else {
+        connectorRepo.abortCredentialWrite(credentialWrite);
+      }
+    } catch (RuntimeException releaseFailed) {
+      failure.addSuppressed(releaseFailed);
+    }
+  }
+
+  void createWithCredentialCleanup(
+      Connector connector,
+      BatchGuard accountLive,
+      String accountId,
+      String secretId,
+      boolean storedCredentials,
+      CredentialCleanupState.Write credentialWrite) {
+    try {
+      var createGuard =
+          credentialWrite == null
+              ? accountLive
+              : BatchGuard.all(
+                  accountLive, connectorRepo.credentialWriteCommitGuard(credentialWrite));
+      connectorRepo.create(connector, createGuard);
+    } catch (RuntimeException createFailed) {
+      abortCredentialCreate(credentialWrite, accountId, secretId, storedCredentials, createFailed);
+      throw createFailed;
+    }
+  }
+
   private AuthConfig storeAuthCredentials(AuthConfig auth, String accountId, String connectorId) {
     AuthConfig safeAuth = auth == null ? AuthConfig.getDefaultInstance() : auth;
     if (!hasAuthCredentials(safeAuth)) {
@@ -791,6 +1034,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     credentialResolver.store(accountId, connectorId, safeAuth.getCredentials());
     // AuthCredentials are stored in the secrets manager; connector records must not persist them.
     return safeAuth.toBuilder().clearCredentials().build();
+  }
+
+  private void cleanupCredentials(
+      String accountId, List<ConnectorRepository.CredentialCleanup> cleanups, BatchGuard guard) {
+    for (var cleanup : cleanups) {
+      var claimed = connectorRepo.claimCredentialCleanup(cleanup, guard);
+      if (claimed.isEmpty()) {
+        continue;
+      }
+      credentialResolver.delete(accountId, cleanup.credentialId());
+      connectorRepo.completeCredentialCleanup(claimed.get());
+    }
   }
 
   private static void ensureNoStoredCredentials(AuthConfig auth) {

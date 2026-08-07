@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -94,6 +95,60 @@ class AccountMarkerSweepTest {
 
     assertEquals(1, markers.deleteAccountMarkers(ACCOUNT, BatchGuard.NONE));
     assertFalse(backing.get(marker).isPresent());
+  }
+
+  @Test
+  void guardBreakOnNamespaceMarkersReportsTheEarlierCatalogMarkerDelete() {
+    var backing = new InMemoryPointerStore();
+    String catalogMarker = Keys.catalogChildrenMarker(ACCOUNT, CATALOG);
+    String namespaceMarker = Keys.namespaceChildrenMarker(ACCOUNT, NAMESPACE);
+    String accountPointer = Keys.accountPointerById(ACCOUNT);
+    put(backing, catalogMarker);
+    put(backing, namespaceMarker);
+    var pointers =
+        new RepoTestPointerStores.DelegatingPointerStore(backing) {
+          private boolean reappeared;
+
+          @Override
+          public boolean compareAndSetBatch(java.util.List<CasOp> ops) {
+            if (!reappeared
+                && ops.stream()
+                    .anyMatch(
+                        op ->
+                            op instanceof CasDelete delete
+                                && delete.key().equals(namespaceMarker))) {
+              reappeared = true;
+              put(backing, accountPointer);
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    var markers = new MarkerStore();
+    markers.pointerStore = pointers;
+    BatchGuard accountGone =
+        new BatchGuard() {
+          @Override
+          public java.util.List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops() {
+            return java.util.List.of(
+                new ai.floedb.floecat.storage.spi.PointerStore.CasCheckAbsent(accountPointer));
+          }
+
+          @Override
+          public Outcome reevaluate() {
+            return pointers.get(accountPointer).isPresent() ? Outcome.BROKEN : Outcome.HOLDS;
+          }
+
+          @Override
+          public String describe() {
+            return "account " + ACCOUNT;
+          }
+        };
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedAfterWriteException.class,
+        () -> markers.deleteAccountMarkers(ACCOUNT, accountGone));
+    assertFalse(backing.get(catalogMarker).isPresent());
+    assertTrue(backing.get(namespaceMarker).isPresent());
   }
 
   private static void put(InMemoryPointerStore pointers, String key) {

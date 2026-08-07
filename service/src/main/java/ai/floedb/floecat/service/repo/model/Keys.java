@@ -161,6 +161,12 @@ public final class Keys {
 
   // ===== Transactions =====
 
+  /** All transaction pointers and blobs owned by one account. */
+  public static String transactionRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/transactions/";
+  }
+
   public static String transactionPointerById(String accountId, String txId) {
     String tid = req("account_id", accountId);
     String tx = req("tx_id", txId);
@@ -266,6 +272,30 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/catalogs/";
   }
 
+  /**
+   * Recovers the catalog id embedded in a pointer row nested under that catalog, or {@code null}
+   * for the top-level by-id/by-name index families and unrelated keys.
+   */
+  public static String catalogIdFromNestedPointerKey(String accountId, String pointerKey) {
+    if (pointerKey == null) {
+      return null;
+    }
+    String prefix = catalogRootPrefix(accountId);
+    if (!pointerKey.startsWith(prefix)) {
+      return null;
+    }
+    String suffix = pointerKey.substring(prefix.length());
+    int slash = suffix.indexOf('/');
+    if (slash <= 0) {
+      return null;
+    }
+    String encodedCatalogId = suffix.substring(0, slash);
+    if ("by-id".equals(encodedCatalogId) || "by-name".equals(encodedCatalogId)) {
+      return null;
+    }
+    return percentDecode(encodedCatalogId);
+  }
+
   public static String catalogPointerByName(String accountId, String displayName) {
     String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
@@ -298,6 +328,11 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/storage-authorities/by-id/";
   }
 
+  public static String storageAuthorityRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/storage-authorities/";
+  }
+
   public static String storageAuthorityPointerByName(String accountId, String displayName) {
     String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
@@ -317,6 +352,16 @@ public final class Keys {
     return String.format(
         "/accounts/%s/storage-authorities/%s/storage-authority/%s.pb",
         encode(tid), encode(aid), encode(sha));
+  }
+
+  public static String storageAuthorityCredentialCleanupPointer(
+      String accountId, String authorityId) {
+    return storageAuthorityCredentialCleanupPrefix(accountId)
+        + encode(req("authority_id", authorityId));
+  }
+
+  public static String storageAuthorityCredentialCleanupPrefix(String accountId) {
+    return storageAuthorityRootPrefix(accountId) + "credential-cleanup/by-authority/";
   }
 
   // ===== Namespace =====
@@ -339,6 +384,18 @@ public final class Keys {
   public static String namespaceRootPrefix(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/namespaces/";
+  }
+
+  /** Durable post-delete cleanup tasks for tables formerly owned by a namespace. */
+  public static String namespaceTableCleanupPointer(
+      String accountId, String namespaceId, String tableId) {
+    return namespaceTableCleanupPrefix(accountId, namespaceId) + encode(req("table_id", tableId));
+  }
+
+  public static String namespaceTableCleanupPrefix(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
+    String nid = req("namespace_id", namespaceId);
+    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/table-cleanup/by-table/";
   }
 
   public static String namespacePointerByPath(
@@ -950,6 +1007,22 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/connectors/%s/connector/%s.pb", encode(tid), encode(cid), encode(sha));
+  }
+
+  public static String connectorCredentialCleanupPointer(
+      String accountId, String connectorId, String credentialId) {
+    return connectorCredentialCleanupPrefix(accountId, connectorId)
+        + encode(req("credential_id", credentialId));
+  }
+
+  public static String connectorCredentialCleanupPrefix(String accountId, String connectorId) {
+    return connectorCredentialCleanupPrefix(accountId)
+        + encode(req("connector_id", connectorId))
+        + "/";
+  }
+
+  public static String connectorCredentialCleanupPrefix(String accountId) {
+    return connectorRootPrefix(accountId) + "credential-cleanup/by-connector/";
   }
 
   // ===== Idempotency =====

@@ -85,6 +85,17 @@ message UpdateAccountResponse {
   ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
+// Removing an account also removes everything it owns: connectors and their external
+// credentials, catalogs, and every namespace, table and view beneath them.
+//
+// An account id that has no pointer is reported as deleted rather than NOT_FOUND, and the
+// precondition is not consulted on that path. Cleanup runs after the pointer is removed and can
+// die part-way, so this is also the path a retry of such a delete lands on, and it sweeps again
+// there. "Never existed" and "I removed it on an earlier attempt" are indistinguishable once the
+// pointer is gone -- nothing tombstones it -- and answering NOT_FOUND is what a teardown scheduler
+// reads as "done", which is what would make a partial sweep's orphans permanent. So the answer is
+// the one that is safe to be wrong about, and the sweep runs either way. It is idempotent: a
+// second pass finds nothing and removes nothing.
 message DeleteAccountRequest {
   ai.floedb.floecat.common.ResourceId account_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 98;

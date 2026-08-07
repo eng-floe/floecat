@@ -39,6 +39,9 @@ import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.CredentialCleanupState;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -67,6 +70,7 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -94,6 +98,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject IdempotencyRepository idempotencyStore;
   @Inject StorageAuthorityResolver resolver;
   @Inject SecretsManager secretsManager;
+  @Inject MarkerStore markerStore;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
@@ -167,6 +172,15 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               StorageAuthoritySpec spec = request.getSpec();
               validateSpec(spec, true, correlationId());
               String accountId = principal.getAccountId();
+              var accountLive =
+                  markerStore
+                      .accountLiveGuard(accountId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  GeneratedErrorMessages.MessageKey.ACCOUNT,
+                                  Map.of("id", accountId)));
               String idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               var op =
@@ -180,8 +194,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                             randomResourceId(accountId, ResourceKind.RK_STORAGE_AUTHORITY);
                         StorageAuthority authority =
                             buildAuthority(authorityId, spec, null, nowTs());
-                        repo.create(authority);
-                        storeCredentials(accountId, authorityId.getId(), spec);
+                        createWithCredentialCleanup(authority, spec, accountLive);
                         return new ai.floedb.floecat.service.common.IdempotencyGuard.CreateResult<>(
                             authority, authorityId);
                       },
@@ -203,7 +216,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   public Uni<UpdateStorageAuthorityResponse> updateStorageAuthority(
       UpdateStorageAuthorityRequest request) {
     return mapFailures(
-        run(
+        runWithRetry(
             () -> {
               PrincipalContext principal = principalProvider.get();
               authz.require(principal, "connector.manage");
@@ -221,30 +234,83 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   mergeSpec(current, request.getSpec(), request.getUpdateMask());
               boolean credentialsTouched = credentialsTouched(request.getUpdateMask());
               validateSpec(desiredSpec, false, correlationId());
-              MutationOps.updateWithPreconditions(
-                  () -> repo.metaFor(authorityId),
-                  request.getPrecondition(),
-                  expectedVersion -> {
-                    StorageAuthority updated =
-                        buildAuthority(authorityId, desiredSpec, current, nowTs());
-                    boolean ok = repo.update(updated, expectedVersion);
-                    if (ok && credentialsTouched) {
-                      if (hasCredentials(desiredSpec)) {
-                        storeCredentials(
-                            authorityId.getAccountId(), authorityId.getId(), desiredSpec);
-                      } else {
-                        secretsManager.delete(
-                            authorityId.getAccountId(),
-                            StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
-                            authorityId.getId());
-                      }
-                    }
-                    return ok;
-                  },
-                  () -> repo.metaFor(authorityId),
-                  correlationId(),
-                  "storage-authority",
-                  Map.of("display_name", current.getDisplayName()));
+              MutationMeta updateMeta = repo.metaFor(authorityId);
+              // Reject a stale caller before staging a handle or touching the external secret.
+              MutationOps.BaseServiceChecks.enforcePreconditions(
+                  correlationId(), updateMeta, request.getPrecondition());
+              String accountId = authorityId.getAccountId();
+              var accountLive =
+                  markerStore
+                      .accountLiveGuard(accountId)
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  correlationId(),
+                                  GeneratedErrorMessages.MessageKey.ACCOUNT,
+                                  Map.of("id", accountId)));
+              Optional<AuthCredentials> priorCredentials = Optional.empty();
+              CredentialCleanupState.Write credentialWrite = null;
+              if (credentialsTouched) {
+                // Stage the durable enumeration path before touching the external secret. It is
+                // retained after success and consumed by a later resource/account delete.
+                credentialWrite =
+                    repo.beginCredentialWrite(
+                        authorityId, updateMeta.getPointerVersion(), accountLive);
+                try {
+                  priorCredentials =
+                      resolver.resolveAuthoritySecret(accountId, authorityId.getId());
+                } catch (RuntimeException resolveFailed) {
+                  try {
+                    repo.abortCredentialWrite(credentialWrite);
+                  } catch (RuntimeException releaseFailed) {
+                    resolveFailed.addSuppressed(releaseFailed);
+                  }
+                  throw resolveFailed;
+                }
+                try {
+                  if (hasCredentials(desiredSpec)) {
+                    storeCredentials(accountId, authorityId.getId(), desiredSpec);
+                  } else {
+                    secretsManager.delete(
+                        accountId,
+                        StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
+                        authorityId.getId());
+                  }
+                } catch (RuntimeException storeFailed) {
+                  try {
+                    compensateStorageCredentialWrite(
+                        authorityId, accountLive, priorCredentials, accountId, credentialWrite);
+                  } catch (RuntimeException compensateFailed) {
+                    storeFailed.addSuppressed(compensateFailed);
+                  }
+                  throw storeFailed;
+                }
+              }
+              try {
+                var updateGuard =
+                    credentialsTouched
+                        ? BatchGuard.all(
+                            accountLive, repo.credentialWriteCommitGuard(credentialWrite))
+                        : accountLive;
+                MutationOps.updateWithPreconditions(
+                    () -> updateMeta,
+                    request.getPrecondition(),
+                    expectedVersion -> {
+                      StorageAuthority updated =
+                          buildAuthority(authorityId, desiredSpec, current, nowTs());
+                      return repo.update(updated, expectedVersion, updateGuard);
+                    },
+                    () -> repo.metaFor(authorityId),
+                    correlationId(),
+                    "storage-authority",
+                    Map.of("display_name", current.getDisplayName()));
+              } catch (RuntimeException updateFailed) {
+                if (credentialsTouched) {
+                  compensateStorageCredentialWrite(
+                      authorityId, accountLive, priorCredentials, accountId, credentialWrite);
+                }
+                throw updateFailed;
+              }
               StorageAuthority updated =
                   repo.getById(authorityId)
                       .orElseThrow(
@@ -257,6 +323,38 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   .build();
             }),
         correlationId());
+  }
+
+  private void compensateStorageCredentialWrite(
+      ResourceId authorityId,
+      BatchGuard accountLive,
+      Optional<AuthCredentials> priorCredentials,
+      String accountId,
+      CredentialCleanupState.Write credentialWrite) {
+    String secretId = authorityId.getId();
+    boolean committed = false;
+    try {
+      committed = repo.credentialWriteCommitted(credentialWrite);
+      if (committed) {
+        return;
+      }
+      if (repo.metaForSafe(authorityId).getPointerVersion() == 0L
+          || accountLive.reevaluate() == BatchGuard.Outcome.BROKEN) {
+        secretsManager.delete(
+            accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, secretId);
+        return;
+      }
+      if (priorCredentials.isPresent()) {
+        storeCredentials(secretsManager, accountId, secretId, priorCredentials.get());
+      } else {
+        secretsManager.delete(
+            accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, secretId);
+      }
+    } finally {
+      if (!committed) {
+        repo.abortCredentialWrite(credentialWrite);
+      }
+    }
   }
 
   @Override
@@ -276,22 +374,65 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               ResourceId authorityId =
                   scopedStorageAuthorityId(
                       principal.getAccountId(), request.getAuthorityId(), correlationId());
+
+              MutationMeta current;
+              try {
+                current = repo.metaFor(authorityId);
+              } catch (BaseResourceRepository.NotFoundException missing) {
+                var safe = repo.metaForSafe(authorityId);
+                if (safe.getPointerVersion() != 0L) {
+                  throw new BaseResourceRepository.AbortRetryableException(
+                      "storage authority reappeared while resuming credential cleanup: "
+                          + authorityId.getId());
+                }
+                cleanupCredential(repo.pendingCredentialCleanup(authorityId));
+                if (hasMeaningfulPrecondition(request.getPrecondition())) {
+                  throw GrpcErrors.notFound(
+                      correlationId(),
+                      GeneratedErrorMessages.bySuffix("storage-authority"),
+                      Map.of("authority_id", authorityId.getId()));
+                }
+                return DeleteStorageAuthorityResponse.newBuilder().setMeta(safe).build();
+              }
+
+              // Reject a stale caller before the durable task is staged. The helper below remains
+              // authoritative and checks again, but its first action used to come after this
+              // external write, leaving a task behind for a delete that was never authorized.
+              MutationOps.BaseServiceChecks.enforcePreconditions(
+                  correlationId(), current, request.getPrecondition());
+
+              var credentialCleanup = repo.prepareCredentialCleanup(authorityId);
+              var credentialReady = repo.credentialCleanupReadyGuard(authorityId);
               MutationMeta meta =
                   MutationOps.deleteWithPreconditions(
-                      () -> repo.metaFor(authorityId),
+                      () -> current,
                       request.getPrecondition(),
-                      expectedVersion -> repo.deleteWithPrecondition(authorityId, expectedVersion),
+                      expectedVersion ->
+                          repo.deleteWithPrecondition(
+                              authorityId, expectedVersion, credentialReady),
                       () -> repo.metaForSafe(authorityId),
                       correlationId(),
                       "storage-authority",
                       Map.of("authority_id", authorityId.getId()));
-              secretsManager.delete(
-                  authorityId.getAccountId(),
-                  StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
-                  authorityId.getId());
+              cleanupCredential(Optional.of(credentialCleanup));
               return DeleteStorageAuthorityResponse.newBuilder().setMeta(meta).build();
             }),
         correlationId());
+  }
+
+  private void cleanupCredential(
+      Optional<StorageAuthorityRepository.CredentialCleanup> credentialCleanup) {
+    credentialCleanup.ifPresent(
+        cleanup -> {
+          var claimed = repo.claimCredentialCleanup(cleanup, BatchGuard.NONE);
+          if (claimed.isPresent()) {
+            secretsManager.delete(
+                cleanup.authorityId().getAccountId(),
+                StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
+                cleanup.authorityId().getId());
+            repo.completeCredentialCleanup(claimed.get());
+          }
+        });
   }
 
   @Override
@@ -765,6 +906,48 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return;
     }
     storeCredentials(secretsManager, accountId, authorityId, spec.getCredentials());
+  }
+
+  void createWithCredentialCleanup(
+      StorageAuthority authority, StorageAuthoritySpec spec, BatchGuard accountLive) {
+    var authorityId = authority.getResourceId();
+    boolean storedCredentials = hasCredentials(spec);
+    CredentialCleanupState.Write credentialWrite =
+        storedCredentials ? repo.beginCredentialWrite(authorityId, 0L, accountLive) : null;
+    try {
+      storeCredentials(authorityId.getAccountId(), authorityId.getId(), spec);
+      var createGuard =
+          credentialWrite == null
+              ? accountLive
+              : BatchGuard.all(accountLive, repo.credentialWriteCommitGuard(credentialWrite));
+      repo.create(authority, createGuard);
+    } catch (RuntimeException createFailed) {
+      if (storedCredentials) {
+        if (repo.credentialWriteCommitted(credentialWrite)) {
+          throw createFailed;
+        }
+        boolean secretDeleted = false;
+        try {
+          secretsManager.delete(
+              authorityId.getAccountId(),
+              StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
+              authorityId.getId());
+          secretDeleted = true;
+        } catch (RuntimeException cleanupFailed) {
+          createFailed.addSuppressed(cleanupFailed);
+        }
+        try {
+          if (secretDeleted) {
+            repo.abortCredentialCreate(credentialWrite);
+          } else {
+            repo.abortCredentialWrite(credentialWrite);
+          }
+        } catch (RuntimeException releaseFailed) {
+          createFailed.addSuppressed(releaseFailed);
+        }
+      }
+      throw createFailed;
+    }
   }
 
   private record CredentialScope(

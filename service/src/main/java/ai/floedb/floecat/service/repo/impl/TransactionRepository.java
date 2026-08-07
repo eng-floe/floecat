@@ -17,9 +17,14 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionKey;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GuardedBlobPrefixSweeper;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -32,9 +37,12 @@ import java.util.Optional;
 public class TransactionRepository {
 
   private final GenericResourceRepository<Transaction, TransactionKey> repo;
+  private final BlobStore blobStore;
+  @Inject MarkerStore markerStore;
 
   @Inject
   public TransactionRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this.blobStore = blobStore;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -46,12 +54,56 @@ public class TransactionRepository {
   }
 
   public void create(Transaction txn) {
-    repo.create(txn);
+    repo.create(txn, accountLiveGuard(txn.getAccountId()));
+  }
+
+  public void create(Transaction txn, BatchGuard guard) {
+    repo.create(txn, BatchGuard.all(accountLiveGuard(txn.getAccountId()), guard));
   }
 
   public boolean update(Transaction txn, long expectedPointerVersion) {
-    return repo.update(txn, expectedPointerVersion);
+    return repo.update(txn, expectedPointerVersion, accountLiveGuard(txn.getAccountId()));
   }
+
+  public boolean update(Transaction txn, long expectedPointerVersion, BatchGuard guard) {
+    return repo.update(
+        txn, expectedPointerVersion, BatchGuard.all(accountLiveGuard(txn.getAccountId()), guard));
+  }
+
+  private BatchGuard accountLiveGuard(String accountId) {
+    // Directly constructed repositories are used by narrow storage tests. CDI production
+    // instances always receive MarkerStore and therefore always fence lifecycle publications.
+    if (markerStore == null) {
+      return BatchGuard.NONE;
+    }
+    return markerStore
+        .accountLiveGuard(accountId)
+        .orElseThrow(
+            () ->
+                new BaseResourceRepository.BatchGuardFailedException(
+                    "account disappeared during transaction mutation: " + accountId));
+  }
+
+  /**
+   * Removes the complete transaction keyspace while account absence remains pinned.
+   *
+   * <p>Pointer rows carry the guard in their delete batches. Blobs cannot join a pointer-store
+   * batch, so each delete targets the immutable object version observed before the absence guard
+   * was rechecked. A replacement account can therefore break the sweep, but it cannot have a new
+   * version of the same object removed by an old account's cleanup.
+   */
+  public CleanupResult deleteAccountResources(
+      String accountId,
+      BatchGuard accountGone,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
+    String prefix = Keys.transactionRootPrefix(accountId);
+    int pointersDeleted = repo.deleteByPrefix(prefix, accountGone, deleteProgress);
+    int blobsDeleted =
+        GuardedBlobPrefixSweeper.delete(blobStore, prefix, accountGone, deleteProgress);
+    return new CleanupResult(pointersDeleted, blobsDeleted);
+  }
+
+  public record CleanupResult(int pointersDeleted, int blobsDeleted) {}
 
   public Optional<Transaction> getById(String accountId, String txId) {
     return repo.getByKey(TransactionKey.byId(accountId, txId));

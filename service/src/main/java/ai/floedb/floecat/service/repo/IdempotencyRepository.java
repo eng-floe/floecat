@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.repo;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Timestamp;
 import java.util.Optional;
@@ -25,7 +27,7 @@ import java.util.Optional;
 public interface IdempotencyRepository {
   Optional<IdempotencyRecord> get(String key);
 
-  boolean createPending(
+  PendingClaim createPending(
       String accountId,
       String key,
       String opName,
@@ -36,6 +38,7 @@ public interface IdempotencyRepository {
   void finalizeSuccess(
       String accountId,
       String key,
+      PendingClaim pendingClaim,
       String opName,
       String requestHash,
       ResourceId resourceId,
@@ -45,4 +48,33 @@ public interface IdempotencyRepository {
       Timestamp expiresAt);
 
   boolean delete(String key);
+
+  boolean deletePending(String key, PendingClaim pendingClaim);
+
+  CleanupResult deleteAccountResources(
+      String accountId,
+      BatchGuard accountGone,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress);
+
+  record CleanupResult(int pointersDeleted, int blobsDeleted) {}
+
+  /** Exact durable PENDING row owned by one invocation. */
+  record PendingClaim(
+      boolean created, long pointerVersion, String claimMarkerKey, long claimMarkerVersion) {
+    public PendingClaim {
+      boolean validCreated =
+          pointerVersion > 0L
+              && claimMarkerKey != null
+              && !claimMarkerKey.isBlank()
+              && claimMarkerVersion > 0L;
+      boolean validLost =
+          pointerVersion == 0L
+              && (claimMarkerKey == null || claimMarkerKey.isBlank())
+              && claimMarkerVersion == 0L;
+      if (created ? !validCreated : !validLost) {
+        throw new IllegalArgumentException(
+            "a created claim must name positive pointer and marker versions; a lost claim must be empty");
+      }
+    }
+  }
 }

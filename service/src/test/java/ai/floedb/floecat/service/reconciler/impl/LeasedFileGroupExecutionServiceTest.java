@@ -130,7 +130,7 @@ class LeasedFileGroupExecutionServiceTest {
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
     when(idempotencyStore.createPending(
             anyString(), anyString(), anyString(), anyString(), any(), any()))
-        .thenReturn(true);
+        .thenReturn(new IdempotencyRepository.PendingClaim(true, 1L, "/idempotency/claim", 1L));
     when(jobs.completeFileGroupSuccess(
             anyString(),
             anyString(),
@@ -321,7 +321,16 @@ class LeasedFileGroupExecutionServiceTest {
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
-            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+            anyString(),
+            anyString(),
+            any(),
+            anyString(),
+            anyString(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any());
   }
 
   @Test
@@ -839,7 +848,16 @@ class LeasedFileGroupExecutionServiceTest {
             any(), anyLong(), anyString(), anyString(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
-            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+            anyString(),
+            anyString(),
+            any(),
+            anyString(),
+            anyString(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any());
   }
 
   @Test

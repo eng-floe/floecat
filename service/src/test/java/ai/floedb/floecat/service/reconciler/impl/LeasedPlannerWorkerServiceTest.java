@@ -1704,10 +1704,12 @@ class LeasedPlannerWorkerServiceTest {
         Keys.idempotencyKey("acct", operationName, jobId + ":chunk:" + Math.max(0, chunkIndex));
     Timestamp now = Timestamps.fromMillis(System.currentTimeMillis());
     String requestHash = "hash-" + operationName + "-" + jobId + "-" + Math.max(0, chunkIndex);
-    service.idempotencyStore.createPending("acct", key, operationName, requestHash, now, now);
+    var pending =
+        service.idempotencyStore.createPending("acct", key, operationName, requestHash, now, now);
     service.idempotencyStore.finalizeSuccess(
         "acct",
         key,
+        pending,
         operationName,
         requestHash,
         resourceId,

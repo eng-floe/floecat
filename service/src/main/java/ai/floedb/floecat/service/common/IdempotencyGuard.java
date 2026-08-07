@@ -37,6 +37,10 @@ import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 public final class IdempotencyGuard {
+
+  /** Stable idempotency scope for platform calls that do not execute as an account. */
+  public static final String PLATFORM_SCOPE = "platform";
+
   public record CreateResult<T>(T resource, ResourceId resourceId) {}
 
   public record Result<T>(T resource, MutationMeta meta) {}
@@ -159,8 +163,9 @@ public final class IdempotencyGuard {
                 .build());
 
     long createPendingStartNanos = logTiming ? System.nanoTime() : 0L;
-    final boolean createdPending =
+    final var pendingClaim =
         store.createPending(accountId, key, opName, requestHash, now, expiresAt);
+    final boolean createdPending = pendingClaim.created();
     if (logTiming) {
       createPendingNanos = System.nanoTime() - createPendingStartNanos;
     }
@@ -264,7 +269,16 @@ public final class IdempotencyGuard {
 
       long finalizeStartNanos = logTiming ? System.nanoTime() : 0L;
       store.finalizeSuccess(
-          accountId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
+          accountId,
+          key,
+          pendingClaim,
+          opName,
+          requestHash,
+          created.resourceId(),
+          meta,
+          payload,
+          now,
+          expiresAt);
       if (logTiming) {
         finalizeSuccessNanos = System.nanoTime() - finalizeStartNanos;
       }
@@ -304,8 +318,8 @@ public final class IdempotencyGuard {
       // included, so this is an ordinary outcome, not a rare one.
       //
       // What makes it safe is narrower than "nothing was written". The guarded batch itself
-      // certainly wrote nothing: the exception is raised either before it is assembled or after
-      // compareAndSetBatch refused the whole thing. But a creator may have committed earlier writes
+      // certainly wrote nothing unless the exception explicitly says an earlier guarded step
+      // committed (BatchGuardFailedAfterWriteException). But a creator may have committed writes
       // on the way to that batch — CreateNamespace with parents runs ensurePathChainExists first,
       // which creates intermediate ancestors and bumps the catalog marker before the guarded leaf
       // create that breaks. The real invariant is that every write reachable from the guarded leaf
@@ -317,14 +331,16 @@ public final class IdempotencyGuard {
       // attempt,
       // or any non-idempotent side effect — would have that work duplicated by the retry this
       // release enables, and must keep its record instead.
-      boolean provablyUncommitted = t instanceof BaseResourceRepository.BatchGuardFailedException;
+      boolean provablyUncommitted =
+          t instanceof BaseResourceRepository.BatchGuardFailedException
+              && !(t instanceof BaseResourceRepository.BatchGuardFailedAfterWriteException);
       boolean retryable =
           !provablyUncommitted
               && ((t instanceof BaseResourceRepository.AbortRetryableException)
                   || (t instanceof StorageAbortRetryableException));
       if (!retryable) {
         try {
-          store.delete(key);
+          store.deletePending(key, pendingClaim);
         } catch (Throwable deleteError) {
           LOG.warnf(deleteError, "idempotency.delete_failed key=%s corr=%s", key, corrId.get());
         }

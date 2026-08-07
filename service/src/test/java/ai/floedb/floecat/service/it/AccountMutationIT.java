@@ -34,14 +34,21 @@ import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -79,9 +86,14 @@ class AccountMutationIT {
 
   @Inject AccountRepository accountRepository;
   @Inject CatalogRepository catalogRepository;
+  @Inject NamespaceRepository namespaceRepository;
   @Inject TableRepository tableRepository;
   @Inject ViewRepository viewRepository;
+  @Inject StorageAuthorityRepository storageAuthorityRepository;
+  @Inject SecretsManager secretsManager;
+  @Inject ai.floedb.floecat.service.repo.util.MarkerStore markerStore;
   @Inject PointerStore ptr;
+  @Inject BlobStore blobs;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -486,6 +498,44 @@ class AccountMutationIT {
   }
 
   @Test
+  void deleteAccountRemovesStorageAuthoritiesAndTheirCredentials() {
+    var authorityId =
+        ResourceId.newBuilder()
+            .setAccountId(seedAccountId)
+            .setId("account-cleanup-authority")
+            .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+            .build();
+    storageAuthorityRepository.create(
+        StorageAuthority.newBuilder()
+            .setResourceId(authorityId)
+            .setDisplayName("account cleanup authority")
+            .setType("s3")
+            .setLocationPrefix("s3://warehouse")
+            .build());
+    secretsManager.put(
+        seedAccountId,
+        StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
+        authorityId.getId(),
+        AuthCredentials.newBuilder()
+            .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("old-secret"))
+            .build()
+            .toByteArray());
+
+    var seededAccountId = seedAccountResourceId();
+    tenancy.deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(seededAccountId).build());
+
+    assertTrue(storageAuthorityRepository.getById(authorityId).isEmpty());
+    assertTrue(
+        secretsManager
+            .get(
+                seedAccountId,
+                StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE,
+                authorityId.getId())
+            .isEmpty());
+    assertEquals(0, ptr.countByPrefix(Keys.storageAuthorityCredentialCleanupPrefix(seedAccountId)));
+  }
+
+  @Test
   void deleteAccountDeletesViewsDuringNamespaceCleanup() throws Exception {
     var cat = TestSupport.createCatalog(catalog, accountPrefix + "view_cat", "");
     var ns =
@@ -525,6 +575,300 @@ class AccountMutationIT {
         ptr.get(Keys.viewPointerById(seedAccountId, createdView.getResourceId().getId()))
             .isEmpty());
     assertEquals(0, ptr.countByPrefix(Keys.viewRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountCleansNestedNamespaceTree() throws Exception {
+    // Account teardown must clean an entire nested namespace tree with relations at several depths.
+    // The dropper runs unguarded here, so cleanup cannot raise AbortRetryableException and orphan
+    // resources by retrying the account delete after its pointer is gone (regression for #397).
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "nested_cat", "");
+    var db =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "nested db");
+    var schema =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "schema", List.of("db"), "nested schema");
+    var sub =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "sub", List.of("db", "schema"), "nested sub");
+    var schemaJson = SchemaParser.toJson(SIMPLE_SCHEMA);
+
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        schema.getResourceId(),
+        accountPrefix + "schema_table",
+        "s3://bucket/",
+        schemaJson,
+        "table");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        sub.getResourceId(),
+        accountPrefix + "sub_table",
+        "s3://bucket/",
+        schemaJson,
+        "table");
+    TestSupport.createView(
+        view,
+        cat.getResourceId(),
+        schema.getResourceId(),
+        accountPrefix + "schema_view",
+        "SELECT 1",
+        "view");
+
+    assertEquals(3, namespaceRepository.listIds(seedAccountId, cat.getResourceId().getId()).size());
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    assertEquals(0, namespaceRepository.listIds(seedAccountId, cat.getResourceId().getId()).size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), schema.getResourceId().getId()));
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), sub.getResourceId().getId()));
+    assertEquals(
+        0,
+        viewRepository.count(
+            seedAccountId, cat.getResourceId().getId(), schema.getResourceId().getId()));
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountCleansUpDespiteACorruptNamespaceBlob() throws Exception {
+    // Teardown runs after the account pointer is gone, so anything that throws in it cannot be
+    // retried — the retry finds no account and reports success. Namespace discovery therefore must
+    // not depend on every namespace blob being parseable, or one corrupt blob orphans everything
+    // cleanup had not reached yet (regression for #397).
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "corrupt_cat", "");
+    var db =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "corrupt db");
+    var other =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "other", List.of(), "second ns");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        other.getResourceId(),
+        accountPrefix + "other_table",
+        "s3://bucket/",
+        SchemaParser.toJson(SIMPLE_SCHEMA),
+        "table");
+
+    // One namespace's pointer still resolves; its bytes no longer parse as a Namespace.
+    String dbById = Keys.namespacePointerById(seedAccountId, db.getResourceId().getId());
+    String corruptBlob = ptr.get(dbById).orElseThrow().getBlobUri();
+    blobs.put(
+        corruptBlob, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    // Nothing is left behind: not the corrupt namespace, not the intact one, not its table.
+    assertEquals(
+        0,
+        namespaceRepository
+            .listRefsUnder(seedAccountId, cat.getResourceId().getId(), List.of())
+            .size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), other.getResourceId().getId()));
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountCleansUpDespiteACorruptCatalogBlob() throws Exception {
+    // Same argument one level up: teardown enumerated catalogs by parsing every catalog blob, so a
+    // single unreadable one aborted the sweep after the account pointer was already gone. Nothing
+    // retries a CorruptionException, and the client's retry lands on the same unparseable blob, so
+    // every catalog behind it — with its namespaces, tables, views and roots — was orphaned for
+    // good.
+    var broken = TestSupport.createCatalog(catalog, accountPrefix + "broken_cat", "");
+    var intact = TestSupport.createCatalog(catalog, accountPrefix + "intact_cat", "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, intact.getResourceId(), "db", List.of(), "intact db");
+    TestSupport.createTable(
+        table,
+        intact.getResourceId(),
+        ns.getResourceId(),
+        accountPrefix + "kept_table",
+        "s3://bucket/",
+        SchemaParser.toJson(SIMPLE_SCHEMA),
+        "table");
+
+    String brokenById = Keys.catalogPointerById(seedAccountId, broken.getResourceId().getId());
+    blobs.put(
+        ptr.get(brokenById).orElseThrow().getBlobUri(),
+        new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF},
+        "application/x-protobuf");
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    // Both catalogs go, and so does everything under the one the sweep would never have reached.
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.catalogPointerByIdPrefix(seedAccountId)));
+    assertEquals(
+        0,
+        namespaceRepository
+            .listRefsUnder(seedAccountId, intact.getResourceId().getId(), List.of())
+            .size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, intact.getResourceId().getId(), ns.getResourceId().getId()));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountRecoversNestedResourcesWhenTheCatalogCanonicalPointerIsGone() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "headless_cat", "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "db", List.of(), "headless catalog db");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            accountPrefix + "headless_table",
+            "s3://bucket/",
+            SchemaParser.toJson(SIMPLE_SCHEMA),
+            "table");
+
+    assertTrue(ptr.delete(Keys.catalogPointerById(seedAccountId, cat.getResourceId().getId())));
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerByPath(
+                    seedAccountId, cat.getResourceId().getId(), List.of("db")))
+            .isPresent());
+
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder().setAccountId(seedAccountResourceId()).build());
+
+    assertTrue(
+        ptr.get(Keys.namespacePointerById(seedAccountId, ns.getResourceId().getId())).isEmpty());
+    assertTrue(
+        ptr.get(Keys.tablePointerById(seedAccountId, tbl.getResourceId().getId())).isEmpty());
+    assertEquals(0, ptr.countByPrefix(Keys.catalogRootPrefix(seedAccountId)));
+  }
+
+  /**
+   * A conditional delete of an account that is already gone sweeps and succeeds.
+   *
+   * <p>It used to answer NOT_FOUND, on a guard that decided "never existed" from whether the
+   * request carried a precondition — a fact about the request, not the account. From an absent
+   * pointer those two cases are indistinguishable, and NOT_FOUND is the answer a teardown scheduler
+   * is most likely to read as "done" and stop on. So the precondition is not consulted once the
+   * pointer is provably absent, and the resumable sweep runs either way.
+   */
+  @Test
+  void aConditionalDeleteOfAnAlreadyGoneAccountSweepsAndSucceeds() throws Exception {
+    var created =
+        tenancy.createAccount(
+            CreateAccountRequest.newBuilder()
+                .setSpec(AccountSpec.newBuilder().setDisplayName(accountPrefix + "twice"))
+                .build());
+    var id = created.getAccount().getResourceId();
+    var meta = accountRepository.metaForSafe(id);
+
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(id)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(meta.getPointerVersion())
+                    .setExpectedEtag(meta.getEtag()))
+            .build());
+
+    // The same conditional request again, against a pointer that is now gone: the precondition can
+    // no longer be satisfied by anything, and the answer is that the account is gone.
+    var again =
+        tenancy.deleteAccount(
+            DeleteAccountRequest.newBuilder()
+                .setAccountId(id)
+                .setPrecondition(
+                    Precondition.newBuilder()
+                        .setExpectedVersion(meta.getPointerVersion())
+                        .setExpectedEtag(meta.getEtag()))
+                .build());
+    assertEquals(0, again.getMeta().getPointerVersion());
+  }
+
+  /**
+   * A children marker whose resource is already gone is unreachable by every identity walk, so
+   * account teardown has to sweep the marker families directly.
+   *
+   * <p>Both deleteCatalogMarker and deleteNamespaceMarker are called by a walk that resolves the
+   * resource and removes its marker alongside its pointer. A catalog missing its by-id row is not
+   * enumerated by that walk, so its marker is never visited — and nothing else covers either
+   * family: the residual sweep is scoped to by-id and by-name, and the namespace root, where
+   * namespace markers live, has no residual sweep at all.
+   */
+  @Test
+  void deleteAccountReclaimsMarkersWhoseResourceIsAlreadyGone() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "marker_cat", "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "marker db");
+
+    // Give both a children marker, the way a publish into each would.
+    markerStore.bumpCatalogMarker(cat.getResourceId());
+    assertTrue(
+        markerStore.advanceNamespaceMarker(
+            ns.getResourceId(), markerStore.namespaceMarkerVersion(ns.getResourceId())));
+    String catalogMarker = Keys.catalogChildrenMarker(seedAccountId, cat.getResourceId().getId());
+    String namespaceMarker =
+        Keys.namespaceChildrenMarker(seedAccountId, ns.getResourceId().getId());
+    assertTrue(ptr.get(catalogMarker).isPresent());
+    assertTrue(ptr.get(namespaceMarker).isPresent());
+
+    // Now remove the canonical pointers out from under both, as an interrupted delete or a pointer
+    // GC reaping a dangling row would: the identity walks can no longer reach either resource.
+    assertTrue(ptr.delete(Keys.catalogPointerById(seedAccountId, cat.getResourceId().getId())));
+    assertTrue(ptr.delete(Keys.namespacePointerById(seedAccountId, ns.getResourceId().getId())));
+
+    var seededAccountId = seedAccountResourceId();
+    tenancy.deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(seededAccountId).build());
+
+    assertTrue(
+        ptr.get(catalogMarker).isEmpty(), "the catalog's marker must not outlive the account");
+    assertTrue(
+        ptr.get(namespaceMarker).isEmpty(), "the namespace's marker must not outlive the account");
   }
 
   private ResourceId seedAccountResourceId() {

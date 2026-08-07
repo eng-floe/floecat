@@ -69,6 +69,11 @@ public class AccountRepository {
     return repo.getByKey(new AccountKey(accountResourceId.getId()));
   }
 
+  /** Reads the exact immutable account blob named by a previously pinned pointer. */
+  public Optional<Account> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
   public Optional<Account> getByName(String displayName) {
     return repo.get(Keys.accountPointerByName(displayName));
   }

@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
@@ -42,6 +43,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -137,6 +139,107 @@ public class IdempotencyGuardTest {
   }
 
   @Test
+  void pendingPublicationRequiresALiveAccount() throws Exception {
+    var markers = markerStore((InMemoryPointerStore) ptr);
+    inject(repo, "markerStore", markers);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "missing-account");
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedException.class,
+        () -> repo.createPending(ACCOUNT, key, OP, "hash", NOW, expiresFrom(NOW, 60)));
+    assertThat(ptr.get(key)).isEmpty();
+    assertThat(blobs.list(Keys.idempotencyPrefixAccount(ACCOUNT), 1, "").keys()).isEmpty();
+  }
+
+  @Test
+  void successPublicationReportsAccountDeletionAsAfterWrite() throws Exception {
+    var memoryPointers = (InMemoryPointerStore) ptr;
+    var markers = markerStore(memoryPointers);
+    inject(repo, "markerStore", markers);
+    String accountKey = Keys.accountPointerById(ACCOUNT);
+    memoryPointers.compareAndSet(
+        accountKey, 0L, PointerReferences.opaqueMarkerPointer(accountKey, "account", 1L));
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "deleted-before-finalize");
+    var pending = repo.createPending(ACCOUNT, key, OP, "hash", NOW, expiresFrom(NOW, 60));
+    assertThat(pending.created()).isTrue();
+    memoryPointers.delete(accountKey);
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedAfterWriteException.class,
+        () ->
+            repo.finalizeSuccess(
+                ACCOUNT,
+                key,
+                pending,
+                OP,
+                "hash",
+                resourceId("rid"),
+                meta(1L),
+                new byte[] {1},
+                NOW,
+                expiresFrom(NOW, 60)));
+    assertThat(repo.get(key))
+        .get()
+        .extracting(IdempotencyRecord::getStatus)
+        .isEqualTo(IdempotencyRecord.Status.PENDING);
+  }
+
+  @Test
+  void accountCleanupRemovesIdempotencyPointersAndBlobs() throws Exception {
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "old-incarnation");
+    assertThat(repo.createPending(ACCOUNT, key, OP, "hash", NOW, expiresFrom(NOW, 60)).created())
+        .isTrue();
+    var guard =
+        markerStore((InMemoryPointerStore) ptr)
+            .pointerAbsentGuard("account " + ACCOUNT, Keys.accountPointerById(ACCOUNT));
+
+    var result =
+        repo.deleteAccountResources(
+            ACCOUNT, guard, new BaseResourceRepository.GuardedDeleteProgress());
+
+    assertThat(result.pointersDeleted()).isEqualTo(2);
+    assertThat(result.blobsDeleted()).isOne();
+    assertThat(ptr.get(key)).isEmpty();
+    assertThat(blobs.list(Keys.idempotencyPrefixAccount(ACCOUNT), 1, "").keys()).isEmpty();
+  }
+
+  @Test
+  void oldInvocationCannotFinalizeIntoARecreatedAccount() throws Exception {
+    var memoryPointers = (InMemoryPointerStore) ptr;
+    var markers = markerStore(memoryPointers);
+    inject(repo, "markerStore", markers);
+    String accountKey = Keys.accountPointerById(ACCOUNT);
+    memoryPointers.compareAndSet(
+        accountKey, 0L, PointerReferences.opaqueMarkerPointer(accountKey, "old-account", 1L));
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "old-invocation");
+    var oldClaim = repo.createPending(ACCOUNT, key, OP, "hash", NOW, expiresFrom(NOW, 60));
+
+    memoryPointers.delete(accountKey);
+    repo.deleteAccountResources(
+        ACCOUNT,
+        markers.pointerAbsentGuard("account " + ACCOUNT, accountKey),
+        new BaseResourceRepository.GuardedDeleteProgress());
+    memoryPointers.compareAndSet(
+        accountKey, 0L, PointerReferences.opaqueMarkerPointer(accountKey, "new-account", 1L));
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedAfterWriteException.class,
+        () ->
+            repo.finalizeSuccess(
+                ACCOUNT,
+                key,
+                oldClaim,
+                OP,
+                "hash",
+                resourceId("rid"),
+                meta(1L),
+                new byte[] {1},
+                NOW,
+                expiresFrom(NOW, 60)));
+    assertThat(ptr.get(key)).isEmpty();
+  }
+
+  @Test
   void runOnceRejectDifferentFingerprint() throws Exception {
     final String idemKey = "k1";
     final byte[] seedReq = "AAA".getBytes(StandardCharsets.UTF_8);
@@ -148,12 +251,13 @@ public class IdempotencyGuardTest {
     Timestamp createdAt = NOW;
     Timestamp expiresAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(300).build());
 
-    boolean pendingOk = repo.createPending(ACCOUNT, key, OP, requestHash, createdAt, expiresAt);
-    assertThat(pendingOk).isTrue();
+    var pending = repo.createPending(ACCOUNT, key, OP, requestHash, createdAt, expiresAt);
+    assertThat(pending.created()).isTrue();
 
     repo.finalizeSuccess(
         ACCOUNT,
         key,
+        pending,
         OP,
         requestHash,
         ResourceId.newBuilder()
@@ -251,10 +355,11 @@ public class IdempotencyGuardTest {
 
     String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
     String requestHash = sha256B64(req);
-    repo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresFrom(NOW, 60));
+    var pending = repo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresFrom(NOW, 60));
     repo.finalizeSuccess(
         ACCOUNT,
         key,
+        pending,
         OP,
         requestHash,
         resourceId("X"),
@@ -333,10 +438,12 @@ public class IdempotencyGuardTest {
     var racingPtr = new CompareDeleteRacePointerStore(rawPtr);
     var racingRepo = new IdempotencyRepositoryImpl(racingPtr, rawBlobs);
 
-    assertThat(racingRepo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt)).isTrue();
+    var pending = racingRepo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt);
+    assertThat(pending.created()).isTrue();
     racingRepo.finalizeSuccess(
         ACCOUNT,
         key,
+        pending,
         OP,
         requestHash,
         resourceId("rid-old"),
@@ -417,6 +524,18 @@ public class IdempotencyGuardTest {
     return Timestamps.add(now, Duration.newBuilder().setSeconds(ttlSeconds).build());
   }
 
+  private static MarkerStore markerStore(InMemoryPointerStore pointers) throws Exception {
+    var markers = new MarkerStore();
+    inject(markers, "pointerStore", pointers);
+    return markers;
+  }
+
+  private static void inject(Object target, String fieldName, Object value) throws Exception {
+    Field field = target.getClass().getDeclaredField(fieldName);
+    field.setAccessible(true);
+    field.set(target, value);
+  }
+
   private void seedSucceeded(
       String account,
       String op,
@@ -433,11 +552,11 @@ public class IdempotencyGuardTest {
     Timestamp createdAt = NOW;
     Timestamp expiresAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(300).build());
 
-    boolean ok = repo.createPending(account, key, op, requestHash, createdAt, expiresAt);
-    assertThat(ok).isTrue();
+    var pending = repo.createPending(account, key, op, requestHash, createdAt, expiresAt);
+    assertThat(pending.created()).isTrue();
 
     repo.finalizeSuccess(
-        account, key, op, requestHash, rid, meta, payloadBytes, createdAt, expiresAt);
+        account, key, pending, op, requestHash, rid, meta, payloadBytes, createdAt, expiresAt);
 
     var rec = repo.get(key).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);

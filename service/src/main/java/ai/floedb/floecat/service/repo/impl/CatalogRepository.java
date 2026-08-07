@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -31,6 +32,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 
@@ -129,16 +131,23 @@ public class CatalogRepository {
    * retried DeleteAccount have for reaching those resources, so sweeping the whole root would, on
    * any teardown that had not finished, erase the index for resources that still exist and orphan
    * them permanently — the exact outcome this sweep is here to prevent.
+   *
+   * <p>Every removal is guarded by {@code accountGone}, so a reused account id cannot authorize a
+   * sweep of the replacement account's rows.
    */
-  public int deleteResidualRows(String accountId) {
-    return repo.deleteByPrefix(Keys.catalogPointerByIdPrefix(accountId))
-        + repo.deleteByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  public int deleteResidualRows(String accountId, BatchGuard accountGone) {
+    return deleteResidualRows(
+        accountId, accountGone, new BaseResourceRepository.GuardedDeleteProgress());
   }
 
-  /** Guarded account-teardown counterpart of {@link #deleteResidualRows(String)}. */
-  public int deleteResidualRows(String accountId, BatchGuard accountGone) {
-    return repo.deleteByPrefix(Keys.catalogPointerByIdPrefix(accountId), accountGone)
-        + repo.deleteByPrefix(Keys.catalogPointerByNamePrefix(accountId), accountGone);
+  public int deleteResidualRows(
+      String accountId,
+      BatchGuard accountGone,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
+    return repo.deleteByPrefix(
+            Keys.catalogPointerByIdPrefix(accountId), accountGone, deleteProgress)
+        + repo.deleteByPrefix(
+            Keys.catalogPointerByNamePrefix(accountId), accountGone, deleteProgress);
   }
 
   /**
@@ -160,6 +169,49 @@ public class CatalogRepository {
                     .setId(Keys.extractLastSegment(pointer.getKey()))
                     .setKind(ResourceKind.RK_CATALOG)
                     .build()));
+  }
+
+  /**
+   * Enumerates every catalog identity still recoverable during account teardown.
+   *
+   * <p>The canonical by-id row can disappear before nested namespace rows. Scan the whole catalog
+   * pointer root before deleting anything and recover identities from canonical rows, standard
+   * catalog blob URIs referenced by by-name rows, and keys nested beneath a catalog id. Holding
+   * only the deduplicated catalog ids prevents cleanup mutations from perturbing this discovery
+   * scan; namespace/table contents remain streamed by the recursive dropper.
+   */
+  public void forEachRecoverableId(
+      String accountId, java.util.function.Consumer<ResourceId> action) {
+    String byIdPrefix = Keys.catalogPointerByIdPrefix(accountId);
+    var catalogIds = new LinkedHashSet<String>();
+    repo.forEachRefByPrefixConsistent(
+        Keys.catalogRootPrefix(accountId),
+        pointer -> {
+          String catalogId = null;
+          if (pointer.getKey().startsWith(byIdPrefix)) {
+            catalogId = Keys.extractLastSegment(pointer.getKey());
+          }
+          if (catalogId == null) {
+            catalogId = Keys.catalogIdFromNestedPointerKey(accountId, pointer.getKey());
+          }
+          if (catalogId == null) {
+            String ownerKey = Keys.ownerPointerKeyForBlob(pointer.getBlobUri());
+            if (ownerKey != null && ownerKey.startsWith(byIdPrefix)) {
+              catalogId = Keys.extractLastSegment(ownerKey);
+            }
+          }
+          if (catalogId != null && !catalogId.isBlank()) {
+            catalogIds.add(catalogId);
+          }
+        });
+    for (String catalogId : catalogIds) {
+      action.accept(
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId(catalogId)
+              .setKind(ResourceKind.RK_CATALOG)
+              .build());
+    }
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {

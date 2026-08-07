@@ -19,7 +19,10 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -33,6 +36,7 @@ public class TransactionIntentRepository {
 
   private final GenericResourceRepository<TransactionIntent, TransactionIntentKey> repo;
   private final PointerStore pointerStore;
+  @Inject MarkerStore markerStore;
 
   @Inject
   public TransactionIntentRepository(PointerStore pointerStore, BlobStore blobStore) {
@@ -48,17 +52,38 @@ public class TransactionIntentRepository {
   }
 
   public void create(TransactionIntent intent) {
-    repo.create(intent);
+    repo.create(intent, accountLiveGuard(intent.getAccountId()));
+  }
+
+  public void create(TransactionIntent intent, BatchGuard guard) {
+    repo.create(intent, BatchGuard.all(accountLiveGuard(intent.getAccountId()), guard));
   }
 
   public boolean update(TransactionIntent intent) {
+    return update(intent, BatchGuard.NONE);
+  }
+
+  public boolean update(TransactionIntent intent, BatchGuard guard) {
     String key =
         Keys.transactionIntentPointerByTarget(intent.getAccountId(), intent.getTargetPointerKey());
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
       return false;
     }
-    return repo.update(intent, ptr.getVersion());
+    return repo.update(
+        intent, ptr.getVersion(), BatchGuard.all(accountLiveGuard(intent.getAccountId()), guard));
+  }
+
+  private BatchGuard accountLiveGuard(String accountId) {
+    if (markerStore == null) {
+      return BatchGuard.NONE;
+    }
+    return markerStore
+        .accountLiveGuard(accountId)
+        .orElseThrow(
+            () ->
+                new BaseResourceRepository.BatchGuardFailedException(
+                    "account disappeared during transaction intent mutation: " + accountId));
   }
 
   public Optional<TransactionIntent> getByTarget(String accountId, String targetPointerKey) {

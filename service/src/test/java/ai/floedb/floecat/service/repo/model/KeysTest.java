@@ -61,6 +61,21 @@ class KeysTest {
   }
 
   @Test
+  void catalogIdCanBeRecoveredFromNestedPointerKeys() {
+    String nested = Keys.namespacePointerByPath("acct id", "cat/id", List.of("db"));
+
+    assertEquals("cat/id", Keys.catalogIdFromNestedPointerKey("acct id", nested));
+    assertEquals(
+        null,
+        Keys.catalogIdFromNestedPointerKey(
+            "acct id", Keys.catalogPointerById("acct id", "cat/id")));
+    assertEquals(
+        null,
+        Keys.catalogIdFromNestedPointerKey(
+            "acct id", Keys.catalogPointerByName("acct id", "catalog")));
+  }
+
+  @Test
   void transactionDeleteSentinelEncodesOpaquePointerKey() {
     assertEquals(
         "/accounts/acct/transactions/tx/delete/%2Faccounts%2Fa%2Fb",

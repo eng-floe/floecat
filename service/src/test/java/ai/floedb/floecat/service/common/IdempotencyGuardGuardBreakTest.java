@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.Timestamp;
 import java.nio.charset.StandardCharsets;
@@ -100,6 +101,23 @@ class IdempotencyGuardGuardBreakTest {
     assertTrue(store.hasPending(), "an uncertain outcome must not hand the key back out");
   }
 
+  @Test
+  void aGuardBreakAfterADurableWriteKeepsThePendingRecord() {
+    var store = new FakeIdempotencyStore();
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedAfterWriteException.class,
+        () ->
+            runOnce(
+                store,
+                () -> {
+                  throw new BaseResourceRepository.BatchGuardFailedAfterWriteException(
+                      "prefix sweep committed before its guard broke");
+                }));
+
+    assertTrue(store.hasPending(), "a partially committed operation must not be replayed");
+  }
+
   private static IdempotencyGuard.Result<String> runOnce(
       FakeIdempotencyStore store,
       java.util.function.Supplier<IdempotencyGuard.CreateResult<String>> creator) {
@@ -131,7 +149,7 @@ class IdempotencyGuardGuardBreakTest {
     }
 
     @Override
-    public boolean createPending(
+    public PendingClaim createPending(
         String accountId,
         String key,
         String opName,
@@ -139,7 +157,7 @@ class IdempotencyGuardGuardBreakTest {
         Timestamp createdAt,
         Timestamp expiresAt) {
       if (records.containsKey(key)) {
-        return false;
+        return new PendingClaim(false, 0L, "", 0L);
       }
       records.put(
           key,
@@ -148,13 +166,14 @@ class IdempotencyGuardGuardBreakTest {
               .setRequestHash(requestHash)
               .setStatus(IdempotencyRecord.Status.PENDING)
               .build());
-      return true;
+      return new PendingClaim(true, 1L, key + "/claim", 1L);
     }
 
     @Override
     public void finalizeSuccess(
         String accountId,
         String key,
+        PendingClaim pendingClaim,
         String opName,
         String requestHash,
         ResourceId resourceId,
@@ -177,6 +196,21 @@ class IdempotencyGuardGuardBreakTest {
     @Override
     public boolean delete(String key) {
       return records.remove(key) != null;
+    }
+
+    @Override
+    public boolean deletePending(String key, PendingClaim pendingClaim) {
+      return delete(key);
+    }
+
+    @Override
+    public CleanupResult deleteAccountResources(
+        String accountId,
+        BatchGuard accountGone,
+        BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
+      int deleted = records.size();
+      records.clear();
+      return new CleanupResult(deleted, 0);
     }
 
     boolean isEmpty() {

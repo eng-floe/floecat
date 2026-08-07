@@ -115,22 +115,35 @@ public class MarkerStore {
    * @return how many marker rows were released
    */
   public int deleteAccountMarkers(String accountId, BatchGuard accountGone) {
-    return deleteMarkersUnder(Keys.catalogRootPrefix(accountId), accountGone)
-        + deleteMarkersUnder(Keys.namespaceRootPrefix(accountId), accountGone);
+    return deleteAccountMarkers(
+        accountId, accountGone, new BaseResourceRepository.GuardedDeleteProgress());
   }
 
-  private int deleteMarkersUnder(String rootPrefix, BatchGuard accountGone) {
+  public int deleteAccountMarkers(
+      String accountId,
+      BatchGuard accountGone,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
+    return deleteMarkersUnder(Keys.catalogRootPrefix(accountId), accountGone, deleteProgress)
+        + deleteMarkersUnder(Keys.namespaceRootPrefix(accountId), accountGone, deleteProgress);
+  }
+
+  private int deleteMarkersUnder(
+      String rootPrefix,
+      BatchGuard accountGone,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress) {
     int deleted = 0;
     var seenTokens = new java.util.HashSet<String>();
     String token = "";
     while (true) {
       var next = new StringBuilder();
       for (var row :
-          pointerStore.listPointersByPrefix(rootPrefix, MARKER_SWEEP_PAGE_SIZE, token, next)) {
+          pointerStore.listPointersByPrefix(
+              rootPrefix, MARKER_SWEEP_PAGE_SIZE, token, next, true)) {
         if (isResourceMarkerKey(rootPrefix, row.getKey())) {
           if (BaseResourceRepository.deletePointerWithGuard(
-              pointerStore, row, accountGone, deleted > 0)) {
+              pointerStore, row, accountGone, deleteProgress.hasPriorWrite())) {
             deleted++;
+            deleteProgress.recordWrite();
           }
         }
       }
