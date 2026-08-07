@@ -111,10 +111,11 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     fingerprints, stats/index capture signatures, auxiliary-target fingerprints, and any selected
     reusable bundle records. Empty physical content identity disables cross-snapshot reuse for that
     file.
-  - Snapshot planning reads the compact capture manifest from the most recently reconciled snapshot
-    with finalized reusable artifacts, ordered by durable `ingested_at` rather than snapshot id or
-    source parentage. It does not read reusable bundle payloads, source files, or page-index
-    sidecars.
+  - Snapshot planning reads the compact capture manifest from the newest root-published finalized
+    reusable candidate at or before the committed current snapshot. Candidate selection is bounded
+    by the table root and does not scan snapshot history. Once selected, a missing manifest object
+    is retryable and malformed or incomplete content is terminal; neither silently becomes a cold
+    plan. Planning does not read reusable bundle payloads, source files, or page-index sidecars.
     The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
     rebinds selected records to the destination snapshot, and captures only missing outputs.
   - The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
@@ -161,6 +162,11 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     normalized reference per file group into `SnapshotCaptureManifest` without reading bundle
     payloads. Finalize submission can race with pointer staging and must retry the exact same result
     when a prepared marker is not yet present.
+  - Reusable compatibility metadata is executor-authored publication metadata. The control plane
+    validates its structure, leased ownership, counts, content-addressed bundle descriptor, and
+    staged target mappings, but deliberately does not GET bundle payloads to reconstruct or compare
+    that metadata. A later file-group worker is the payload consumer: it verifies the selected
+    bundle's byte length and SHA-256 and rejects missing or incompatible records before reuse.
   - Successful publication stores the capture-manifest descriptor in the snapshot's system-owned
     `reuse_manifest_ref` and heads the reusable stats generation from the table root. Garbage
     collection treats both references as live publication state.

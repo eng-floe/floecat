@@ -661,11 +661,12 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private Optional<HistoricalArtifacts> loadReuseManifest(
       ResourceId tableId, Snapshot snapshot, String expectedConnectorId) {
     if (blobStore == null) {
-      return Optional.empty();
+      throw invalidReuseManifest("snapshot reuse manifest storage is unavailable", null);
     }
     long snapshotId = snapshot.getSnapshotId();
     if (!snapshot.hasReuseManifestRef()) {
-      return Optional.empty();
+      throw invalidReuseManifest(
+          "selected snapshot reuse manifest reference is missing: " + snapshotId, null);
     }
     var manifestRef = snapshot.getReuseManifestRef();
     String uri = manifestRef.getUri().trim();
@@ -676,10 +677,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     try {
       bytes = blobStore.get(uri);
     } catch (StorageNotFoundException e) {
-      return Optional.empty();
+      throw unavailableReuseManifest("snapshot reuse manifest is unavailable: " + uri, e);
     }
     if (bytes == null) {
-      return Optional.empty();
+      throw unavailableReuseManifest("snapshot reuse manifest is unavailable: " + uri, null);
     }
     if (manifestRef.getPayloadBytes() <= 0L
         || manifestRef.getPayloadBytes() != bytes.length
@@ -692,7 +693,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(bytes);
       validateReuseManifestIdentity(tableId, snapshotId, expectedConnectorId, manifest, uri);
       if (!manifest.getReusableArtifactBundlesComplete()) {
-        return Optional.empty();
+        throw invalidReuseManifest("snapshot reuse manifest is incomplete: " + uri, null);
       }
       return Optional.of(new HistoricalArtifacts(manifest.getReusableArtifactBundlesList()));
     } catch (com.google.protobuf.InvalidProtocolBufferException e) {
@@ -705,6 +706,16 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         ExecutionResult.FailureKind.INTERNAL,
         ExecutionResult.RetryDisposition.TERMINAL,
         ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
+  }
+
+  private static ReconcileFailureException unavailableReuseManifest(
+      String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.RETRYABLE,
+        ExecutionResult.RetryClass.TRANSIENT_ERROR,
         message,
         cause);
   }

@@ -126,7 +126,11 @@ engine release.
   fingerprints and capture signatures. `SnapshotCaptureManifest.reusable_artifact_bundles` retains
   that lightweight index so a later snapshot planner can select reusable targets without reading
   bundle payloads, source files, or page-index sidecars. A selected file-group worker verifies and
-  reads each compact bundle once.
+  reads each compact bundle once. This compatibility index is executor-authored metadata: the
+  control plane validates its structure, leased ownership, counts, content-addressed bundle
+  descriptor, and staged target mappings, but deliberately does not GET the bundle to derive or
+  compare metadata. The consuming worker verifies bundle length and SHA-256 and rejects a selected
+  record that is absent or incompatible before reuse.
   `FileGroupResultPayload.realized_stats_selectors` and `.realized_index_selectors` record the
   concrete selector aliases materialized by each group. The finalizer aggregates them into the
   corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later

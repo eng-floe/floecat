@@ -363,14 +363,34 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void planningRegeneratesWhenLatestReuseManifestObjectIsUnavailable() {
-    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NULL_BLOB);
-    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.NOT_FOUND);
-    assertPlanningRegeneratesWhenManifestIsUnavailable(ManifestUnavailableMode.UNMARKED_MANIFEST);
+  void planningFailsClosedWhenSelectedReuseManifestIsUnavailableOrInvalid() {
+    assertPlanningFailsWhenManifestIsUnavailable(
+        ManifestUnavailableMode.NULL_BLOB,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+        ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+        "snapshot reuse manifest is unavailable");
+    assertPlanningFailsWhenManifestIsUnavailable(
+        ManifestUnavailableMode.NOT_FOUND,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+        ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+        "snapshot reuse manifest is unavailable");
+    assertPlanningFailsWhenManifestIsUnavailable(
+        ManifestUnavailableMode.UNMARKED_MANIFEST,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        "snapshot reuse manifest is incomplete");
+    assertPlanningFailsWhenManifestIsUnavailable(
+        ManifestUnavailableMode.MISSING_REFERENCE,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        "snapshot reuse manifest reference is missing");
   }
 
-  private static void assertPlanningRegeneratesWhenManifestIsUnavailable(
-      ManifestUnavailableMode unavailableMode) {
+  private static void assertPlanningFailsWhenManifestIsUnavailable(
+      ManifestUnavailableMode unavailableMode,
+      ReconcileExecutor.ExecutionResult.RetryDisposition expectedDisposition,
+      ReconcileExecutor.ExecutionResult.RetryClass expectedRetryClass,
+      String expectedDetail) {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
@@ -408,21 +428,19 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             .build()
             .toByteArray();
     boolean unmarked = unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST;
+    Snapshot.Builder basis =
+        Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L);
+    if (unavailableMode != ManifestUnavailableMode.MISSING_REFERENCE) {
+      basis.setReuseManifestRef(
+          SnapshotReuseManifestRef.newBuilder()
+              .setUri(uri)
+              .setPayloadBytes(unmarked ? manifestBytes.length : 123L)
+              .setPayloadSha256(
+                  ByteString.copyFrom(unmarked ? sha256(manifestBytes) : new byte[32]))
+              .setStatsGenerationManifestUri("/stats/generation.pb"));
+    }
     when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(9001L)
-                    .setReuseManifestRef(
-                        SnapshotReuseManifestRef.newBuilder()
-                            .setUri(uri)
-                            .setPayloadBytes(unmarked ? manifestBytes.length : 123L)
-                            .setPayloadSha256(
-                                ByteString.copyFrom(
-                                    unmarked ? sha256(manifestBytes) : new byte[32]))
-                            .setStatsGenerationManifestUri("/stats/generation.pb"))
-                    .build()));
+        .thenReturn(Optional.of(basis.build()));
     if (unavailableMode == ManifestUnavailableMode.NOT_FOUND) {
       when(blobStore.get(uri)).thenThrow(new StorageNotFoundException("missing"));
     } else if (unavailableMode == ManifestUnavailableMode.NULL_BLOB) {
@@ -430,34 +448,29 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     } else if (unmarked) {
       when(blobStore.get(uri)).thenReturn(manifestBytes);
     }
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertTrue(
-        executor
-            .execute(
-                new ReconcileExecutor.ExecutionContext(
-                    lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
-            .success());
+    assertFalse(result.success());
+    assertEquals(expectedDisposition, result.retryDisposition);
+    assertEquals(expectedRetryClass, result.retryClass);
     verify(workerClient)
-        .submitPlanSnapshotSuccess(
+        .submitPlanSnapshotFailure(
             any(),
-            any(),
-            argThat(
-                fileGroupJobs ->
-                    fileGroupJobs.stream()
-                        .flatMap(job -> job.fileGroupTask().fileExecutionPlans().stream())
-                        .allMatch(
-                            plan ->
-                                plan.reusableArtifactBundleSelections().isEmpty()
-                                    && !plan.sourceFingerprint().isBlank()
-                                    && !plan.statsCaptureSignature().isBlank())),
-            any());
+            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
+            eq(expectedDisposition),
+            eq(expectedRetryClass),
+            argThat(detail -> detail.contains(expectedDetail)));
+    verify(workerClient, never()).submitPlanSnapshotSuccess(any(), any(), any(), any());
   }
 
   private enum ManifestUnavailableMode {
     NULL_BLOB,
     NOT_FOUND,
-    UNMARKED_MANIFEST
+    UNMARKED_MANIFEST,
+    MISSING_REFERENCE
   }
 
   private static byte[] sha256(byte[] bytes) {
