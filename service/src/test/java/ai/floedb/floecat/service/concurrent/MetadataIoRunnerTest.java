@@ -34,6 +34,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,14 +43,19 @@ import org.junit.jupiter.params.provider.ValueSource;
 class MetadataIoRunnerTest {
 
   /**
-   * The shared-runtime lifecycle tests mutate a process-wide static that backs every
-   * default-constructed runner in this JVM, and the module runs one surefire fork shared with
-   * {@code @QuarkusTest} classes. Leave it usable for whatever runs next, whichever way a test
-   * exits.
+   * Both statics these tests touch — the shared runtime and the saturation sink — back every
+   * default-constructed runner in this JVM. Restored whichever way a test exits.
+   *
+   * <p>Scoped to this classloader, not the fork. {@code MetadataIoRunner} is an application class,
+   * so each {@code @QuarkusTest} restart loads its own copy with its own statics, and Quarkus's
+   * {@code QuarkusClassOrderer} runs non-Quarkus classes last anyway. What this protects is the
+   * plain unit tests that run after these, which do share them.
    */
-  @org.junit.jupiter.api.AfterEach
-  void restoreSharedRuntime() {
+  @AfterEach
+  void restoreProcessWideState() {
     MetadataIoRunner.reopenSharedRuntime();
+    // The default sink is a no-op, so clearing is a full restore: nothing outside CDI installs one.
+    MetadataIoRunner.clearSaturationSink();
   }
 
   private static final CancellableCallRunner.FailureMessages FAILURES =
@@ -271,6 +277,54 @@ class MetadataIoRunnerTest {
       assertThrows(
           RejectedExecutionException.class,
           () -> late.callWithoutCancellation(() -> "late", FAILURES));
+    } finally {
+      MetadataIoRunner.reopenSharedRuntime();
+    }
+  }
+
+  @Test
+  void aNestedReadDuringShutdownOfTheSharedRuntimeSurfacesAsCancellation() {
+    // The sibling test uses an explicit-capacity runtime, which resolves through a field and never
+    // touches the shutdown latch. Only the shared runtime — the production one — takes the path
+    // where a drain in progress has to answer a re-entrancy check with something other than a
+    // rejection, and the contract for a call already in flight is cancellation.
+    try {
+      Throwable nested =
+          new MetadataIoRunner()
+              .callWithoutCancellation(
+                  () -> {
+                    MetadataIoRunner.closeSharedRuntimeIfStarted();
+                    // close() runs shutdownNow on this worker; clear it so the closure check, not
+                    // the interrupt check, is what answers.
+                    Thread.interrupted();
+                    return assertThrows(
+                        Throwable.class,
+                        () ->
+                            new MetadataIoRunner()
+                                .callWithoutCancellation(() -> "nested", FAILURES));
+                  },
+                  FAILURES);
+      assertInstanceOf(CancellationException.class, nested);
+      assertEquals(CancellableCallRunner.RUNTIME_CLOSED, nested.getMessage());
+    } finally {
+      MetadataIoRunner.reopenSharedRuntime();
+    }
+  }
+
+  @Test
+  void theAdmissionGaugesKeepReadingThroughTheDrainWindow() {
+    // These three feed Micrometer gauges. A throw here is not surfaced — DefaultGauge catches it
+    // and publishes NaN, with a warning per scrape — so the whole graceful-shutdown drain would
+    // report no capacity, no usage and no waiters at the one moment an operator is watching.
+    MetadataIoRunner gauges = new MetadataIoRunner();
+    gauges.callWithoutCancellation(() -> "warm", FAILURES);
+    int capacityBefore = gauges.capacity();
+    try {
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+
+      assertEquals(capacityBefore, gauges.capacity(), "capacity is a configured value, not state");
+      assertEquals(0, gauges.permitsInUse(), "the drained runtime holds nothing");
+      assertEquals(0, gauges.admissionWaiters(), "nothing can be queued behind a closed runtime");
     } finally {
       MetadataIoRunner.reopenSharedRuntime();
     }

@@ -37,9 +37,14 @@ class MetadataIoLifecycleTest {
 
   private final MetadataIoLifecycle lifecycle = new MetadataIoLifecycle();
 
+  /**
+   * These call the real observers, which close the shared runtime and drop the telemetry sink.
+   * Restore both for the plain unit tests that run after this class in the same classloader.
+   */
   @AfterEach
-  void restoreSharedRuntime() {
+  void restoreProcessWideState() {
     MetadataIoRunner.reopenSharedRuntime();
+    MetadataIoRunner.clearSaturationSink();
   }
 
   @Test

@@ -81,8 +81,18 @@ public class MetadataIoRunner {
   // a counter; the default is a no-op so the acquire path works outside CDI.
   private static volatile Runnable saturationSink = () -> {};
 
-  /** Installed while a shutdown is in progress, so no replacement runtime is built after it. */
-  private static final RuntimeState SHUTTING_DOWN = new RuntimeState(1);
+  /**
+   * Set while a shutdown is in progress, so no replacement runtime is built after it.
+   *
+   * <p>A flag beside {@link #SHARED} rather than a sentinel installed into it. A sentinel has to
+   * displace the runtime being closed, and every resolution during the drain window then has
+   * nothing to return but a rejection — including the re-entrancy check and the gauges, neither of
+   * which is submitting anything. Leaving the closed runtime in place lets each caller answer for
+   * itself: a nested call reports cancellation, a new submission reports rejection, and the gauges
+   * keep reading real numbers.
+   */
+  private static final java.util.concurrent.atomic.AtomicBoolean SHUTDOWN_LATCHED =
+      new java.util.concurrent.atomic.AtomicBoolean();
 
   /**
    * True when the calling thread is currently inside an admitted operation. Drives re-entrant
@@ -456,11 +466,11 @@ public class MetadataIoRunner {
     // runtime returns null and touches nothing, so an unused runner still never starts a pool just
     // to close it.
     //
-    // The sentinel closes the window rather than narrowing it: while it is installed, sharedRuntime
-    // refuses to build a replacement, so no pool is created after the ShutdownEvent. StartupEvent
-    // re-arms it for the next lifecycle.
-    RuntimeState closing = SHARED.getAndSet(SHUTTING_DOWN);
-    if (closing != null && closing != SHUTTING_DOWN && !closing.close()) {
+    // Latch before reading, so a creator that has not yet checked cannot get past it. One that
+    // already did still loses: it re-checks after winning the CAS and closes what it built.
+    SHUTDOWN_LATCHED.set(true);
+    RuntimeState closing = SHARED.get();
+    if (closing != null && !closing.close()) {
       LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
     }
   }
@@ -471,10 +481,14 @@ public class MetadataIoRunner {
    * <p>A no-op under Quarkus: this is an application class, so a dev-mode reload or
    * {@code @QuarkusTest} restart mints a fresh {@code Class} with fresh statics and {@code SHARED}
    * is already null. It is what lets a plain JUnit fork — where the statics really are shared —
-   * recover, and it keeps the sentinel from being a one-way door if that ever stops holding.
+   * recover, and it keeps the latch from being a one-way door if that ever stops holding.
+   *
+   * <p>Clearing the latch is enough: {@link #sharedRuntime()} replaces a closed runtime once it is
+   * allowed to build one, so the next caller gets a fresh one without this having to null the
+   * reference and race a concurrent resolution.
    */
   static void reopenSharedRuntime() {
-    SHARED.compareAndSet(SHUTTING_DOWN, null);
+    SHUTDOWN_LATCHED.set(false);
   }
 
   private static RuntimeState createSharedRuntime() {
@@ -496,14 +510,27 @@ public class MetadataIoRunner {
   private static RuntimeState sharedRuntime() {
     while (true) {
       RuntimeState current = SHARED.get();
-      if (current == SHUTTING_DOWN) {
-        throw new RejectedExecutionException("metadata I/O executor is closed");
-      }
       if (current != null && !current.isClosed()) {
         return current;
       }
+      if (SHUTDOWN_LATCHED.get()) {
+        if (current != null) {
+          // Closed, and no replacement may be built. Returned rather than rejected here so the
+          // caller decides: acquire() reports the rejection, a nested call reports cancellation,
+          // and an observation accessor just reads it.
+          return current;
+        }
+        throw new RejectedExecutionException("metadata I/O executor is closed");
+      }
       RuntimeState fresh = createSharedRuntime();
       if (SHARED.compareAndSet(current, fresh)) {
+        if (SHUTDOWN_LATCHED.get()) {
+          // Latched between the check above and this CAS. Undo rather than hand back a runtime the
+          // ShutdownEvent will never see: close() on a never-started runtime touches nothing, since
+          // the pool is built lazily by executor().
+          fresh.close();
+          throw new RejectedExecutionException("metadata I/O executor is closed");
+        }
         return fresh;
       }
     }
