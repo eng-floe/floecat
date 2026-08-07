@@ -1721,8 +1721,7 @@
 Views, Snapshots, statistics, and query-lifecycle artifacts.</p>
 <div class="highlight"><pre><span></span><code>Account
  ├── CatalogIntegration (external catalog identity)
- │    └── CatalogOverlay (namespace selection)
- │         └── Catalog (SQL-visible placement)
+ │    └── CatalogOverlay (SQL-visible catalog and namespace selection)
  └── Catalog (locally managed catalog)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
@@ -1760,11 +1759,11 @@ without exposing an unfinalized scan.</p>
 catalog integrations and overlays. These resources are intentionally operationally inert: this API
 does not define credentials, connectivity, adapter selection, validation, reconciliation, or
 lifecycle cleanup. Legacy connectors remain unchanged and are not part of either new contract.</p>
-<p>An overlay references an existing catalog but does not own or mutate that catalog. Overlay creation
-is conditioned on the current integration and catalog pointer versions, and advances a fixed
-integration dependency marker in the same transaction. Integration deletion checks both the
-dependent-overlay index and that marker, closing concurrent overlay-create/integration-delete
-races. Catalog lifecycle enforcement and cleanup are deliberately deferred.</p>
+<p>An overlay is itself the top-level, read-only SQL catalog; it does not reference a separate Catalog
+resource. Overlay creation is conditioned on the current integration pointer version and advances a
+fixed integration dependency marker in the same transaction. Integration deletion checks both the
+strongly consistent dependent-overlay index and that marker, closing concurrent
+overlay-create/integration-delete races. Account deletion removes overlays before integrations.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
 <p>The following modules compose the system (see linked docs for deep dives):</p>
 <table>
