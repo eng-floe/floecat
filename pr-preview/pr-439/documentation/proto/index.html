@@ -2103,8 +2103,9 @@ CLI, and reconciler.</p>
 authenticated principal's account. The service rejects blank or cross-account IDs before hitting
 repository storage.</p>
 <p><code>NamespacePath</code> represents an upstream namespace as root-to-leaf path segments for overlay include
-and exclude filters. Empty includes select all namespaces; exclusions take precedence. Paths are
-trimmed, deduplicated, and compared case-sensitively by segment.</p>
+and exclude filters. Empty includes select all namespaces; exclusions take precedence. Segment text
+is preserved exactly, paths are deduplicated and deterministically ordered, and matching is
+case-sensitive. Each path selects that namespace subtree.</p>
 <h3 id="planner-lifecycle-execution-scan-schemas">Planner Lifecycle &amp; Execution Scan Schemas<a class="headerlink" href="#planner-lifecycle-execution-scan-schemas" title="Permanent link">&para;</a></h3>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
 - <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion

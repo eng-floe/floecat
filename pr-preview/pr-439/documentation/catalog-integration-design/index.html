@@ -1903,13 +1903,11 @@ lifecycle semantics before those behaviors are added to the production APIs.</p>
 <p>The new path does not use, wrap, synthesize, or fall back to Connector resources. Connectors remain
 a separate legacy path during migration and will eventually be deprecated.</p>
 <h2 id="resource-and-ownership-model">Resource and ownership model<a class="headerlink" href="#resource-and-ownership-model" title="Permanent link">&para;</a></h2>
-<p>The target model has three distinct layers:</p>
+<p>The target model has two resource layers plus shared captured metadata:</p>
 <div class="highlight"><pre><span></span><code>CatalogIntegration                 connection, authentication, canonical upstream identity
  ├── captured namespace/table      shared metadata, snapshots, file groups, and statistics
- ├── CatalogOverlay                mappings, visibility, and freshness demand
- │    └── existing Catalog         SQL-visible placement; not owned by the overlay
- └── CatalogOverlay
-      └── existing Catalog
+ ├── CatalogOverlay &quot;sales&quot;        top-level SQL catalog, mappings, visibility, and demand
+ └── CatalogOverlay &quot;finance&quot;      another top-level projection of the same integration
 </code></pre></div>
 <h3 id="catalog-integration">Catalog integration<a class="headerlink" href="#catalog-integration" title="Permanent link">&para;</a></h3>
 <p><code>CatalogIntegration</code> owns the upstream catalog protocol, endpoint, authentication configuration,
@@ -1923,17 +1921,13 @@ client capabilities.</p>
 authentication scheme, non-secret options, whether credentials are configured, and a credential
 generation. Credential writes use a dedicated request that never returns secret material.</p>
 <h3 id="catalog-overlay">Catalog overlay<a class="headerlink" href="#catalog-overlay" title="Permanent link">&para;</a></h3>
-<p><code>CatalogOverlay</code> is a non-owning, read-only projection of one integration into one existing
-Floecat <code>Catalog</code>. It owns namespace mappings, visibility state, and refresh/retention demand. It
-does not create, rename, empty, lock, or delete its target catalog.</p>
-<p>Initially, at most one overlay may target a catalog. This keeps name resolution and collision
-reporting deterministic while still allowing several catalogs to expose different projections of
-the same integration. Supporting overlay composition within one catalog requires a separate design
-decision.</p>
-<p>The target catalog remains a normal catalog. Users may create local namespaces and views in it,
-and views may reference overlay-bound tables. Captured namespaces and relations are read-only.
-Local and overlay objects never shadow one another: an exposed-name collision prevents that binding
-from becoming visible and puts the overlay into a degraded condition until the conflict is fixed.</p>
+<p><code>CatalogOverlay</code> is a read-only top-level SQL catalog backed by one integration. Its display name is
+the catalog name. It owns namespace mappings, visibility state, and refresh/retention demand; it
+does not point to or mutate a separate <code>Catalog</code> resource.</p>
+<p>Several overlays may expose different projections of the same integration under different
+top-level catalog names. The account-level catalog namespace must reject collisions between overlay
+display names and other top-level catalogs. Captured namespaces and relations inside an overlay are
+read-only; writable local objects belong in a separate regular catalog.</p>
 <h2 id="namespace-selection-and-mapping">Namespace selection and mapping<a class="headerlink" href="#namespace-selection-and-mapping" title="Permanent link">&para;</a></h2>
 <p>The current include/exclude paths are sufficient for inert CRUD but not for the target product.
 The behavioral contract replaces them with explicit source-to-target prefix mappings:</p>
@@ -1944,12 +1938,12 @@ The behavioral contract replaces them with explicit source-to-target prefix mapp
 <span class="p">}</span>
 
 <span class="kd">message</span><span class="w"> </span><span class="nc">CatalogOverlaySpec</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">ResourceId</span><span class="w"> </span><span class="na">integration_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
-<span class="w">  </span><span class="n">ResourceId</span><span class="w"> </span><span class="na">catalog_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
-<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespaceMapping</span><span class="w"> </span><span class="na">namespace_mappings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
-<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">exclude_namespaces</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayState</span><span class="w"> </span><span class="na">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayPolicy</span><span class="w"> </span><span class="na">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">8</span><span class="p">;</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="n">ResourceId</span><span class="w"> </span><span class="na">integration_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespaceMapping</span><span class="w"> </span><span class="na">namespace_mappings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">exclude_namespaces</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
+<span class="w">  </span><span class="n">CatalogOverlayState</span><span class="w"> </span><span class="na">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
+<span class="w">  </span><span class="n">CatalogOverlayPolicy</span><span class="w"> </span><span class="na">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
 <p>The protobuf above is illustrative. The inert CRUD field numbers remain contiguous; numbering for
@@ -1961,7 +1955,7 @@ are fixed:</p>
 <li>A non-recursive mapping exposes only the exact source namespace.</li>
 <li>Exclusions are expressed in upstream namespace space and take precedence over mappings.</li>
 <li>Newly discovered namespaces that match an active mapping become visible automatically.</li>
-<li>Empty source or target prefixes represent the corresponding catalog root.</li>
+<li>Empty source or target prefixes represent the upstream or overlay catalog root, respectively.</li>
 <li>Source mappings within one overlay may not overlap. Target prefixes may not overlap. Rejecting
   ambiguity is preferable to order-dependent precedence.</li>
 <li>Two overlays may expose the same canonical table under different catalogs or names without
@@ -1979,10 +1973,11 @@ A canonical captured object key consists of:</p>
 upstream path is the fallback identity and an upstream rename is observed as delete plus create.
 Display names and overlay mappings are never part of canonical identity.</p>
 <p>Canonical tables own their schemas, snapshots, manifests, file groups, and statistics. An overlay
-binding is lightweight state that associates a canonical object with an exposed catalog/namespace
-path. Its identity includes the overlay ID, canonical object ID, and exposed path. Query resolution
-returns the canonical table identity plus the binding through which it was resolved, so several
-names can safely share one captured object and one set of statistics.</p>
+binding is lightweight state that associates a canonical object with a path inside the overlay's
+top-level catalog. Its identity includes the overlay ID, canonical object ID, and exposed path.
+Query resolution returns the canonical table identity plus the binding through which it was
+resolved, so several overlay catalogs can safely share one captured object and one set of
+statistics.</p>
 <p>This requires an explicit replacement for the current connector-rooted <code>UpstreamRef</code>; adding an
 integration ID beside a connector ID would create two competing identities. The integration path
 will use a new canonical external-object reference. Connector-backed tables retain their existing
@@ -2000,9 +1995,10 @@ CatalogClientFactory
 CatalogCapabilities
 </code></pre></div>
 <p>No type in this boundary imports Connector protobufs or carries a Connector resource ID. The first
-vertical slice is Iceberg REST. The existing Iceberg Connector may delegate catalog access to this
-library during transition, but Integration code never delegates to a Connector resource or service.
-Unity Catalog and Glue support follow as separate provider implementations.</p>
+vertical slice is Iceberg REST. The existing Iceberg Connector remains operational on its separate
+Connector SPI and does not delegate to this library. Integration code likewise never delegates to a
+Connector resource or service. Unity Catalog and Glue support follow as separate provider
+implementations.</p>
 <p>The client boundary covers connection validation, namespace and relation enumeration, stable
 identity lookup, and provider metadata access. Capture planning, scheduling, Floecat persistence,
 overlay binding, and query resolution remain outside the catalog client.</p>
@@ -2041,11 +2037,7 @@ integration reports an actionable validation or reconciliation error.</p>
 </tr>
 <tr>
 <td>Delete overlay</td>
-<td>Fence its jobs, remove bindings and policy demand, and leave its catalog untouched.</td>
-</tr>
-<tr>
-<td>Drop target catalog</td>
-<td>Reject while an overlay references it unless an explicit cascade removes the overlay first.</td>
+<td>Fence its jobs, remove its top-level catalog bindings and policy demand, and retain shared captures still in use.</td>
 </tr>
 <tr>
 <td>Pause integration</td>
@@ -2090,16 +2082,17 @@ temporary coexistence decision, not a compatibility layer:</p>
 <li>Integration validation and reconciliation do not call Connector RPCs.</li>
 <li>New integration contracts and neutral catalog-access types do not import Connector protos.</li>
 <li>Existing Connector-backed tables and jobs continue to work unchanged until an explicit migration.</li>
-<li>Migration maps connectivity and authentication to integrations and placement/filtering to
-  overlays, then retires Connector APIs and persisted state in a separately reviewed change.</li>
+<li>Migration maps connectivity and authentication to integrations and top-level catalog
+  projection/filtering to overlays, then retires Connector APIs and persisted state in a separately
+  reviewed change.</li>
 </ul>
 <p>There is deliberately no runtime fallback from an Integration to a Connector. Silent fallback would
 make ownership, credentials, scheduling, and failure semantics impossible to reason about.</p>
 <h2 id="implementation-sequence">Implementation sequence<a class="headerlink" href="#implementation-sequence" title="Permanent link">&para;</a></h2>
 <p>The next changes should retain clear review boundaries:</p>
 <ol>
-<li>Introduce the neutral catalog-access SPI and an Iceberg REST implementation; adapt the legacy
-   Iceberg Connector to use it internally.</li>
+<li>Introduce the neutral catalog-access SPI and an Iceberg REST implementation while leaving the
+   operational legacy Iceberg Connector on its separate Connector SPI.</li>
 <li>Add integration authentication, secret persistence, credential rotation, capability discovery,
    validation, and their CLI surface. Do not schedule reconciliation yet.</li>
 <li>Add integration-scoped canonical capture identity and lightweight overlay bindings, including

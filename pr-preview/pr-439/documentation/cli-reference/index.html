@@ -1702,20 +1702,17 @@ query fetch-scan &lt;query_id&gt; &lt;table_id&gt;
 integrations
 integration list
 integration get &lt;name|id&gt;
-integration create &lt;name&gt; &lt;iceberg-rest|unity|glue&gt; &lt;uri&gt;
-    [--desc &lt;text&gt;] [--props k=v ...]
-integration update &lt;name|id&gt; [--display &lt;name&gt;] [--uri &lt;uri&gt;] [--desc &lt;text&gt;]
-    [--state active|paused] [--props k=v ...] [--etag &lt;etag&gt;]
-integration delete &lt;name|id&gt; [--etag &lt;etag&gt;]
+integration create &lt;name&gt; &lt;iceberg-rest|unity&gt; &lt;uri&gt;
+integration update &lt;name|id&gt; --display &lt;name&gt; [--etag &lt;etag&gt;]
+integration delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 
 overlays [--integration &lt;name|id&gt;]
 overlay list [--integration &lt;name|id&gt;]
 overlay get &lt;name|id&gt;
-overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt;
-    [--include ns[,ns...]] [--exclude ns[,ns...]] [--desc &lt;text&gt;]
-    [--props k=v ...]
-overlay update &lt;name|id&gt; [--include ns[,ns...]] [--exclude ns[,ns...]]
-    [--desc &lt;text&gt;] [--state active|paused] [--props k=v ...] [--etag &lt;etag&gt;]
+overlay create &lt;name&gt; &lt;integration-name|id&gt;
+    [--include ns[,ns...]] [--exclude ns[,ns...]]
+overlay update &lt;name|id&gt; [--display &lt;name&gt;]
+    [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag &lt;etag&gt;]
 overlay delete &lt;name|id&gt; [--etag &lt;etag&gt;]
 
 connectors
