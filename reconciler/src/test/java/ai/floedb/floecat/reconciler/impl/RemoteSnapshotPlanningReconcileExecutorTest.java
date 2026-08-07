@@ -428,8 +428,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             .build()
             .toByteArray();
     boolean unmarked = unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST;
-    Snapshot.Builder basis =
-        Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L);
+    Snapshot.Builder basis = Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L);
     if (unavailableMode != ManifestUnavailableMode.MISSING_REFERENCE) {
       basis.setReuseManifestRef(
           SnapshotReuseManifestRef.newBuilder()
