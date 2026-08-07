@@ -394,26 +394,72 @@ public class SnapshotRepository {
       return Optional.empty();
     }
     RootLookup lookup = lookupRoot(tableId);
-    if (!lookup.pointerExists()
-        || lookup.root() == null
-        || !lookup.root().hasCurrentSnapshotId()
-        || !lookup.root().hasSnapshotManifestRef()) {
+    if (!lookup.pointerExists()) {
       return Optional.empty();
+    }
+    if (lookup.root() == null) {
+      throw new StorageAbortRetryableException(
+          "reusable snapshot root is temporarily unavailable: " + tableId.getId());
+    }
+    if (!lookup.root().hasCurrentSnapshotId()) {
+      if (lookup.root().getReusableSnapshotCandidatesCount() != 0) {
+        throw reusableCandidateCorruption(
+            "root publishes reusable snapshots without a committed current snapshot");
+      }
+      return Optional.empty();
+    }
+    if (!lookup.root().hasSnapshotManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root with a committed current snapshot has no snapshot manifest");
     }
     for (SnapshotManifestEntry entry : lookup.root().getReusableSnapshotCandidatesList()) {
       if (excludedSnapshotId != null && entry.getSnapshotId() == excludedSnapshotId) {
         continue;
       }
-      if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
-        continue;
-      }
-      Optional<Snapshot> candidate =
-          getByBlobUri(entry.getSnapshotRef().getUri()).filter(Snapshot::hasReuseManifestRef);
-      if (candidate.isPresent()) {
-        return candidate;
-      }
+      return Optional.of(loadReusableCandidate(tableId, entry));
     }
     return Optional.empty();
+  }
+
+  private Snapshot loadReusableCandidate(ResourceId tableId, SnapshotManifestEntry entry) {
+    if (!entry.hasSnapshotRef()
+        || entry.getSnapshotRef().getUri().isBlank()
+        || !entry.hasReuseStatsGenerationRef()
+        || entry.getReuseStatsGenerationRef().getUri().isBlank()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate is structurally incomplete");
+    }
+    Snapshot candidate =
+        getByBlobUriLive(entry.getSnapshotRef().getUri())
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "root-published reusable snapshot is temporarily unavailable: "
+                            + entry.getSnapshotRef().getUri()));
+    if (!candidate.getTableId().equals(tableId)
+        || candidate.getSnapshotId() != entry.getSnapshotId()
+        || !candidate.hasReuseManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate does not match its snapshot");
+    }
+    SnapshotReuseManifestRef reuse = candidate.getReuseManifestRef();
+    if (reuse.getUri().isBlank()
+        || reuse.getPayloadBytes() <= 0L
+        || reuse.getPayloadSha256().size() != 32
+        || reuse.getStatsGenerationManifestUri().isBlank()
+        || !entry
+            .getReuseStatsGenerationRef()
+            .getUri()
+            .equals(reuse.getStatsGenerationManifestUri())) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot manifest reference is invalid");
+    }
+    return candidate;
+  }
+
+  private static BaseResourceRepository.CorruptionException reusableCandidateCorruption(
+      String message) {
+    return new BaseResourceRepository.CorruptionException(message);
   }
 
   private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {

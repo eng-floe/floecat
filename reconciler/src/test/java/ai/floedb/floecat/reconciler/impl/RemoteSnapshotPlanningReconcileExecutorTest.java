@@ -384,6 +384,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         ReconcileExecutor.ExecutionResult.RetryClass.NONE,
         "snapshot reuse manifest reference is missing");
+    assertPlanningFailsWhenManifestIsUnavailable(
+        ManifestUnavailableMode.MALFORMED_BUNDLE,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+        ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        "invalid snapshot reuse manifest");
   }
 
   private static void assertPlanningFailsWhenManifestIsUnavailable(
@@ -418,24 +423,34 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 new FloecatConnector.SnapshotFilePlan(
                     List.of(snapshotFile("file-1", 10L)), List.of())));
     String uri = "/reuse/missing-9001.pb";
-    byte[] manifestBytes =
+    SnapshotCaptureManifest.Builder manifest =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
             .setAccountId("acct")
             .setConnectorId("connector-1")
             .setTableId("table-1")
-            .setSnapshotId(9001L)
-            .build()
-            .toByteArray();
+            .setSnapshotId(9001L);
+    if (unavailableMode == ManifestUnavailableMode.MALFORMED_BUNDLE) {
+      manifest
+          .setReusableArtifactBundlesComplete(true)
+          .addFileGroups(
+              ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor.newBuilder()
+                  .setGroupId("group-1")
+                  .setStatsObjectPrefix("/stats/group-1/"))
+          .addReusableArtifactBundles(
+              ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder());
+    }
+    byte[] manifestBytes = manifest.build().toByteArray();
     boolean unmarked = unavailableMode == ManifestUnavailableMode.UNMARKED_MANIFEST;
+    boolean malformed = unavailableMode == ManifestUnavailableMode.MALFORMED_BUNDLE;
     Snapshot.Builder basis = Snapshot.newBuilder().setTableId(tableId()).setSnapshotId(9001L);
     if (unavailableMode != ManifestUnavailableMode.MISSING_REFERENCE) {
       basis.setReuseManifestRef(
           SnapshotReuseManifestRef.newBuilder()
               .setUri(uri)
-              .setPayloadBytes(unmarked ? manifestBytes.length : 123L)
+              .setPayloadBytes(unmarked || malformed ? manifestBytes.length : 123L)
               .setPayloadSha256(
-                  ByteString.copyFrom(unmarked ? sha256(manifestBytes) : new byte[32]))
+                  ByteString.copyFrom(unmarked || malformed ? sha256(manifestBytes) : new byte[32]))
               .setStatsGenerationManifestUri("/stats/generation.pb"));
     }
     when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
@@ -444,7 +459,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
       when(blobStore.get(uri)).thenThrow(new StorageNotFoundException("missing"));
     } else if (unavailableMode == ManifestUnavailableMode.NULL_BLOB) {
       when(blobStore.get(uri)).thenReturn(null);
-    } else if (unmarked) {
+    } else if (unmarked || malformed) {
       when(blobStore.get(uri)).thenReturn(manifestBytes);
     }
     ReconcileExecutor.ExecutionResult result =
@@ -469,7 +484,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     NULL_BLOB,
     NOT_FOUND,
     UNMARKED_MANIFEST,
-    MISSING_REFERENCE
+    MISSING_REFERENCE,
+    MALFORMED_BUNDLE
   }
 
   private static byte[] sha256(byte[] bytes) {

@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
@@ -695,8 +696,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       if (!manifest.getReusableArtifactBundlesComplete()) {
         throw invalidReuseManifest("snapshot reuse manifest is incomplete: " + uri, null);
       }
+      ReusableArtifactManifest.validate(manifest);
       return Optional.of(new HistoricalArtifacts(manifest.getReusableArtifactBundlesList()));
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+    } catch (com.google.protobuf.InvalidProtocolBufferException | IllegalArgumentException e) {
       throw invalidReuseManifest("invalid snapshot reuse manifest: " + uri, e);
     }
   }

@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -306,7 +307,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
         throwIfCancellationRequested(stop);
       } catch (java.util.concurrent.CancellationException error) {
         throw error;
-      } catch (StorageAbortRetryableException error) {
+      } catch (StorageAbortRetryableException | StorageNotFoundException error) {
         throw retryableReuseBundleRead(
             "Failed to load reusable artifact bundle " + selection.payloadUri(), error);
       } catch (ReconcileFailureException error) {
@@ -371,7 +372,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
     }
     byte[] bytes = blobStore.get(uri);
     if (bytes == null) {
-      throw new IllegalStateException("Reusable artifact reference is missing: " + uri);
+      throw new StorageNotFoundException("Reusable artifact reference is missing: " + uri);
     }
     if (bytes.length != expectedBytes || !MessageDigest.isEqual(expectedSha256, sha256(bytes))) {
       throw new IllegalStateException("Reusable artifact reference validation failed: " + uri);

@@ -16,6 +16,8 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -158,6 +160,56 @@ class GrpcReconcilerBackendTest {
 
     assertThat(backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
         .isEmpty();
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseClassifiesStructuralFailureAsTerminal() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenThrow(Status.INTERNAL.withDescription("corrupt reuse candidate").asRuntimeException());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    ReconcileFailureException failure =
+        assertThrows(
+            ReconcileFailureException.class,
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L));
+
+    assertThat(failure.retryDisposition())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+    assertThat(failure.retryClass()).isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.NONE);
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseLeavesTransientFailureRetryable() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    StatusRuntimeException aborted =
+        Status.ABORTED
+            .withDescription("reuse candidate temporarily unavailable")
+            .asRuntimeException();
+    when(backend.snapshot.getLatestFinalizedSnapshot(any())).thenThrow(aborted);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThatThrownBy(
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isSameAs(aborted);
   }
 
   @Test

@@ -21,14 +21,17 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
@@ -42,6 +45,7 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -76,6 +80,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject StatsStore statsStore;
   @Inject BlobStore blobStore;
   @Inject SnapshotRepository snapshotRepo;
+  @Inject SnapshotFinalizeCoverageService snapshotFinalizeCoverageService;
 
   public boolean persistSuccess(
       PrincipalContext principalContext,
@@ -359,7 +364,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
-    validateReusableArtifactCoverage(manifest);
+    ReusableArtifactManifest.Coverage reusableCoverage = reusableArtifactCoverage(manifest);
+    validateExpectedReusableArtifactCoverage(
+        reusableCoverage, expectedReusableArtifactCoverage(lease, snapshotTask, manifest));
     validateCapturePolicy(lease, manifest.getCapturePolicy());
     validateIndexPredecessor(lease, snapshotTask, manifest);
     validateRealizedStatsSelectors(lease, manifest);
@@ -383,82 +390,161 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       SnapshotCaptureManifest manifest, byte[] serializedBytes) {}
 
   static void validateReusableArtifactCoverage(SnapshotCaptureManifest manifest) {
-    Map<String, List<String>> groupStatsPrefixes = new LinkedHashMap<>();
-    Set<String> expectedStatsPrefixes = new HashSet<>();
-    for (var group : manifest.getFileGroupsList()) {
-      if (group.getGroupId().isBlank()
-          || group.getStatsObjectPrefix().isBlank()
-          || !expectedStatsPrefixes.add(group.getStatsObjectPrefix())) {
-        throw new IllegalArgumentException(
-            "snapshot capture manifest has duplicate file-group identity");
-      }
-      groupStatsPrefixes
-          .computeIfAbsent("reuse-bundle:" + group.getGroupId(), ignored -> new ArrayList<>())
-          .add(group.getStatsObjectPrefix());
-    }
+    reusableArtifactCoverage(manifest);
+  }
 
-    if (!manifest.getReusableArtifactBundlesComplete()) {
+  private static ReusableArtifactManifest.Coverage reusableArtifactCoverage(
+      SnapshotCaptureManifest manifest) {
+    return ReusableArtifactManifest.validate(manifest);
+  }
+
+  private ReusableArtifactManifest.Coverage expectedReusableArtifactCoverage(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      SnapshotCaptureManifest manifest) {
+    List<ReconcileFileGroupTask> groups =
+        snapshotFinalizeCoverageService.plannedFileGroups(snapshotTask);
+    if (groups.size() != snapshotTask.fileGroupCount()) {
       throw new IllegalArgumentException(
-          "snapshot capture manifest reuse bundle index is not complete");
+          "snapshot reuse coverage does not match the durable file-group plan");
     }
-    if (manifest.getReusableArtifactBundlesCount() != manifest.getFileGroupsCount()) {
-      throw new IllegalArgumentException("snapshot capture manifest reuse bundle count mismatch");
-    }
-
-    Set<String> bundleUris = new HashSet<>();
-    Set<String> bundledStatsPrefixes = new HashSet<>();
-    Set<String> reusableFileStats = new HashSet<>();
-    Set<String> reusableIndexArtifacts = new HashSet<>();
-    for (var bundle : manifest.getReusableArtifactBundlesList()) {
-      if (!bundle.hasArtifact()) {
+    ReconcileCapturePolicy policy =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
+    boolean statsRequested =
+        !FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(policy).isEmpty();
+    boolean indexesRequested = policy.requestsIndexes();
+    for (ReconcileFileGroupTask group : groups) {
+      if (group.fileExecutionPlans().size() != group.filePaths().size()) {
         throw new IllegalArgumentException(
-            "snapshot capture manifest reuse bundle has no artifact");
+            "snapshot reuse coverage requires one execution plan per file");
       }
-      StatsObjectDescriptor artifact = bundle.getArtifact();
-      String statsPrefix = null;
-      for (String candidate :
-          groupStatsPrefixes.getOrDefault(artifact.getTargetStorageId(), List.of())) {
-        if (artifact.getPayloadUri().startsWith(candidate + "reuse-bundles/")) {
-          if (statsPrefix != null) {
-            throw new IllegalArgumentException(
-                "snapshot capture manifest reuse bundle identity is ambiguous");
+    }
+    validateReusableArtifactReferenceBindings(manifest, groups, statsRequested, indexesRequested);
+    Set<String> statsPaths = new HashSet<>();
+    Set<String> indexPaths = new HashSet<>();
+    for (ReconcileFileGroupTask group : groups) {
+      ReusableArtifactManifest.Coverage expected =
+          expectedReusableArtifactCoverage(group, statsRequested, indexesRequested);
+      statsPaths.addAll(expected.fileStatsPaths());
+      indexPaths.addAll(expected.indexArtifactPaths());
+    }
+    return new ReusableArtifactManifest.Coverage(Set.copyOf(statsPaths), Set.copyOf(indexPaths));
+  }
+
+  static void validateReusableArtifactReferenceBindings(
+      SnapshotCaptureManifest manifest,
+      List<ReconcileFileGroupTask> groups,
+      boolean statsRequested,
+      boolean indexesRequested) {
+    Map<GroupIdentity, ReconcileFileGroupTask> planned = new LinkedHashMap<>();
+    for (ReconcileFileGroupTask group : groups) {
+      if (planned.putIfAbsent(new GroupIdentity(group.planId(), group.groupId()), group) != null) {
+        throw new IllegalArgumentException("snapshot reuse plan contains duplicate file groups");
+      }
+    }
+    for (var descriptor : manifest.getFileGroupsList()) {
+      ReconcileFileGroupTask group =
+          planned.remove(new GroupIdentity(descriptor.getPlanId(), descriptor.getGroupId()));
+      if (group == null) {
+        throw new IllegalArgumentException(
+            "snapshot reuse manifest file group does not match the durable plan");
+      }
+      var bundle =
+          manifest.getReusableArtifactBundlesList().stream()
+              .filter(
+                  candidate ->
+                      candidate.hasArtifact()
+                          && candidate
+                              .getArtifact()
+                              .getTargetStorageId()
+                              .equals("reuse-bundle:" + descriptor.getGroupId())
+                          && candidate
+                              .getArtifact()
+                              .getPayloadUri()
+                              .startsWith(descriptor.getStatsObjectPrefix() + "reuse-bundles/"))
+              .findFirst()
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "snapshot reuse bundle does not match its durable file group"));
+      ReusableArtifactManifest.Coverage expected =
+          expectedReusableArtifactCoverage(group, statsRequested, indexesRequested);
+      Set<String> submittedStatsPaths =
+          bundle.getFileStatsList().stream()
+              .map(metadata -> metadata.getFilePath().trim())
+              .collect(java.util.stream.Collectors.toSet());
+      Set<String> submittedIndexPaths =
+          bundle.getIndexArtifactsList().stream()
+              .map(metadata -> metadata.getFilePath().trim())
+              .collect(java.util.stream.Collectors.toSet());
+      if (!expected.fileStatsPaths().containsAll(submittedStatsPaths)
+          || !expected.indexArtifactPaths().containsAll(submittedIndexPaths)) {
+        throw new IllegalArgumentException(
+            "snapshot reuse bundle metadata is outside its durable file-group mappings");
+      }
+      List<StatsObjectDescriptor> statsDescriptors =
+          expected.fileStatsPaths().stream()
+              .map(
+                  path ->
+                      bundle.getArtifact().toBuilder()
+                          .setTargetStorageId(
+                              StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(path)))
+                          .build())
+              .toList();
+      List<StatsObjectDescriptor> indexDescriptors =
+          expected.indexArtifactPaths().stream()
+              .map(
+                  path ->
+                      bundle.getArtifact().toBuilder().setTargetStorageId("file:" + path).build())
+              .toList();
+      String submittedDigest =
+          HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray());
+      if (!ArtifactReferenceDigest.sha256(statsDescriptors, indexDescriptors)
+          .equals(submittedDigest)) {
+        throw new IllegalArgumentException(
+            "snapshot reuse bundle is not bound to the accepted file-group mappings");
+      }
+    }
+    if (!planned.isEmpty()) {
+      throw new IllegalArgumentException(
+          "snapshot reuse manifest omits durable file-group mappings");
+    }
+  }
+
+  private static ReusableArtifactManifest.Coverage expectedReusableArtifactCoverage(
+      ReconcileFileGroupTask group, boolean statsRequested, boolean indexesRequested) {
+    Set<String> statsPaths = new HashSet<>();
+    Set<String> indexPaths = new HashSet<>();
+    if (statsRequested) {
+      statsPaths.addAll(group.filePaths());
+    }
+    if (indexesRequested) {
+      indexPaths.addAll(group.filePaths());
+    }
+    if (statsRequested) {
+      for (var plan : group.fileExecutionPlans()) {
+        var deletionVector = plan.deletionVector();
+        if (deletionVector != null && deletionVector.onDisk()) {
+          statsPaths.add(deletionVector.pathOrInlineDv());
+        }
+        for (var deleteFile : plan.icebergDeleteFiles()) {
+          if (deleteFile != null && !deleteFile.filePath().isBlank()) {
+            statsPaths.add(deleteFile.filePath());
           }
-          statsPrefix = candidate;
-        }
-      }
-      if (statsPrefix == null
-          || !bundledStatsPrefixes.add(statsPrefix)
-          || artifact.getPayloadBytes() <= 0L
-          || artifact.getPayloadSha256().size() != 32
-          || !ReusableArtifactBundleUris.matchesDigest(
-              artifact.getPayloadUri(), artifact.getPayloadSha256().toByteArray())
-          || !bundleUris.add(artifact.getPayloadUri())) {
-        throw new IllegalArgumentException(
-            "snapshot capture manifest reuse bundle identity mismatch");
-      }
-      for (var metadata : bundle.getFileStatsList()) {
-        if (metadata.getFilePath().isBlank()
-            || metadata.getSourceFingerprint().isBlank()
-            || metadata.getStatsCaptureSignature().isBlank()
-            || !reusableFileStats.add(metadata.getFilePath())) {
-          throw new IllegalArgumentException(
-              "snapshot capture manifest reuse stats metadata mismatch");
-        }
-      }
-      for (var metadata : bundle.getIndexArtifactsList()) {
-        if (metadata.getFilePath().isBlank()
-            || metadata.getSourceFingerprint().isBlank()
-            || metadata.getIndexCaptureSignature().isBlank()
-            || !reusableIndexArtifacts.add(metadata.getFilePath())) {
-          throw new IllegalArgumentException(
-              "snapshot capture manifest reuse index metadata mismatch");
         }
       }
     }
-    if (reusableFileStats.size() != manifest.getFileStatsRecordCount()
-        || reusableIndexArtifacts.size() != manifest.getIndexArtifactCount()) {
+    return new ReusableArtifactManifest.Coverage(Set.copyOf(statsPaths), Set.copyOf(indexPaths));
+  }
+
+  private record GroupIdentity(String planId, String groupId) {}
+
+  static void validateExpectedReusableArtifactCoverage(
+      ReusableArtifactManifest.Coverage submitted, ReusableArtifactManifest.Coverage expected) {
+    if (!submitted.fileStatsPaths().equals(expected.fileStatsPaths())
+        || !submitted.indexArtifactPaths().equals(expected.indexArtifactPaths())) {
       throw new IllegalArgumentException(
-          "snapshot capture manifest reuse bundle coverage mismatch");
+          "snapshot capture manifest reuse bundle coverage does not match staged file groups");
     }
   }
 

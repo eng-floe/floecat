@@ -42,6 +42,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor;
@@ -211,6 +213,112 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void reusableBundleMetadataMustCoverEveryExpectedStagedTarget() {
+    ReusableArtifactManifest.Coverage submitted =
+        new ReusableArtifactManifest.Coverage(Set.of("data-1.parquet"), Set.of());
+    ReusableArtifactManifest.Coverage expected =
+        new ReusableArtifactManifest.Coverage(
+            Set.of("data-1.parquet", "delete-1.parquet"), Set.of());
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                LeasedSnapshotFinalizeExecutionService.validateExpectedReusableArtifactCoverage(
+                    submitted, expected));
+
+    assertTrue(failure.getMessage().contains("does not match staged file groups"));
+  }
+
+  @Test
+  void reusableBundleDescriptorMustMatchAcceptedFileGroupMappings() {
+    String filePath = "s3://bucket/data-1.parquet";
+    String statsPrefix = "/stats/job-1/";
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
+            .addFileGroups(
+                FileGroupResultDescriptor.newBuilder()
+                    .setPlanId("plan-1")
+                    .setGroupId("group-1")
+                    .setStatsObjectPrefix(statsPrefix)
+                    .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32])))
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(
+                        StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("reuse-bundle:group-1")
+                            .setPayloadUri(zeroDigestBundleUri(statsPrefix))
+                            .setPayloadBytes(123)
+                            .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                            .setFilePath(filePath)
+                            .setSourceFingerprint("source-1")
+                            .setStatsCaptureSignature("stats-signature")))
+            .build();
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                LeasedSnapshotFinalizeExecutionService.validateReusableArtifactReferenceBindings(
+                    manifest, List.of(plannedGroup(filePath)), true, false));
+
+    assertTrue(failure.getMessage().contains("not bound to the accepted file-group mappings"));
+  }
+
+  @Test
+  void reusableBundleMetadataMustBelongToItsDurableFileGroup() {
+    String plannedPath = "s3://bucket/data-1.parquet";
+    String foreignPath = "s3://bucket/data-2.parquet";
+    String statsPrefix = "/stats/job-1/";
+    StatsObjectDescriptor artifact =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:group-1")
+            .setPayloadUri(zeroDigestBundleUri(statsPrefix))
+            .setPayloadBytes(123)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .build();
+    String acceptedDigest =
+        ArtifactReferenceDigest.sha256(
+            List.of(
+                artifact.toBuilder()
+                    .setTargetStorageId(
+                        StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(plannedPath)))
+                    .build()),
+            List.of());
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setReusableArtifactBundlesComplete(true)
+            .addFileGroups(
+                FileGroupResultDescriptor.newBuilder()
+                    .setPlanId("plan-1")
+                    .setGroupId("group-1")
+                    .setStatsObjectPrefix(statsPrefix)
+                    .setArtifactReferencesSha256(
+                        ByteString.copyFrom(HexFormat.of().parseHex(acceptedDigest))))
+            .addReusableArtifactBundles(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+                    .setArtifact(artifact)
+                    .addFileStats(
+                        ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                            .setFilePath(foreignPath)
+                            .setSourceFingerprint("source-2")
+                            .setStatsCaptureSignature("stats-signature")))
+            .build();
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                LeasedSnapshotFinalizeExecutionService.validateReusableArtifactReferenceBindings(
+                    manifest, List.of(plannedGroup(plannedPath)), true, false));
+
+    assertTrue(failure.getMessage().contains("outside its durable file-group mappings"));
+  }
+
+  @Test
   void reusableBundlesAreMatchedByFencedPrefixWhenGroupIdsRepeatAcrossPlans() {
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
@@ -280,6 +388,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.indexArtifactRepository = mock(IndexArtifactRepository.class);
     service.statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     service.snapshotRepo = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
+    service.snapshotFinalizeCoverageService = mock(SnapshotFinalizeCoverageService.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -475,6 +584,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setSnapshotId(SNAPSHOT_ID)
             .setLeaseEpoch(LEASE_EPOCH)
             .setResultId("result-1")
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_FILE_STATS))
             .addFileGroups(fileGroup)
             .addReusableArtifactBundles(
                 ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
@@ -490,7 +602,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     byte[] manifestBytes = manifest.toByteArray();
     SnapshotCaptureManifestDescriptor descriptor =
         descriptor(manifestUri(), manifestBytes, 1, 1, 1);
-    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView(1, 1)));
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 1, 1, fileStatsScope())));
+    when(service.snapshotFinalizeCoverageService.plannedFileGroups(any()))
+        .thenReturn(List.of(plannedGroup(filePath)));
     when(service.childStateService.compactChildState(ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, 1))
         .thenReturn(
             new SnapshotFinalizeChildStateService.ChildState(
@@ -517,6 +632,17 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   void successRetriesWhenAFileGroupHasNotFinishedMetadataOnlyStaging() {
     String childJobId = "file-group-job";
     String childLeaseEpoch = "child-lease";
+    String filePath = "s3://bucket/data-1.parquet";
+    String statsPrefix =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+            ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch);
+    StatsObjectDescriptor bundleArtifact =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:group-1")
+            .setPayloadUri(zeroDigestBundleUri(statsPrefix))
+            .setPayloadBytes(123)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .build();
     FileGroupResultDescriptor fileGroup =
         FileGroupResultDescriptor.newBuilder()
             .setFormatVersion(1)
@@ -533,13 +659,22 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setPayloadUri("/file-group-result.pb")
             .setPayloadBytes(1)
             .setPayloadSha256(ByteString.copyFrom(new byte[32]))
-            .setStatsObjectPrefix(
-                Keys.reconcileFileGroupStatsObjectPrefix(
-                    ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch))
+            .setStatsObjectPrefix(statsPrefix)
             .setPlannedFileCount(1)
             .setSucceededFileCount(1)
             .setFileStatsRecordCount(1)
-            .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32]))
+            .setArtifactReferencesSha256(
+                ByteString.copyFrom(
+                    HexFormat.of()
+                        .parseHex(
+                            ArtifactReferenceDigest.sha256(
+                                List.of(
+                                    bundleArtifact.toBuilder()
+                                        .setTargetStorageId(
+                                            StatsTargetIdentity.storageId(
+                                                StatsTargetIdentity.fileTarget(filePath)))
+                                        .build()),
+                                List.of()))))
             .build();
     byte[] manifestBytes =
         SnapshotCaptureManifest.newBuilder()
@@ -553,25 +688,26 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setSnapshotId(SNAPSHOT_ID)
             .setLeaseEpoch(LEASE_EPOCH)
             .setResultId("result-1")
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_FILE_STATS))
             .addFileGroups(fileGroup)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
             .addReusableArtifactBundles(
                 ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
-                    .setArtifact(
-                        StatsObjectDescriptor.newBuilder()
-                            .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri(zeroDigestBundleUri(fileGroup.getStatsObjectPrefix()))
-                            .setPayloadBytes(123)
-                            .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+                    .setArtifact(bundleArtifact)
                     .addFileStats(
                         ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
-                            .setFilePath("s3://bucket/data-1.parquet")
+                            .setFilePath(filePath)
                             .setSourceFingerprint("source-1")
                             .setStatsCaptureSignature("stats-signature")))
             .build()
             .toByteArray();
-    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView(1, 1)));
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 1, 1, fileStatsScope())));
+    when(service.snapshotFinalizeCoverageService.plannedFileGroups(any()))
+        .thenReturn(List.of(plannedGroup(filePath)));
     when(service.childStateService.compactChildState(ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, 1))
         .thenReturn(
             new SnapshotFinalizeChildStateService.ChildState(
@@ -1064,6 +1200,22 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         Set.of(
             ReconcileCapturePolicy.Output.COLUMN_STATS,
             ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static ReconcileScope fileStatsScope() {
+    return ReconcileScope.of(
+        List.of(),
+        TABLE_ID,
+        List.of(),
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
+  }
+
+  private static ReconcileFileGroupTask plannedGroup(String filePath) {
+    return ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath))
+        .withFileExecutionPlans(
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    filePath, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")));
   }
 
   private static byte[] indexCaptureManifestBytes() {
