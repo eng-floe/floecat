@@ -2102,7 +2102,11 @@ engine release.</p>
   authenticated prior <code>reusable_artifact_index</code> runs and publishes the resulting immutable run set
   as the complete compatibility index. A later planner can select reusable targets without
   reading bundle payloads, source files, or page-index sidecars. A selected file-group worker
-  verifies and reads each compact bundle once.
+  verifies and reads each compact bundle once. This compatibility index is executor-authored
+  metadata: the control plane validates its structure, leased ownership, counts, content-addressed
+  bundle descriptor, and staged target mappings, but deliberately does not GET the bundle to derive
+  or compare metadata. The consuming worker verifies bundle length and SHA-256 and rejects a
+  selected record that is absent or incompatible before reuse.
   <code>FileGroupResultPayload.realized_stats_selectors</code> and <code>.realized_index_selectors</code> record the
   concrete selector aliases materialized by each group. The finalizer aggregates them into the
   corresponding <code>SnapshotCaptureManifest</code> fields so durable content state can satisfy later
