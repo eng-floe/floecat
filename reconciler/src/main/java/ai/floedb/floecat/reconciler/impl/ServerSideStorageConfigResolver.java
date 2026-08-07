@@ -77,6 +77,15 @@ public class ServerSideStorageConfigResolver {
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
+  /**
+   * Iceberg REST access-delegation header, as it appears in connector properties.
+   *
+   * <p>Set on a connector with {@code --props header.X-Iceberg-Access-Delegation=vended-credentials}.
+   * Read here rather than from the derived catalog properties because this runs before the connector
+   * factory builds them; {@code IcebergConnectorFactory} reads the same key downstream.
+   */
+  private static final String ICEBERG_ACCESS_DELEGATION_PROP = "header.X-Iceberg-Access-Delegation";
+
   private final Optional<String> headerName;
 
   @GrpcClient("floecat")
@@ -253,6 +262,19 @@ public class ServerSideStorageConfigResolver {
       Connector connector,
       ConnectorConfig config,
       boolean refreshableExecutionCredentials) {
+    // A catalog that vends its own credentials needs no storage authority: loadTable returns
+    // storage-credentials and the catalog client's FileIO uses them. Returning the config untouched
+    // is the same thing the null-locationPrefix branch below already does for non-S3 URIs, which is
+    // how GCS- and Azure-backed connectors run today without an authority -- this makes that
+    // existing path reachable for s3:// when the caller has explicitly asked for delegation.
+    //
+    // Deliberately not a fallback on vending failure: if delegation is declared we never call the
+    // authority service at all, so a missing authority cannot mask a catalog that silently ignored
+    // the header. The failure then surfaces from the catalog or the read itself.
+    if (isNonBlank(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
+      return config;
+    }
+
     String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
     if (locationPrefix == null) {
       return config;
