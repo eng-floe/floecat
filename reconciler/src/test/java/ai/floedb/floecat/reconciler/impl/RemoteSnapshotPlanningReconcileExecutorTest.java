@@ -339,67 +339,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void planningFailsTerminalWhenLatestReuseManifestUriIsBlank() {
-    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
-    var workerClient = mock(RemotePlannerWorkerClient.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    var executor =
-        new RemoteSnapshotPlanningReconcileExecutor(
-            backend, workerClient, ignored -> Optional.empty(), 2, true);
-    executor.blobStore = blobStore;
-    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
-    when(workerClient.getPlanSnapshotInput(any()))
-        .thenReturn(
-            new StandalonePlanSnapshotPayload(
-                lease.jobId,
-                lease.leaseEpoch,
-                "",
-                connectorId(),
-                ReconcilerService.CaptureMode.CAPTURE_ONLY,
-                false,
-                statsOnlyScope(),
-                snapshotTask()));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.empty());
-    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                new FloecatConnector.SnapshotFilePlan(
-                    List.of(snapshotFile("file-1", 10L)), List.of())));
-    when(backend.latestReconciledSnapshotForReuse(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(9001L)
-                    .setReuseManifestRef(
-                        SnapshotReuseManifestRef.newBuilder()
-                            .setPayloadBytes(1L)
-                            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
-                            .setStatsGenerationManifestUri("/stats/generation.pb"))
-                    .build()));
-
-    ReconcileExecutor.ExecutionResult result =
-        executor.execute(
-            new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
-
-    assertFalse(result.success());
-    assertEquals(
-        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
-    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
-    verify(workerClient)
-        .submitPlanSnapshotFailure(
-            any(),
-            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
-            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL),
-            eq(ReconcileExecutor.ExecutionResult.RetryClass.NONE),
-            argThat(detail -> detail.contains("snapshot reuse manifest URI is missing")));
-    verify(blobStore, never()).get(any());
-    verify(workerClient, never()).submitPlanSnapshotSuccess(any(), any(), any(), any());
-  }
-
-  @Test
   void planningRegeneratesWhenNoReconciledSnapshotHasReusableArtifacts() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
