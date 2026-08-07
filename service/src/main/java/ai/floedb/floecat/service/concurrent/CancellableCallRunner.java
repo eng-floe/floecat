@@ -407,7 +407,6 @@ final class CancellableCallRunner {
       SubmittedCall task =
           new SubmittedCall(
               () -> {
-                lifecycle.operationStarted.set(true);
                 // A hung store client pins its permit with no way to identify it: every worker is
                 // named floecat-metadata-io-<n>. Carry the operation label on the thread name so a
                 // thread dump names the call that wedged the ceiling.
@@ -415,6 +414,11 @@ final class CancellableCallRunner {
                 String idleName = worker.getName();
                 boolean renamed = false;
                 try {
+                  // Set inside the try, not before it. This flag is what tells run() the callable
+                  // owns the release; between setting it and entering the try, an Error would skip
+                  // this finally and be filtered out by run()'s !operationStarted guard, retiring a
+                  // permit from the process-wide ceiling for the life of the JVM.
+                  lifecycle.operationStarted.set(true);
                   // Inside the try: admission has already transferred to this thread, so anything
                   // that throws from here on — including an OutOfMemoryError building the name —
                   // must still reach the finally that releases the permit. Renaming outside it

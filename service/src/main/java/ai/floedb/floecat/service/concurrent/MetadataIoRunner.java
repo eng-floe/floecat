@@ -479,7 +479,12 @@ public class MetadataIoRunner {
     // registered at startup and no caller routes store I/O through this tier yet, so a first scrape
     // during the drain is exactly the likely case; with nothing installed it would publish NaN.
     // Never started, so this closes without touching a pool.
-    SHARED.compareAndSet(null, createSharedRuntime());
+    if (SHARED.get() == null) {
+      // Guarded because the argument would be evaluated on every shutdown: createSharedRuntime()
+      // reads config, and configuredCapacity() WARNs if the provider is already torn down — a
+      // warning about a ceiling that was never used, on a value thrown away immediately.
+      SHARED.compareAndSet(null, createSharedRuntime());
+    }
     RuntimeState closing = SHARED.get();
     if (closing != null && !closing.close()) {
       LOG.warn("metadata I/O executor did not terminate during shutdown");
