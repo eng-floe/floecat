@@ -126,6 +126,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             ? new IndexArtifactRepository.GenerationInput(
                 capturedIndexInput.predecessor(), List.of())
             : capturedIndexInput;
+    if (lease.fullRescan) {
+      // Reserve the generation after validation but before returning any upload location. A worker
+      // can now crash after its first PUT without leaving an undiscoverable object-store prefix.
+      statsStore.beginStatsGeneration(
+          tableId, plannedTask.snapshotId(), "full-rescan-" + lease.parentJobId);
+    }
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,

@@ -40,15 +40,7 @@ import java.util.function.Supplier;
  */
 @ApplicationScoped
 public class TableBlobReachabilityGuard {
-
-  private static final TableBlobReachabilityGuard SHARED = new TableBlobReachabilityGuard();
-
   private final ConcurrentHashMap<TableKey, Entry> entries = new ConcurrentHashMap<>();
-
-  /** Shared instance used by direct-construction unit tests and non-CDI embeddings. */
-  public static TableBlobReachabilityGuard shared() {
-    return SHARED;
-  }
 
   /** Begins one exact table proof and retains its epoch across deadline continuations. */
   public Proof beginProof(String accountId, String tableId) {

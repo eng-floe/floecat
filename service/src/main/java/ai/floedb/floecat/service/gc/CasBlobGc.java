@@ -104,7 +104,7 @@ public class CasBlobGc {
   @Inject QueryContextStore queryContextStore;
   @Inject TableRootRepository tableRootRepo;
   @Inject StatsRepository statsRepository;
-  @Inject TableBlobReachabilityGuard reachabilityGuard = TableBlobReachabilityGuard.shared();
+  @Inject TableBlobReachabilityGuard reachabilityGuard;
 
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
@@ -168,6 +168,7 @@ public class CasBlobGc {
     private final Map<String, String> pointerTokens = new LinkedHashMap<>();
     private final Map<String, String> blobTokens = new LinkedHashMap<>();
     private final Map<String, String> chainPageUris = new HashMap<>();
+    private final Map<String, Integer> chainEntryIndexes = new HashMap<>();
     private ReferenceIndex chainVisited;
     private String chainRoot = "";
     private boolean accountMarked;
@@ -389,6 +390,15 @@ public class CasBlobGc {
 
   Optional<String> continuationAccountId() {
     return continuation == null ? Optional.empty() : Optional.of(continuation.accountId);
+  }
+
+  synchronized void abandonContinuation() {
+    if (continuation != null) {
+      LOG.infof(
+          "cas gc abandoning local mark epoch for account %s to preserve account fairness",
+          continuation.accountId);
+      clearContinuation();
+    }
   }
 
   synchronized void abandonContinuationIfAccountMissing(Set<String> presentAccountIds) {
@@ -635,6 +645,14 @@ public class CasBlobGc {
             pageSize,
             null,
             storageEstimate);
+    pointersScanned +=
+        collectPointers(
+            Keys.storageAuthorityPointerByIdPrefix(accountId),
+            referenced,
+            null,
+            pageSize,
+            null,
+            storageEstimate);
     collectTableBlobIds(accountId, tableIds, pageSize);
 
     // A pinned ROOT protects everything it references, not just its own blob: a query pinned to a
@@ -685,6 +703,13 @@ public class CasBlobGc {
       var tablePointer = pointerStore.get(Keys.tablePointerById(accountId, tableId)).orElse(null);
       if (tablePointer != null && !tablePointer.getBlobUri().isBlank()) {
         tableReferenced.add(normalizeKey(tablePointer.getBlobUri()));
+      }
+      var currentSnapshotPointer =
+          pointerStore.get(Keys.currentSnapshotPointerByTable(accountId, tableId)).orElse(null);
+      if (currentSnapshotPointer != null && !currentSnapshotPointer.getBlobUri().isBlank()) {
+        tableReferenced.add(normalizeKey(currentSnapshotPointer.getBlobUri()));
+        pointersScanned++;
+        storageEstimate.observe(currentSnapshotPointer);
       }
       rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
@@ -918,6 +943,21 @@ public class CasBlobGc {
     blobsDeleted += connectors.deleted();
     blobsRescued += connectors.rescued();
 
+    var storageAuthorities =
+        deleteUnreferenced(
+            Keys.storageAuthorityRootPrefix(accountId),
+            referenced,
+            walkedPinRoots,
+            walkFailures,
+            key -> key.contains(Keys.SEG_STORAGE_AUTHORITY),
+            null,
+            pageSize,
+            nowMs,
+            minAgeMs);
+    blobsScanned += storageAuthorities.scanned();
+    blobsDeleted += storageAuthorities.deleted();
+    blobsRescued += storageAuthorities.rescued();
+
     // Report the FINAL poison state, not a static false: the delete passes re-run rootLivePinChains
     // per page, so a pin registered mid-sweep whose chain walk fails raises walkFailures[0] and
     // aborts that pass (protecting data). That poison must reach the scheduler's gauges — reporting
@@ -990,7 +1030,9 @@ public class CasBlobGc {
             walkedPinRoots,
             walkFailures,
             key ->
-                key.contains(Keys.SEG_SNAPSHOT) || key.contains(Keys.SEG_INDEX_CAPTURE_MANIFESTS),
+                key.contains(Keys.SEG_SNAPSHOT)
+                    || key.contains("/snapshots/current/")
+                    || key.contains(Keys.SEG_INDEX_CAPTURE_MANIFESTS),
             null,
             pageSize,
             nowMs,
@@ -1139,11 +1181,16 @@ public class CasBlobGc {
       }
       break;
     }
-    // Exact, bounded candidate-page verification. Re-mark the table once for the whole bounded
-    // page, retaining only matches from deletedKeys. The Bloom filters only decide keeps; they
-    // cannot manufacture a corruption report, and verification does not rewalk a large table once
-    // per candidate.
-    if (!state.deletedKeys.isEmpty() && !state.verificationRemarkComplete) {
+    // The delete ran under the exact publication epoch retained by remarkProof. If that epoch is
+    // still unchanged, no publisher could have re-referenced a deleted ownerless blob and a second
+    // whole-table mark is unnecessary. Only an overlapping publication pays for the exact,
+    // page-bounded verification re-mark.
+    boolean publicationAfterDelete =
+        !state.deletedKeys.isEmpty()
+            && reachabilityGuard.deleteIfUnchanged(state.remarkProof, () -> true).changed();
+    if (publicationAfterDelete
+        && !state.deletedKeys.isEmpty()
+        && !state.verificationRemarkComplete) {
       if (state.verificationProbe == null) {
         state.verificationProbe = new CandidateSetProbeReferenceIndex(state.deletedKeys);
       }
@@ -1153,7 +1200,7 @@ public class CasBlobGc {
       }
       state.verificationRemarkComplete = true;
     }
-    while (state.verifyIndex < state.deletedKeys.size()) {
+    while (publicationAfterDelete && state.verifyIndex < state.deletedKeys.size()) {
       checkDeadline();
       String normalized = state.deletedKeys.get(state.verifyIndex);
       if (blobStore.head(normalized).isEmpty()
@@ -1195,6 +1242,10 @@ public class CasBlobGc {
         .chainPageUris
         .keySet()
         .removeIf(key -> key.startsWith(remarkScope) || key.startsWith(verifyScope));
+    continuation
+        .chainEntryIndexes
+        .keySet()
+        .removeIf(key -> key.startsWith(remarkScope) || key.startsWith(verifyScope));
     if (continuation.chainRoot.startsWith(remarkScope)
         || continuation.chainRoot.startsWith(verifyScope)) {
       if (continuation.chainVisited != null) {
@@ -1210,6 +1261,9 @@ public class CasBlobGc {
     pass.pointerTokens.keySet().removeIf(key -> key.contains(tablePrefix));
     pass.blobTokens.keySet().removeIf(key -> key.contains(tablePrefix));
     pass.chainPageUris
+        .keySet()
+        .removeIf(key -> key.contains(tablePrefix) || key.contains(normalizeKey(tablePrefix)));
+    pass.chainEntryIndexes
         .keySet()
         .removeIf(key -> key.contains(tablePrefix) || key.contains(normalizeKey(tablePrefix)));
     if (pass.deferredPage != null) {
@@ -1313,13 +1367,14 @@ public class CasBlobGc {
         referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
       }
       var pageRef = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
+      boolean resumingPage = resumable && continuation.chainEntryIndexes.containsKey(chainKey);
       if (savedPage != null && !savedPage.isBlank()) {
         pageRef = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(savedPage).build();
       }
       while (pageRef != null && !pageRef.getUri().isBlank()) {
         checkDeadline();
         String normalizedPage = normalizeKey(pageRef.getUri());
-        if (walkedPages.mightContain(normalizedPage)) {
+        if (!resumingPage && walkedPages.mightContain(normalizedPage)) {
           // Content-addressed pages are acyclic by construction, so a repeated URI means a corrupt
           // or malformed chain. Fail safe (poison the sweep) instead of looping until OOM on the
           // background GC thread, which has no request timeout to rescue it.
@@ -1328,7 +1383,13 @@ public class CasBlobGc {
               rootBlobUri, pageRef.getUri());
           return false;
         }
-        walkedPages.add(normalizedPage);
+        if (!resumingPage) {
+          walkedPages.add(normalizedPage);
+          if (resumable) {
+            continuation.chainPageUris.put(chainKey, pageRef.getUri());
+            continuation.chainEntryIndexes.put(chainKey, 0);
+          }
+        }
         referenced.add(normalizedPage);
         var pageRefForRead = pageRef;
         var page =
@@ -1342,8 +1403,10 @@ public class CasBlobGc {
               pageRef.getUri(), rootBlobUri);
           return false;
         }
-        for (var entry : page.getEntriesList()) {
+        int entryStart = resumable ? continuation.chainEntryIndexes.getOrDefault(chainKey, 0) : 0;
+        for (int entryIndex = entryStart; entryIndex < page.getEntriesCount(); entryIndex++) {
           checkDeadline();
+          var entry = page.getEntries(entryIndex);
           if (entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getSnapshotRef().getUri()));
           }
@@ -1361,17 +1424,23 @@ public class CasBlobGc {
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
           }
+          if (resumable) {
+            continuation.chainEntryIndexes.put(chainKey, entryIndex + 1);
+          }
         }
         pageRef = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
         if (resumable) {
+          continuation.chainEntryIndexes.remove(chainKey);
           continuation.chainPageUris.put(
               chainKey,
               pageRef == null || pageRef.getUri().isBlank() ? SCAN_COMPLETE : pageRef.getUri());
         }
+        resumingPage = false;
         checkDeadline();
       }
       if (resumable) {
         continuation.chainPageUris.put(chainKey, SCAN_COMPLETE);
+        continuation.chainEntryIndexes.remove(chainKey);
         continuation.chainVisited.close();
         continuation.chainVisited = null;
         continuation.chainRoot = "";
@@ -1782,12 +1851,6 @@ public class CasBlobGc {
             // table against the settled store before deleting (see the flush comment for why the
             // rescue signal alone is not sufficient proof).
             deferNoOwnerTo.add(new DeferredCandidate(key, versionId));
-            if (deferNoOwnerTo.size() >= pageSize) {
-              // Bound retained candidate strings. Successfully deleted candidates disappear from
-              // the next pass's listing, so restarting the prefix is safe and still makes
-              // progress without retaining an account-wide candidate list.
-              return new DeleteResult(scanned, deleted, rescued, true);
-            }
             continue;
           }
           if (ownerPointerKey != null && ownedBy(ownerPointerKey, normalized)) {

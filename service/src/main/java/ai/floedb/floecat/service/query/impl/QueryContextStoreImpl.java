@@ -59,7 +59,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
 
   @Inject TableRootRepository tableRoots;
   @Inject StatsRepository statsRepository;
-  @Inject TableBlobReachabilityGuard reachabilityGuard = TableBlobReachabilityGuard.shared();
+  @Inject TableBlobReachabilityGuard reachabilityGuard;
 
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;

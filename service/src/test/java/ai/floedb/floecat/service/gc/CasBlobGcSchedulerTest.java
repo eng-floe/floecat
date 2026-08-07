@@ -137,6 +137,35 @@ class CasBlobGcSchedulerTest {
     assertEquals(List.of("acct-a", "acct-a", "acct-a", "acct-b"), gc.accountIds);
   }
 
+  @Test
+  void retainedContinuationCannotStarveAnotherAccountForever() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    System.setProperty("floecat.gc.cas.max-consecutive-continuation-ticks", "2");
+    try {
+      scheduler.tick();
+      scheduler.tick();
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+      System.clearProperty("floecat.gc.cas.max-consecutive-continuation-ticks");
+    }
+
+    assertTrue(gc.accountIds.contains("acct-b"));
+    assertEquals(1, gc.abandons);
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -182,6 +211,30 @@ class CasBlobGcSchedulerTest {
     @Override
     Optional<String> continuationAccountId() {
       return continuing ? Optional.of("acct-a") : Optional.empty();
+    }
+  }
+
+  private static final class NeverCompletingContinuationGc extends CasBlobGc {
+    private final List<String> accountIds = new ArrayList<>();
+    private String continuingAccount;
+    private int abandons;
+
+    @Override
+    public Result runForAccount(String accountId, long deadlineMs) {
+      accountIds.add(accountId);
+      continuingAccount = accountId;
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);
+    }
+
+    @Override
+    Optional<String> continuationAccountId() {
+      return Optional.ofNullable(continuingAccount);
+    }
+
+    @Override
+    synchronized void abandonContinuation() {
+      abandons++;
+      continuingAccount = null;
     }
   }
 }

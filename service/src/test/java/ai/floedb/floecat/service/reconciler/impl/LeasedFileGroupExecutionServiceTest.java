@@ -181,7 +181,8 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileJobKind.EXEC_FILE_GROUP,
                     ReconcileSnapshotTask.empty(),
                     group.asReference(),
-                    PARENT_JOB_ID)));
+                    PARENT_JOB_ID,
+                    true)));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
@@ -217,6 +218,7 @@ class LeasedFileGroupExecutionServiceTest {
         ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
         payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
     assertEquals(group.fileExecutionPlans(), payload.fileExecutionPlans());
+    verify(statsStore).beginStatsGeneration(tableId(), SNAPSHOT_ID, "full-rescan-" + PARENT_JOB_ID);
   }
 
   @Test

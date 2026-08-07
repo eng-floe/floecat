@@ -70,6 +70,8 @@ public class CasBlobGcScheduler {
   private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
   private String nextAccountId = "";
+  private String continuationAccountId = "";
+  private int consecutiveContinuationTicks;
 
   private volatile boolean stopping;
 
@@ -132,7 +134,7 @@ public class CasBlobGcScheduler {
     }
 
     var cfg = ConfigProvider.getConfig();
-    boolean enabled = cfg.getOptionalValue("floecat.gc.cas.enabled", Boolean.class).orElse(true);
+    boolean enabled = cfg.getOptionalValue("floecat.gc.cas.enabled", Boolean.class).orElse(false);
     enabledGauge.set(enabled ? 1 : 0);
     if (!enabled) {
       return;
@@ -158,6 +160,11 @@ public class CasBlobGcScheduler {
             cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(45_000L));
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
+    final int maxConsecutiveContinuationTicks =
+        Math.max(
+            1,
+            cfg.getOptionalValue("floecat.gc.cas.max-consecutive-continuation-ticks", Integer.class)
+                .orElse(10));
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
@@ -248,11 +255,24 @@ public class CasBlobGcScheduler {
             Tag.of(TagKey.RESULT, "account-run"));
         var continuing = gc.continuationAccountId();
         if (continuing.isPresent()) {
-          // The one retained local epoch is the process-wide memory bound. Resume it next tick;
-          // starting another account would multiply that bound. Abandoning the epoch to rotate
-          // accounts also discards its resumable scan tokens, so an account wider than a configured
-          // tick burst can restart forever and never reach deletion. Retain it until completion.
+          String retainedAccountId = continuing.get();
+          if (retainedAccountId.equals(continuationAccountId)) {
+            consecutiveContinuationTicks++;
+          } else {
+            continuationAccountId = retainedAccountId;
+            consecutiveContinuationTicks = 1;
+          }
+          // Keep only one local epoch at a time, but cap how long it can monopolize the scheduler.
+          // An oversized account may need a larger cap; the backlog metric exposes that condition.
+          if (consecutiveContinuationTicks >= maxConsecutiveContinuationTicks) {
+            gc.abandonContinuation();
+            continuationAccountId = "";
+            consecutiveContinuationTicks = 0;
+          }
           break;
+        } else if (accountId.equals(continuationAccountId)) {
+          continuationAccountId = "";
+          consecutiveContinuationTicks = 0;
         }
       }
     } finally {
@@ -308,7 +328,7 @@ public class CasBlobGcScheduler {
       boolean enabled =
           ConfigProvider.getConfig()
               .getOptionalValue("floecat.gc.cas.enabled", Boolean.class)
-              .orElse(true);
+              .orElse(false);
       return !enabled || stopping || DynamoDbBootstrapReadiness.shouldWaitForBootstrap();
     }
   }

@@ -37,11 +37,11 @@ import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
-import ai.floedb.floecat.service.catalog.impl.TableRootSynthesizer;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -72,7 +72,7 @@ class SnapshotHelperTest {
             MutationMeta.newBuilder().setBlobUri("s3://tbl/table.pb").setEtag("etag-t").build());
     when(tableRepo.blobEtag("s3://tbl/table.pb")).thenReturn("etag-t");
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    committer = new TableRootCommitter(roots);
+    committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     // A real repair pipeline over its own in-memory store, so tests can assert which broken-root
     // observations durably enqueue the table for the resync re-drive and which do not.
     repairPointers = new InMemoryPointerStore();
@@ -243,44 +243,6 @@ class SnapshotHelperTest {
     // The pinned root is the immutable object every read follows refs out of.
     TableRoot pinnedRoot = roots.getByBlobUri(pin.getRootUri()).orElseThrow();
     assertThat(pinnedRoot.getCurrentSnapshotId()).isEqualTo(142);
-  }
-
-  @Test
-  void tablePinCurrentMaterializesALegacyTableAtFirstTouch() {
-    // A table with pre-existing (legacy family) data but no root yet: pin construction runs the
-    // committer's ensureRoot, which persists the synthesized history, then pins through it.
-    ResourceId tableId = tableId("tbl");
-    seedSnapshot(tableId, 142, "2024-05-01T00:00:00Z");
-    TableRoot synthesized =
-        TableRoot.newBuilder()
-            .setTableId(tableId)
-            .setDefinitionRef(BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t"))
-            .setSnapshotManifestRef(
-                ai.floedb.floecat.service.repo.impl.SnapshotManifests.upsert(
-                    roots,
-                    tableId,
-                    null,
-                    SnapshotManifestEntry.newBuilder()
-                        .setSnapshotId(142)
-                        .setSnapshotRef(
-                            BlobRef.newBuilder()
-                                .setUri("s3://tbl/snap-142.pb")
-                                .setVersion("etag-s142"))
-                        .setUpstreamCreatedAt(ts("2024-05-01T00:00:00Z"))
-                        .build()))
-            .setCurrentSnapshotId(142)
-            .build();
-    TableRootSynthesizer synthesizer = mock(TableRootSynthesizer.class);
-    when(synthesizer.synthesize(tableId)).thenReturn(Optional.of(synthesized));
-    helper =
-        new SnapshotHelper(
-            repository, roots, new TableRootCommitter(roots, synthesizer), null, validator);
-
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
-
-    assertThat(pin.getSnapshotId()).isEqualTo(142);
-    // The synthesized root was persisted: the table is migrated, not re-synthesized per read.
-    assertThat(roots.get(tableId)).isPresent();
   }
 
   @Test
@@ -698,7 +660,7 @@ class SnapshotHelperTest {
           }
         };
     ResourceId table = tableId("tbl-refollow");
-    var flakyCommitter = new TableRootCommitter(flakyRoots);
+    var flakyCommitter = new TableRootCommitter(flakyRoots, new TableBlobReachabilityGuard());
     flakyCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(
@@ -737,7 +699,7 @@ class SnapshotHelperTest {
           }
         };
     ResourceId table = tableId("tbl-dead-root");
-    var deadCommitter = new TableRootCommitter(deadRoots);
+    var deadCommitter = new TableRootCommitter(deadRoots, new TableBlobReachabilityGuard());
     deadCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(
@@ -764,7 +726,7 @@ class SnapshotHelperTest {
     // pin must fail naming that, not construct an empty-URI pin a downstream validator reports
     // as a generic internal error.
     ResourceId table = tableId("tbl-no-snap-ref");
-    var localCommitter = new TableRootCommitter(roots);
+    var localCommitter = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     localCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(

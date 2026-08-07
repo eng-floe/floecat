@@ -37,6 +37,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -59,7 +60,7 @@ class TableRootWriterTest {
   @BeforeEach
   void setUp() {
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    committer = new TableRootCommitter(roots);
+    committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     statsStore = mock(StatsStore.class);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
     when(statsStore.activeStatsGeneration(any(), anyLong())).thenReturn(Optional.empty());
@@ -345,7 +346,7 @@ class TableRootWriterTest {
     var blobStore = new InMemoryBlobStore();
     int[] updateFailures = {0};
     var cRoots = contendedRoots(ptr, blobStore, updateFailures);
-    var cCommitter = new TableRootCommitter(cRoots);
+    var cCommitter = new TableRootCommitter(cRoots, new TableBlobReachabilityGuard());
     var cWriter =
         new TableRootWriter(
             cRoots, cCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
@@ -377,7 +378,7 @@ class TableRootWriterTest {
     var blobStore = new InMemoryBlobStore();
     int[] updateFailures = {0};
     var cRoots = contendedRoots(ptr, blobStore, updateFailures);
-    var cCommitter = new TableRootCommitter(cRoots);
+    var cCommitter = new TableRootCommitter(cRoots, new TableBlobReachabilityGuard());
     var cWriter =
         new TableRootWriter(
             cRoots, cCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
@@ -401,36 +402,6 @@ class TableRootWriterTest {
   }
 
   @Test
-  void aDropRacingTheResyncDoesNotLeaveADefinitionlessRoot() {
-    // The committer persists synthesized history even on a mutator no-op. A drop landing between
-    // the resync's probe and its commit could therefore persist a definition-less root built from
-    // lingering snapshot pointers mid-drop-cleanup; the post-commit re-probe must delete it.
-    var ptr = new InMemoryPointerStore();
-    var blobStore = new InMemoryBlobStore();
-    var freshRoots = new TableRootRepository(ptr, blobStore);
-    TableRootSynthesizer synthesizer = mock(TableRootSynthesizer.class);
-    when(synthesizer.synthesize(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder().setTableId(tableId).build()));
-    var freshCommitter = new TableRootCommitter(freshRoots, synthesizer);
-    var freshWriter =
-        new TableRootWriter(
-            freshRoots, freshCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
-    // Probe sees the definition; by the time the mutator re-reads, the drop has landed.
-    when(tableRepo.metaForSafe(tableId))
-        .thenReturn(
-            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("e").build(),
-            MutationMeta.getDefaultInstance());
-
-    boolean converged = freshWriter.resyncFromCommittedState(tableId);
-
-    assertTrue(converged, "the drop path converges by deletion");
-    assertTrue(
-        freshRoots.get(tableId).isEmpty(), "no definition-less root may survive the drop race");
-  }
-
-  @Test
   void resyncReportsNonConvergenceWhenTheRootCannotBeDeleted() {
     // deleteRoot gives up after bounded CAS attempts; that is NOT convergence — the re-drive
     // marker must survive, so the result has to be false.
@@ -443,7 +414,7 @@ class TableRootWriterTest {
             return false;
           }
         };
-    var stubbornCommitter = new TableRootCommitter(stubbornRoots);
+    var stubbornCommitter = new TableRootCommitter(stubbornRoots, new TableBlobReachabilityGuard());
     var stubbornWriter =
         new TableRootWriter(
             stubbornRoots, stubbornCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);

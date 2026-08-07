@@ -422,7 +422,9 @@ class TransactionGcTest {
     pointers.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
 
     var roots = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     var tables = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     when(tables.metaForSafe(any()))
         .thenReturn(
@@ -472,7 +474,9 @@ class TransactionGcTest {
     pointers.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
 
     var roots = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     var tables = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     when(tables.metaForSafe(any())).thenThrow(new IllegalStateException("store down"));
     var writer =

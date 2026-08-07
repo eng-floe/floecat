@@ -331,7 +331,7 @@ public class TableRootWriter {
               ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(
                   builder, s);
             });
-    // Attach the finalized aux refs the same way TableRootSynthesizer.entryFor does. A resync
+    // Attach the finalized auxiliary refs while rebuilding the committed root entry. A resync
     // creates a fresh entry (no prior entry for preserveAuxRefs to copy from), so without this a
     // finalized snapshot would land WITHOUT its stats_generation_ref — invisible under the gate —
     // and a constrained snapshot would drop its constraints_ref.
