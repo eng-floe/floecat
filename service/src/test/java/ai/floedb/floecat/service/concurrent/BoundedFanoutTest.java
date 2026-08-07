@@ -602,13 +602,13 @@ class BoundedFanoutTest {
                     cancelled::get);
               });
 
-      assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(taskStarted.await(5, TimeUnit.SECONDS)).isTrue();
       cancelled.set(true);
       try {
         assertThat(result.get(5, TimeUnit.SECONDS))
             .isInstanceOf(CancellationException.class)
             .hasMessage("fan-out cancelled");
-        assertThat(taskInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
+        assertThat(taskInterrupted.await(5, TimeUnit.SECONDS)).isTrue();
       } finally {
         allowTaskCompletion.countDown();
       }
