@@ -1688,7 +1688,7 @@
 <tr>
 <td><code>default</code></td>
 <td>Baseline read-only tenant access. Used when no roles are provided in normal (<code>oidc</code>) mode.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-overlay.read</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code>, <code>catalog-overlay.read</code></td>
 </tr>
 <tr>
 <td><code>administrator</code></td>
@@ -1741,8 +1741,9 @@
 <li><code>catalog-integration.write</code> administers integration records, while <code>catalog-integration.use</code>
   permits an integration to be bound to an overlay without granting integration-management
   authority.</li>
-<li><code>catalog-overlay.write</code> administers namespace filters and overlay records. Creating an overlay
-  that references an existing catalog additionally requires <code>catalog.write</code>.</li>
+<li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
+  <code>catalog-integration.use</code>. The overlay is itself a top-level SQL catalog, so no <code>catalog.write</code>
+  permission or separate Catalog resource is involved.</li>
 </ul>
 
 

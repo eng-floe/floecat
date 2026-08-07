@@ -1676,23 +1676,23 @@
 <p>Catalog integrations and overlays are operationally inert records that establish the resource
 model for future external-catalog connectivity:</p>
 <ul>
-<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, display metadata, state, and
-  non-secret properties.</li>
-<li>A <strong>catalog overlay</strong> binds an integration and namespace filters to an existing Floecat catalog.</li>
+<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, and display name.</li>
+<li>A <strong>catalog overlay</strong> defines a top-level Floecat catalog backed by an integration and filtered
+  to selected upstream namespaces.</li>
 </ul>
 <div class="highlight"><pre><span></span><code>CatalogIntegration (external catalog identity)
- ├── CatalogOverlay &quot;sales&quot;   → existing Floecat Catalog &quot;sales&quot;
- └── CatalogOverlay &quot;finance&quot; → existing Floecat Catalog &quot;finance&quot;
+ ├── CatalogOverlay &quot;sales&quot;
+ └── CatalogOverlay &quot;finance&quot;
 </code></pre></div>
 <p>These resources do not store authentication or credentials, validate connectivity, refresh
 metadata, reconcile or capture tables, or affect query paths. The legacy <code>Connector</code> API and Shell
 commands remain the operational path for external catalog connectivity.</p>
 <h2 id="shell-workflow">Shell workflow<a class="headerlink" href="#shell-workflow" title="Permanent link">&para;</a></h2>
-<p>Create the integration record, then attach it to an existing catalog:</p>
+<p>Create the integration record, then define a top-level overlay catalog:</p>
 <div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1
-overlay create sales-overlay lakehouse sales --include prod.sales,prod.reference
+overlay create sales-overlay lakehouse --include prod.sales,prod.reference
 </code></pre></div>
-<p>The overlay command accepts either resource IDs or display names for the integration and catalog.
+<p>The overlay command accepts either a resource ID or display name for the integration.
 Namespace filters are comma-separated paths supplied with <code>--include</code> and <code>--exclude</code>. Omitting both
 selects the whole upstream namespace tree.</p>
 <p>The available commands are:</p>
@@ -1706,17 +1706,16 @@ integration delete &lt;name|id&gt;
 overlays [--integration &lt;name|id&gt;]
 overlay list [--integration &lt;name|id&gt;]
 overlay get &lt;name|id&gt;
-overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt; [options]
+overlay create &lt;name&gt; &lt;integration-name|id&gt; [options]
 overlay update &lt;name|id&gt; [options]
 overlay delete &lt;name|id&gt;
 </code></pre></div>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Overlay creation requires an active integration and an existing catalog.</li>
-<li>At most one overlay can refer to a catalog.</li>
-<li>An overlay's <code>catalog_id</code> is a non-owning reference. Overlay CRUD never creates, updates, locks,
-  empties, or deletes the catalog or its namespaces.</li>
+<li>Overlay creation requires an existing integration.</li>
+<li>Overlay display names are unique within an account and identify the top-level catalog.</li>
 <li>An integration cannot be deleted while overlays refer to it.</li>
+<li>Integration deletion supports <code>--cascade</code> to delete dependent overlays.</li>
 <li>Integration and overlay mutations support optimistic <code>--etag</code> preconditions.</li>
 </ul>
 <p>The protobuf contracts are in <code>core/proto/src/main/proto/floecat/integration/</code>.</p>
