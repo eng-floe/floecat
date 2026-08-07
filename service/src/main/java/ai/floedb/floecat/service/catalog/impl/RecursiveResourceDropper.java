@@ -1,0 +1,1497 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.catalog.impl;
+
+import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import org.jboss.logging.Logger;
+
+/** Removes the dependent state owned by tables and namespace trees. */
+@ApplicationScoped
+public class RecursiveResourceDropper {
+
+  // Per-resource audit trail for irreversible teardown (account delete and recursive namespace
+  // delete). Each purged namespace, table, view, and snapshot prefix is named so the destruction
+  // can be reconstructed after the fact.
+  private static final Logger CLEANUP_LOG = Logger.getLogger(RecursiveResourceDropper.class);
+
+  @Inject NamespaceRepository namespaceRepo;
+  @Inject TableRepository tableRepo;
+  @Inject TableCleanupRepository tableCleanupRepo;
+  @Inject TableRootRepository tableRoots;
+  @Inject ViewRepository viewRepo;
+  @Inject UserGraph metadataGraph;
+  @Inject TopologyGraph topology;
+  @Inject MarkerStore markerStore;
+  @Inject PointerStore pointerStore;
+
+  /**
+   * Guarded drop bound to the exact root pointer version {@code root} was read at.
+   *
+   * <p>{@code root} supplies the subtree prefix this walks, and that prefix is a path rather than
+   * an identity: rename the root and the name it vacated can be taken by a new namespace, at which
+   * point the prefix leads into somebody else's subtree. The caller checks the version before
+   * calling, but a check is a read and cannot be part of a batch — so the version is carried into
+   * every batch that destroys anything the root itself owns, and a root that moves mid-drop makes
+   * them fail rather than empty a namespace that has moved on.
+   *
+   * <p>Descendants are pinned independently, and more tightly, by {@link #pinDescendantToSubtree}:
+   * each is re-resolved and bound to the version that proved it still lives under this prefix.
+   */
+  public DropSummary dropNamespaceContents(
+      Namespace root, long rootPointerVersion, DropSummary summary) {
+    return dropNamespaceContents(root, true, rootPointerVersion, summary);
+  }
+
+  /**
+   * Test seam for the unpinned account-teardown mode.
+   *
+   * <p>Production teardown enters through {@link #dropCatalogNamespaces}; ordinary recursive
+   * deletion must use the pointer-version overload above. Keeping the unpinned form named for its
+   * one safe purpose prevents callers and tests from accidentally exercising it as a guarded
+   * recursive delete.
+   */
+  DropSummary dropNamespaceContentsForTeardown(Namespace root) {
+    return dropNamespaceContents(root, false, UNPINNED, new DropSummary());
+  }
+
+  private DropSummary dropNamespaceContents(
+      Namespace root, boolean guarded, long rootPointerVersion, DropSummary summary) {
+    var rootId = root.getResourceId();
+    var rootPath = new ArrayList<>(root.getParentsList());
+    rootPath.add(root.getDisplayName());
+    // The path below came from this exact root version. Carry that identity proof through every
+    // destructive batch in the walk: a prefix scan is not a snapshot, so after a rename the old
+    // path may begin yielding a replacement namespace's newly published descendants.
+    var rootPin = subtreePin(rootId, guarded, rootPointerVersion);
+    // Only the root's own subtree, by path prefix, rather than the whole catalog — and from the
+    // by-path pointer rows, not their content: a row carries the id and full path the drop needs,
+    // while a content-bearing scan would fail outright on one unparseable namespace blob, mid-drop,
+    // after everything deeper had already been destroyed.
+    forEachNamespaceDeepestFirst(
+        rootId.getAccountId(),
+        root.getCatalogId(),
+        rootPath,
+        ref ->
+            dropNamespace(
+                namespaceFromRef(ref, root.getCatalogId()), summary, rootPath, guarded, rootPin),
+        rootPin);
+    // The root's own relations are pinned to the root the caller resolved, so a concurrent reparent
+    // of the root cannot have its contents emptied out from under it either.
+    dropNamespaceRelations(root, summary, guarded, rootPin);
+    return summary;
+  }
+
+  /**
+   * Tears down every namespace in a catalog, and everything they own, deepest-first.
+   *
+   * <p>Enumerated from by-path pointer rows rather than content because a namespace whose blob does
+   * not parse must still be removable. Every namespace in the catalog is visited, not only the
+   * top-level ones — a damaged tree can leave a deep namespace whose ancestors are already gone,
+   * and nothing else would ever reach it.
+   *
+   * <p>{@code base} joins every batch this drop issues. Teardown pins nothing about the resources
+   * it removes — they are all going, so contending on their versions would only make it fail — but
+   * it does rest on one fact outside them: that the account itself is gone. Account ids are
+   * supplied by the caller and so can be reused, and every scan below enumerates by that id, so a
+   * recreate landing mid-sweep would otherwise have its resources destroyed by a sweep authorized
+   * against the account that used to hold the id. Passing that as a guard rather than re-reading
+   * between steps is what makes it airtight: the check rides in the same all-or-nothing batch as
+   * each removal.
+   */
+  public DropSummary dropCatalogNamespaces(
+      String accountId, ResourceId catalogId, BatchGuard base) {
+    var summary = new DropSummary();
+    forEachNamespaceDeepestFirst(
+        accountId,
+        catalogId,
+        List.of(),
+        ref -> dropNamespace(namespaceFromRef(ref, catalogId), summary, List.of(), false, base),
+        base);
+    return summary;
+  }
+
+  /**
+   * Hands every namespace strictly under {@code rootPath} to {@code drop}, each one only after
+   * everything beneath it, while holding no more than one namespace per level of depth.
+   *
+   * <p>A namespace can only be deleted once its children are gone, and a by-path scan runs the
+   * other way: parents first. Collecting the subtree to reverse it made peak memory proportional to
+   * the subtree — the one unbounded allocation on a teardown path that runs after the account
+   * pointer is gone, where exhausting the heap orphans whatever the sweep had not reached,
+   * permanently.
+   *
+   * <p>No collection is needed, but the test for "this one's subtree is finished" has to be about
+   * key ranges rather than about descent. A by-path key ends at its last segment with no trailing
+   * delimiter, so a namespace's descendants are <em>not</em> the only rows that follow it: {@code
+   * db/orders}, {@code db/orders-2024} and {@code db/orders/archive} sort in that order, because
+   * the separator {@code /} (0x2F) sorts after the {@code -} that {@code Keys.encode} leaves
+   * literal. Popping {@code db/orders} when the sibling arrives would drop it while its child is
+   * still to come — and for a guarded recursive delete that is fatal rather than untidy: the
+   * emptiness gate then fails on the surviving child, deterministically, on that attempt and on
+   * every retry.
+   *
+   * <p>So a namespace stays open until a key arrives that does not begin with its key at all. Every
+   * descendant's key begins with {@code key + "/"}, keys sharing a prefix are contiguous, and the
+   * stack is LIFO — so when one is finally popped, everything beneath it has already been dropped.
+   * A name that merely extends another ({@code orders-2024} over {@code orders}) rides on top of it
+   * and is dropped first, which is harmless. The stack holds one entry per key that is a prefix of
+   * the next, bounded by key length rather than by the size of the subtree.
+   */
+  private void forEachNamespaceDeepestFirst(
+      String accountId,
+      ResourceId catalogId,
+      List<String> rootPath,
+      java.util.function.Consumer<TopologyGraph.NamespaceRef> drop,
+      BatchGuard base) {
+    var open = new java.util.ArrayDeque<OpenNamespace>();
+    namespaceRepo.forEachRefUnder(
+        accountId,
+        catalogId.getId(),
+        rootPath,
+        ref -> {
+          String key =
+              Keys.namespacePointerByPath(accountId, catalogId.getId(), ref.pathSegments());
+          while (!open.isEmpty() && !key.startsWith(open.peek().key())) {
+            drop.accept(open.pop().ref());
+          }
+          open.push(new OpenNamespace(key, ref));
+        },
+        unresolvable -> retainUnresolvableNamespacePath(accountId, rootPath, unresolvable));
+    while (!open.isEmpty()) {
+      drop.accept(open.pop().ref());
+    }
+  }
+
+  /**
+   * A namespace the walk has seen but cannot drop yet, with the key whose range holds its subtree.
+   */
+  private record OpenNamespace(String key, TopologyGraph.NamespaceRef ref) {}
+
+  /**
+   * Removes a table after its pointer has already been deleted through a public mutation.
+   *
+   * <p>Deliberately does not touch the owning namespace's children marker. That marker is the
+   * child-publish fence and nothing else: {@code namespaceChildGuard} advances it inside the batch
+   * that publishes a child, and {@code namespaceChildrenUnchangedGuard} refuses a namespace delete
+   * whose emptiness scan predates such an advance. A table leaving the namespace is the opposite of
+   * a publish, so advancing the marker here would break a concurrent {@code DeleteNamespace} that
+   * nothing had invalidated — and losing that guard is not retryable, so a non-recursive delete
+   * would report NAMESPACE_CHILDREN_CHANGED to a caller racing nothing but a table going away.
+   *
+   * @return how many snapshot pointer rows the prefix delete actually removed. Zero for a table
+   *     that never had a snapshot, which is why the summary counts this rather than counting the
+   *     tables it called this for.
+   */
+  public int cleanupDeletedTable(ResourceId tableId) {
+    return cleanupDeletedTable(tableId, tableCleanupRepo.tableAbsentGuard(tableId));
+  }
+
+  private int cleanupDeletedTable(ResourceId tableId, BatchGuard cleanupGuard) {
+    topology.evict(tableId);
+    metadataGraph.invalidate(tableId);
+    // Snapshot-scoped stats pointers live under this prefix and go with it. Stats-generation blobs
+    // are left to the GC lifecycle that owns them.
+    int snapshotRows = tableCleanupRepo.deleteSnapshotPointers(tableId, cleanupGuard);
+    tableRoots.purgeRoot(tableId, cleanupGuard);
+    tableCleanupRepo.deletePointer(
+        Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()), cleanupGuard);
+    return snapshotRows;
+  }
+
+  /** Consumes a task staged by public DeleteTable. */
+  public int cleanupDeletedTable(TableCleanupRepository.Cleanup cleanup) {
+    return cleanupDeletedTable(cleanup, BatchGuard.NONE);
+  }
+
+  /** Drains stale or pending table cleanup handles before a plain namespace emptiness decision. */
+  public int cleanupDeletedTablesInNamespace(ResourceId namespaceId) {
+    int[] deleted = {0};
+    tableCleanupRepo.forEach(
+        namespaceId, cleanup -> deleted[0] += cleanupDeletedTable(cleanup, BatchGuard.NONE));
+    return deleted[0];
+  }
+
+  /** Consumes a durable handle only after atomically proving the table pointer is still absent. */
+  private int cleanupDeletedTable(TableCleanupRepository.Cleanup cleanup, BatchGuard subtreePin) {
+    var claimed = tableCleanupRepo.claim(cleanup, subtreePin);
+    if (claimed.isEmpty()) {
+      return 0;
+    }
+    int snapshotRows =
+        cleanupDeletedTable(
+            claimed.get().tableId(),
+            BatchGuard.all(subtreePin, tableCleanupRepo.claimedGuard(claimed.get())));
+    tableCleanupRepo.complete(claimed.get());
+    return snapshotRows;
+  }
+
+  private void dropNamespace(
+      Namespace namespace,
+      DropSummary summary,
+      List<String> rootPath,
+      boolean guarded,
+      BatchGuard base) {
+    var namespaceId = namespace.getResourceId();
+
+    if (!guarded) {
+      dropNamespaceRelations(namespace, summary, false, base);
+      // Account removal does not revoke a publisher that already resolved and authorized this
+      // namespace. Re-scan after relation teardown and carry the marker that every such publish
+      // advances; then either the publish or this namespace delete commits, never both.
+      var childrenGuard = BatchGuard.all(base, requireNamespaceEmptyAndStable(namespace));
+      // Counts only a namespace this call actually removed — teardown reaches namespaces an earlier
+      // subtree already took, and this number is the reconstruction record for an irreversible
+      // operation. deleteNamespace does the counting, at the removal itself.
+      deleteNamespace(namespace, childrenGuard, UNPINNED, summary, base);
+      return;
+    }
+
+    // Confirm this scanned descendant is STILL inside the subtree before destroying anything in it,
+    // and capture the pointer version that proved it. A reparent out of the subtree advances that
+    // pointer, so pinning every removal below to this version means a namespace that escaped
+    // mid-drop
+    // is neither emptied nor deleted.
+    var pinned = pinDescendantToSubtree(namespace, rootPath);
+    if (pinned.isEmpty()) {
+      // The namespace itself is gone, but the by-path row this walk followed is not — a concurrent
+      // delete that could only remove the canonical pointer leaves exactly that. Every
+      // immediate-child probe counts that row, so leaving it wedges the drop for good: the parent
+      // reports a child that cannot be resolved, let alone deleted.
+      CLEANUP_LOG.infof(
+          "recursive_drop_namespace_skipped_absent account_id=%s namespace_id=%s",
+          namespaceId.getAccountId(), namespaceId.getId());
+      // Its relations do NOT go with it: they are keyed by namespace id, not by path, so they
+      // outlive the namespace's own pointer. Drop them first and release the by-path row only
+      // afterwards — that row is the only handle any later scan has for reaching this namespace, so
+      // releasing it while tables remain would strand them where no emptiness gate and no teardown
+      // sweep can ever walk to them again. Nothing survives to pin against, so removals rest on
+      // each
+      // relation's own canonical version, which still fails a CAS for anything reparented out.
+      dropNamespaceRelations(namespace, summary, true, base);
+      reclaimStrandedNamespacePath(namespace, base);
+      // Its children marker is a pointer row in its own right, outside every prefix the GC and
+      // teardown sweep, so whoever removed the canonical pointer without it left a row nothing can
+      // ever reach again. This is the last walk that knows the id.
+      if (namespaceRepo.metaForSafe(namespaceId).getPointerVersion() != 0L) {
+        throw namespaceChanged(namespaceId);
+      }
+      markerStore.deleteNamespaceMarker(namespaceId);
+      return;
+    }
+    // Both guards below also assert the placement proof, when there is one: for a namespace whose
+    // blob cannot be read, the by-path row is the only thing that says where it lives, so every
+    // batch that destroys something has to contend on it rather than trust a read that preceded it.
+    var placement = pinned.get().placement();
+    var subtreePin =
+        BatchGuard.all(
+            base,
+            withPlacement(
+                markerStore.namespacePinnedGuard(namespaceId, pinned.get().pointerVersion()),
+                placement));
+
+    // Everything below works from the namespace the pin resolved, not the row the walk started
+    // from. They differ after an in-place rename: the scan's path is then stale, and probing for
+    // children under a stale path would miss one created under the new name and delete this
+    // namespace out from over a live child.
+    var resolved = pinned.get().resolved();
+    dropNamespaceRelations(resolved, summary, true, subtreePin);
+    var childrenGuard =
+        BatchGuard.all(base, withPlacement(requireNamespaceEmptyAndStable(resolved), placement));
+    deleteNamespace(resolved, childrenGuard, pinned.get().pointerVersion(), summary, base);
+  }
+
+  /** Sentinel for "no pointer version pinned" — account teardown, or a resource already gone. */
+  private static final long UNPINNED = -1L;
+
+  /**
+   * Pins the root's own relations to the root pointer the caller resolved, so a concurrent reparent
+   * of the root cannot have its contents emptied. Unguarded teardown pins nothing.
+   *
+   * <p>{@code pinnedVersion} is the version the caller read the root at, and using it rather than a
+   * fresh read is the whole point: a version read here is read after any move that already
+   * happened, so it would happily pin the root wherever it has since ended up — and the subtree
+   * prefix this drop is walking came from the earlier read, not from that one.
+   */
+  private BatchGuard subtreePin(ResourceId namespaceId, boolean guarded, long pinnedVersion) {
+    if (!guarded) {
+      return BatchGuard.NONE;
+    }
+    long version =
+        pinnedVersion == UNPINNED
+            ? namespaceRepo.metaForSafe(namespaceId).getPointerVersion()
+            : pinnedVersion;
+    if (version == 0L) {
+      throw namespaceChanged(namespaceId);
+    }
+    return markerStore.namespacePinnedGuard(namespaceId, version);
+  }
+
+  /**
+   * Re-reads a scanned descendant and returns the canonical pointer version that proves it is still
+   * under {@code rootPath}, together with the namespace that version resolved to — empty when it no
+   * longer exists at all.
+   *
+   * <p>The version and the content come from a single pointer read, so the pair is coherent: the
+   * namespace path checked here is exactly the one that version resolved to. Verifying membership
+   * against a separately-read version could otherwise pin a resource that had already moved.
+   *
+   * <p>Handing the resolved namespace back matters as much as the version. The row the walk started
+   * from carries the path as it was scanned, and an in-place rename makes that stale while leaving
+   * the namespace inside the subtree — so callers must work from what was verified here, not from
+   * what was scanned.
+   */
+  private Optional<DescendantPin> pinDescendantToSubtree(Namespace scanned, List<String> rootPath) {
+    var namespaceId = scanned.getResourceId();
+    var meta = namespaceRepo.metaForSafe(namespaceId);
+    if (meta.getPointerVersion() == 0L) {
+      return Optional.empty();
+    }
+    Optional<Namespace> live;
+    try {
+      live = namespaceRepo.getByBlobUri(meta.getBlobUri());
+    } catch (BaseResourceRepository.CorruptionException unparseable) {
+      // Same reasoning as a relation with an unreadable blob (see pinToNamespace), and the stakes
+      // are higher here: descendants are dropped deepest-first, so refusing at this point aborts an
+      // operation that has already destroyed everything below this namespace.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_namespace_blob_unparseable account_id=%s namespace_id=%s blob_uri=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
+      return pinToScannedPath(scanned, meta.getPointerVersion(), rootPath);
+    }
+    if (live.isEmpty()) {
+      // The blob is gone rather than unreadable, which is just as stable: aborting here would
+      // report
+      // NAMESPACE_RECURSIVE_PARTIAL on every attempt, after this namespace's own descendants are
+      // already destroyed, with nothing a retry could change. Same treatment as the unparseable
+      // case.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_namespace_blob_absent account_id=%s namespace_id=%s blob_uri=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
+      return pinToScannedPath(scanned, meta.getPointerVersion(), rootPath);
+    }
+    if (!isDescendant(live.get(), scanned.getCatalogId(), rootPath)) {
+      throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
+    }
+    return Optional.of(new DescendantPin(meta.getPointerVersion(), live.get()));
+  }
+
+  /**
+   * Placement for a namespace that cannot state its own: proved by the by-path row the walk
+   * followed still naming it, and carried into every batch below so a concurrent move loses.
+   *
+   * <p>The canonical version alone proves nothing about location. It is read here, after any move
+   * that already happened, so a namespace reparented out of the subtree before this read passes the
+   * CAS and would be destroyed where it now lives — and with an unreadable blob there is no path in
+   * the content to fall back on. The by-path row is the only remaining evidence: a reparent removes
+   * the row at the old path and writes one at the new, so a row still naming this namespace at the
+   * scanned path is proof it has not moved, and pinning that row's version keeps it that way for
+   * the batches that follow.
+   *
+   * <p>A row that names something else — or nothing — means a concurrent move or rename, which is a
+   * genuine conflict rather than a permanent state: refuse, and let the retry re-scan and find it
+   * wherever it now is.
+   */
+  private Optional<DescendantPin> pinToScannedPath(
+      Namespace scanned, long pointerVersion, List<String> rootPath) {
+    var namespaceId = scanned.getResourceId();
+    var path = new ArrayList<>(scanned.getParentsList());
+    path.add(scanned.getDisplayName());
+    String byPathKey =
+        Keys.namespacePointerByPath(
+            namespaceId.getAccountId(), scanned.getCatalogId().getId(), path);
+    var row = pointerStore.get(byPathKey).orElse(null);
+    if (row == null || !namespaceId.getId().equals(ownerIdOf(row))) {
+      throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
+    }
+    return Optional.of(
+        new DescendantPin(
+            pointerVersion, scanned, new PlacementProof(byPathKey, row.getVersion())));
+  }
+
+  /** The by-path row that proves where a blob-less namespace lives, at the version proved. */
+  private record PlacementProof(String key, long version) {}
+
+  /**
+   * {@code guard} with the placement proof folded in, so the batch it protects commits only while
+   * the by-path row that placed this namespace is still exactly as read. A no-op when there is no
+   * proof to carry — a namespace whose blob parses states its own path and is checked against it.
+   *
+   * <p>The outcome of the combined guard is the more severe of the two: a moved placement row is
+   * never benign contention, so it reports BROKEN and the drop refuses rather than retrying into
+   * the same conflict.
+   */
+  private BatchGuard withPlacement(BatchGuard guard, PlacementProof placement) {
+    if (placement == null) {
+      return guard;
+    }
+    return new BatchGuard() {
+      @Override
+      public List<PointerStore.CasOp> ops() {
+        var ops = new ArrayList<>(guard.ops());
+        ops.add(new PointerStore.CasCheck(placement.key(), placement.version()));
+        return ops;
+      }
+
+      @Override
+      public Outcome reevaluate() {
+        var row = pointerStore.get(placement.key()).orElse(null);
+        if (row == null || row.getVersion() != placement.version()) {
+          return Outcome.BROKEN;
+        }
+        return guard.reevaluate();
+      }
+
+      @Override
+      public String describe() {
+        return guard.describe() + " at " + placement.key();
+      }
+    };
+  }
+
+  /**
+   * The canonical pointer version a scanned descendant is pinned to, and the namespace that version
+   * resolved to — the live one where its blob could be read, the scanned row where it could not.
+   * Emptiness probes and the delete itself must both use {@code resolved}: it carries the path the
+   * namespace has now, which an in-place rename makes differ from the path the walk found it under.
+   *
+   * <p>{@code placement} is set only for the blob-less cases, where the row is the sole evidence of
+   * location; a readable namespace states its own path and is checked against it directly.
+   */
+  private record DescendantPin(long pointerVersion, Namespace resolved, PlacementProof placement) {
+    DescendantPin(long pointerVersion, Namespace resolved) {
+      this(pointerVersion, resolved, null);
+    }
+  }
+
+  /**
+   * Uses the same marker protocol as ordinary namespace deletion. This prevents a concurrently
+   * created table or immediate child namespace from being orphaned by a recursive parent drop.
+   *
+   * <p>The marker is read, never advanced. Only a publish may move it, and this is a delete: an
+   * advance here is a durable write that no child made, and if the delete then fails — storage,
+   * corruption, an exhausted retry — it survives to make a concurrent non-recursive delete that
+   * captured the earlier version report NAMESPACE_CHILDREN_CHANGED with no child anywhere in sight.
+   * Reading is also sufficient. Publishers advance the marker inside their own batches, so a child
+   * published after the scan moves it and the delete's own check fails; one published before the
+   * scan is seen by the scan.
+   *
+   * @return the fence to carry into this descendant's delete batch, asserting the marker is still
+   *     where the scan below found it. The scan alone cannot close the window — it is a read, and a
+   *     read cannot join a CAS batch — so the delete itself has to contend on the marker that every
+   *     child-publishing write advances (see {@link BatchGuard}).
+   */
+  private BatchGuard requireNamespaceEmptyAndStable(Namespace namespace) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    var parentPath = new ArrayList<>(namespace.getParentsList());
+    parentPath.add(namespace.getDisplayName());
+    // Read before the scan, so the guard covers the whole window the scan's answer has to survive.
+    long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+
+    if (hasRelations(namespaceId, catalogId)
+        || tableCleanupRepo.hasAny(namespaceId)
+        || hasImmediateChildren(catalogId, parentPath)) {
+      throw namespaceChanged(namespaceId);
+    }
+    return markerStore.namespaceChildrenUnchangedGuard(namespaceId, markerVersion);
+  }
+
+  private boolean hasRelations(ResourceId namespaceId, ResourceId catalogId) {
+    return tableRepo.anyNamePointer(
+            namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), ignored -> true)
+        || viewRepo.anyNamePointer(
+            namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), ignored -> true);
+  }
+
+  /**
+   * Whether {@code parentPath} has a direct child namespace. Reads by-path rows rather than
+   * content: this gates a delete, so an unparseable child must be able to block it — but not by
+   * failing the probe outright.
+   */
+  private boolean hasImmediateChildren(ResourceId catalogId, List<String> parentPath) {
+    return namespaceRepo.hasChildUnder(catalogId.getAccountId(), catalogId.getId(), parentPath);
+  }
+
+  private static BaseResourceRepository.AbortRetryableException namespaceChanged(
+      ResourceId namespaceId) {
+    return new BaseResourceRepository.AbortRetryableException(
+        "namespace children changed during recursive delete: " + namespaceId.getId());
+  }
+
+  private static BaseResourceRepository.AbortRetryableException relationChanged(
+      ResourceId relationId) {
+    return new BaseResourceRepository.AbortRetryableException(
+        "relation changed during recursive delete: " + relationId.getId());
+  }
+
+  private static BaseResourceRepository.AbortRetryableException movedOutOfSubtree(
+      ResourceId resourceId, String from) {
+    return new BaseResourceRepository.AbortRetryableException(
+        "resource moved out of the subtree during recursive delete: "
+            + resourceId.getId()
+            + " no longer under "
+            + from);
+  }
+
+  /**
+   * Resolves the pointer version to delete a scanned resource at, but only while it still belongs
+   * to the part of the tree being dropped.
+   *
+   * <p>The subtree scans that feed this dropper produce ids, and deleting by id resolves whatever
+   * that id points at <em>now</em>. A concurrent reparent that moved the resource out between the
+   * scan and the delete would therefore have it destroyed in its new home, along with its owned
+   * state — a silent data loss that no marker can prevent, because a marker can only be checked
+   * after the fact.
+   *
+   * <p>The fix is to make membership and the delete precondition come from the same observation.
+   * {@code metaReader} performs a single canonical-pointer read, yielding a coherent {@code
+   * (blobUri, pointerVersion)} pair; {@code ownerOfBlob} then reads the content <em>that exact
+   * version</em> pointed at and reports which namespace it declared. Deleting pinned to that
+   * version means any later mutation — every reparent advances the canonical pointer — loses the
+   * CAS instead of destroying a resource that had legitimately moved away.
+   *
+   * @return the version to delete at, or empty when the resource is already gone (a concurrent
+   *     delete won and ran the same cleanup, so there is nothing left to do)
+   */
+  private Optional<RelationPin> pinToNamespace(
+      ResourceId resourceId,
+      ResourceId expectedOwner,
+      Function<ResourceId, MutationMeta> metaReader,
+      Function<String, Optional<ResourceId>> ownerOfBlob) {
+    var meta = metaReader.apply(resourceId);
+    if (meta.getPointerVersion() == 0L) {
+      return Optional.empty();
+    }
+    Optional<ResourceId> owner;
+    try {
+      owner = ownerOfBlob.apply(meta.getBlobUri());
+    } catch (BaseResourceRepository.CorruptionException unparseable) {
+      // Present but unparseable, so the relation cannot state which namespace owns it. Membership
+      // then rests entirely on the by-name row this relation was reached through, under THIS
+      // namespace's prefix — which is why the caller pins that row into the delete batch (see
+      // scannedRowPin). The canonical pin this returns is not sufficient on its own: it catches a
+      // reparent that commits after the read below, but not one that completed before it, which
+      // would leave this read reporting the version the relation now has somewhere else. Refusing
+      // outright would instead let one corrupt blob make the whole subtree permanently undeletable,
+      // which is the state a recursive delete exists to clear.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_relation_blob_unparseable account_id=%s namespace_id=%s resource_id=%s"
+              + " blob_uri=%s",
+          resourceId.getAccountId(), expectedOwner.getId(), resourceId.getId(), meta.getBlobUri());
+      return Optional.of(new RelationPin(meta.getPointerVersion(), false));
+    }
+    if (owner.isEmpty()) {
+      // Either the pointer moved between the version read and the content read, or it dangles. The
+      // first is a race and the second never resolves on its own, so aborting would burn the whole
+      // retry budget and leave the namespace undeletable — the same dead end an unparseable blob
+      // used
+      // to produce. Treat it like that case and delete on pointer evidence: pinning to the version
+      // read above means a pointer that really did move loses its CAS instead.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_relation_blob_absent account_id=%s namespace_id=%s resource_id=%s"
+              + " blob_uri=%s",
+          resourceId.getAccountId(), expectedOwner.getId(), resourceId.getId(), meta.getBlobUri());
+      return Optional.of(new RelationPin(meta.getPointerVersion(), false));
+    }
+    if (!owner.get().getId().equals(expectedOwner.getId())) {
+      throw movedOutOfSubtree(resourceId, expectedOwner.getId());
+    }
+    return Optional.of(new RelationPin(meta.getPointerVersion(), true));
+  }
+
+  /**
+   * The canonical pointer version a scanned relation is pinned to, and whether its blob could be
+   * read to confirm the namespace it declares. An unverified pin still deletes — see {@link
+   * #pinToNamespace} — but leaves the relation's index rows behind, since the repository can only
+   * drop the canonical pointer when it cannot parse the resource.
+   */
+  private record RelationPin(long pointerVersion, boolean membershipVerified) {}
+
+  /**
+   * Pins the by-name row the scan followed, for a relation whose own blob could not say which
+   * namespace owns it.
+   *
+   * <p>The canonical pin alone is not sufficient evidence there. It catches a reparent that commits
+   * after the canonical read, because that advances the pointer the delete is pinned to — but not
+   * one that completed before it: the scan yields a row, the reparent removes that row and
+   * republishes the relation elsewhere, and the canonical read that follows reports the version it
+   * now has in its new home. The pin matches, the delete commits, and a table is destroyed in a
+   * namespace this drop was never asked about, along with its snapshots and root state.
+   *
+   * <p>So when membership is unverified, the row that <em>is</em> the membership evidence joins the
+   * batch. A reparent removes it, which breaks the guard however the two reads were ordered.
+   * Nothing is added when the blob was readable: there the content named the namespace at the exact
+   * version being deleted, which is evidence about the relation itself and needs no index row to
+   * stand up.
+   */
+  private BatchGuard scannedRowPin(Pointer namePointer, RelationPin pinned, ResourceId relationId) {
+    if (pinned.membershipVerified()) {
+      return BatchGuard.NONE;
+    }
+    return markerStore.pointerPinnedGuard(
+        "relation " + relationId.getId() + " by-name row",
+        namePointer.getKey(),
+        namePointer.getVersion());
+  }
+
+  /**
+   * Drops every relation in {@code namespace}, enumerating them through their by-name pointer rows
+   * rather than their content.
+   *
+   * <p>The content-bearing listing ({@code tableRepo.list}) fetches and parses every blob in the
+   * namespace before the first relation can be dropped, so one present-but-unparseable blob makes
+   * the whole listing — and with it the entire recursive delete — fail with a non-retryable {@code
+   * CorruptionException}. Cleaning up damaged state is exactly what a recursive delete is for, so
+   * enumeration must not depend on that state being readable. The by-name rows are also what the
+   * emptiness gate counts, so this enumerates precisely the set that has to reach zero, and it
+   * costs one pointer scan instead of a blob fetch per relation.
+   */
+  private void dropNamespaceRelations(
+      Namespace namespace, DropSummary summary, boolean guarded, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    String accountId = namespaceId.getAccountId();
+
+    // A prior attempt may have removed a table pointer and died before purging its snapshots/root.
+    // These handles are namespace-scoped precisely so this retry can resume them after the by-name
+    // row — the original enumeration path — is already gone.
+    tableCleanupRepo.forEach(
+        namespaceId,
+        cleanup -> summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin));
+
+    // Streamed, not materialized: a namespace can hold any number of relations, and each row is
+    // handled and then gone. Deleting the row just handed over does not disturb the scan — page
+    // tokens resume from the last key seen.
+    tableRepo.forEachNamePointer(
+        accountId,
+        catalogId.getId(),
+        namespaceId.getId(),
+        namePointer -> dropTable(namespace, namePointer, summary, guarded, subtreePin));
+    viewRepo.forEachNamePointer(
+        accountId,
+        catalogId.getId(),
+        namespaceId.getId(),
+        namePointer -> dropView(namespace, namePointer, summary, guarded, subtreePin));
+  }
+
+  /** The relation a by-name row names, or empty when the row identifies no owner. */
+  private static Optional<ResourceId> relationIdOf(
+      Pointer namePointer, String accountId, ResourceKind kind) {
+    String ownerId = ownerIdOf(namePointer);
+    if (ownerId.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(ownerId).build());
+  }
+
+  /** Both relation kinds — for callers authorized to write tables and views alike. */
+  public static final Set<ResourceKind> ALL_RELATION_KINDS =
+      Set.of(ResourceKind.RK_TABLE, ResourceKind.RK_VIEW);
+
+  /**
+   * Reconciles leftover by-name index rows for a namespace whose emptiness a caller is about to
+   * decide, outside any drop. Best-effort: a row that changes under the batch is left for the
+   * caller's own re-check rather than aborting the request.
+   */
+  public int reclaimStrandedRelationNames(Namespace namespace) {
+    return reclaimStrandedRelationNames(namespace, ALL_RELATION_KINDS);
+  }
+
+  /**
+   * Same, restricted to {@code kinds}.
+   *
+   * <p>Releasing a row is a relation-scoped write, so a caller may only spend the grants it holds:
+   * a CreateTable authorized by {@code table.write} alone can clear the stranded table rows
+   * blocking its own name, but not view rows. A name still held after a restricted sweep is
+   * reported as taken, which is the honest answer for a caller who cannot clear what is holding it.
+   */
+  public int reclaimStrandedRelationNames(Namespace namespace, Set<ResourceKind> kinds) {
+    return reclaimStrandedRelationNames(namespace, kinds, BatchGuard.NONE);
+  }
+
+  /**
+   * Whether {@code displayName} in this namespace is held by a relation that still exists.
+   *
+   * <p>A bounded answer — at most the shared relation-name claim and the two kind-specific by-name
+   * rows, plus one canonical read for each owner they name — to the question a create asks after a
+   * name collision. The collision itself does not distinguish "taken by something live" from "taken
+   * by a row whose relation is gone": only the second is worth reconciling, and the first is the
+   * common case, since a name held by a live relation of either kind collides deterministically on
+   * every attempt. Answering here keeps that case from paying for a sweep of the whole namespace.
+   */
+  public boolean relationNameHeld(Namespace namespace, String displayName) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    String catalogId = namespace.getCatalogId().getId();
+    var claim =
+        pointerStore.get(
+            Keys.relationPointerByName(accountId, catalogId, namespaceId.getId(), displayName));
+    if (claim.isPresent() && !claimIsStranded(accountId, claim.get())) {
+      return true;
+    }
+    // The claim postdates some rows, so fall back to the kind-specific indexes it would have
+    // covered.
+    return resolvesByName(
+            Keys.tablePointerByName(accountId, catalogId, namespaceId.getId(), displayName),
+            accountId,
+            ResourceKind.RK_TABLE)
+        || resolvesByName(
+            Keys.viewPointerByName(accountId, catalogId, namespaceId.getId(), displayName),
+            accountId,
+            ResourceKind.RK_VIEW);
+  }
+
+  private boolean resolvesByName(String nameKey, String accountId, ResourceKind kind) {
+    return pointerStore.get(nameKey).map(row -> resolves(row, accountId, kind)).orElse(false);
+  }
+
+  /**
+   * Whether any by-name row in this namespace still names a relation that exists, answering at the
+   * first one it finds.
+   *
+   * <p>Lets a caller deciding emptiness skip {@link #reclaimStrandedRelationNames} in the ordinary
+   * case. That sweep exists only to release rows nothing can resolve, so a namespace holding
+   * anything live has nothing to gain from it — and paying for it turned the common "not empty"
+   * rejection into a full row scan plus a point read per relation. Here the first live relation
+   * ends the walk, which for a namespace that holds tables is one page and one read.
+   *
+   * <p>Ending it is a return value, not a thrown exception: the enumeration is observed, and a scan
+   * abandoned by throwing marks its span failed and counts a repository error — on the successful
+   * answer, which is also the common one.
+   */
+  public boolean hasResolvableRelation(Namespace namespace) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    String accountId = namespaceId.getAccountId();
+    return tableRepo.anyNamePointer(
+            accountId,
+            catalogId.getId(),
+            namespaceId.getId(),
+            namePointer -> resolves(namePointer, accountId, ResourceKind.RK_TABLE))
+        || viewRepo.anyNamePointer(
+            accountId,
+            catalogId.getId(),
+            namespaceId.getId(),
+            namePointer -> resolves(namePointer, accountId, ResourceKind.RK_VIEW));
+  }
+
+  /** Whether a by-name row names a relation whose canonical pointer still exists. */
+  private boolean resolves(Pointer namePointer, String accountId, ResourceKind kind) {
+    String ownerId = ownerIdOf(namePointer);
+    if (ownerId.isEmpty()) {
+      // Names nothing, so it resolves to nothing: reclaimUnresolvableName's case, not a live
+      // relation.
+      return false;
+    }
+    String canonicalKey =
+        kind == ResourceKind.RK_TABLE
+            ? Keys.tablePointerById(accountId, ownerId)
+            : Keys.viewPointerById(accountId, ownerId);
+    return pointerStore.get(canonicalKey).isPresent();
+  }
+
+  /**
+   * Releases by-name pointers whose relation no longer exists, so the emptiness gate and the
+   * removal step agree on what counts as a relation.
+   *
+   * <p>{@link #hasRelations} counts by-name pointers, while every removal resolves its relation
+   * through the canonical by-id pointer. A relation whose canonical pointer is gone but whose
+   * by-name pointer survived — the corrupt-blob delete path in {@code GenericResourceRepository}
+   * removes only the canonical pointer, and legacy partial state has the same shape — is therefore
+   * invisible to the drop and permanently fatal to the gate: nothing left can remove it, so every
+   * retry re-counts it and the namespace can never be deleted, recursively or otherwise. Reclaiming
+   * it here is what makes the subtree deletable, and it destroys nothing reachable: no live
+   * relation resolves through a pointer whose owner is already gone.
+   *
+   * <p>The drop path reclaims these rows inline as it walks them; this sweep exists for callers who
+   * only need to decide emptiness, such as a non-recursive delete.
+   */
+  private int reclaimStrandedRelationNames(
+      Namespace namespace, Set<ResourceKind> kinds, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    String accountId = namespaceId.getAccountId();
+
+    var reclaimed = new int[1];
+    if (kinds.contains(ResourceKind.RK_TABLE)) {
+      tableRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          pointer -> {
+            if (reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, subtreePin)) {
+              reclaimed[0]++;
+            }
+          });
+    }
+    if (kinds.contains(ResourceKind.RK_VIEW)) {
+      viewRepo.forEachNamePointer(
+          accountId,
+          catalogId.getId(),
+          namespaceId.getId(),
+          pointer -> {
+            if (reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, subtreePin)) {
+              reclaimed[0]++;
+            }
+          });
+    }
+    return reclaimed[0];
+  }
+
+  /**
+   * Deletes one by-name pointer, and the relation-name claim it shares, if and only if the relation
+   * they name has no canonical pointer left.
+   *
+   * <p>The batch asserts that absence rather than trusting the read, so a relation being created or
+   * restored under this name right now keeps its index intact. Under a guarded drop the removal
+   * also carries {@code subtreePin}, binding it to the namespace the scan observed.
+   *
+   * <p>Best-effort by design: losing this CAS is not a reason to abort the operation that called
+   * it. The common case is a concurrent {@code DeleteTable} that removed the canonical pointer and
+   * this row together, and aborting would turn that benign race into a retry. Nothing downstream
+   * trusts the reclaim either — the emptiness gate re-counts these rows and is the authority on
+   * whether the namespace may go.
+   *
+   * <p>Both owners are read through {@link #ownerIdOf}: the claim is matched against this row by
+   * the relation each names, and a row predating {@code Pointer.resource_id} names it only in the
+   * blob URI. Comparing refs alone left a legacy claim behind — and the sweep reaches a claim only
+   * through the by-name row it shares, so once that row is released nothing can ever clear it, and
+   * the name stays blocked for both CreateTable and CreateView.
+   *
+   * <p>A row that names no relation at all is handled by {@link #reclaimUnresolvableName}, which
+   * cannot assert an absent owner because there is no owner to name.
+   */
+  private boolean reclaimIfOrphaned(
+      Pointer namePointer, Namespace namespace, ResourceKind kind, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    String ownerId = ownerIdOf(namePointer);
+    if (ownerId.isEmpty()) {
+      return reclaimUnresolvableName(namePointer, namespace, kind, subtreePin);
+    }
+    String canonicalKey =
+        kind == ResourceKind.RK_TABLE
+            ? Keys.tablePointerById(accountId, ownerId)
+            : Keys.viewPointerById(accountId, ownerId);
+    if (pointerStore.get(canonicalKey).isPresent()) {
+      return false;
+    }
+    if (pointerStore.get(namePointer.getKey()).isEmpty()) {
+      // The delete that removed the relation took this row with it, in the same batch. That is the
+      // ordinary case — only a relation whose blob could not be read leaves the row behind — and it
+      // is the one teardown hits for every relation in the account. Without this the batch below is
+      // built against a row that is already gone, fails by construction, and reports the failure as
+      // contention: a guaranteed-doomed write and a misleading log line per relation, on the path
+      // that runs after the account is already gone.
+      return false;
+    }
+
+    var ops = new ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasCheckAbsent(canonicalKey));
+    ops.add(new PointerStore.CasDelete(namePointer.getKey(), namePointer.getVersion()));
+
+    String displayName =
+        namePointer.getDisplayName().isEmpty()
+            ? Keys.extractLastSegment(namePointer.getKey())
+            : namePointer.getDisplayName();
+    String claimKey =
+        Keys.relationPointerByName(
+            accountId, namespace.getCatalogId().getId(), namespaceId.getId(), displayName);
+    pointerStore
+        .get(claimKey)
+        .filter(claim -> ownerId.equals(ownerIdOf(claim)))
+        .ifPresent(claim -> ops.add(new PointerStore.CasDelete(claimKey, claim.getVersion())));
+
+    ops.addAll(subtreePin.ops());
+
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      // The row changed under us — most often a concurrent delete that removed it already. Leave it
+      // for the gate to re-count.
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_stranded_name_contended account_id=%s namespace_id=%s"
+              + " pointer_key=%s",
+          accountId, namespaceId.getId(), namePointer.getKey());
+      return false;
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_reclaimed_stranded_name account_id=%s namespace_id=%s kind=%s"
+            + " relation_id=%s pointer_key=%s",
+        accountId, namespaceId.getId(), kind.name(), ownerId, namePointer.getKey());
+    return true;
+  }
+
+  /**
+   * Releases a by-name row that names no relation at all — neither a ref nor a parseable blob URI.
+   *
+   * <p>Such a row cannot be acted on: every removal resolves its relation through the owner this
+   * row does not carry, so no delete, recursive or otherwise, can ever take it away. The emptiness
+   * gate counts it all the same, which made it permanently fatal to a recursive delete: the drop
+   * skipped the row, the gate then reported the namespace non-empty, and under {@code --recursive}
+   * that is a retryable abort — so every attempt destroyed the rest of the subtree, exhausted its
+   * retries, and reported partial teardown, with no path left to finish the job.
+   *
+   * <p>Releasing it destroys nothing reachable. A lookup by name needs the owner reference to
+   * return a relation, so a row without one cannot be the index of anything live; it is unusable
+   * state whose only effect is to wedge the namespace. The delete is still pinned to the exact
+   * version read, so a writer republishing this key right now wins instead.
+   *
+   * <p>The shared relation-name claim goes too, but only when it is provably stranded on its own
+   * terms — its owner is absent, or missing entirely. A claim naming a live relation is left alone:
+   * it belongs to that relation, not to this row.
+   */
+  private boolean reclaimUnresolvableName(
+      Pointer namePointer, Namespace namespace, ResourceKind kind, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+
+    var ops = new ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasDelete(namePointer.getKey(), namePointer.getVersion()));
+
+    String displayName =
+        namePointer.getDisplayName().isEmpty()
+            ? Keys.extractLastSegment(namePointer.getKey())
+            : namePointer.getDisplayName();
+    String claimKey =
+        Keys.relationPointerByName(
+            accountId, namespace.getCatalogId().getId(), namespaceId.getId(), displayName);
+    pointerStore
+        .get(claimKey)
+        .filter(claim -> claimIsStranded(accountId, claim))
+        .ifPresent(claim -> ops.add(new PointerStore.CasDelete(claimKey, claim.getVersion())));
+
+    ops.addAll(subtreePin.ops());
+
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_unresolvable_name_contended account_id=%s namespace_id=%s"
+              + " pointer_key=%s",
+          accountId, namespaceId.getId(), namePointer.getKey());
+      return false;
+    }
+    CLEANUP_LOG.warnf(
+        "recursive_drop_reclaimed_unresolvable_name account_id=%s namespace_id=%s kind=%s"
+            + " pointer_key=%s",
+        accountId, namespaceId.getId(), kind.name(), namePointer.getKey());
+    return true;
+  }
+
+  /**
+   * Whether a relation-name claim names nothing, or names a relation whose pointer is gone.
+   *
+   * <p>Read through {@link #ownerIdOf}, which is what defines "the relation a pointer row names"
+   * for this class: a row predating {@code Pointer.resource_id} carries its owner only in the blob
+   * URI. Reading the ref alone called such a claim stranded, and a stranded claim gets deleted — so
+   * a legacy claim held by a live table was released, and the name it reserved became available to
+   * a view of the same name, which is exactly the cross-kind collision the claim exists to prevent.
+   */
+  private boolean claimIsStranded(String accountId, Pointer claim) {
+    String ownerId = ownerIdOf(claim);
+    if (ownerId.isEmpty()) {
+      return true;
+    }
+    return pointerStore.get(Keys.tablePointerById(accountId, ownerId)).isEmpty()
+        && pointerStore.get(Keys.viewPointerById(accountId, ownerId)).isEmpty();
+  }
+
+  /** The relation a by-name pointer names: its ref if present, else parsed from its blob URI. */
+  private static String ownerIdOf(Pointer namePointer) {
+    String fromRef = namePointer.getResourceId().getId();
+    return fromRef.isEmpty()
+        ? Keys.extractResourceIdFromBlobUri(namePointer.getBlobUri())
+        : fromRef;
+  }
+
+  private void dropTable(
+      Namespace namespace,
+      Pointer namePointer,
+      DropSummary summary,
+      boolean guarded,
+      BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    var resolved = relationIdOf(namePointer, namespaceId.getAccountId(), ResourceKind.RK_TABLE);
+    if (resolved.isEmpty()) {
+      // Neither the row's ref nor its blob URI names a table, so there is no table to delete — but
+      // the row itself must still go, or the emptiness gate counts a relation nothing can ever
+      // remove and the namespace becomes undeletable for good.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_table_unresolvable account_id=%s namespace_id=%s pointer_key=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), namePointer.getKey());
+      reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
+      return;
+    }
+    var tableId = resolved.get();
+
+    if (guarded) {
+      var pinned =
+          pinToNamespace(
+              tableId,
+              namespaceId,
+              tableRepo::metaForSafe,
+              blobUri -> tableRepo.getByBlobUri(blobUri).map(Table::getNamespaceId));
+      if (pinned.isEmpty()) {
+        var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+        // Already gone — a concurrent DeleteTable won, or the canonical pointer was removed on its
+        // own by a corrupt-blob delete. Either way the by-name row this scan followed is now
+        // orphaned index state, and the emptiness gate counts it, so release it here rather than
+        // leaving the namespace permanently undeletable.
+        CLEANUP_LOG.infof(
+            "recursive_drop_table_skipped_absent account_id=%s namespace_id=%s table_id=%s",
+            namespaceId.getAccountId(), namespaceId.getId(), tableId.getId());
+        reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
+        // And purge what the table owned, rather than assuming whoever removed the pointer got that
+        // far. Removing the pointer and purging owned state are two operations, so a delete that
+        // died between them leaves the snapshot prefix, the root and the root-resync marker behind
+        // — and this drop is about to take the last index row naming the table and then the
+        // namespace above it, after which nothing reaches those leftovers again. The purge is
+        // idempotent and the pointer is provably absent, which is the only condition it needs; the
+        // account-teardown branch below already repairs the same state the same way.
+        summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin);
+        return;
+      }
+      var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+      // Delete pinned to the exact pointer version the membership check observed. Any concurrent
+      // mutation — crucially a reparent that moved this table out of the subtree — advances the
+      // canonical pointer, so the CAS fails and no owned state is purged. Deleting by id alone
+      // would resolve the table's CURRENT pointer and destroy it in whatever namespace it had just
+      // moved to.
+      if (!tableRepo.deleteWithPrecondition(
+          tableId,
+          pinned.get().pointerVersion(),
+          BatchGuard.all(subtreePin, scannedRowPin(namePointer, pinned.get(), tableId)))) {
+        throw relationChanged(tableId);
+      }
+      // Counted here, not after the cleanup below. The table is irreversibly gone as of the line
+      // above, and everything that follows can throw — an index reclaim, a prefix delete. Counting
+      // afterwards let a failure in any of it leave destroyed.total() at zero, so
+      // partialTeardownIfDestroyed passed the original error through and told the caller nothing
+      // had
+      // been committed about a subtree that was already being dismantled. Nothing recovers the
+      // count
+      // on a retry either: the delete took the by-name row this table was enumerated through.
+      summary.tablesDeleted++;
+      if (!pinned.get().membershipVerified()) {
+        // The repository could not parse the table, so its delete batch could only remove the
+        // canonical pointer — the by-name row and relation claim it owned are still there. Release
+        // them now that the canonical pointer is provably gone, or the gate below still counts a
+        // table that no longer exists.
+        reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
+      }
+      summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin);
+      CLEANUP_LOG.infof(
+          "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s"
+              + " membership_verified=%s committed=true",
+          namespaceId.getAccountId(),
+          catalogId.getId(),
+          namespaceId.getId(),
+          tableId.getId(),
+          pinned.get().membershipVerified());
+      return;
+    }
+
+    var cleanup = tableCleanupRepo.prepare(namespaceId, tableId);
+    boolean committed = tableRepo.delete(tableId, subtreePin);
+    // Counted the moment it commits, before any of the cleanup below, which can throw — see the
+    // guarded branch above. A retried teardown must not count a deletion an earlier pass performed,
+    // which is why this is conditional on committed rather than on the pointer being gone.
+    if (committed) {
+      summary.tablesDeleted++;
+    }
+    // Teardown deletes by id and tolerates a corrupt blob (the repository drops the canonical
+    // pointer alone in that case), so the index rows can survive. The account is going away, so
+    // release them rather than leaving durable orphans behind the deleted namespace.
+    reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_TABLE, subtreePin);
+    // delete() reports false for two different things: the canonical pointer was already gone — an
+    // earlier teardown pass or a concurrent DeleteTable took it — or its CAS lost to a writer that
+    // republished the table, which means the table is still there. Only the first is safe to purge
+    // after, so ask which one it was, exactly as deleteNamespace does before removing a marker.
+    boolean gone = committed || tableRepo.metaForSafe(tableId).getPointerVersion() == 0L;
+    if (!gone) {
+      // The delete lost its CAS to a writer that republished the table, so the table is still
+      // there.
+      // Its owned state must not be purged — that would leave reads failing on a dangling root
+      // rather than finding it absent — but carrying on is worse than either: this sweep goes on to
+      // delete the namespace and then the catalog above it, leaving a live table and its by-name
+      // row
+      // under parents that no longer exist, reported as a clean teardown.
+      //
+      // So abort, retryably. DeleteAccount runs under runWithRetry, and the branch a retry lands on
+      // once the account pointer is gone re-runs the whole sweep, which is idempotent — that is the
+      // documented recovery path rather than an accident of control flow. The retry's unconditional
+      // delete either wins or reports the conflict again, and once the budget is spent the caller
+      // is
+      // told cleanup did not finish instead of being told it did.
+      CLEANUP_LOG.errorf(
+          "recursive_drop_table_lost_cas account_id=%s catalog_id=%s namespace_id=%s table_id=%s"
+              + " owned_state_kept=true retryable=true",
+          namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), tableId.getId());
+      throw relationChanged(tableId);
+    }
+    // Rows removed are counted whoever removed the table, because they are rows this call
+    // destroyed. The table itself was counted above, at the moment its delete committed.
+    summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin);
+    CLEANUP_LOG.infof(
+        "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s committed=%s",
+        namespaceId.getAccountId(),
+        catalogId.getId(),
+        namespaceId.getId(),
+        tableId.getId(),
+        committed);
+  }
+
+  private void dropView(
+      Namespace namespace,
+      Pointer namePointer,
+      DropSummary summary,
+      boolean guarded,
+      BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    var resolved = relationIdOf(namePointer, namespaceId.getAccountId(), ResourceKind.RK_VIEW);
+    if (resolved.isEmpty()) {
+      // Same as dropTable: no view to delete, but the row still has to go or it wedges the gate.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_view_unresolvable account_id=%s namespace_id=%s pointer_key=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), namePointer.getKey());
+      reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
+      return;
+    }
+    var viewId = resolved.get();
+
+    if (guarded) {
+      // Same stale-scan hazard as tables: delete pinned to the version whose content was verified
+      // to still live here, so a view that moved out cannot be destroyed in its new namespace. And
+      // the same corrupt-blob tolerance — an unreadable view must not wedge the subtree.
+      var pinned =
+          pinToNamespace(
+              viewId,
+              namespaceId,
+              viewRepo::metaForSafe,
+              blobUri -> viewRepo.getByBlobUri(blobUri).map(View::getNamespaceId));
+      if (pinned.isEmpty()) {
+        CLEANUP_LOG.infof(
+            "recursive_drop_view_skipped_absent account_id=%s namespace_id=%s view_id=%s",
+            namespaceId.getAccountId(), namespaceId.getId(), viewId.getId());
+        reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
+        // A view owns no durable state, but it does own cache entries, and the same reasoning as
+        // dropTable applies: whoever removed the pointer may not have got this far. Both are
+        // idempotent, and the unguarded branch below already evicts unconditionally.
+        topology.evict(viewId);
+        metadataGraph.invalidate(viewId);
+        return;
+      }
+      if (!viewRepo.deleteWithPrecondition(
+          viewId,
+          pinned.get().pointerVersion(),
+          BatchGuard.all(subtreePin, scannedRowPin(namePointer, pinned.get(), viewId)))) {
+        throw relationChanged(viewId);
+      }
+      // Counted at the commit, before the cleanup that follows — see dropTable.
+      summary.viewsDeleted++;
+      if (!pinned.get().membershipVerified()) {
+        reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
+      }
+      topology.evict(viewId);
+      metadataGraph.invalidate(viewId);
+      CLEANUP_LOG.infof(
+          "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s"
+              + " membership_verified=%s committed=true",
+          namespaceId.getAccountId(),
+          catalogId.getId(),
+          namespaceId.getId(),
+          viewId.getId(),
+          pinned.get().membershipVerified());
+      return;
+    }
+
+    boolean committed = viewRepo.delete(viewId, subtreePin);
+    // Counted at the commit — see dropTable.
+    if (committed) {
+      summary.viewsDeleted++;
+    }
+    reclaimIfOrphaned(namePointer, namespace, ResourceKind.RK_VIEW, subtreePin);
+    topology.evict(viewId);
+    metadataGraph.invalidate(viewId);
+    // A surviving view is the same hazard as a surviving table, minus the owned state: continuing
+    // leaves it alive under a namespace this sweep is about to delete. See dropTable.
+    if (!committed && viewRepo.metaForSafe(viewId).getPointerVersion() != 0L) {
+      CLEANUP_LOG.errorf(
+          "recursive_drop_view_lost_cas account_id=%s catalog_id=%s namespace_id=%s view_id=%s"
+              + " retryable=true",
+          namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), viewId.getId());
+      throw relationChanged(viewId);
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s committed=%s",
+        namespaceId.getAccountId(),
+        catalogId.getId(),
+        namespaceId.getId(),
+        viewId.getId(),
+        committed);
+  }
+
+  /**
+   * Deletes {@code namespace}, leaving every ancestor's children marker alone.
+   *
+   * <p>Those markers are delete fences that only a child publish may move, and a descendant going
+   * away is the opposite. Advancing them here used to break the enclosing recursive delete itself —
+   * hence the former root-skipping parameter — and, one namespace up, any concurrent delete of an
+   * ancestor that had already scanned. See {@link MarkerStore#namespaceChildGuard}.
+   *
+   * <p>{@code childrenGuard} makes the pointer removal atomic with the emptiness the caller
+   * established: a child published since then raises {@link
+   * BaseResourceRepository.BatchGuardFailedException}, which is retryable and re-runs the drop.
+   *
+   * <p>{@code expectedVersion} pins the removal to the pointer that was proven to be inside the
+   * subtree ({@link #UNPINNED} in account teardown, where there is no subtree to leave). Without
+   * it, deleting by id would resolve the namespace's current pointer and remove one that had been
+   * reparented out of the subtree since the scan.
+   *
+   * <p>{@code summary} is credited the moment the pointer is removed, not by the caller afterwards.
+   * Everything below that removal can throw — a stranded-path reclaim, a marker delete, the
+   * survivor abort — and counting outside would let any of it leave the count at zero for a
+   * namespace that is already gone, which is exactly when the count matters: {@code
+   * partialTeardownIfDestroyed} reads {@code total()} to decide whether to tell the caller the
+   * operation was destructive. A retry cannot repair it either, since the by-path row this
+   * namespace was enumerated through went with the delete.
+   *
+   * @return whether this call removed the namespace's pointer. False in teardown when it was
+   *     already gone — the owned state is still purged, but nothing is counted for a deletion this
+   *     call did not perform, since that count is the audit record for an irreversible operation.
+   */
+  private boolean deleteNamespace(
+      Namespace namespace,
+      BatchGuard childrenGuard,
+      long expectedVersion,
+      DropSummary summary,
+      BatchGuard base) {
+    var namespaceId = namespace.getResourceId();
+    boolean removed;
+    if (expectedVersion == UNPINNED) {
+      removed = namespaceRepo.delete(namespaceId, childrenGuard);
+    } else if (namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion, childrenGuard)) {
+      removed = true;
+    } else {
+      throw namespaceChanged(namespaceId);
+    }
+    if (removed) {
+      summary.namespacesDeleted++;
+    }
+    // base rather than childrenGuard: the reclaim already asserts the canonical pointer is absent,
+    // and a guarded childrenGuard pins that same key to a version. Two ops on one key is rejected
+    // outright by DynamoDB, and they contradict each other besides.
+    reclaimStrandedNamespacePath(namespace, base);
+    // Only once the pointer is provably gone. Teardown's unguarded delete answers false both for a
+    // namespace that was already deleted and for one whose CAS it lost — and in the second case the
+    // namespace is still live, so taking its children marker would strip a fence that is still in
+    // use: a create publishing into it advances a marker this call has removed, and a delete whose
+    // scan found the namespace empty then contends on an absent key instead of that advance, so
+    // both
+    // commit and the new table is orphaned. See MarkerStore#deleteNamespaceMarker.
+    boolean gone = removed || namespaceRepo.metaForSafe(namespaceId).getPointerVersion() == 0L;
+    if (gone) {
+      markerStore.deleteNamespaceMarker(namespaceId);
+    }
+    topology.evictRelationRefs(namespaceId);
+    topology.evictNamespaceRefs(namespace.getCatalogId());
+    metadataGraph.invalidate(namespaceId);
+    if (!gone) {
+      // Still live: the unguarded delete lost its CAS to a writer that republished this namespace.
+      // Carrying on would delete the catalog above it and leave a live namespace, and everything
+      // beneath it, under a parent that no longer exists. Retryable for the same reason as a
+      // surviving table — see dropTable.
+      CLEANUP_LOG.errorf(
+          "recursive_drop_namespace_lost_cas account_id=%s catalog_id=%s namespace_id=%s"
+              + " retryable=true",
+          namespaceId.getAccountId(), namespace.getCatalogId().getId(), namespaceId.getId());
+      throw namespaceChanged(namespaceId);
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_namespace account_id=%s catalog_id=%s namespace_id=%s display_name=%s"
+            + " removed=%s",
+        namespaceId.getAccountId(),
+        namespace.getCatalogId().getId(),
+        namespaceId.getId(),
+        namespace.getDisplayName(),
+        removed);
+    return removed;
+  }
+
+  /**
+   * Retains a by-path row whose namespace identity cannot be recovered.
+   *
+   * <p>A malformed secondary row does not prove that its canonical namespace is absent. Without an
+   * id there is no safe canonical-absence check, and deleting the row could remove the only
+   * placement handle for a live namespace and its subtree. The ordinary emptiness probe continues
+   * to count this row, so the enclosing delete fails closed instead of orphaning unknown state.
+   */
+  private void retainUnresolvableNamespacePath(
+      String accountId, List<String> rootPath, Pointer row) {
+    CLEANUP_LOG.errorf(
+        "recursive_drop_namespace_path_unresolvable_retained account_id=%s root_path=%s"
+            + " pointer_key=%s",
+        accountId, String.join(".", rootPath), row.getKey());
+  }
+
+  /** Repairs namespace placement rows that can otherwise keep an empty catalog undeletable. */
+  void reclaimStrandedNamespacePaths(ResourceId catalogId) {
+    String accountId = catalogId.getAccountId();
+    namespaceRepo.forEachRefUnder(
+        accountId,
+        catalogId.getId(),
+        List.of(),
+        ref -> reclaimStrandedNamespacePath(namespaceFromRef(ref, catalogId), BatchGuard.NONE),
+        row -> retainUnresolvableNamespacePath(accountId, List.of(), row));
+  }
+
+  /**
+   * Releases a deleted namespace's by-path row when the repository could only remove its canonical
+   * pointer — the case for a namespace whose blob does not parse, since the repository cannot read
+   * the secondary keys it would otherwise remove in the same batch.
+   *
+   * <p>That row is what every immediate-child probe counts, so leaving it makes the parent look
+   * non-empty forever and the subtree undeletable. A no-op on the ordinary path: a parseable
+   * namespace has its by-path row removed atomically with the canonical pointer, so there is
+   * nothing here to find.
+   *
+   * <p>Only ever removes a row that still names the namespace just deleted — a namespace recreated
+   * at the same path owns its own row, and the absent-canonical check alone would not notice.
+   */
+  private void reclaimStrandedNamespacePath(Namespace namespace, BatchGuard base) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    var path = new ArrayList<>(namespace.getParentsList());
+    path.add(namespace.getDisplayName());
+    String byPathKey =
+        Keys.namespacePointerByPath(accountId, namespace.getCatalogId().getId(), path);
+    var row = pointerStore.get(byPathKey).orElse(null);
+    if (row == null || !namespaceId.getId().equals(ownerIdOf(row))) {
+      return;
+    }
+    String canonicalKey = Keys.namespacePointerById(accountId, namespaceId.getId());
+    // This is a repair for a pointer already proved absent, not an alternate namespace delete.
+    // Avoid both the guaranteed-failing CAS for an ordinary live namespace and, more importantly,
+    // hiding a damaged namespace that still owns discoverable state.
+    if (pointerStore.get(canonicalKey).isPresent()
+        || hasRelations(namespaceId, namespace.getCatalogId())
+        || tableCleanupRepo.hasAny(namespaceId)
+        || hasImmediateChildren(namespace.getCatalogId(), path)) {
+      return;
+    }
+    var ops = new ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasCheckAbsent(canonicalKey));
+    ops.add(new PointerStore.CasDelete(byPathKey, row.getVersion()));
+    ops.addAll(base.ops());
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      if (base.reevaluate() == BatchGuard.Outcome.BROKEN) {
+        throw new BaseResourceRepository.BatchGuardFailedException(
+            "stranded namespace path reclaim lost the race against " + base.describe());
+      }
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_stranded_path_contended account_id=%s namespace_id=%s"
+              + " pointer_key=%s",
+          accountId, namespaceId.getId(), byPathKey);
+      return;
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_reclaimed_stranded_path account_id=%s namespace_id=%s pointer_key=%s",
+        accountId, namespaceId.getId(), byPathKey);
+  }
+
+  /**
+   * The scanned namespace as the drop needs to see it, from a by-path pointer row alone.
+   *
+   * <p>Identity, placement, and name are all recoverable from the row: the key encodes the full
+   * path, so the parents are that path minus its last segment. Nothing below reads any other field,
+   * so this stands in for the stored proto without depending on the blob being parseable.
+   */
+  private static Namespace namespaceFromRef(TopologyGraph.NamespaceRef ref, ResourceId catalogId) {
+    var path = ref.pathSegments();
+    return Namespace.newBuilder()
+        .setResourceId(ref.id())
+        .setCatalogId(catalogId)
+        .setDisplayName(ref.name())
+        .addAllParents(path.isEmpty() ? List.of() : path.subList(0, path.size() - 1))
+        .build();
+  }
+
+  /**
+   * Whether {@code namespace} is inside the subtree being dropped: under {@code rootPath}, and in
+   * the same catalog.
+   *
+   * <p>A path alone does not identify a namespace. Two catalogs can hold the same path, and a
+   * reparent may move a namespace across catalogs without changing it — so a membership test on
+   * segments alone would let a namespace that had left the catalog entirely still look like a
+   * descendant, and the drop would destroy it, and everything under it, where it now lives.
+   */
+  private static boolean isDescendant(
+      Namespace namespace, ResourceId rootCatalogId, java.util.List<String> rootPath) {
+    if (!namespace.getCatalogId().getId().equals(rootCatalogId.getId())) {
+      return false;
+    }
+    var parents = namespace.getParentsList();
+    return parents.size() >= rootPath.size()
+        && parents.subList(0, rootPath.size()).equals(rootPath);
+  }
+
+  public static final class DropSummary {
+    public int namespacesDeleted;
+    public int tablesDeleted;
+    public int viewsDeleted;
+
+    /**
+     * Snapshot pointer rows actually removed, not tables whose prefix was swept — a table that
+     * never had a snapshot contributes nothing. It used to increment once per dropped table, which
+     * made it a second, identically-valued copy of {@link #tablesDeleted} under a name that
+     * promised something else.
+     */
+    public int snapshotPointerRowsDeleted;
+
+    /**
+     * Resources destroyed, for callers deciding whether a failed operation was still destructive.
+     */
+    public int total() {
+      return namespacesDeleted + tablesDeleted + viewsDeleted;
+    }
+  }
+}

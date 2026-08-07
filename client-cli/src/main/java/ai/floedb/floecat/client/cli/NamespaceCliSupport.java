@@ -298,19 +298,41 @@ final class NamespaceCliSupport {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println("usage: namespace delete <id|fq> [--require-empty] [--etag <etag>]");
+          out.println(
+              "usage: namespace delete <id|fq> [--recursive|--require-empty] [--etag <etag>]");
           return;
         }
         boolean requireEmpty = args.contains("--require-empty");
+        boolean recursive = args.contains("--recursive");
+        // Apply the service's mutually-exclusive flag rule locally, so a human typing two opposed
+        // destructive options gets an immediate explanation instead of a remote INVALID_ARGUMENT.
+        if (requireEmpty && recursive) {
+          out.println("error: --recursive and --require-empty cannot be combined");
+          return;
+        }
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var deleteBuilder =
-            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
+            DeleteNamespaceRequest.newBuilder()
+                .setNamespaceId(nsId)
+                .setRequireEmpty(requireEmpty)
+                .setRecursive(recursive);
         Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);
         }
-        namespaces.deleteNamespace(deleteBuilder.build());
-        out.println("ok");
+        var deleted = namespaces.deleteNamespace(deleteBuilder.build());
+        if (recursive) {
+          // A recursive delete is irreversible and its size is not something the caller stated, so
+          // print what it removed rather than "ok". A plain delete removed exactly the namespace
+          // that was named, which "ok" already says.
+          out.printf(
+              "ok: deleted %d namespace(s), %d table(s), %d view(s)%n",
+              deleted.getDeletedNamespaces(),
+              deleted.getDeletedTables(),
+              deleted.getDeletedViews());
+        } else {
+          out.println("ok");
+        }
       }
       default -> out.println("unknown subcommand");
     }

@@ -18,7 +18,9 @@ package ai.floedb.floecat.service.security.impl;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import io.grpc.Status;
@@ -68,6 +70,25 @@ class AuthorizerTest {
     StatusRuntimeException e =
         assertThrows(StatusRuntimeException.class, () -> authz.require(principal, "catalog.read"));
     assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode());
+  }
+
+  /**
+   * {@code allows} answers the same question as {@code require} without denying the call, for
+   * optional housekeeping a caller may or may not be entitled to. A missing grant is an answer, not
+   * a failure — including for the default instance, which must not be reported as UNAUTHENTICATED
+   * here because nothing is being refused.
+   */
+  @Test
+  void allowsReportsTheGrantWithoutDenying() {
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setSubject("tester")
+            .setAccountId("acct")
+            .addPermissions("namespace.write")
+            .build();
+    assertTrue(authz.allows(principal, "namespace.write"));
+    assertFalse(authz.allows(principal, "table.write"));
+    assertFalse(authz.allows(PrincipalContext.getDefaultInstance(), "table.write"));
   }
 
   /** The default instance is what a lost call context degrades to — reported as UNAUTHENTICATED. */

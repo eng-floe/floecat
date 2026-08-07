@@ -67,8 +67,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 
 - **CatalogServiceImpl** – Enforces `catalog.read`/`catalog.write` permissions, canonicalises names,
   uses `IdempotencyGuard` for Create, and ensures namespace cascading checks during Delete.
-- **NamespaceServiceImpl** – Handles hierarchical selectors, supports recursive listing, and ensures
-  `require_empty` semantics on deletion by inspecting repository counts.
+- **NamespaceServiceImpl** – Handles hierarchical selectors and recursive listing. Namespace
+  deletion establishes emptiness from relation by-name rows, namespace by-path rows, pending table
+  cleanup tasks, and a children-marker fence that contends atomically with child publication.
 - **TableServiceImpl** – Validates `UpstreamRef`, enforces unique names before writing, supports
   partial updates via `FieldMask`, and coordinates snapshot/statistics purging.
 - **ViewServiceImpl** – Stores SQL definitions and references to base tables.
@@ -237,8 +238,13 @@ Secrets Manager integration (tags + optional per-account assume-role) is documen
   UUIDv4 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
   pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the caller supplies an
   `IdempotencyKey`, the repository short-circuits duplicates.
-- **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via
-  `NamespaceRepository.countChildren`. If tables exist, the service raises `MC_CONFLICT.namespace.not_empty`.
+- **Delete Namespace** – `require_empty=true` rejects a namespace that still has tables, views,
+  child namespaces, or pending table-cleanup tasks. `recursive=true` removes the subtree and
+  requires `namespace.write`, `table.write`, and `view.write`; it is mutually exclusive with
+  `require_empty` (`INVALID_ARGUMENT`). Recursive responses report `deleted_namespaces`,
+  `deleted_tables`, and `deleted_views`. Because teardown is incremental, a failed request can have
+  committed part of the deletion; such failures use
+  `MC_PRECONDITION_FAILED.namespace.recursive.partial` and retain the committed deletion counts.
 - **Query lease renewal** – Clients call `QueryService.RenewQuery` before `expires_at`; the store extends
   the TTL if the query remains `ACTIVE`. A stale or ended query returns `MC_NOT_FOUND.query.not_found`.
 

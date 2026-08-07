@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
@@ -143,6 +144,49 @@ public class NamespaceRepository {
     return repo.countByPrefix(prefix);
   }
 
+  /** Whether any by-path row exists below this path, for a destructive emptiness decision. */
+  public boolean hasAnyRefUnder(
+      String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    return hasAnyPointerUnder(
+        Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty));
+  }
+
+  /**
+   * Whether a by-path row under this catalog still names a live canonical namespace.
+   *
+   * <p>Returns on the first live row, keeping the ordinary catalog-not-empty path to one page and
+   * one point read. It drains the prefix only in the exceptional all-stranded case, where the
+   * caller is about to run repair anyway.
+   */
+  public boolean hasLiveRefUnder(
+      String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+    var seenTokens = new java.util.HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      for (var row :
+          pointerStore.listPointersByPrefix(prefix, CHILD_PROBE_PAGE_SIZE, token, next, true)) {
+        var ref = toNamespaceRef(accountId, catalogId, catalogResourceId, row);
+        if (ref.isPresent()
+            && pointerStore
+                .get(Keys.namespacePointerById(accountId, ref.get().id().getId()))
+                .isPresent()) {
+          return true;
+        }
+      }
+      token = next.toString();
+      if (token.isBlank()) {
+        return false;
+      }
+      if (!seenTokens.add(token)) {
+        throw new IllegalStateException(
+            "pointer scan did not advance; repeated page token: " + token);
+      }
+    }
+  }
+
   /**
    * The refs {@link #count} counts under {@code parentSegmentsOrEmpty}, with no blob fetch: id and
    * full path come from the by-path pointer row itself.
@@ -198,7 +242,7 @@ public class NamespaceRepository {
       java.util.function.Consumer<ai.floedb.floecat.common.rpc.Pointer> onUnresolvable) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
-    repo.forEachRefByPrefix(
+    repo.forEachRefByPrefixConsistent(
         prefix,
         pointer -> {
           var ref = toNamespaceRef(accountId, catalogId, catalogResourceId, pointer);
@@ -226,7 +270,7 @@ public class NamespaceRepository {
     while (true) {
       var next = new StringBuilder();
       for (var row :
-          pointerStore.listPointersByPrefix(prefix, CHILD_PROBE_PAGE_SIZE, token, next)) {
+          pointerStore.listPointersByPrefix(prefix, CHILD_PROBE_PAGE_SIZE, token, next, true)) {
         if (Keys.extractNamespacePathSegments(accountId, catalogId, row.getKey()).size()
             == parentPath.size() + 1) {
           return true;
@@ -238,6 +282,38 @@ public class NamespaceRepository {
       }
       // A store that returns a non-advancing cursor would spin here forever with nothing
       // observable.
+      if (!seenTokens.add(token)) {
+        throw new IllegalStateException(
+            "pointer scan did not advance; repeated page token: " + token);
+      }
+    }
+  }
+
+  /**
+   * Whether any by-path row exists strictly below {@code parentPath}, at any depth.
+   *
+   * <p>The non-empty path prefix ends in {@code /}, so it excludes the parent's own row and covers
+   * every descendant even when damaged state has left a gap in the intermediate path. Identity is
+   * all the relocation gate needs, so this never reads namespace blobs.
+   */
+  public boolean hasAnyDescendantUnder(
+      String accountId, String catalogId, List<String> parentPath) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentPath);
+    return hasAnyPointerUnder(prefix);
+  }
+
+  private boolean hasAnyPointerUnder(String prefix) {
+    var seenTokens = new java.util.HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      if (!pointerStore.listPointersByPrefix(prefix, 1, token, next, true).isEmpty()) {
+        return true;
+      }
+      token = next.toString();
+      if (token.isBlank()) {
+        return false;
+      }
       if (!seenTokens.add(token)) {
         throw new IllegalStateException(
             "pointer scan did not advance; repeated page token: " + token);
@@ -296,6 +372,26 @@ public class NamespaceRepository {
     return repo.refByPointer(Keys.namespacePointerByPath(accountId, catalogId, pathSegments))
         .flatMap(
             p -> toNamespaceRef(accountId, catalogId, catalogResourceId(accountId, catalogId), p));
+  }
+
+  /** A namespace identity together with the exact by-path row that established its placement. */
+  public record NamespacePlacementRef(NamespaceRef namespace, Pointer placement) {}
+
+  /**
+   * Resolves a namespace and retains the by-path pointer version used to resolve it.
+   *
+   * <p>A caller publishing beneath this path must pin {@link NamespacePlacementRef#placement} in
+   * the publish batch. Pinning only the canonical namespace pointer leaves a gap where the
+   * namespace can move after this row is read and before that later pointer is captured.
+   */
+  public Optional<NamespacePlacementRef> placementRefByPath(
+      String accountId, String catalogId, List<String> pathSegments) {
+    return repo.refByPointer(Keys.namespacePointerByPath(accountId, catalogId, pathSegments))
+        .flatMap(
+            placement ->
+                toNamespaceRef(
+                        accountId, catalogId, catalogResourceId(accountId, catalogId), placement)
+                    .map(namespace -> new NamespacePlacementRef(namespace, placement)));
   }
 
   /** Reads exact by-path namespace pointers and returns refs without fetching blobs from S3. */

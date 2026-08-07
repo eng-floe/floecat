@@ -69,10 +69,23 @@ public abstract class KvPointerStore implements PointerStore {
   @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+    return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut, false);
+  }
+
+  @Override
+  public List<Pointer> listPointersByPrefix(
+      String prefix,
+      int limit,
+      String pageToken,
+      StringBuilder nextTokenOut,
+      boolean consistentRead) {
     Optional<String> token =
         (pageToken == null || pageToken.isBlank()) ? Optional.empty() : Optional.of(pageToken);
 
-    var page = await(() -> pointers.listByPrefix(prefix, limit, token).await().indefinitely());
+    var page =
+        await(
+            () ->
+                pointers.listByPrefix(prefix, limit, token, consistentRead).await().indefinitely());
 
     if (nextTokenOut != null) {
       nextTokenOut.setLength(0);

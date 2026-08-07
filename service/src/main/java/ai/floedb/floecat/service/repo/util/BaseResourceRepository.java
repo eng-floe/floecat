@@ -398,19 +398,35 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * {@link #listRefsByPrefix} without holding the result: hands each pointer to {@code action} a
    * page at a time, so peak memory is one page rather than the whole prefix.
    *
-   * <p>For callers that consume rows independently — a drop that deletes each as it goes, a probe
-   * that stops at the first hit. Deleting the row just handed over is safe: page tokens resume from
-   * the last key seen, and a caller deleting keys under other prefixes cannot disturb this scan
-   * either.
+   * <p>For callers that consume every row independently — for example, a drop that deletes each as
+   * it goes. Deleting the row just handed over is safe: page tokens resume from the last key seen,
+   * and a caller deleting keys under other prefixes cannot disturb this scan either. A caller that
+   * wants normal, non-error early exit should use {@link #anyRefByPrefix}.
    *
    * <p>{@code action} may throw; the exception propagates and abandons the scan.
    */
   public void forEachRefByPrefix(String prefix, java.util.function.Consumer<Pointer> action) {
-    anyRefByPrefix(
-        prefix,
-        pointer -> {
-          action.accept(pointer);
-          return false;
+    forEachRefByPrefix(prefix, false, action);
+  }
+
+  public void forEachRefByPrefixConsistent(
+      String prefix, java.util.function.Consumer<Pointer> action) {
+    forEachRefByPrefix(prefix, true, action);
+  }
+
+  private void forEachRefByPrefix(
+      String prefix, boolean consistentRead, java.util.function.Consumer<Pointer> action) {
+    observeRepository(
+        "for_each_ref_by_prefix",
+        () -> {
+          scanRefsByPrefix(
+              prefix,
+              consistentRead,
+              pointer -> {
+                action.accept(pointer);
+                return false;
+              });
+          return null;
         });
   }
 
@@ -425,27 +441,33 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * succeeds is not an error, and the common case here is the successful one.
    */
   public boolean anyRefByPrefix(String prefix, java.util.function.Predicate<Pointer> test) {
-    return observeRepository(
-        "any_ref_by_prefix",
-        () -> {
-          var seenTokens = new HashSet<String>();
-          String token = "";
-          do {
-            var next = new StringBuilder();
-            for (var pointer :
-                pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
-              if (test.test(pointer)) {
-                return true;
-              }
-            }
-            token = next.toString();
-            if (!token.isBlank() && !seenTokens.add(token)) {
-              throw new IllegalStateException(
-                  "pointer scan did not advance; repeated page token: " + token);
-            }
-          } while (!token.isBlank());
-          return false;
-        });
+    return observeRepository("any_ref_by_prefix", () -> scanRefsByPrefix(prefix, false, test));
+  }
+
+  public boolean anyRefByPrefixConsistent(
+      String prefix, java.util.function.Predicate<Pointer> test) {
+    return observeRepository("any_ref_by_prefix", () -> scanRefsByPrefix(prefix, true, test));
+  }
+
+  private boolean scanRefsByPrefix(
+      String prefix, boolean consistentRead, java.util.function.Predicate<Pointer> test) {
+    var seenTokens = new HashSet<String>();
+    String token = "";
+    do {
+      var next = new StringBuilder();
+      for (var pointer :
+          pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next, consistentRead)) {
+        if (test.test(pointer)) {
+          return true;
+        }
+      }
+      token = next.toString();
+      if (!token.isBlank() && !seenTokens.add(token)) {
+        throw new IllegalStateException(
+            "pointer scan did not advance; repeated page token: " + token);
+      }
+    } while (!token.isBlank());
+    return false;
   }
 
   public List<Pointer> listRefsByPrefix(String prefix) {

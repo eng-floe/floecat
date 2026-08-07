@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.CatalogSpec;
 import ai.floedb.floecat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -60,6 +62,8 @@ class CatalogServiceImplSystemCatalogTest {
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
   private UserGraph metadataGraph;
+  private RecursiveResourceDropper recursiveDropper;
+  private Authorizer authz;
 
   @BeforeEach
   void setup() {
@@ -68,11 +72,12 @@ class CatalogServiceImplSystemCatalogTest {
     catalogRepo = mock(CatalogRepository.class);
     namespaceRepo = mock(NamespaceRepository.class);
     PrincipalProvider principal = mock(PrincipalProvider.class);
-    Authorizer authz = mock(Authorizer.class);
+    authz = mock(Authorizer.class);
     engineContext = mock(EngineContextProvider.class);
     overlay = mock(CatalogOverlay.class);
     markerStore = mock(MarkerStore.class);
     metadataGraph = mock(UserGraph.class);
+    recursiveDropper = mock(RecursiveResourceDropper.class);
 
     svc.catalogRepo = catalogRepo;
     svc.namespaceRepo = namespaceRepo;
@@ -82,6 +87,7 @@ class CatalogServiceImplSystemCatalogTest {
     svc.overlay = overlay;
     svc.markerStore = markerStore;
     svc.metadataGraph = metadataGraph;
+    svc.recursiveDropper = recursiveDropper;
 
     var pc = mock(PrincipalContext.class);
     when(principal.get()).thenReturn(pc);
@@ -91,6 +97,7 @@ class CatalogServiceImplSystemCatalogTest {
     when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");
     when(overlay.catalog(any())).thenReturn(Optional.empty());
     doNothing().when(authz).require(any(), anyString());
+    when(authz.allows(any(), eq("namespace.write"))).thenReturn(true);
   }
 
   @Test
@@ -151,6 +158,33 @@ class CatalogServiceImplSystemCatalogTest {
   }
 
   @Test
+  void conditionalDeleteOfMissingCatalogStillReclaimsItsChildrenMarker() {
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("already-gone")
+            .build();
+    when(markerStore.catalogMarkerVersion(id)).thenReturn(0L);
+    when(catalogRepo.metaFor(id))
+        .thenThrow(new BaseResourceRepository.NotFoundException("catalog missing"));
+    when(catalogRepo.metaForSafe(id)).thenReturn(MutationMeta.getDefaultInstance());
+
+    var request =
+        DeleteCatalogRequest.newBuilder()
+            .setCatalogId(id)
+            .setPrecondition(Precondition.newBuilder().setExpectedVersion(7L))
+            .build();
+
+    var failure =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.deleteCatalog(request).await().indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, failure.getStatus().getCode());
+    verify(markerStore).deleteCatalogMarker(id);
+  }
+
+  @Test
   void deleteCatalogChecksTheScannedMarkerInsideThePointerDelete() {
     ResourceId id =
         ResourceId.newBuilder()
@@ -167,7 +201,8 @@ class CatalogServiceImplSystemCatalogTest {
     when(markerStore.catalogMarkerVersion(id)).thenReturn(4L);
     when(markerStore.catalogChildrenUnchangedGuard(id, 4L)).thenReturn(childrenGuard);
     when(catalogRepo.metaFor(id)).thenReturn(meta);
-    when(namespaceRepo.count("acct", "user-catalog", java.util.List.of())).thenReturn(0);
+    when(namespaceRepo.hasAnyRefUnder("acct", "user-catalog", java.util.List.of()))
+        .thenReturn(false);
     when(catalogRepo.deleteWithPrecondition(id, 7L, childrenGuard)).thenReturn(true);
 
     svc.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(id).build())
@@ -175,7 +210,96 @@ class CatalogServiceImplSystemCatalogTest {
         .indefinitely();
 
     verify(catalogRepo).deleteWithPrecondition(eq(id), eq(7L), eq(childrenGuard));
+    verify(recursiveDropper, never()).reclaimStrandedNamespacePaths(id);
     verify(markerStore).deleteCatalogMarker(id);
+  }
+
+  @Test
+  void deleteCatalogRejectsAStalePreconditionBeforeRepairingNamespaceRows() {
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("user-catalog")
+            .build();
+    when(catalogRepo.metaFor(id))
+        .thenReturn(
+            MutationMeta.newBuilder()
+                .setPointerVersion(7L)
+                .setPointerKey("/accounts/acct/catalogs/by-id/user-catalog")
+                .build());
+    var request =
+        DeleteCatalogRequest.newBuilder()
+            .setCatalogId(id)
+            .setPrecondition(Precondition.newBuilder().setExpectedVersion(6L))
+            .build();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.deleteCatalog(request).await().indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
+    verify(namespaceRepo, never()).hasAnyRefUnder(anyString(), anyString(), any());
+    verify(recursiveDropper, never()).reclaimStrandedNamespacePaths(id);
+  }
+
+  @Test
+  void deleteCatalogRejectsALiveNamespaceWithoutRunningTheRepairSweep() {
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("user-catalog")
+            .build();
+    when(catalogRepo.metaFor(id))
+        .thenReturn(
+            MutationMeta.newBuilder()
+                .setPointerVersion(7L)
+                .setPointerKey("/accounts/acct/catalogs/by-id/user-catalog")
+                .build());
+    when(namespaceRepo.hasAnyRefUnder("acct", "user-catalog", java.util.List.of()))
+        .thenReturn(true);
+    when(namespaceRepo.hasLiveRefUnder("acct", "user-catalog", java.util.List.of()))
+        .thenReturn(true);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            svc.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(id).build())
+                .await()
+                .indefinitely());
+
+    verify(namespaceRepo).hasLiveRefUnder("acct", "user-catalog", java.util.List.of());
+    verify(recursiveDropper, never()).reclaimStrandedNamespacePaths(id);
+  }
+
+  @Test
+  void deleteCatalogDoesNotReclaimNamespaceRowsWithoutNamespaceWrite() {
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("user-catalog")
+            .build();
+    when(catalogRepo.metaFor(id))
+        .thenReturn(
+            MutationMeta.newBuilder()
+                .setPointerVersion(7L)
+                .setPointerKey("/accounts/acct/catalogs/by-id/user-catalog")
+                .build());
+    when(namespaceRepo.hasAnyRefUnder("acct", "user-catalog", java.util.List.of()))
+        .thenReturn(true);
+    when(authz.allows(any(), eq("namespace.write"))).thenReturn(false);
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            svc.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(id).build())
+                .await()
+                .indefinitely());
+
+    verify(namespaceRepo, never()).hasLiveRefUnder(anyString(), anyString(), any());
+    verify(recursiveDropper, never()).reclaimStrandedNamespacePaths(id);
   }
 
   private static ResourceId systemCatalogId() {

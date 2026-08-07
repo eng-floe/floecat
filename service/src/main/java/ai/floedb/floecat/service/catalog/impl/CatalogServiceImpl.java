@@ -72,6 +72,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject EngineContextProvider engineContext;
   @Inject CatalogOverlay overlay;
 
@@ -354,22 +355,42 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = catalogRepo.metaForSafe(id);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                    if (safe.getPointerVersion() == 0L) {
+                      // A crash may have removed the catalog pointer but not its marker. Drain the
+                      // durable residual before either the conditional NOT_FOUND or idempotent
+                      // success response; this is the last request path that can still name it.
+                      markerStore.deleteCatalogMarker(id);
+                    }
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(correlationId, CATALOG, Map.of("id", id.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    if (safe.getPointerVersion() == 0L) {
-                      // Already gone, and this idempotent success is the last call that will ever
-                      // name it, so take its children marker with it. Safe only because the pointer
-                      // is provably absent — see MarkerStore#deleteCatalogMarker.
-                      markerStore.deleteCatalogMarker(id);
-                    }
                     metadataGraph.invalidate(id);
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  if (namespaceRepo.count(id.getAccountId(), id.getId(), List.of()) > 0) {
+                  // A stale conditional request must not repair durable namespace rows before it
+                  // is rejected. The final guarded delete still evaluates the same precondition
+                  // again, catching a catalog update that lands after this early check.
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      correlationId, meta, request.getPrecondition());
+
+                  // A corrupt or legacy namespace delete can leave only its by-path row behind.
+                  // Reject immediately when any row still names a live namespace; the ordinary
+                  // not-empty path must not pay for a full repair scan. Only an all-stranded prefix
+                  // is walked to release rows whose canonical pointer is absent and whose owned
+                  // state is independently empty.
+                  boolean hasNamespaces =
+                      namespaceRepo.hasAnyRefUnder(id.getAccountId(), id.getId(), List.of());
+                  if (hasNamespaces
+                      && authz.allows(principalContext, "namespace.write")
+                      && !namespaceRepo.hasLiveRefUnder(id.getAccountId(), id.getId(), List.of())) {
+                    recursiveDropper.reclaimStrandedNamespacePaths(id);
+                    hasNamespaces =
+                        namespaceRepo.hasAnyRefUnder(id.getAccountId(), id.getId(), List.of());
+                  }
+                  if (hasNamespaces) {
                     var currentCatalog = catalogRepo.getById(id).orElse(null);
                     var displayName =
                         (currentCatalog != null && !currentCatalog.getDisplayName().isBlank())

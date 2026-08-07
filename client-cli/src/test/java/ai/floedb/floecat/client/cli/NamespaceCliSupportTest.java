@@ -198,6 +198,21 @@ class NamespaceCliSupportTest {
   }
 
   @Test
+  void namespaceDeleteRecursiveForwardsFlag() throws Exception {
+    try (Harness h = new Harness()) {
+      NamespaceCliSupport.handle(
+          "namespace",
+          List.of("delete", UUID_NS, "--recursive"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.namespacesStub,
+          h.directoryStub,
+          () -> ACCT_ID);
+
+      assertTrue(h.namespaceService.lastDeleteRequest.getRecursive());
+    }
+  }
+
+  @Test
   void namespaceDeletePrintsUsageWhenNoArgs() throws Exception {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -271,6 +286,7 @@ class NamespaceCliSupportTest {
     final List<Namespace> namespacesToList = new ArrayList<>();
     Namespace namespaceToReturn = Namespace.getDefaultInstance();
     CreateNamespaceRequest lastCreateRequest;
+    DeleteNamespaceRequest lastDeleteRequest;
 
     @Override
     public void listNamespaces(
@@ -311,6 +327,7 @@ class NamespaceCliSupportTest {
     public void deleteNamespace(
         DeleteNamespaceRequest request, StreamObserver<DeleteNamespaceResponse> responseObserver) {
       deleteNamespaceCalls.incrementAndGet();
+      lastDeleteRequest = request;
       responseObserver.onNext(DeleteNamespaceResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }

@@ -124,6 +124,19 @@ public interface PointerStore {
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
   /**
+   * Prefix-list variant for scans whose result authorizes a destructive mutation. Stores without a
+   * weaker read mode may inherit the default.
+   */
+  default List<Pointer> listPointersByPrefix(
+      String prefix,
+      int limit,
+      String pageToken,
+      StringBuilder nextTokenOut,
+      boolean consistentRead) {
+    return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+  }
+
+  /**
    * Returns a page token that resumes a {@link #listPointersByPrefix} scan immediately after the
    * given pointer key, as if a previous page had ended exactly at that key. This lets callers that
    * post-filter scanned rows emit a cursor at the last row they actually consumed rather than at

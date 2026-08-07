@@ -15,8 +15,10 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.kv.AttrValue;
@@ -53,11 +55,33 @@ class KvPointerStoreTest {
     assertSame(failure, thrown.getCause());
   }
 
+  @Test
+  void prefixListsRequestStrongConsistencyOnlyWhenTheCallerRequiresIt() {
+    var kv = new RecordingQueryKvStore();
+    var entity = new PointerStoreEntity(kv);
+    KvPointerStore store = new KvPointerStore(entity) {};
+
+    store.listPointersByPrefix("/accounts/acct/catalogs/", 10, "", new StringBuilder());
+    assertFalse(kv.consistentRead);
+
+    store.listPointersByPrefix("/accounts/acct/catalogs/", 10, "", new StringBuilder(), true);
+    assertTrue(kv.consistentRead);
+
+    store.countByPrefix("/accounts/acct/catalogs/");
+    assertFalse(kv.consistentRead);
+
+    entity
+        .listKeysByPrefix("/accounts/acct/catalogs/", 10, Optional.empty(), true)
+        .await()
+        .indefinitely();
+    assertTrue(kv.consistentRead);
+  }
+
   private static KvPointerStore pointerStoreFailingReadsWith(RuntimeException failure) {
     return new KvPointerStore(new PointerStoreEntity(new FailingReadKvStore(failure))) {};
   }
 
-  private static final class FailingReadKvStore implements KvStore {
+  private static class FailingReadKvStore implements KvStore {
     private final RuntimeException failure;
 
     private FailingReadKvStore(RuntimeException failure) {
@@ -114,6 +138,32 @@ class KvPointerStoreTest {
     @Override
     public Uni<Boolean> txnWriteCas(List<TxnOp> ops) {
       throw new UnsupportedOperationException();
+    }
+  }
+
+  private static final class RecordingQueryKvStore extends FailingReadKvStore {
+    private boolean consistentRead;
+
+    private RecordingQueryKvStore() {
+      super(new UnsupportedOperationException());
+    }
+
+    @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken) {
+      consistentRead = false;
+      return Uni.createFrom().item(new Page(List.of(), Optional.empty()));
+    }
+
+    @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      this.consistentRead = consistentRead;
+      return Uni.createFrom().item(new Page(List.of(), Optional.empty()));
     }
   }
 }

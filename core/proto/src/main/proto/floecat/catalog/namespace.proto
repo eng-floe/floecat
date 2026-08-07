@@ -89,11 +89,33 @@ message UpdateNamespaceResponse {
 
 message DeleteNamespaceRequest {
   ai.floedb.floecat.common.ResourceId namespace_id = 1;
+  // A non-recursive delete refuses a non-empty namespace whether or not this is set. It cannot be
+  // combined with `recursive`: asserting emptiness while requesting subtree destruction is rejected
+  // with INVALID_ARGUMENT.
   bool require_empty = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
+  // Remove descendant namespaces and their tables and views before dropping this namespace.
+  // Concurrent changes to the root namespace metadata can cause the operation to make partial
+  // progress before its precondition fails; callers may retry after resolving the precondition.
+  bool recursive = 4;
 }
 message DeleteNamespaceResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;
+  // What the teardown destroyed, under `recursive` only: the whole subtree, the root namespace
+  // included, so deleted_namespaces is never zero on a recursive success.
+  //
+  // All zero otherwise. Zero says no teardown happened, NOT that nothing was deleted — a plain
+  // delete removes exactly the namespace the request named, which is 1 by construction and so not
+  // worth a field, and `meta` is what reports its outcome. Zero also for an idempotent success on a
+  // namespace that was already gone before the call — but not when an earlier attempt of this same
+  // call is what removed it, since the counts describe the operation and not its last attempt.
+  //
+  // The same counts are reported on a failure that had already destroyed something, as params of
+  // MC_PRECONDITION_FAILED namespace.recursive.partial -- there the point is that the operation was
+  // not a no-op, here it is the audit record of one that finished.
+  uint32 deleted_namespaces = 2;
+  uint32 deleted_tables = 3;
+  uint32 deleted_views = 4;
 }
 
 // ----- Services -----

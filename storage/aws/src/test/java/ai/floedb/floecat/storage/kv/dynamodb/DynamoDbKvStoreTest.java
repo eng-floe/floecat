@@ -438,6 +438,16 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void queryByPartitionKeyPrefix_propagatesConsistentRead() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    store.queryByPartitionKeyPrefix("pk1", "a/", 10, Optional.empty(), true).await().indefinitely();
+
+    assertTrue(handler.lastQueryRequest.consistentRead());
+  }
+
+  @Test
   void queryByPartitionKeyPrefix_without_prefix_returns_all_in_pk() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);

@@ -151,7 +151,7 @@ public class TableRepository {
       String catalogId,
       String namespaceId,
       java.util.function.Consumer<Pointer> action) {
-    repo.forEachRefByPrefix(
+    repo.forEachRefByPrefixConsistent(
         Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), action);
   }
 
@@ -164,7 +164,7 @@ public class TableRepository {
       String catalogId,
       String namespaceId,
       java.util.function.Predicate<Pointer> test) {
-    return repo.anyRefByPrefix(
+    return repo.anyRefByPrefixConsistent(
         Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), test);
   }
 

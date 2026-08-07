@@ -137,7 +137,7 @@ public class ViewRepository {
       String catalogId,
       String namespaceId,
       java.util.function.Consumer<Pointer> action) {
-    repo.forEachRefByPrefix(
+    repo.forEachRefByPrefixConsistent(
         Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), action);
   }
 
@@ -147,7 +147,7 @@ public class ViewRepository {
       String catalogId,
       String namespaceId,
       java.util.function.Predicate<Pointer> test) {
-    return repo.anyRefByPrefix(
+    return repo.anyRefByPrefixConsistent(
         Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), test);
   }
 

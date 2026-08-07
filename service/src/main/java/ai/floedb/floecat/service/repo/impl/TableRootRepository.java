@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.cache.PointerTtlCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -232,6 +233,16 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
    */
   public void purgeRoot(ResourceId tableId) {
     pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
+    invalidatePointer(tableId);
+  }
+
+  /** Removes the root only while the table pointer remains absent. */
+  public void purgeRoot(ResourceId tableId, BatchGuard guard) {
+    String key = Keys.tableRootByTable(tableId.getAccountId(), tableId.getId());
+    var current = pointerStore.get(key).orElse(null);
+    if (current != null) {
+      BaseResourceRepository.deletePointerWithGuard(pointerStore, current, guard, false);
+    }
     invalidatePointer(tableId);
   }
 

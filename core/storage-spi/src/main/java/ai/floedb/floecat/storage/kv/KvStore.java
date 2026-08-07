@@ -155,6 +155,20 @@ public interface KvStore {
       String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken);
 
   /**
+   * Query variant for callers whose result gates a destructive mutation and therefore must observe
+   * every write that completed before the query. Stores without a weaker read mode may inherit the
+   * default.
+   */
+  default Uni<Page> queryByPartitionKeyPrefix(
+      String partitionKey,
+      String sortKeyPrefix,
+      int limit,
+      Optional<String> pageToken,
+      boolean consistentRead) {
+    return queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, limit, pageToken);
+  }
+
+  /**
    * Returns a page token that resumes a {@link #queryByPartitionKeyPrefix} scan immediately after
    * the given key, in this store's native token encoding. The default throws; stores that serve
    * paging must override.
