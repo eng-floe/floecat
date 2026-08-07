@@ -46,13 +46,13 @@ final class CancellableCallRunner {
   /** How far to walk a cause chain before giving up; guards against a legal cause cycle. */
   private static final int MAX_CAUSE_DEPTH = 32;
 
+  /** How long a single caller may wait for admission before it is worth naming in the log. */
+  private static final long SLOW_ADMISSION_WARN_NANOS = TimeUnit.SECONDS.toNanos(30);
+
   /**
    * How often a non-cancellable caller re-checks for runtime closure. Shutdown-scale, not
    * request-scale: this wait has no cancellation to observe.
    */
-  /** How long a single caller may wait for admission before it is worth naming in the log. */
-  private static final long SLOW_ADMISSION_WARN_NANOS = TimeUnit.SECONDS.toNanos(30);
-
   private static final long CLOSURE_POLL_MILLIS = 250;
 
   /**

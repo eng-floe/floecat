@@ -17,9 +17,12 @@
 package ai.floedb.floecat.service.concurrent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -105,5 +108,46 @@ class MetadataIoExecutorsTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> MetadataIoExecutors.newBoundedDaemonPool(1, 0, "test-md-io-"));
+  }
+
+  @Test
+  void shutdownHandsTheDiscardedTasksToTheCaller() throws Exception {
+    // A queued task already holds its permit and will never run its finally. Losing this handoff
+    // strands the permit and its caller, and nothing else in the shutdown path would report it.
+    var pool =
+        new ThreadPoolExecutor(
+            1,
+            1,
+            0,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(4),
+            new ThreadPoolExecutor.AbortPolicy());
+    var occupied = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var discarded = new AtomicReference<List<Runnable>>();
+    Runnable queued = () -> {};
+    try {
+      pool.execute(
+          () -> {
+            occupied.countDown();
+            try {
+              release.await();
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          });
+      assertTrue(occupied.await(1, TimeUnit.SECONDS));
+      pool.execute(queued); // cannot start; the single worker is held
+
+      MetadataIoExecutors.shutdownNowAndAwait(pool, discarded::set, 5, TimeUnit.SECONDS);
+
+      assertNotNull(discarded.get(), "the discarded tasks must reach the caller");
+      assertTrue(
+          discarded.get().contains(queued),
+          "the task that never ran must be among the discarded ones");
+    } finally {
+      release.countDown();
+      pool.shutdownNow();
+    }
   }
 }

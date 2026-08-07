@@ -56,6 +56,111 @@ class MetadataIoRunnerTest {
       new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
 
   @Test
+  void anUnresolvableConfiguredCapacityFailsStartup() {
+    // getOptionalValue reports a declared-but-unexpanded ${VAR} as an empty Optional rather than
+    // throwing, so reading through it accepts the property and configuredCapacity() then falls back
+    // to the default: an operator who lowered the ceiling silently gets it back.
+    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+    try {
+      System.setProperty(
+          MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "${FLOECAT_NO_SUCH_VAR_FOR_THIS_TEST}");
+      assertThrows(IllegalStateException.class, MetadataIoRunner::validateConfiguredCapacity);
+    } finally {
+      if (previous == null) {
+        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+      } else {
+        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
+      }
+    }
+  }
+
+  @Test
+  void closingASharedRuntimeFacadeDoesNotTearDownTheProcessWideRuntime() {
+    // One bean's @PreDestroy must not close the runtime every other caller is still using. The
+    // guard is a single early return, and nothing else would report its loss until an unrelated
+    // caller started seeing RejectedExecutionException.
+    MetadataIoRunner facade = new MetadataIoRunner();
+    assertEquals("ok", facade.callWithoutCancellation(() -> "ok", FAILURES));
+    facade.close();
+    assertEquals(
+        "ok",
+        new MetadataIoRunner().callWithoutCancellation(() -> "ok", FAILURES),
+        "closing a shared-runtime facade must leave the process-wide runtime open");
+  }
+
+  @Test
+  void aCachedFacadeFollowsTheRuntimeAcrossARestart() {
+    // A facade outlives the runtime it was created against. A CDI-scoped bean is exactly this
+    // shape:
+    // built once, held for the container's life. If it captured the RuntimeState it would keep
+    // serving the one a shutdown closed — closed is sticky and reopen only clears the sentinel.
+    MetadataIoRunner longLived = new MetadataIoRunner();
+    assertEquals("ok", longLived.callWithoutCancellation(() -> "ok", FAILURES));
+
+    MetadataIoRunner.closeSharedRuntimeIfStarted();
+    MetadataIoRunner.reopenSharedRuntime();
+
+    assertEquals(
+        "ok",
+        longLived.callWithoutCancellation(() -> "ok", FAILURES),
+        "a facade created before the restart must follow the new runtime, not the closed one");
+  }
+
+  @Test
+  void theSaturationSinkIsInstalledAndClearedAcrossTheBeanBoundary() {
+    // setSaturationSink lives in this class, the install is in the telemetry bean and the clear is
+    // in the lifecycle bean — three files, and nothing exercised the wire itself.
+    var hits = new java.util.concurrent.atomic.AtomicInteger();
+    MetadataIoRunner.setSaturationSink(hits::incrementAndGet);
+    var runner = new MetadataIoRunner(1);
+    var blocker = new UninterruptibleBlocker();
+    Thread holder =
+        new Thread(
+            () ->
+                runner.callWithoutCancellation(
+                    () -> {
+                      blocker.await();
+                      return "held";
+                    },
+                    FAILURES),
+            "sink-holder");
+    try {
+      holder.start();
+      await(blocker.started);
+      Thread waiter =
+          new Thread(() -> runner.callWithoutCancellation(() -> "queued", FAILURES), "sink-waiter");
+      waiter.start();
+      awaitSaturation(hits);
+      blocker.release.countDown();
+      waiter.join(TimeUnit.SECONDS.toMillis(10));
+      assertEquals(1, hits.get(), "a saturated admission must reach the installed sink");
+
+      MetadataIoRunner.clearSaturationSink();
+      hits.set(0);
+      runner.callWithoutCancellation(() -> "uncontended", FAILURES);
+      assertEquals(0, hits.get(), "a cleared sink must not be called");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    } finally {
+      blocker.release.countDown();
+      MetadataIoRunner.clearSaturationSink();
+      runner.close();
+    }
+  }
+
+  private static void awaitSaturation(java.util.concurrent.atomic.AtomicInteger hits) {
+    for (int i = 0; i < 500 && hits.get() == 0; i++) {
+      try {
+        Thread.sleep(10);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError(e);
+      }
+    }
+  }
+
+  @Test
   void aNestedCallIntoAnotherRuntimeAcquiresThatRuntimesPermit() {
     // S4: the re-entrant fast path compares RuntimeState by identity. Reusing a permit granted by a
     // different runtime would leave that runtime's ceiling unenforced and run the work on the wrong
@@ -159,7 +264,13 @@ class MetadataIoRunnerTest {
     new MetadataIoRunner().callWithoutCancellation(() -> "warm", FAILURES);
     MetadataIoRunner.closeSharedRuntimeIfStarted();
     try {
-      assertThrows(RejectedExecutionException.class, MetadataIoRunner::new);
+      // Construction itself resolves nothing (see runtime()), so the rejection lands at the point
+      // of use. Asserting it here rather than on the constructor keeps the test on the invariant —
+      // no replacement runtime is installed — instead of on where the resolution happens to occur.
+      MetadataIoRunner late = new MetadataIoRunner();
+      assertThrows(
+          RejectedExecutionException.class,
+          () -> late.callWithoutCancellation(() -> "late", FAILURES));
     } finally {
       MetadataIoRunner.reopenSharedRuntime();
     }
@@ -176,12 +287,17 @@ class MetadataIoRunnerTest {
           runner.callWithoutCancellation(
               () -> {
                 runner.close(); // latch closure while this admitted call is running
+                // close() runs shutdownNow on this worker, so this thread is also interrupted.
+                // Clearing it leaves the closure check as the only gate that can fire — without
+                // this the test passes off the interrupt branch and says nothing about closure.
+                Thread.interrupted();
                 return assertThrows(
                     Throwable.class,
                     () -> runner.callWithoutCancellation(() -> "nested", FAILURES));
               },
               FAILURES);
       assertInstanceOf(CancellationException.class, nested);
+      assertEquals(CancellableCallRunner.RUNTIME_CLOSED, nested.getMessage());
     } finally {
       runner.close();
     }
@@ -390,15 +506,23 @@ class MetadataIoRunnerTest {
     var runner = new MetadataIoRunner(1);
     var blocker = new UninterruptibleBlocker();
     var outcome = new AtomicReference<Throwable>();
+    var holderOutcome = new AtomicReference<Throwable>();
     Thread holder =
         new Thread(
-            () ->
+            () -> {
+              try {
                 runner.callWithoutCancellation(
                     () -> {
                       blocker.await();
                       return "holder";
                     },
-                    FAILURES),
+                    FAILURES);
+              } catch (Throwable expected) {
+                // The close under test cancels this call too. Swallowed rather than left to the
+                // default handler, which printed a stack trace on every run.
+                holderOutcome.set(expected);
+              }
+            },
             "permit-holder");
     Thread waiter =
         new Thread(

@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +23,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import org.jboss.logging.Logger;
 
 /**
@@ -74,12 +76,16 @@ final class MetadataIoExecutors {
   }
 
   /**
-   * Interrupt live work, release admission held by tasks discarded from the queue, and await no
-   * longer than the supplied bound. Returns whether the pool terminated. Interruption restores the
-   * caller's interrupt status and returns {@code true}.
+   * Interrupt live work, hand the tasks discarded from the queue to {@code onDiscarded}, and await
+   * no longer than the supplied bound. Returns whether the pool terminated. Interruption restores
+   * the caller's interrupt status and returns {@code true}.
+   *
+   * <p>The discarded tasks are passed out rather than released here: what a queued task owns is the
+   * submitter's concern, and this class stays a pool factory that knows nothing about admission.
    */
-  static boolean shutdownNowAndAwait(ExecutorService executor, long timeout, TimeUnit unit) {
-    CancellableCallRunner.cancelDiscardedTasks(executor.shutdownNow());
+  static boolean shutdownNowAndAwait(
+      ExecutorService executor, Consumer<List<Runnable>> onDiscarded, long timeout, TimeUnit unit) {
+    onDiscarded.accept(executor.shutdownNow());
     try {
       return executor.awaitTermination(timeout, unit);
     } catch (InterruptedException e) {

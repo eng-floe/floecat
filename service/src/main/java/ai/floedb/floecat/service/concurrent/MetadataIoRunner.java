@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.eclipse.microprofile.config.ConfigValue;
 import org.jboss.logging.Logger;
 
 /**
@@ -51,7 +52,17 @@ public class MetadataIoRunner {
   private static final int MAX_CAPACITY = 256;
   private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
 
-  private final RuntimeState runtime;
+  /**
+   * The runtime this facade owns, or null when it follows the process-wide one.
+   *
+   * <p>Never cache the shared runtime in a field: a facade outlives it. The
+   * {@code @ApplicationScoped} bean and any long-held reference would keep serving the instance
+   * captured at construction, which a shutdown closes for good — {@code closed} is sticky and
+   * {@link #reopenSharedRuntime()} only clears the sentinel, it cannot revive a closed runtime.
+   * Resolve per use instead.
+   */
+  private final RuntimeState ownedRuntime;
+
   // Only an isolated, explicit-capacity runtime is owned (and torn down) by this facade. The
   // process-wide runtime is shared and daemon-backed, so no single bean's @PreDestroy may close it.
   private final boolean ownsRuntime;
@@ -86,13 +97,13 @@ public class MetadataIoRunner {
    * Wrap {@code operation} so its execution thread is marked admitted for its duration, so a nested
    * admission on that thread reuses this permit rather than acquiring another.
    */
-  private <T> Supplier<T> guarded(Supplier<T> operation) {
+  private <T> Supplier<T> guarded(RuntimeState granting, Supplier<T> operation) {
     return () -> {
       // The remove() below is load-bearing but has no test: nothing non-admitted runs on these
       // workers today, so a leaked marker is unobservable from here. It becomes observable the
       // moment a fan-out runs on one — isRunningAdmittedOperation would read true on an idle worker
       // and trip rejectFanOutFromAdmittedOperation. Keep the finally.
-      IN_ADMITTED_OP.set(runtime);
+      IN_ADMITTED_OP.set(granting);
       try {
         return operation.get();
       } finally {
@@ -113,7 +124,7 @@ public class MetadataIoRunner {
    * makes that unreachable in production.
    */
   private boolean holdsPermitFromThisRuntime() {
-    return IN_ADMITTED_OP.get() == runtime;
+    return IN_ADMITTED_OP.get() == runtime();
   }
 
   /**
@@ -121,14 +132,11 @@ public class MetadataIoRunner {
    * same admission semaphore and bounded daemon worker pool.
    */
   public MetadataIoRunner() {
-    this(sharedRuntime(), false);
+    this(null, false);
   }
 
   /** Return the process-wide runner for compatibility constructors outside CDI. */
   public static MetadataIoRunner shared() {
-    // Resolved per call, symmetric with the constructor. A cached facade holds its RuntimeState in
-    // a final field, so a static instance would keep serving the runtime it captured — closed after
-    // a restart, and potentially a different one from the constructor's, splitting the ceiling.
     return new MetadataIoRunner();
   }
 
@@ -176,11 +184,22 @@ public class MetadataIoRunner {
     return clamped;
   }
 
+  /**
+   * Resolve the runtime per call rather than at construction. A shared-runtime facade outlives the
+   * runtime it was built against — a CDI bean is built once and held for the container's life — and
+   * {@code closed} is sticky, so a captured RuntimeState would keep serving the one a shutdown
+   * closed. Resolving here also lets construction succeed while the shutdown sentinel is installed.
+   */
+  private RuntimeState runtime() {
+    return ownsRuntime ? ownedRuntime : sharedRuntime();
+  }
+
   private MetadataIoRunner(RuntimeState runtime, boolean ownsRuntime) {
-    this.runtime = java.util.Objects.requireNonNull(runtime, "runtime");
+    this.ownedRuntime = ownsRuntime ? java.util.Objects.requireNonNull(runtime, "runtime") : null;
     this.ownsRuntime = ownsRuntime;
-    // The pool is created lazily by executor(), so construction succeeds even after shutdown and a
-    // closed runtime reports itself as a RejectedExecutionException at the point of use.
+    // Shared-runtime facades hold nothing; see runtime(). An owned runtime creates its pool lazily
+    // in executor(), so construction succeeds even after shutdown and a closed runtime reports
+    // itself as a RejectedExecutionException at the point of use.
   }
 
   /**
@@ -188,7 +207,7 @@ public class MetadataIoRunner {
    * an eager start after shutdown throws. {@link #call} starts the pool lazily on its own.
    */
   public void start() {
-    runtime.start();
+    runtime().start();
   }
 
   /**
@@ -204,17 +223,18 @@ public class MetadataIoRunner {
    * from store latency.
    */
   public int capacity() {
-    return runtime.capacity;
+    return runtime().capacity;
   }
 
   /** Permits currently held by in-flight calls. */
   public int permitsInUse() {
-    return runtime.capacity - runtime.permits.availablePermits();
+    RuntimeState current = runtime();
+    return current.capacity - current.permits.availablePermits();
   }
 
   /** Threads currently parked waiting for admission. */
   public int admissionWaiters() {
-    return runtime.permits.getQueueLength();
+    return runtime().permits.getQueueLength();
   }
 
   /**
@@ -250,7 +270,7 @@ public class MetadataIoRunner {
    * I/O in exactly the states where {@code acquire} refuses to.
    */
   private void rejectIfUnusable(BooleanSupplier cancelled, FailureMessages failureMessages) {
-    if (runtime.isClosed()) {
+    if (runtime().isClosed()) {
       // In flight by construction — this only runs on a thread already holding a permit — so
       // closure is a cancellation here, not a rejected submission. Throwing the rejection type
       // would put a spurious INTERNAL next to the clean cancellations an identical non-nested call
@@ -296,25 +316,26 @@ public class MetadataIoRunner {
    * once at startup, where the failure names the property and the offending value.
    */
   public static void validateConfiguredCapacity() {
-    String raw;
-    try {
-      raw =
-          ConfigProvider.getConfig()
-              .getOptionalValue(MAX_CONCURRENCY_PROPERTY, String.class)
-              .orElse(null);
-    } catch (IllegalStateException noConfigSystem) {
-      // No config provider registered for this classloader — the outside-CDI case. Nothing to
-      // validate; configuredCapacity() already defaults.
+    // No catch here: SmallRyeConfigProviderResolver builds and registers a Config on demand, so
+    // there is no "no provider" case to swallow, and swallowing every other IllegalStateException
+    // it can raise would skip validation silently.
+    ConfigValue configured = ConfigProvider.getConfig().getConfigValue(MAX_CONCURRENCY_PROPERTY);
+    if (configured == null || configured.getRawValue() == null) {
       return;
-    } catch (RuntimeException unresolvable) {
-      // Anything else means the property exists but could not be resolved — most often an
-      // unresolvable ${ENV_VAR} expression, which SmallRye reports as NoSuchElementException. That
-      // is exactly what this validator exists to catch: configuredCapacity() would fall back to the
-      // default and an operator who lowered the ceiling would silently get it back.
-      throw new IllegalStateException(
-          MAX_CONCURRENCY_PROPERTY + " is set but could not be resolved", unresolvable);
     }
-    if (raw == null || raw.isBlank()) {
+    String raw = configured.getValue();
+    if (raw == null) {
+      // Declared, but the expression did not expand — an unresolvable ${ENV_VAR}, typically.
+      // getOptionalValue reports this as an empty Optional rather than throwing, so reading through
+      // it here would accept the property and let configuredCapacity() fall back: an operator who
+      // lowered the ceiling would silently get the default back.
+      throw new IllegalStateException(
+          MAX_CONCURRENCY_PROPERTY
+              + " is set to \""
+              + configured.getRawValue()
+              + "\" but could not be resolved");
+    }
+    if (raw.isBlank()) {
       return;
     }
     int parsed;
@@ -335,7 +356,7 @@ public class MetadataIoRunner {
 
   /** True when two facades share the same process or test runtime. */
   boolean sharesRuntimeWith(MetadataIoRunner other) {
-    return other != null && runtime == other.runtime;
+    return other != null && runtime() == other.runtime();
   }
 
   /** Run one blocking call with cancellation polling and application-wide admission. */
@@ -349,12 +370,15 @@ public class MetadataIoRunner {
       rejectIfUnusable(cancelled, failureMessages);
       return operation.get();
     }
+    // Resolved once: two calls to runtime() could straddle a restart and hand the executor and the
+    // semaphore of different runtimes to the same call.
+    RuntimeState current = runtime();
     return CancellableCallRunner.call(
-        runtime.executor(),
-        runtime.permits,
+        current.executor(),
+        current.permits,
         cancelled,
-        runtime::isClosed,
-        guarded(operation),
+        current::isClosed,
+        guarded(current, operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -368,11 +392,12 @@ public class MetadataIoRunner {
       rejectIfUnusable(null, failureMessages);
       return operation.get();
     }
+    RuntimeState current = runtime();
     return CancellableCallRunner.callWithoutCancellation(
-        runtime.executor(),
-        runtime.permits,
-        runtime::isClosed,
-        guarded(operation),
+        current.executor(),
+        current.permits,
+        current::isClosed,
+        guarded(current, operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -404,7 +429,7 @@ public class MetadataIoRunner {
     if (!ownsRuntime) {
       return;
     }
-    if (!runtime.close()) {
+    if (!ownedRuntime.close()) {
       LOG.warn("metadata I/O executor did not terminate before shutdown timeout");
     }
   }
@@ -440,7 +465,14 @@ public class MetadataIoRunner {
     }
   }
 
-  /** Re-arm the shared runtime for a new application lifecycle. */
+  /**
+   * Re-arm the shared runtime for a new application lifecycle.
+   *
+   * <p>A no-op under Quarkus: this is an application class, so a dev-mode reload or
+   * {@code @QuarkusTest} restart mints a fresh {@code Class} with fresh statics and {@code SHARED}
+   * is already null. It is what lets a plain JUnit fork — where the statics really are shared —
+   * recover, and it keeps the sentinel from being a one-way door if that ever stops holding.
+   */
   static void reopenSharedRuntime() {
     SHARED.compareAndSet(SHUTTING_DOWN, null);
   }
@@ -555,8 +587,13 @@ public class MetadataIoRunner {
       if (closing == null) {
         return true;
       }
+      // A queued call already holds its permit but will never run its finally, so releasing the
+      // discarded tasks is this runtime's job, not the pool factory's.
       return MetadataIoExecutors.shutdownNowAndAwait(
-          closing, SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+          closing,
+          CancellableCallRunner::cancelDiscardedTasks,
+          SHUTDOWN_TIMEOUT_SECONDS,
+          TimeUnit.SECONDS);
     }
   }
 }

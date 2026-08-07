@@ -49,8 +49,9 @@ public class MetadataIoMetrics {
    * injects it, and an unobserved {@code @PostConstruct} bean is a removal candidate.
    */
   // After MetadataIoLifecycle's observer, which clears the previous lifecycle's shutdown sentinel.
-  // Injecting the runner here would otherwise be able to construct it while that sentinel is still
-  // installed and fail startup.
+  // Injection alone is harmless — `admission` is a client proxy and constructing the runner touches
+  // no runtime — but the gauges registered below read through it, and a registry that samples at
+  // registration would resolve the shared runtime while the sentinel is still installed.
   void registerAdmissionGauges(@Observes @Priority(100) StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
     Tag operation = Tag.of(TagKey.OPERATION, "metadata_io");

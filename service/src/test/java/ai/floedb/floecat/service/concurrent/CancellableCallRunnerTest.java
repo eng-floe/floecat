@@ -854,6 +854,184 @@ class CancellableCallRunnerTest {
   }
 
   @Test
+  void closingTheRuntimeReleasesACancellableCallerParkedOnAnUninterruptibleOperation()
+      throws Exception {
+    // The sibling coverage exercises callWithoutCancellation. call() has its own copy of the
+    // closure branch in the abort reason it passes to awaitOutcome; losing it parks a cancellable
+    // caller forever, because this tier has no deadline and the operation ignores interruption.
+    ExecutorService executor = Executors.newFixedThreadPool(1);
+    var permits = new Semaphore(1);
+    var closed = new AtomicBoolean();
+    var blocker = new UninterruptibleBlocker();
+    try {
+      CompletableFuture<Throwable> caller =
+          CompletableFuture.supplyAsync(
+              () ->
+                  assertThrows(
+                      Throwable.class,
+                      () ->
+                          CancellableCallRunner.call(
+                              executor,
+                              permits,
+                              () -> false,
+                              closed::get,
+                              () -> {
+                                blocker.await();
+                                return "done";
+                              },
+                              CALL_FAILURES,
+                              saturations::incrementAndGet)));
+      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+
+      closed.set(true);
+      Throwable failure = caller.get(5, TimeUnit.SECONDS);
+      assertInstanceOf(CancellationException.class, failure);
+      assertEquals(CancellableCallRunner.RUNTIME_CLOSED, failure.getMessage());
+    } finally {
+      blocker.release.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void aCallCancelledWhileQueuedNeverEntersTheOperation() throws Exception {
+    // Cancellation between admission and the worker picking the task up. What stops the body here
+    // is the caller's abort cancelling the FutureTask before the worker claims it; the task's own
+    // rejectCancelledStart check covers the narrower window where the worker already claimed it.
+    // Verified: disabling that check leaves this green, so the assertion below is on the outcome —
+    // no body, both permits back — not on which of the two gates fired.
+    ExecutorService executor = Executors.newFixedThreadPool(1);
+    var permits = new Semaphore(2);
+    var cancel = new AtomicBoolean();
+    var occupied = new UninterruptibleBlocker();
+    var secondBodyRan = new AtomicBoolean();
+    try {
+      // Occupy the single worker so the second call is admitted but sits in the queue.
+      CompletableFuture.runAsync(
+          () ->
+              CancellableCallRunner.call(
+                  executor,
+                  permits,
+                  () -> false,
+                  notClosed,
+                  () -> {
+                    occupied.await();
+                    return "held";
+                  },
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      assertTrue(occupied.started.await(1, TimeUnit.SECONDS));
+
+      cancel.set(true);
+      assertThrows(
+          CancellationException.class,
+          () ->
+              CancellableCallRunner.call(
+                  executor,
+                  permits,
+                  cancel::get,
+                  notClosed,
+                  () -> {
+                    secondBodyRan.set(true);
+                    return "queued";
+                  },
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+
+      occupied.release.countDown();
+      // Give the freed worker every chance to run the queued task before asserting it did not.
+      for (int attempt = 0; attempt < 100 && permits.availablePermits() < 2; attempt++) {
+        Thread.sleep(10);
+      }
+      assertFalse(
+          secondBodyRan.get(), "a call cancelled while queued must not start its operation");
+      assertEquals(2, permits.availablePermits(), "both permits must come back");
+    } finally {
+      occupied.release.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void admissionIsReturnedWhenTheExecutorRejectsTheSubmission() {
+    // The permit is taken before the submit, so a rejection that escapes without releasing shrinks
+    // the process-wide ceiling by one for good — silently, one call at a time.
+    ExecutorService rejecting =
+        new ThreadPoolExecutor(
+            1,
+            1,
+            0,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(1),
+            new ThreadPoolExecutor.AbortPolicy());
+    rejecting.shutdown(); // a shut-down pool rejects every submission
+    var permits = new Semaphore(1);
+    try {
+      assertThrows(
+          RejectedExecutionException.class,
+          () ->
+              CancellableCallRunner.call(
+                  rejecting,
+                  permits,
+                  () -> false,
+                  notClosed,
+                  () -> "unreachable",
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      assertEquals(1, permits.availablePermits(), "a rejected submission must return its permit");
+    } finally {
+      rejecting.shutdownNow();
+    }
+  }
+
+  @Test
+  void aThrowingSaturationSinkDoesNotFailTheCall() throws Exception {
+    // The sink is a telemetry callback owned by another module. A counter that throws under a
+    // strict registry would otherwise turn every saturated admission into a failed request.
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    var permits = new Semaphore(1);
+    var blocker = new UninterruptibleBlocker();
+    Runnable throwingSink =
+        () -> {
+          throw new IllegalStateException("sink is broken");
+        };
+    try {
+      CompletableFuture.runAsync(
+          () ->
+              CancellableCallRunner.call(
+                  executor,
+                  permits,
+                  () -> false,
+                  notClosed,
+                  () -> {
+                    blocker.await();
+                    return "held";
+                  },
+                  CALL_FAILURES,
+                  throwingSink));
+      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+
+      CompletableFuture<String> waiter =
+          CompletableFuture.supplyAsync(
+              () ->
+                  CancellableCallRunner.call(
+                      executor,
+                      permits,
+                      () -> false,
+                      notClosed,
+                      () -> "admitted",
+                      CALL_FAILURES,
+                      throwingSink));
+      Thread.sleep(50); // let the waiter reach the saturated path and call the sink
+      blocker.release.countDown();
+      assertEquals("admitted", waiter.get(5, TimeUnit.SECONDS));
+    } finally {
+      blocker.release.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   void cancellingRunningCallRetainsAdmissionUntilOperationExits() throws Exception {
     ExecutorService executor = Executors.newFixedThreadPool(1);
     var permits = new Semaphore(1);
