@@ -391,6 +391,90 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.empty(), config));
   }
 
+  /**
+   * A connector whose catalog vends its own credentials must not consult the storage authority
+   * service at all. Note the storage location IS present here -- without the delegation property
+   * this exact call vends (see the companion test below), so this asserts the property is what
+   * short-circuits it, not a missing location hint.
+   */
+  @Test
+  void delegatingRestConnectorSkipsStorageAuthorityVending() {
+    ConnectorConfig config = delegationTestConfig(true);
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+
+    ConnectorConfig resolved =
+        resolveWithStorageLocation(resolver, config).config();
+
+    verify(resolver.storageAuthorities, never()).vendStorageCredentials(any());
+    assertEquals(config.options(), resolved.options());
+  }
+
+  /**
+   * Guards the change above from being read as a blanket disable: the same connector without the
+   * delegation property still vends. If this ever stops failing when the property check is removed,
+   * the test above is proving nothing.
+   */
+  @Test
+  void nonDelegatingRestConnectorStillVendsStorageCredentials() {
+    ConnectorConfig config = delegationTestConfig(false);
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenReturn(
+            ResolveStorageAuthorityResponse.newBuilder()
+                .addStorageCredentials(
+                    VendedStorageCredential.newBuilder()
+                        .setPrefix("s3://8c554103--table-s3/")
+                        .putConfig("s3.access-key-id", "vended-access")
+                        .putConfig("s3.secret-access-key", "vended-secret"))
+                .build());
+
+    resolveWithStorageLocation(resolver, config);
+
+    verify(resolver.storageAuthorities, times(1)).vendStorageCredentials(any());
+  }
+
+  private static ConnectorConfig delegationTestConfig(boolean withDelegation) {
+    var options = new java.util.LinkedHashMap<String, String>();
+    options.put("iceberg.source", "rest");
+    options.put("warehouse", "arn:aws:s3tables:us-east-1:000000000000:bucket/bench");
+    if (withDelegation) {
+      options.put("header.X-Iceberg-Access-Delegation", "vended-credentials");
+    }
+    return new ConnectorConfig(
+        ConnectorConfig.Kind.ICEBERG,
+        "s3tables",
+        "https://s3tables.us-east-1.amazonaws.com/iceberg",
+        java.util.Map.copyOf(options),
+        new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+  }
+
+  private static ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveWithStorageLocation(
+      ServerSideStorageConfigResolver resolver, ConnectorConfig config) {
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .build();
+    return resolver.resolveManagedWithAuthorization(
+        java.util.Optional.empty(),
+        java.util.Optional.empty(),
+        java.util.Optional.empty(),
+        java.util.Optional.of("s3://8c554103--table-s3/data/f.parquet"),
+        java.util.Optional.empty(),
+        connector,
+        config);
+  }
+
   @Test
   void mergeResolvedStorageConfigAddsServerSideSecretsAndClientSafeProps() {
     ResolveStorageAuthorityResponse response =
