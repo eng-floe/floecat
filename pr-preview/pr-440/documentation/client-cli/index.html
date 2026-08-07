@@ -843,7 +843,7 @@
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture Decisions
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -1895,7 +1895,8 @@ fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argume
   while <code>query fetch-scan &lt;query_id&gt; &lt;table_id&gt;</code> requests the connector-provided <code>ScanFile</code> lists for
   an individual table.</li>
 <li><code>connectors</code> / <code>connector &lt;subcommand&gt;</code> – Manage connector definitions and reconciliation jobs.</li>
-<li><code>integrations</code> / <code>integration &lt;subcommand&gt;</code> – Manage inert upstream catalog identity records.</li>
+<li><code>integrations</code> / <code>integration &lt;subcommand&gt;</code> – Manage upstream catalog identity, authentication,
+  and write-only credentials.</li>
 <li><code>overlays</code> / <code>overlay &lt;subcommand&gt;</code> – Define a top-level catalog backed by an integration,
   optionally filtering namespaces.</li>
 <li><code>storage-authorities</code> / <code>storage-authority &lt;subcommand&gt;</code> – Manage storage credential authorities
@@ -1928,11 +1929,11 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 </code></pre></div>
 <p>Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via <code>connector job &lt;id&gt;</code>.</p>
-<p>Integration and overlay records currently provide CRUD configuration only. They do not store
-credentials, connect to the upstream catalog, reconcile metadata, or affect query execution. To
-exercise the resource model from the Shell, create an integration and attach it to an existing
-catalog:</p>
-<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1
+<p>Integration and overlay records currently provide CRUD configuration and credential lifecycle
+only. They do not connect to the upstream catalog, reconcile metadata, or affect query execution.
+To exercise the resource model from the Shell, create an integration and overlay:</p>
+<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
+  --auth-type bearer --cred token=secret
 overlay create sales-overlay lakehouse --include prod.sales
 </code></pre></div>
 <p>Legacy connector commands remain the operational path for external catalog connectivity.</p>

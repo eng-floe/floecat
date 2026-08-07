@@ -780,7 +780,7 @@
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture Decisions
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -1719,10 +1719,12 @@
 
 
 <h1 id="catalog-integrations-and-overlays">Catalog Integrations and Overlays<a class="headerlink" href="#catalog-integrations-and-overlays" title="Permanent link">&para;</a></h1>
-<p>Catalog integrations and overlays are operationally inert records that establish the resource
-model for future external-catalog connectivity:</p>
+<p>Catalog integrations and overlays establish the resource, authentication, and SQL naming
+foundation for external-catalog connectivity:</p>
 <ul>
-<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, and display name.</li>
+<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, display name, and typed,
+  non-secret authentication configuration. Credential material is stored separately and is never
+  returned by the API.</li>
 <li>A <strong>catalog overlay</strong> defines a top-level Floecat catalog backed by an integration and filtered
   to selected upstream namespaces.</li>
 </ul>
@@ -1730,15 +1732,17 @@ model for future external-catalog connectivity:</p>
  ├── CatalogOverlay &quot;sales&quot;
  └── CatalogOverlay &quot;finance&quot;
 </code></pre></div>
-<p>These resources do not store authentication or credentials, validate connectivity, refresh
-metadata, reconcile or capture tables, or affect query paths. The legacy <code>Connector</code> API and Shell
-commands remain the operational path for external catalog connectivity.</p>
-<p>The accepted target semantics and implementation boundaries are described in
-<a href="../catalog-integration-design/">Catalog Integration Architecture Decisions</a>. They intentionally do
-not add behavior to the CRUD resources in this change.</p>
+<p>These resources do not yet validate connectivity, refresh metadata, reconcile or capture tables,
+or affect query paths. The legacy <code>Connector</code> API and Shell commands remain the operational path
+for external catalog connectivity.</p>
+<p>The implemented stack boundaries, accepted target semantics, and remaining delivery plan are
+described in <a href="../catalog-integration-design/">Catalog Integration Architecture and Delivery Plan</a>.</p>
 <h2 id="shell-workflow">Shell workflow<a class="headerlink" href="#shell-workflow" title="Permanent link">&para;</a></h2>
 <p>Create the integration record, then define a top-level overlay catalog:</p>
-<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1
+<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
+  --auth-type oauth-client-credentials \
+  --auth client_id=floecat token_uri=https://identity.example/token \
+  --cred client_secret=secret
 overlay create sales-overlay lakehouse --include prod.sales,prod.reference
 </code></pre></div>
 <p>The overlay command accepts either a resource ID or display name for the integration.
@@ -1748,8 +1752,9 @@ selects the whole upstream namespace tree.</p>
 <div class="highlight"><pre><span></span><code>integrations
 integration list
 integration get &lt;name|id&gt;
-integration create &lt;name&gt; &lt;type&gt; &lt;uri&gt; [options]
+integration create &lt;name&gt; &lt;type&gt; &lt;uri&gt; --auth-type &lt;type&gt; [--auth k=v ...] [--cred k=v ...]
 integration update &lt;name|id&gt; [options]
+integration update-auth &lt;name|id&gt; --auth-type &lt;type&gt; [--auth k=v ...] [--cred k=v ...]
 integration delete &lt;name|id&gt;
 
 overlays [--integration &lt;name|id&gt;]
@@ -1759,6 +1764,46 @@ overlay create &lt;name&gt; &lt;integration-name|id&gt; [options]
 overlay update &lt;name|id&gt; [options]
 overlay delete &lt;name|id&gt;
 </code></pre></div>
+<p>Authentication types and their properties are:</p>
+<table>
+<thead>
+<tr>
+<th><code>--auth-type</code></th>
+<th><code>--auth</code> properties</th>
+<th><code>--cred</code> properties</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>oauth-client-credentials</code></td>
+<td><code>client_id</code>; optional <code>token_uri</code>, <code>scopes</code> CSV</td>
+<td><code>client_secret</code></td>
+</tr>
+<tr>
+<td><code>bearer</code></td>
+<td>none</td>
+<td><code>token</code></td>
+</tr>
+<tr>
+<td><code>aws-assume-role</code></td>
+<td><code>role_arn</code>; optional <code>external_id</code>, <code>role_session_name</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>aws-access-key</code></td>
+<td><code>access_key_id</code></td>
+<td><code>secret_access_key</code>; optional <code>session_token</code></td>
+</tr>
+<tr>
+<td><code>aws-sigv4</code></td>
+<td><code>region</code>, <code>credential_source</code>; optional <code>signing_name</code>, plus source fields</td>
+<td>source-dependent</td>
+</tr>
+</tbody>
+</table>
+<p>For SigV4, <code>credential_source</code> is <code>default</code>, <code>assume-role</code>, or <code>access-key</code>. Assume-role uses the
+role properties above. Access-key uses the access-key properties above. The CLI rejects unknown
+properties instead of silently dropping them.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Overlay creation requires an existing integration.</li>
@@ -1766,6 +1811,8 @@ overlay delete &lt;name|id&gt;
 <li>An integration cannot be deleted while overlays refer to it.</li>
 <li>Integration deletion supports <code>--cascade</code> to delete dependent overlays.</li>
 <li>Integration and overlay mutations support optimistic <code>--etag</code> preconditions.</li>
+<li>Authentication replacement uses the dedicated <code>integration update-auth</code> command so credential
+  values remain write-only.</li>
 </ul>
 <p>The protobuf contracts are in <code>core/proto/src/main/proto/floecat/integration/</code>.</p>
 

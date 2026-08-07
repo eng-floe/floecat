@@ -730,7 +730,7 @@
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture Decisions
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -1725,8 +1725,11 @@ query fetch-scan &lt;query_id&gt; &lt;table_id&gt;
 integrations
 integration list
 integration get &lt;name|id&gt;
-integration create &lt;name&gt; &lt;iceberg-rest|unity&gt; &lt;uri&gt;
+integration create &lt;name&gt; &lt;iceberg-rest|unity&gt; &lt;uri&gt; --auth-type &lt;type&gt;
+  [--auth k=v ...] [--cred k=v ...]
 integration update &lt;name|id&gt; --display &lt;name&gt; [--etag &lt;etag&gt;]
+integration update-auth &lt;name|id&gt; --auth-type &lt;type&gt;
+  [--auth k=v ...] [--cred k=v ...] [--etag &lt;etag&gt;]
 integration delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 
 overlays [--integration &lt;name|id&gt;]

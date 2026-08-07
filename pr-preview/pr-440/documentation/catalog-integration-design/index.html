@@ -24,7 +24,7 @@
     
     
       
-        <title>Catalog Integration Architecture Decisions - Floecat Documentation</title>
+        <title>Catalog Integration Architecture and Delivery Plan - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#catalog-integration-architecture-decisions" class="md-skip">
+        <a href="#catalog-integration-architecture-and-delivery-plan" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Catalog Integration Architecture Decisions
+              Catalog Integration Architecture and Delivery Plan
             
           </span>
         </div>
@@ -729,7 +729,7 @@
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture Decisions
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -742,7 +742,7 @@
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture Decisions
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -763,6 +763,15 @@
       Table of contents
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#stack-implementation-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Stack implementation map
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#goals" class="md-nav__link">
@@ -793,6 +802,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#catalog-overlay" class="md-nav__link">
     <span class="md-ellipsis">
       Catalog overlay
@@ -807,18 +825,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#namespace-selection-and-mapping" class="md-nav__link">
+  <a href="#namespace-selection" class="md-nav__link">
     <span class="md-ellipsis">
-      Namespace selection and mapping
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-captured-metadata" class="md-nav__link">
-    <span class="md-ellipsis">
-      Shared captured metadata
+      Namespace selection
     </span>
   </a>
   
@@ -828,6 +837,15 @@
   <a href="#catalog-access-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-captured-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Canonical captured metadata
     </span>
   </a>
   
@@ -852,9 +870,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#proposed-api-evolution" class="md-nav__link">
+  <a href="#remaining-api-evolution" class="md-nav__link">
     <span class="md-ellipsis">
-      Proposed API evolution
+      Remaining API evolution
     </span>
   </a>
   
@@ -870,9 +888,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#implementation-sequence" class="md-nav__link">
+  <a href="#delivery-plan-and-pr-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      Implementation sequence
+      Delivery plan and PR boundaries
     </span>
   </a>
   
@@ -1773,6 +1791,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#stack-implementation-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Stack implementation map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#goals" class="md-nav__link">
     <span class="md-ellipsis">
       Goals
@@ -1801,6 +1828,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#catalog-overlay" class="md-nav__link">
     <span class="md-ellipsis">
       Catalog overlay
@@ -1815,18 +1851,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#namespace-selection-and-mapping" class="md-nav__link">
+  <a href="#namespace-selection" class="md-nav__link">
     <span class="md-ellipsis">
-      Namespace selection and mapping
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#shared-captured-metadata" class="md-nav__link">
-    <span class="md-ellipsis">
-      Shared captured metadata
+      Namespace selection
     </span>
   </a>
   
@@ -1836,6 +1863,15 @@
   <a href="#catalog-access-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-captured-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Canonical captured metadata
     </span>
   </a>
   
@@ -1860,9 +1896,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#proposed-api-evolution" class="md-nav__link">
+  <a href="#remaining-api-evolution" class="md-nav__link">
     <span class="md-ellipsis">
-      Proposed API evolution
+      Remaining API evolution
     </span>
   </a>
   
@@ -1878,9 +1914,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#implementation-sequence" class="md-nav__link">
+  <a href="#delivery-plan-and-pr-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      Implementation sequence
+      Delivery plan and PR boundaries
     </span>
   </a>
   
@@ -1910,105 +1946,118 @@
   
 
 
-<h1 id="catalog-integration-architecture-decisions">Catalog Integration Architecture Decisions<a class="headerlink" href="#catalog-integration-architecture-decisions" title="Permanent link">&para;</a></h1>
-<p>Status: accepted for implementation after the inert Integration and Overlay CRUD foundation.</p>
-<p>This document defines the target architecture for catalog integrations. It is intentionally a
-design boundary: it fixes resource ownership, namespace mapping, capture identity, scheduling, and
-lifecycle semantics before those behaviors are added to the production APIs.</p>
+<h1 id="catalog-integration-architecture-and-delivery-plan">Catalog Integration Architecture and Delivery Plan<a class="headerlink" href="#catalog-integration-architecture-and-delivery-plan" title="Permanent link">&para;</a></h1>
+<p>Status: accepted; the resource, authentication, CLI, and first catalog-access layers are
+implemented in the current PR stack.</p>
+<p>This document records both the target architecture and the boundary of each stacked change. It is
+aligned with the Catalog Integration and Catalog Overlay SQL specification. It distinguishes code
+already present below this change, code in the following PR, and work that remains deferred.</p>
+<h2 id="stack-implementation-map">Stack implementation map<a class="headerlink" href="#stack-implementation-map" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Implemented boundary</th>
+<th>Explicitly not implemented</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#424, Catalog Integration and Overlay APIs</td>
+<td>CRUD resources, typed authentication, write-only credential storage and rotation, shared SQL catalog-name reservation, idempotency, optimistic concurrency, dependencies, cascade deletion, and atomic persistence primitives</td>
+<td>Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>#425, Shell CLI</td>
+<td>Integration and Overlay CRUD commands, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions</td>
+<td>Connectivity validation, discovery, capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>#439, this document</td>
+<td>Architecture decisions and delivery boundaries</td>
+<td>Production behavior</td>
+</tr>
+<tr>
+<td>#440, catalog-access SPI</td>
+<td>Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table loading, OAuth2, SigV4, and renewable AWS credential support</td>
+<td>Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture</td>
+</tr>
+</tbody>
+</table>
 <h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
-<p>The catalog integration model will provide a simpler way to:</p>
+<p>The catalog integration model provides a SQL-compatible way to:</p>
 <ul>
 <li>authenticate Floecat to an upstream catalog;</li>
-<li>map upstream catalog namespaces into SQL-visible Floecat catalogs and namespaces;</li>
-<li>define freshness and retention requirements; and</li>
-<li>capture external metadata once while exposing it through one or more overlays.</li>
+<li>select upstream namespaces beneath a read-only SQL catalog name;</li>
+<li>discover and validate upstream objects without depending on Connector resources; and</li>
+<li>eventually capture external metadata once while exposing it through one or more overlays.</li>
 </ul>
-<p>The new path does not use, wrap, synthesize, or fall back to Connector resources. Connectors remain
-a separate legacy path during migration and will eventually be deprecated.</p>
+<p>The Integration path does not use, wrap, synthesize, or fall back to Connector resources.
+Connectors currently remain a separate operational path and are retired through an explicit later
+migration, not through runtime fallback.</p>
 <h2 id="resource-and-ownership-model">Resource and ownership model<a class="headerlink" href="#resource-and-ownership-model" title="Permanent link">&para;</a></h2>
-<p>The target model has two resource layers plus shared captured metadata:</p>
-<div class="highlight"><pre><span></span><code>CatalogIntegration                 connection, authentication, canonical upstream identity
- ├── captured namespace/table      shared metadata, snapshots, file groups, and statistics
- ├── CatalogOverlay &quot;sales&quot;        top-level SQL catalog, mappings, visibility, and demand
- └── CatalogOverlay &quot;finance&quot;      another top-level projection of the same integration
+<div class="highlight"><pre><span></span><code>CatalogIntegration                 connection and authentication
+ ├── captured namespace/table      future shared metadata and statistics
+ ├── CatalogOverlay &quot;sales&quot;        top-level SQL catalog and namespace selection
+ └── CatalogOverlay &quot;finance&quot;      another projection of the same integration
 </code></pre></div>
 <h3 id="catalog-integration">Catalog integration<a class="headerlink" href="#catalog-integration" title="Permanent link">&para;</a></h3>
-<p><code>CatalogIntegration</code> owns the upstream catalog protocol, endpoint, authentication configuration,
-credential lifecycle, and canonical identity of captured external objects. Its immutable resource
-ID is used by capture and reconciliation; display names are never operational identity.</p>
-<p>The integration type identifies a catalog protocol or provider, such as Iceberg REST, Unity
-Catalog, or AWS Glue. It does not identify the table format. A provider can expose more than one
-table format, and format-specific behavior belongs to the discovered table metadata and catalog
-client capabilities.</p>
-<p>Secret values are stored outside the integration protobuf. Reads expose only the configured
-authentication scheme, non-secret options, whether credentials are configured, and a credential
-generation. Credential writes use a dedicated request that never returns secret material.</p>
-<h3 id="catalog-overlay">Catalog overlay<a class="headerlink" href="#catalog-overlay" title="Permanent link">&para;</a></h3>
-<p><code>CatalogOverlay</code> is a read-only top-level SQL catalog backed by one integration. Its display name is
-the catalog name. It owns namespace mappings, visibility state, and refresh/retention demand; it
-does not point to or mutate a separate <code>Catalog</code> resource.</p>
-<p>Several overlays may expose different projections of the same integration under different
-top-level catalog names. The account-level catalog namespace must reject collisions between overlay
-display names and other top-level catalogs. Captured namespaces and relations inside an overlay are
-read-only; writable local objects belong in a separate regular catalog.</p>
-<h2 id="namespace-selection-and-mapping">Namespace selection and mapping<a class="headerlink" href="#namespace-selection-and-mapping" title="Permanent link">&para;</a></h2>
-<p>The current include/exclude paths are sufficient for inert CRUD but not for the target product.
-The behavioral contract replaces them with explicit source-to-target prefix mappings:</p>
-<div class="highlight"><pre><span></span><code><span class="kd">message</span><span class="w"> </span><span class="nc">NamespaceMapping</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">source_prefix</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
-<span class="w">  </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">target_prefix</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
-<span class="w">  </span><span class="kt">bool</span><span class="w"> </span><span class="na">recursive</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
-<span class="p">}</span>
-
-<span class="kd">message</span><span class="w"> </span><span class="nc">CatalogOverlaySpec</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">display_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
-<span class="w">  </span><span class="n">ResourceId</span><span class="w"> </span><span class="na">integration_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
-<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespaceMapping</span><span class="w"> </span><span class="na">namespace_mappings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
-<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">NamespacePath</span><span class="w"> </span><span class="na">exclude_namespaces</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayState</span><span class="w"> </span><span class="na">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
-<span class="w">  </span><span class="n">CatalogOverlayPolicy</span><span class="w"> </span><span class="na">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
-<span class="p">}</span>
-</code></pre></div>
-<p>The protobuf above is illustrative. The inert CRUD field numbers remain contiguous; numbering for
-new fields and request separation are finalized when the contract is implemented. The semantics
-are fixed:</p>
+<p><code>CatalogIntegration</code> owns the upstream protocol, HTTP(S) endpoint, non-secret authentication
+configuration, credential lifecycle, and eventually the canonical identity of captured external
+objects. Its immutable resource ID is operational identity; its display name is mutable SQL-facing
+metadata.</p>
+<p>The API currently supports Iceberg REST and Unity integration types. Authentication is required and
+is represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS assume
+role, AWS access keys, and AWS SigV4. Unity currently accepts only OAuth client credentials or
+bearer authentication. The base service validates structural compatibility; endpoint/provider
+support is intentionally left to the catalog-access adapter and provider.</p>
+<p>Type and catalog URI are immutable through update. <code>CREATE OR REPLACE</code> creates a new resource
+identity. It is rejected while overlays depend on the existing integration because replacement
+must not silently retarget those overlays.</p>
+<h3 id="authentication-and-credentials">Authentication and credentials<a class="headerlink" href="#authentication-and-credentials" title="Permanent link">&para;</a></h3>
+<p>Persisted resources contain only non-secret authentication configuration,
+<code>credentials_configured</code>, and a server-managed credential generation. Secret values are supplied
+on create or through the dedicated authentication-update RPC and are never returned.</p>
+<p>The service derives its internal secret key from integration ID and credential generation. No
+secret-manager reference is exposed in the public resource. <code>CatalogIntegrationCredentialStore</code>
+provides the typed service-side resolution primitive required by a later catalog-access adapter.</p>
+<p>Credential publication has these guarantees:</p>
 <ul>
-<li>Paths are ordered from catalog root to namespace leaf, trimmed, and matched case-sensitively.</li>
-<li>A recursive mapping maps every descendant by appending its suffix to <code>target_prefix</code>.</li>
-<li>A non-recursive mapping exposes only the exact source namespace.</li>
-<li>Exclusions are expressed in upstream namespace space and take precedence over mappings.</li>
-<li>Newly discovered namespaces that match an active mapping become visible automatically.</li>
-<li>Empty source or target prefixes represent the upstream or overlay catalog root, respectively.</li>
-<li>Source mappings within one overlay may not overlap. Target prefixes may not overlap. Rejecting
-  ambiguity is preferable to order-dependent precedence.</li>
-<li>Two overlays may expose the same canonical table under different catalogs or names without
-  duplicating captured metadata.</li>
+<li>a new immutable generation is reserved with atomic <code>putIfAbsent</code> before the resource CAS;</li>
+<li>the old generation is retired only after the new resource generation is published;</li>
+<li>a definite publication failure removes the prepared secret;</li>
+<li>an acknowledgement-uncertain publication retains the secret because the resource CAS may have
+  succeeded; and</li>
+<li>idempotent create may carry credentials, excludes secret bytes from its fingerprint, and returns
+  the first successfully published value for that key.</li>
 </ul>
-<p>For example, mapping <code>production.sales</code> to <code>sales</code> recursively exposes
-<code>production.sales.orders</code> as <code>sales.orders</code>. An exclusion for
-<code>production.sales.private</code> suppresses that namespace and all descendants.</p>
-<h2 id="shared-captured-metadata">Shared captured metadata<a class="headerlink" href="#shared-captured-metadata" title="Permanent link">&para;</a></h2>
-<p>External metadata is captured once per integration and is not stored as catalog-owned table copies.
-A canonical captured object key consists of:</p>
-<div class="highlight"><pre><span></span><code>(account_id, integration_id, object_kind, upstream_object_id)
-</code></pre></div>
-<p>Provider-stable object IDs are preferred. When a provider has no stable ID, the normalized full
-upstream path is the fallback identity and an upstream rename is observed as delete plus create.
-Display names and overlay mappings are never part of canonical identity.</p>
-<p>Canonical tables own their schemas, snapshots, manifests, file groups, and statistics. An overlay
-binding is lightweight state that associates a canonical object with a path inside the overlay's
-top-level catalog. Its identity includes the overlay ID, canonical object ID, and exposed path.
-Query resolution returns the canonical table identity plus the binding through which it was
-resolved, so several overlay catalogs can safely share one captured object and one set of
-statistics.</p>
-<p>This requires an explicit replacement for the current connector-rooted <code>UpstreamRef</code>; adding an
-integration ID beside a connector ID would create two competing identities. The integration path
-will use a new canonical external-object reference. Connector-backed tables retain their existing
-reference until the explicit migration phase.</p>
+<p>Reclamation of retained, unreachable credential generations is not implemented in this stack. A
+later orphan-reclamation PR will add that mechanism; this document does not claim it exists today.</p>
+<h3 id="catalog-overlay">Catalog overlay<a class="headerlink" href="#catalog-overlay" title="Permanent link">&para;</a></h3>
+<p><code>CatalogOverlay</code> is the read-only top-level SQL catalog backed by one integration. It does not point
+to, create, mutate, empty, or delete a separate Floecat <code>Catalog</code> resource. Its display name is the
+SQL catalog name.</p>
+<p>Catalog and CatalogOverlay create, rename, replacement, and delete operations use one shared
+account-level name reservation, so they cannot expose the same top-level SQL name. An overlay keeps
+an immutable integration binding through update. Replacement may choose a different binding
+because it creates a new overlay identity.</p>
+<h2 id="namespace-selection">Namespace selection<a class="headerlink" href="#namespace-selection" title="Permanent link">&para;</a></h2>
+<p>The SQL contract's include/exclude namespace paths are the target model; they are not placeholders
+for a separate prefix-remapping contract.</p>
+<ul>
+<li>Paths are ordered from external catalog root to namespace leaf and matched case-sensitively.</li>
+<li>An empty include list selects the whole external namespace tree.</li>
+<li>An included path selects that namespace and all descendants.</li>
+<li>An excluded path removes that namespace and all descendants; exclusion wins.</li>
+<li>Paths are normalized and deduplicated without flattening segment boundaries.</li>
+<li>Newly discovered namespaces matching the stored selection become eligible automatically once
+  discovery is wired to overlays.</li>
+<li>Several overlays may select the same upstream object without requiring duplicate capture.</li>
+</ul>
+<p>The current API and CLI implement storage and mutation of these selections. They do not yet make
+the selected namespaces query-visible.</p>
 <h2 id="catalog-access-boundary">Catalog access boundary<a class="headerlink" href="#catalog-access-boundary" title="Permanent link">&para;</a></h2>
-<p>Catalog connectivity is extracted behind a neutral library before integration-driven capture is
-implemented. The boundary uses catalog concepts rather than Connector RPC concepts. Its expected
-shape is:</p>
+<p>PR #440 implements the Connector-independent boundary anticipated by this design:</p>
 <div class="highlight"><pre><span></span><code>CatalogConnectionConfig
 CatalogAuthentication
 ResolvedCatalogCredentials
@@ -2017,120 +2066,146 @@ CatalogClientProvider
 CatalogClientFactory
 CatalogCapabilities
 </code></pre></div>
-<p>No type in this boundary imports Connector protobufs or carries a Connector resource ID. The first
-vertical slice is Iceberg REST. The existing Iceberg Connector remains operational on its separate
-Connector SPI and does not delegate to this library. Integration code likewise never delegates to a
-Connector resource or service. Unity Catalog and Glue support follow as separate provider
-implementations.</p>
-<p>The client boundary covers connection validation, namespace and relation enumeration, stable
-identity lookup, and provider metadata access. Capture planning, scheduling, Floecat persistence,
-overlay binding, and query resolution remain outside the catalog client.</p>
+<p>No SPI type imports Connector protobufs or carries a Connector resource ID. Provider lookup is by
+catalog protocol and fails explicitly for missing or duplicate providers.</p>
+<p>The Iceberg REST provider in #440 implements:</p>
+<ul>
+<li>connection validation using a namespace-list request;</li>
+<li>structured namespace and table enumeration;</li>
+<li>provider-neutral table metadata and stable Iceberg table UUID identity when available;</li>
+<li>anonymous, OAuth2, and AWS SigV4 client authentication;</li>
+<li>separate catalog-signing and storage credential scopes; and</li>
+<li>renewable, process-local AWS credential registrations with serialized refresh and terminal
+  failure handling.</li>
+</ul>
+<p>The SPI validates persistable configuration so secrets, credential-provider handles, user-info,
+and secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
+separately through <code>ResolvedCatalogCredentials</code>.</p>
+<p>The remaining adapter must translate the Integration protobuf authentication variants and resolved
+<code>CatalogIntegrationCredentials</code> onto the SPI's authentication schemes. Integration authentication
+is currently required, so the adapter need not select the SPI's <code>NONE</code> scheme. It must also perform
+provider-specific compatibility checks. #440 does not yet call
+<code>CatalogIntegrationCredentialStore</code>, expose Integration validation/discovery RPCs, or schedule
+work.</p>
+<p>The catalog client owns external I/O only. Capture planning, Floecat persistence, overlay binding,
+scheduling, and query resolution remain outside it.</p>
+<h2 id="canonical-captured-metadata">Canonical captured metadata<a class="headerlink" href="#canonical-captured-metadata" title="Permanent link">&para;</a></h2>
+<p>This section is target design, not current implementation. External metadata will be captured once
+per integration rather than copied per overlay. A canonical key is:</p>
+<div class="highlight"><pre><span></span><code>(account_id, integration_id, object_kind, upstream_object_id)
+</code></pre></div>
+<p>Provider-stable object IDs are preferred. When a provider has no stable ID, the normalized full
+upstream path is an explicitly unstable identity and rename is observed as delete plus create.
+Display names and overlay selection are never part of canonical identity.</p>
+<p>Canonical tables will own schemas, snapshots, manifests, file groups, and statistics. A lightweight
+overlay binding will associate a canonical object with its SQL-visible path. This requires a new
+integration-owned external-object reference rather than adding an integration ID to the existing
+Connector-rooted <code>UpstreamRef</code>.</p>
 <p>The implemented SPI and provider behavior are documented in <a href="../catalog-access-spi/">Catalog Access SPI</a>.</p>
 <h2 id="refresh-and-reconciliation-ownership">Refresh and reconciliation ownership<a class="headerlink" href="#refresh-and-reconciliation-ownership" title="Permanent link">&para;</a></h2>
-<p>Overlays state user-facing freshness and retention requirements; integrations own upstream work.
-For all active overlays on an active integration, the scheduler computes one effective capture
-plan:</p>
+<p>This section is also deferred target design. Overlays will state user-facing freshness and
+retention demand; integrations will own upstream work. For active overlays on one integration, the
+scheduler will compute one effective plan:</p>
 <ul>
-<li>capture scope is the union of namespaces selected by active overlays;</li>
+<li>capture scope is the union of selected namespaces;</li>
 <li>refresh interval is the shortest requested interval;</li>
-<li>retained history is sufficient for the longest requested retention; and</li>
-<li>pausing an overlay removes its visibility and policy demand, while pausing an integration stops
-  all new upstream work for it.</li>
+<li>retained history satisfies the longest requested retention; and</li>
+<li>pausing an overlay removes its visibility and demand, while pausing an integration stops all new
+  upstream work.</li>
 </ul>
-<p>Changing connection configuration or credentials advances an integration configuration generation.
-Changing mappings, policy, or overlay state advances the effective capture-plan generation. Every
-planned and leased job carries both generations. Publishing captured data or bindings is conditional
-on those generations still being current. A stale job may finish external I/O, but it cannot publish
-results or repopulate a changed or deleted overlay.</p>
-<p>Reconciliation jobs and deduplication keys use integration and canonical external-object identity.
-There is no Connector fallback if an integration provider is unavailable or unsupported; the
-integration reports an actionable validation or reconciliation error.</p>
+<p>A future integration configuration generation and capture-plan generation will fence every planned
+and leased job. Stale work may finish external I/O but must not publish results after configuration,
+selection, pause, replacement, or deletion changes.</p>
 <h2 id="lifecycle-and-garbage-collection">Lifecycle and garbage collection<a class="headerlink" href="#lifecycle-and-garbage-collection" title="Permanent link">&para;</a></h2>
-<p>Lifecycle operations have the following effects:</p>
 <table>
 <thead>
 <tr>
 <th>Operation</th>
-<th>Required behavior</th>
+<th>Current stack</th>
+<th>Later behavior</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Pause overlay</td>
-<td>Hide its bindings and remove its policy demand; retain shared captures.</td>
+<td>Rename integration or overlay</td>
+<td>Atomic rename with optimistic preconditions and shared SQL-name checks for overlays</td>
+<td>No additional behavior required</td>
 </tr>
 <tr>
-<td>Delete overlay</td>
-<td>Fence its jobs, remove its top-level catalog bindings and policy demand, and retain shared captures still in use.</td>
-</tr>
-<tr>
-<td>Pause integration</td>
-<td>Stop new work and fence publication from work planned before the pause.</td>
+<td>Replace integration</td>
+<td>New identity; rejected while dependent overlays exist</td>
+<td>Validation may run before publication</td>
 </tr>
 <tr>
 <td>Rotate credentials</td>
-<td>Atomically advance the credential/configuration generation; never expose the old or new secret.</td>
+<td>Atomic new credential generation; old generation retired after publication</td>
+<td>Reclaim acknowledgement-uncertain orphan generations</td>
+</tr>
+<tr>
+<td>Delete overlay</td>
+<td>Removes resource pointers and integration dependency atomically</td>
+<td>Fence jobs, remove bindings, retain shared captures still in use</td>
 </tr>
 <tr>
 <td>Delete integration</td>
-<td>Reject while overlays exist unless explicit cascade was requested.</td>
+<td>Rejected while overlays exist</td>
+<td>Fence integration-owned jobs and captured publication</td>
 </tr>
 <tr>
 <td>Cascade integration delete</td>
-<td>Delete overlays, cancel/fence jobs, delete credentials, then make unreferenced captures GC-eligible.</td>
+<td>Durable deletion fence, dependent overlay deletion, resource deletion, and credential cleanup</td>
+<td>Remove bindings and make unreferenced captures GC-eligible</td>
+</tr>
+<tr>
+<td>Delete account</td>
+<td>Integration credentials are included in account cleanup</td>
+<td>Include future bindings and captures</td>
 </tr>
 </tbody>
 </table>
-<p>Captured metadata becomes eligible for garbage collection only when no active or retained overlay
-binding references it, no query pin protects it, no in-flight current-generation job can publish to
-it, and the configured retention grace period has elapsed. Deleting an overlay never immediately
-deletes shared snapshots or statistics used by another overlay.</p>
-<h2 id="proposed-api-evolution">Proposed API evolution<a class="headerlink" href="#proposed-api-evolution" title="Permanent link">&para;</a></h2>
-<p>The inert CRUD resources remain the foundation. Behavioral implementation evolves them with:</p>
+<p>Captured metadata GC is not implemented. Future capture data becomes eligible only when no retained
+binding or query pin references it, no current-generation job can publish to it, and its retention
+grace period has elapsed.</p>
+<h2 id="remaining-api-evolution">Remaining API evolution<a class="headerlink" href="#remaining-api-evolution" title="Permanent link">&para;</a></h2>
+<p>The lower PRs already provide the SQL-facing CRUD and credential primitives. Remaining changes are:</p>
 <ol>
-<li>A typed, integration-owned catalog connection and authentication contract, dedicated credential
-   mutation, validation/capabilities RPCs, and credential generations.</li>
-<li>Namespace mappings and overlay refresh/retention policy, replacing selection-only filters.</li>
-<li>Canonical captured-resource and overlay-binding contracts independent of Connector protos.</li>
-<li>Configuration and capture-plan generations used by every reconciliation job and publish step.</li>
-<li>Explicit cascade requests, dependency reporting, job fencing, credential cleanup, and retained
-   metadata garbage collection.</li>
+<li>Wire Integration resources and the typed credential resolver to the catalog-access SPI.</li>
+<li>Add validation, capability, namespace-listing, and object-listing service RPCs required by the
+   SQL functions.</li>
+<li>Add integration-scoped canonical object identity and lightweight overlay bindings.</li>
+<li>Add overlay policy/state and integration-owned scheduling with generation fencing.</li>
+<li>Add query visibility, retained capture GC, credential orphan reclamation, migration, and
+   Connector retirement in separately reviewed changes.</li>
 </ol>
-<p>Because backwards compatibility is not a project requirement at this stage, fields should be
-replaced where the semantics differ rather than preserving aliases or hidden fallback behavior.</p>
+<p>Because backwards compatibility is not a project requirement at this stage, contracts should be
+replaced when semantics differ rather than accumulating aliases or hidden fallback behavior.</p>
 <h2 id="legacy-connector-disposition">Legacy Connector disposition<a class="headerlink" href="#legacy-connector-disposition" title="Permanent link">&para;</a></h2>
-<p>Connectors remain operational as a separate legacy API while the new path is built. This is a
-temporary coexistence decision, not a compatibility layer:</p>
+<p>Connectors currently remain operational as a separate API while the Integration path is completed.
+This is temporary coexistence, not a compatibility layer:</p>
 <ul>
 <li>Integration and Overlay services do not create or read Connector resources.</li>
-<li>Integration validation and reconciliation do not call Connector RPCs.</li>
-<li>New integration contracts and neutral catalog-access types do not import Connector protos.</li>
-<li>Existing Connector-backed tables and jobs continue to work unchanged until an explicit migration.</li>
-<li>Migration maps connectivity and authentication to integrations and top-level catalog
-  projection/filtering to overlays, then retires Connector APIs and persisted state in a separately
-  reviewed change.</li>
+<li>The catalog-access SPI does not import Connector protos or delegate to Connector services.</li>
+<li>Future Integration validation and reconciliation must not call Connector RPCs.</li>
+<li>Migration and Connector removal require their own reviewed change.</li>
 </ul>
-<p>There is deliberately no runtime fallback from an Integration to a Connector. Silent fallback would
-make ownership, credentials, scheduling, and failure semantics impossible to reason about.</p>
-<h2 id="implementation-sequence">Implementation sequence<a class="headerlink" href="#implementation-sequence" title="Permanent link">&para;</a></h2>
-<p>The next changes should retain clear review boundaries:</p>
+<p>There is deliberately no runtime fallback from an Integration to a Connector. Unsupported provider
+or authentication combinations must fail explicitly.</p>
+<h2 id="delivery-plan-and-pr-boundaries">Delivery plan and PR boundaries<a class="headerlink" href="#delivery-plan-and-pr-boundaries" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Introduce the neutral catalog-access SPI and an Iceberg REST implementation while leaving the
-   operational legacy Iceberg Connector on its separate Connector SPI.</li>
-<li>Add integration authentication, secret persistence, credential rotation, capability discovery,
-   validation, and their CLI surface. Do not schedule reconciliation yet.</li>
-<li>Add integration-scoped canonical capture identity and lightweight overlay bindings, including
-   collision and name-resolution tests.</li>
-<li>Move scheduling and job identity to integrations with generation fencing. Do not add Connector
-   fallback.</li>
-<li>Complete query visibility, cascade lifecycle, garbage collection, migration, and finally
-   Connector deprecation/removal in separate changes.</li>
+<li><strong>Complete — #424:</strong> CRUD, SQL identity, authentication/credential lifecycle, atomic storage,
+   idempotency, dependency, cascade, and cleanup primitives.</li>
+<li><strong>Complete — #425:</strong> CLI coverage for those APIs, including typed authentication and write-only
+   credential input for create and rotation commands.</li>
+<li><strong>This change — #439:</strong> keep the architecture and delivery record aligned with implemented code.</li>
+<li><strong>Implemented in the following PR — #440:</strong> neutral catalog-access SPI and Iceberg REST vertical
+   slice.</li>
+<li><strong>Next:</strong> Integration-to-SPI adapter and SQL-required validation/discovery RPCs.</li>
+<li><strong>Later:</strong> canonical capture/bindings, scheduling, query visibility, garbage collection,
+   migration, and Connector removal.</li>
 </ol>
-<p>The Integration/Overlay CLI currently resolves display names by listing the corresponding resource
-type, so its integration and overlay helpers contain similar pagination and ambiguity handling.
-That duplication is small and isolated. It should remain in the inert CLI change rather than
-expanding the earlier API PR. A generic resource resolver is worthwhile only when the Directory API
-supports these resource kinds or another CLI resource needs the same behavior.</p>
+<p>The CLI currently resolves Integration and Overlay display names by listing the corresponding
+resource type. The duplication is isolated and does not require expanding the API until another
+consumer needs a generic resolver.</p>
 
 
 
