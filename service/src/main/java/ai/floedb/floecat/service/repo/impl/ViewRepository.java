@@ -139,19 +139,23 @@ public class ViewRepository {
     return refs;
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId viewResourceId) {
     return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId viewResourceId, Timestamp nowTs) {
     return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), nowTs);
   }
 
+  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId viewResourceId) {
     return repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId viewResourceId) {
     return repo.pointerMetaForSafe(
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));

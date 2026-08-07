@@ -208,22 +208,26 @@ public class NamespaceRepository {
     return Optional.of(new NamespaceRef(rid, name, catalogResourceId, pathSegments));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId namespaceResourceId) {
     return repo.metaFor(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId namespaceResourceId, Timestamp nowTs) {
     return repo.metaFor(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()), nowTs);
   }
 
+  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId namespaceResourceId) {
     return repo.metaForSafe(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId namespaceResourceId) {
     return repo.pointerMetaForSafe(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));

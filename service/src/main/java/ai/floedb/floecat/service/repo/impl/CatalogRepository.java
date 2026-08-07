@@ -95,22 +95,26 @@ public class CatalogRepository {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId catalogResourceId) {
     return repo.metaFor(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId catalogResourceId, Timestamp nowTs) {
     return repo.metaFor(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()), nowTs);
   }
 
+  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId catalogResourceId) {
     return repo.metaForSafe(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId catalogResourceId) {
     return repo.pointerMetaForSafe(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));

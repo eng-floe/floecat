@@ -130,6 +130,7 @@ public class TableRepository {
    * before the claim existed) or carries no owner; callers must then fall back to the kind-specific
    * by-name probes.
    */
+  @BoundMetadataIo
   public Optional<ResourceId> relationNameClaim(
       String accountId, String catalogId, String namespaceId, String name) {
     return repo.refByPointer(Keys.relationPointerByName(accountId, catalogId, namespaceId, name))
@@ -173,20 +174,24 @@ public class TableRepository {
     return Optional.of(new RelationRef(rid, name, kind));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId tableResourceId) {
     return repo.metaFor(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId tableResourceId, Timestamp nowTs) {
     return repo.metaFor(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()), nowTs);
   }
 
+  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
     return repo.pointerMetaForSafe(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
@@ -208,6 +213,7 @@ public class TableRepository {
    * HEAD-only version (etag) of a table blob by URI (no body fetch, no parse), or {@code null} if
    * no blob is there. Used to validate a pinned table blob is both present and the pinned version.
    */
+  @BoundMetadataIo
   public String blobEtag(String blobUri) {
     return repo.blobEtag(blobUri);
   }

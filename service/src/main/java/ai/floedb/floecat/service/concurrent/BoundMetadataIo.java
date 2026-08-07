@@ -19,7 +19,6 @@ import static java.lang.annotation.ElementType.METHOD;
 import static java.lang.annotation.ElementType.TYPE;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
-import jakarta.enterprise.util.Nonbinding;
 import jakarta.interceptor.InterceptorBinding;
 import java.lang.annotation.Inherited;
 import java.lang.annotation.Retention;
@@ -39,12 +38,8 @@ import java.lang.annotation.Target;
  */
 @InterceptorBinding
 @Inherited
+// Repository reads use this on methods; the interceptor itself must carry the binding at type
+// level for CDI to discover it.
 @Target({METHOD, TYPE})
 @Retention(RUNTIME)
-public @interface BoundMetadataIo {
-  /**
-   * Reserved for future per-call tuning; non-binding so all annotated reads share one interceptor.
-   */
-  @Nonbinding
-  boolean value() default true;
-}
+public @interface BoundMetadataIo {}

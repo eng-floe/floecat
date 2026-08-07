@@ -18,6 +18,12 @@ package ai.floedb.floecat.service.concurrent;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import com.google.protobuf.Timestamp;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -48,5 +54,38 @@ class MetadataIoAdmissionWiringTest {
         probe.observedAdmission(),
         "the @BoundMetadataIo method must run under admission — the interceptor did not fire");
     assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
+  }
+
+  @Test
+  void queryPathPointerReadsRemainBoundAtTheRepositoryBoundary() throws Exception {
+    assertBound(
+        TableRepository.class,
+        "relationNameClaim",
+        String.class,
+        String.class,
+        String.class,
+        String.class);
+    assertBound(CatalogRepository.class, "pointerMetaForSafe", ResourceId.class);
+    assertBound(NamespaceRepository.class, "pointerMetaForSafe", ResourceId.class);
+    assertBound(TableRepository.class, "pointerMetaForSafe", ResourceId.class);
+    assertBound(ViewRepository.class, "pointerMetaForSafe", ResourceId.class);
+    assertBound(TableRepository.class, "blobEtag", String.class);
+    assertMetadataReadsBound(CatalogRepository.class);
+    assertMetadataReadsBound(NamespaceRepository.class);
+    assertMetadataReadsBound(TableRepository.class);
+    assertMetadataReadsBound(ViewRepository.class);
+  }
+
+  private static void assertMetadataReadsBound(Class<?> type) throws Exception {
+    assertBound(type, "metaFor", ResourceId.class);
+    assertBound(type, "metaFor", ResourceId.class, Timestamp.class);
+    assertBound(type, "metaForSafe", ResourceId.class);
+  }
+
+  private static void assertBound(Class<?> type, String method, Class<?>... parameterTypes)
+      throws Exception {
+    assertTrue(
+        type.getMethod(method, parameterTypes).isAnnotationPresent(BoundMetadataIo.class),
+        () -> type.getSimpleName() + "." + method + " bypasses metadata-I/O admission");
   }
 }
