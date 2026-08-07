@@ -2096,7 +2096,8 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   rebuilds its response from subsequently mutable state.
   Get accepts either resource ID or
   exact SQL name. Reads require
-  <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>.</li>
+  <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>, and cascading deletion of
+  dependent overlays also requires <code>catalog-overlay.write</code>.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Makes an integration and optional upstream namespace filters available
   as a top-level, read-only SQL catalog. It does not reference or manage a separate Catalog
   resource. Creating an overlay atomically publishes its pointers while requiring the integration

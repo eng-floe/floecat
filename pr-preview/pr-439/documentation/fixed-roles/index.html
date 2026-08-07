@@ -1763,7 +1763,8 @@
   separate from broad catalog/table/connector management permissions.</li>
 <li><code>catalog-integration.write</code> administers integration records, while <code>catalog-integration.use</code>
   permits an integration to be bound to an overlay without granting integration-management
-  authority.</li>
+  authority. Cascading integration deletion additionally requires <code>catalog-overlay.write</code> because
+  it deletes the dependent overlay resources.</li>
 <li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
   <code>catalog-integration.use</code>. The overlay is itself a top-level SQL catalog, so no <code>catalog.write</code>
   permission or separate Catalog resource is involved.</li>
