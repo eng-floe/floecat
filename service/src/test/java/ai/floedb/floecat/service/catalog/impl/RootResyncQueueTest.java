@@ -23,13 +23,107 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class RootResyncQueueTest {
+
+  @Test
+  void enqueueDoesNotRecreateAMarkerAfterTheTableIsGone() {
+    var pointers = new InMemoryPointerStore();
+    var markers =
+        new MarkerStore() {
+          @Override
+          public ai.floedb.floecat.service.repo.util.BatchGuard tableLiveGuard(ResourceId tableId) {
+            throw new BaseResourceRepository.BatchGuardFailedException("table is gone");
+          }
+        };
+    var queue = new RootResyncQueue(pointers, markers);
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-deleted")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    queue.enqueue(tableId);
+
+    assertTrue(pointers.get(Keys.rootResyncPendingPointer("acct", "tbl-deleted")).isEmpty());
+  }
+
+  @Test
+  void enqueueRecapturesItsGuardAfterALiveTableUpdate() {
+    String tableKey = Keys.tablePointerById("acct", "tbl-updated");
+    var pointers =
+        new InMemoryPointerStore() {
+          private boolean advanced;
+
+          @Override
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            if (!advanced) {
+              advanced = true;
+              compareAndSet(
+                  tableKey, 1L, PointerReferences.blobPointer(tableKey, "blob://table/v2", 2L));
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    pointers.compareAndSet(
+        tableKey, 0L, PointerReferences.blobPointer(tableKey, "blob://table/v1", 1L));
+    var guardCaptures = new AtomicInteger();
+    var markers =
+        new MarkerStore() {
+          @Override
+          public BatchGuard tableLiveGuard(ResourceId tableId) {
+            var table =
+                pointers
+                    .get(tableKey)
+                    .orElseThrow(
+                        () ->
+                            new BaseResourceRepository.BatchGuardFailedException("table is gone"));
+            long capturedVersion = table.getVersion();
+            guardCaptures.incrementAndGet();
+            return new BatchGuard() {
+              @Override
+              public List<PointerStore.CasOp> ops() {
+                return List.of(new PointerStore.CasCheck(tableKey, capturedVersion));
+              }
+
+              @Override
+              public Outcome reevaluate() {
+                return pointers.get(tableKey).map(Pointer::getVersion).orElse(0L) == capturedVersion
+                    ? Outcome.HOLDS
+                    : Outcome.BROKEN;
+              }
+
+              @Override
+              public String describe() {
+                return "table tbl-updated";
+              }
+            };
+          }
+        };
+    var queue = new RootResyncQueue(pointers, markers);
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-updated")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    queue.enqueue(tableId);
+
+    assertEquals(2, guardCaptures.get());
+    assertTrue(pointers.get(Keys.rootResyncPendingPointer("acct", "tbl-updated")).isPresent());
+  }
 
   @Test
   void enqueueBacksOffBetweenTransientStoreFailures() {

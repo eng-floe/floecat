@@ -19,6 +19,9 @@ package ai.floedb.floecat.service.catalog.impl;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -43,15 +46,26 @@ public class RootResyncQueue {
 
   private final PointerStore pointerStore;
   private final LongConsumer retrySleeper;
+  private final MarkerStore markerStore;
 
   @Inject
+  public RootResyncQueue(PointerStore pointerStore, MarkerStore markerStore) {
+    this(pointerStore, RootResyncQueue::sleepUnchecked, markerStore);
+  }
+
   public RootResyncQueue(PointerStore pointerStore) {
-    this(pointerStore, RootResyncQueue::sleepUnchecked);
+    this(pointerStore, RootResyncQueue::sleepUnchecked, null);
   }
 
   RootResyncQueue(PointerStore pointerStore, LongConsumer retrySleeper) {
+    this(pointerStore, retrySleeper, null);
+  }
+
+  private RootResyncQueue(
+      PointerStore pointerStore, LongConsumer retrySleeper, MarkerStore markerStore) {
     this.pointerStore = pointerStore;
     this.retrySleeper = retrySleeper;
+    this.markerStore = markerStore;
   }
 
   /**
@@ -62,21 +76,40 @@ public class RootResyncQueue {
    */
   public void enqueue(ResourceId tableId) {
     String key = Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId());
+    BatchGuard tableGuard = liveTableGuardOrNull(tableId);
+    if (tableGuard == null) {
+      return;
+    }
     RuntimeException lastFailure = null;
     for (int attempt = 0; attempt < ENQUEUE_ATTEMPTS; attempt++) {
       try {
-        if (pointerStore.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "", 1L))) {
+        if (compareAndSetGuarded(key, 0L, PointerReferences.blobPointer(key, "", 1L), tableGuard)) {
           return;
+        }
+        if (tableGuard.reevaluate() == BatchGuard.Outcome.BROKEN) {
+          tableGuard = liveTableGuardOrNull(tableId);
+          if (tableGuard == null) {
+            return;
+          }
+          continue;
         }
         var existing = pointerStore.get(key).orElse(null);
         if (existing == null) {
           continue; // deleted between the failed create and the read: re-create
         }
-        if (pointerStore.compareAndSet(
+        if (compareAndSetGuarded(
             key,
             existing.getVersion(),
-            PointerReferences.blobPointer(key, "", existing.getVersion() + 1))) {
+            PointerReferences.blobPointer(key, "", existing.getVersion() + 1),
+            tableGuard)) {
           return;
+        }
+        if (tableGuard.reevaluate() == BatchGuard.Outcome.BROKEN) {
+          tableGuard = liveTableGuardOrNull(tableId);
+          if (tableGuard == null) {
+            return;
+          }
+          continue;
         }
         // Lost the touch to another enqueue or a delete: retry from the top.
       } catch (RuntimeException e) {
@@ -90,6 +123,28 @@ public class RootResyncQueue {
     }
     throw new IllegalStateException(
         "root-resync marker for table " + tableId.getId() + " could not be recorded", lastFailure);
+  }
+
+  private BatchGuard liveTableGuardOrNull(ResourceId tableId) {
+    try {
+      return markerStore == null ? BatchGuard.NONE : markerStore.tableLiveGuard(tableId);
+    } catch (BaseResourceRepository.BatchGuardFailedException tableGone) {
+      return null;
+    }
+  }
+
+  private boolean compareAndSetGuarded(
+      String key,
+      long expectedVersion,
+      ai.floedb.floecat.common.rpc.Pointer next,
+      BatchGuard guard) {
+    if (guard == BatchGuard.NONE) {
+      return pointerStore.compareAndSet(key, expectedVersion, next);
+    }
+    var ops = new java.util.ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasUpsert(key, expectedVersion, next));
+    ops.addAll(guard.ops());
+    return pointerStore.compareAndSetBatch(ops);
   }
 
   private static void sleepUnchecked(long millis) {

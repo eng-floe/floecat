@@ -149,6 +149,15 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var fingerprint = canonicalFingerprint(normalizedSpec);
                   var catalogId = randomResourceId(accountId, ResourceKind.RK_CATALOG);
 
+                  // Publish under the account, not merely into its key prefix: without this the
+                  // catalog can commit after DeleteAccount has swept that prefix and be orphaned
+                  // under an account that no longer exists. See MarkerStore#accountLiveGuard.
+                  var accountLive =
+                      markerStore
+                          .accountLiveGuard(accountId)
+                          .orElseThrow(
+                              () -> GrpcErrors.notFound(corr, ACCOUNT, Map.of("id", accountId)));
+
                   var built =
                       Catalog.newBuilder()
                           .setResourceId(catalogId)
@@ -165,7 +174,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
                     }
 
-                    catalogRepo.create(built);
+                    catalogRepo.create(built, accountLive);
                     metadataGraph.invalidate(catalogId);
                     var meta = catalogRepo.metaForSafe(catalogId);
                     return CreateCatalogResponse.newBuilder()
@@ -184,7 +193,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                   () -> fingerprint,
                                   () -> {
                                     try {
-                                      catalogRepo.create(built);
+                                      catalogRepo.create(built, accountLive);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
                                       var existingOpt = catalogRepo.getByName(accountId, normName);
                                       if (existingOpt.isPresent()) {
@@ -328,6 +337,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   public Uni<DeleteCatalogResponse> deleteCatalog(DeleteCatalogRequest request) {
     var L = LogHelper.start(LOG, "DeleteCatalog");
 
+    // Retryable on a lost pointer CAS: see TableServiceImpl#deleteTable.
     return mapFailures(
             runWithRetry(
                 () -> {
@@ -349,6 +359,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
+                    if (safe.getPointerVersion() == 0L) {
+                      // Already gone, and this idempotent success is the last call that will ever
+                      // name it, so take its children marker with it. Safe only because the pointer
+                      // is provably absent — see MarkerStore#deleteCatalogMarker.
+                      markerStore.deleteCatalogMarker(id);
+                    }
                     metadataGraph.invalidate(id);
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
                   }
@@ -363,21 +379,28 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         correlationId, CATALOG_NOT_EMPTY, Map.of("display_name", displayName));
                   }
 
-                  if (!markerStore.advanceCatalogMarker(id, markerVersion)) {
+                  final MutationMeta out;
+                  try {
+                    var childrenGuard =
+                        markerStore.catalogChildrenUnchangedGuard(id, markerVersion);
+                    out =
+                        MutationOps.deleteWithPreconditions(
+                            () -> meta,
+                            request.getPrecondition(),
+                            expected ->
+                                catalogRepo.deleteWithPrecondition(id, expected, childrenGuard),
+                            () -> catalogRepo.metaForSafe(id),
+                            correlationId,
+                            "catalog",
+                            Map.of("id", id.getId()));
+                  } catch (BaseResourceRepository.BatchGuardFailedException childAppeared) {
                     throw GrpcErrors.preconditionFailed(
                         correlationId, CATALOG_CHILDREN_CHANGED, Map.of());
                   }
 
-                  var out =
-                      MutationOps.deleteWithPreconditions(
-                          () -> meta,
-                          request.getPrecondition(),
-                          expected -> catalogRepo.deleteWithPrecondition(id, expected),
-                          () -> catalogRepo.metaForSafe(id),
-                          correlationId,
-                          "catalog",
-                          Map.of("id", id.getId()));
-
+                  // The catalog's own marker goes with it; nothing else reaches that row once the
+                  // pointer is gone. See MarkerStore#deleteCatalogMarker.
+                  markerStore.deleteCatalogMarker(id);
                   metadataGraph.invalidate(id);
                   return DeleteCatalogResponse.newBuilder().setMeta(out).build();
                 }),

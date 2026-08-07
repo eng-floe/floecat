@@ -39,6 +39,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -102,6 +103,19 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   public static class AbortRetryableException extends RepoException {
     public AbortRetryableException(String msg) {
+      super(msg);
+    }
+  }
+
+  /**
+   * A mutation lost the atomic race against the deletion of the parent it was writing into (see
+   * {@link BatchGuard}). Retryable by design: the parent is gone, so re-running the enclosing RPC
+   * re-resolves it and fails with the natural NOT_FOUND for that surface rather than a bespoke
+   * error duplicated at every call site. Should the parent turn out to still exist — a version move
+   * rather than a delete — the retry simply re-captures the guard and proceeds.
+   */
+  public static class BatchGuardFailedException extends AbortRetryableException {
+    public BatchGuardFailedException(String msg) {
       super(msg);
     }
   }
@@ -380,16 +394,80 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   private static final int REFS_PAGE_SIZE = 1_000;
 
+  /**
+   * {@link #listRefsByPrefix} without holding the result: hands each pointer to {@code action} a
+   * page at a time, so peak memory is one page rather than the whole prefix.
+   *
+   * <p>For callers that consume rows independently — a drop that deletes each as it goes, a probe
+   * that stops at the first hit. Deleting the row just handed over is safe: page tokens resume from
+   * the last key seen, and a caller deleting keys under other prefixes cannot disturb this scan
+   * either.
+   *
+   * <p>{@code action} may throw; the exception propagates and abandons the scan.
+   */
+  public void forEachRefByPrefix(String prefix, java.util.function.Consumer<Pointer> action) {
+    anyRefByPrefix(
+        prefix,
+        pointer -> {
+          action.accept(pointer);
+          return false;
+        });
+  }
+
+  /**
+   * The same scan, stopping at the first pointer {@code test} accepts, and reporting whether one
+   * did.
+   *
+   * <p>For probes — "does this prefix hold a row satisfying X" — where the answer is usually found
+   * in the first page and draining the rest is waste. Stopping is a return value rather than an
+   * exception thrown through the scan: an exception is how this method reports a real fault, and
+   * {@link #observeRepository} records one as a failed span and an error metric. A probe that
+   * succeeds is not an error, and the common case here is the successful one.
+   */
+  public boolean anyRefByPrefix(String prefix, java.util.function.Predicate<Pointer> test) {
+    return observeRepository(
+        "any_ref_by_prefix",
+        () -> {
+          var seenTokens = new HashSet<String>();
+          String token = "";
+          do {
+            var next = new StringBuilder();
+            for (var pointer :
+                pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
+              if (test.test(pointer)) {
+                return true;
+              }
+            }
+            token = next.toString();
+            if (!token.isBlank() && !seenTokens.add(token)) {
+              throw new IllegalStateException(
+                  "pointer scan did not advance; repeated page token: " + token);
+            }
+          } while (!token.isBlank());
+          return false;
+        });
+  }
+
   public List<Pointer> listRefsByPrefix(String prefix) {
     return observeRepository(
         "list_refs_by_prefix",
         () -> {
           List<Pointer> out = new ArrayList<>();
+          var seenTokens = new HashSet<String>();
           String token = "";
           do {
             var next = new StringBuilder();
             out.addAll(pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next));
             token = next.toString();
+            // A pointer store that returns a non-advancing cursor would spin this loop forever with
+            // no observable failure. Treat a repeated token as a hard error instead: callers
+            // include
+            // teardown paths on worker threads, where a silent spin is indistinguishable from a
+            // hang.
+            if (!token.isBlank() && !seenTokens.add(token)) {
+              throw new IllegalStateException(
+                  "pointer scan did not advance; repeated page token: " + token);
+            }
           } while (!token.isBlank());
           return out;
         });
@@ -465,6 +543,84 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   @Override
   public int countByPrefix(String prefix) {
     return observeRepository("count_by_prefix", () -> pointerStore.countByPrefix(prefix));
+  }
+
+  /**
+   * Removes every pointer row under {@code prefix}, whatever it names, and reports how many went.
+   *
+   * <p>For teardown of a whole subtree only. A per-resource delete cannot always leave the index
+   * clean: when the resource's blob is unreadable, the delete has no way to learn which secondary
+   * keys that blob named, so it removes the canonical pointer and leaves the by-name rows behind.
+   * Those rows name something that no longer exists and no per-resource path will ever revisit
+   * them. A caller destroying everything under the prefix can say so directly.
+   */
+  public int deleteByPrefix(String prefix) {
+    return observeRepository("delete_by_prefix", () -> pointerStore.deleteByPrefix(prefix));
+  }
+
+  /**
+   * Removes rows under {@code prefix} one versioned row at a time, with {@code guard} in the same
+   * batch as every removal. A bulk prefix delete cannot carry a guard and is therefore unsafe when
+   * the prefix's owner id can be reused while the sweep is running.
+   */
+  public int deleteByPrefix(String prefix, BatchGuard guard) {
+    return observeRepository(
+        "delete_by_prefix_guarded",
+        () -> {
+          int deleted = 0;
+          var seenTokens = new HashSet<String>();
+          String token = "";
+          while (true) {
+            var next = new StringBuilder();
+            for (var row : pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next)) {
+              if (deletePointerWithGuard(pointerStore, row, guard, deleted > 0)) {
+                deleted++;
+              }
+            }
+            token = next.toString();
+            if (token.isBlank()) {
+              return deleted;
+            }
+            if (!seenTokens.add(token)) {
+              throw new IllegalStateException(
+                  "pointer scan did not advance; repeated page token: " + token);
+            }
+          }
+        });
+  }
+
+  /**
+   * Deletes one pointer while {@code guard} holds, retrying false batch results until the key is
+   * confirmed absent.
+   *
+   * <p>A backend may report both a real conditional miss and a transient transaction conflict as
+   * {@code false}. Treating every non-guard failure as "the row moved or disappeared" silently
+   * skips a still-live row after the latter. Re-reading closes that ambiguity: an absent row needs
+   * no more work, while a present row is retried at its current version.
+   */
+  public static boolean deletePointerWithGuard(
+      PointerStore pointerStore, Pointer scanned, BatchGuard guard, boolean priorWrite) {
+    Pointer current = scanned;
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      var ops = new ArrayList<PointerStore.CasOp>();
+      ops.add(new PointerStore.CasDelete(current.getKey(), current.getVersion()));
+      ops.addAll(guard.ops());
+      if (pointerStore.compareAndSetBatch(ops)) {
+        return true;
+      }
+      if (guard.reevaluate() == BatchGuard.Outcome.BROKEN) {
+        String message = "guarded pointer delete lost the race against " + guard.describe();
+        if (priorWrite) {
+          throw new BatchGuardFailedAfterWriteException(message);
+        }
+        throw new BatchGuardFailedException(message);
+      }
+      current = pointerStore.get(current.getKey()).orElse(null);
+      if (current == null) {
+        return false;
+      }
+    }
+    throw new AbortRetryableException("guarded pointer delete contended for: " + scanned.getKey());
   }
 
   protected static String sha256B64(byte[] data) {

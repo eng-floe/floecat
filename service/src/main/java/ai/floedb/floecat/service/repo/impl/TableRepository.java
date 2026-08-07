@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -63,18 +65,49 @@ public class TableRepository {
     repo.create(table);
   }
 
+  /**
+   * Publishes a table atomically with respect to deletion of its namespace; see {@link BatchGuard}.
+   */
+  public void create(Table table, BatchGuard namespaceGuard) {
+    repo.create(table, namespaceGuard);
+  }
+
   public boolean update(Table table, long expectedPointerVersion) {
     return repo.update(table, expectedPointerVersion);
+  }
+
+  /** Guarded update, for a reparent that publishes the table into a different namespace. */
+  public boolean update(Table table, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.update(table, expectedPointerVersion, namespaceGuard);
   }
 
   public boolean delete(ResourceId tableResourceId) {
     return repo.delete(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  /**
+   * Guarded delete by id, for account teardown: the removal is unpinned as to the table itself —
+   * everything is going — but still rests on the account being gone, which travels as {@code
+   * guard}.
+   */
+  public boolean delete(ResourceId tableResourceId, BatchGuard guard) {
+    return repo.delete(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()), guard);
+  }
+
   public boolean deleteWithPrecondition(ResourceId tableResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
         expectedPointerVersion);
+  }
+
+  /** Guarded delete, for removing a table only while its namespace is unchanged. */
+  public boolean deleteWithPrecondition(
+      ResourceId tableResourceId, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.deleteWithPrecondition(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
+        expectedPointerVersion,
+        namespaceGuard);
   }
 
   public Optional<Table> getById(ResourceId tableResourceId) {
@@ -99,6 +132,40 @@ public class TableRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * The raw by-name pointer rows {@link #count} counts, with no blob fetch, handed over a page at a
+   * time.
+   *
+   * <p>{@link #list} resolves each row's blob and so cannot enumerate a by-name pointer whose table
+   * is gone or whose blob dangles — exactly the rows a caller reconciling leftover index state
+   * needs to see.
+   *
+   * <p>Streamed rather than returned because a namespace can hold any number of tables, and the
+   * callers — a drop, a sweep, a probe that stops at the first hit — act on each row and are done
+   * with it. Materializing the set made peak memory proportional to the namespace.
+   */
+  public void forEachNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Consumer<Pointer> action) {
+    repo.forEachRefByPrefix(
+        Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), action);
+  }
+
+  /**
+   * The same rows, stopped at the first one {@code test} accepts. For probes that only need to know
+   * whether such a row exists, so the scan ends on a return rather than on a thrown exception.
+   */
+  public boolean anyNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Predicate<Pointer> test) {
+    return repo.anyRefByPrefix(
+        Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId), test);
   }
 
   /**

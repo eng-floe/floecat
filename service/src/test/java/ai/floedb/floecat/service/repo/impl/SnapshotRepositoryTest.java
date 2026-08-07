@@ -31,6 +31,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -55,6 +57,49 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 class SnapshotRepositoryTest {
+
+  @Test
+  void snapshotCreateCannotPublishWhenItsTableFenceIsBroken() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var tables = new TableRepository(pointers, blobs);
+    var current = new CurrentSnapshotPointerRepository(pointers, blobs);
+    var roots = new TableRootRepository(pointers, blobs);
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String tableKey = Keys.tablePointerById("acct", "table-1");
+    BatchGuard brokenTable =
+        new BatchGuard() {
+          @Override
+          public java.util.List<PointerStore.CasOp> ops() {
+            return java.util.List.of(new PointerStore.CasCheck(tableKey, 1L));
+          }
+
+          @Override
+          public Outcome reevaluate() {
+            return Outcome.BROKEN;
+          }
+
+          @Override
+          public String describe() {
+            return "table table-1";
+          }
+        };
+    var markers = mock(MarkerStore.class);
+    when(markers.tableLiveGuard(tableId)).thenReturn(brokenTable);
+    var repository =
+        new SnapshotRepository(pointers, blobs, tables, current, roots, null, null, markers);
+    var snapshot = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+
+    assertThrows(
+        BaseResourceRepository.BatchGuardFailedException.class, () -> repository.create(snapshot));
+    assertTrue(pointers.get(Keys.snapshotPointerById("acct", "table-1", 7L)).isEmpty());
+  }
+
   private final Clock clock = Clock.systemUTC();
 
   private TableRepository tableRepo;

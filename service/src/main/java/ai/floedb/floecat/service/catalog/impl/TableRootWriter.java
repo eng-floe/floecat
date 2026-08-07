@@ -27,6 +27,8 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.BlobRefs;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -55,6 +57,7 @@ public class TableRootWriter {
   private final SnapshotRepository snapshots;
   private final ConstraintRepository constraints;
   private final StatsStore statsStore;
+  private final MarkerStore markerStore;
 
   @Inject
   public TableRootWriter(
@@ -63,13 +66,32 @@ public class TableRootWriter {
       TableRepository tables,
       SnapshotRepository snapshots,
       ConstraintRepository constraints,
-      StatsStore statsStore) {
+      StatsStore statsStore,
+      MarkerStore markerStore) {
     this.roots = roots;
     this.committer = committer;
     this.tables = tables;
     this.snapshots = snapshots;
     this.constraints = constraints;
     this.statsStore = statsStore;
+    this.markerStore = markerStore;
+  }
+
+  public TableRootWriter(
+      TableRootRepository roots,
+      TableRootCommitter committer,
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      ConstraintRepository constraints,
+      StatsStore statsStore) {
+    this(roots, committer, tables, snapshots, constraints, statsStore, null);
+  }
+
+  private void commitLive(ResourceId tableId, TableRootCommitter.RootMutator mutator) {
+    committer.commitRefreshingGuard(
+        tableId,
+        mutator,
+        () -> markerStore == null ? BatchGuard.NONE : markerStore.tableLiveGuard(tableId));
   }
 
   /**
@@ -87,7 +109,7 @@ public class TableRootWriter {
     // still require the selected manifest entry to carry a stats generation before pinning it, so
     // logical Iceberg metadata can move current without exposing an unfinalized scan.
     boolean advanceAtRegistration = true;
-    committer.commit(
+    commitLive(
         tableId,
         TableRootMutations.upsertSnapshot(
             roots,
@@ -112,7 +134,7 @@ public class TableRootWriter {
 
   /** Removes a deleted snapshot's entry from the root manifest. */
   public void removeSnapshot(ResourceId tableId, long snapshotId) {
-    committer.commit(tableId, TableRootMutations.removeSnapshot(roots, tableId, snapshotId));
+    commitLive(tableId, TableRootMutations.removeSnapshot(roots, tableId, snapshotId));
   }
 
   /** Records the table's (possibly new) immutable definition blob on the root. */
@@ -121,7 +143,7 @@ public class TableRootWriter {
     if (definitionRef == null) {
       return;
     }
-    committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
+    commitLive(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
   }
 
   /**
@@ -141,7 +163,7 @@ public class TableRootWriter {
     if (!StatsVisibilityGate.gateOnFinalize(statsStore)) {
       return;
     }
-    committer.commit(
+    commitLive(
         tableId,
         current -> {
           // Read the active generation INSIDE the mutator: concurrent activations race, and a
@@ -172,7 +194,7 @@ public class TableRootWriter {
    * write. The ref is read back from the constraints family, so a delete clears it.
    */
   public void commitConstraints(ResourceId tableId, long snapshotId) {
-    committer.commit(
+    commitLive(
         tableId,
         TableRootMutations.setConstraints(
             roots,
@@ -208,7 +230,7 @@ public class TableRootWriter {
             return deleteRoot(tableId);
           }
           boolean[] converged = {true};
-          committer.commit(
+          committer.commitRefreshingGuard(
               tableId,
               current -> {
                 // The committed families are re-read INSIDE the mutator: resync FORCES currency,
@@ -260,7 +282,8 @@ public class TableRootWriter {
                           return loaded;
                         })
                     .apply(current);
-              });
+              },
+              () -> markerStore == null ? BatchGuard.NONE : markerStore.tableLiveGuard(tableId));
           // A drop can race the commit: the committer persists synthesized history even on a
           // mutator no-op, so a definition-less root (built from lingering snapshot pointers
           // mid-drop-cleanup) may have just been created. Re-probe and take the drop path.

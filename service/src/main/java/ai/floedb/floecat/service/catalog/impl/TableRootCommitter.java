@@ -20,10 +20,13 @@ import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * The single owner of every {@link TableRoot} mutation. A commit is: read the current root (version
@@ -48,16 +51,23 @@ public class TableRootCommitter {
 
   private final TableRootRepository roots;
   private final TableRootSynthesizer synthesizer;
+  private final MarkerStore markerStore;
 
   @Inject
-  public TableRootCommitter(TableRootRepository roots, TableRootSynthesizer synthesizer) {
+  public TableRootCommitter(
+      TableRootRepository roots, TableRootSynthesizer synthesizer, MarkerStore markerStore) {
     this.roots = roots;
     this.synthesizer = synthesizer;
+    this.markerStore = markerStore;
+  }
+
+  public TableRootCommitter(TableRootRepository roots, TableRootSynthesizer synthesizer) {
+    this(roots, synthesizer, null);
   }
 
   /** Without legacy synthesis (unit tests exercising pure commit semantics). */
   public TableRootCommitter(TableRootRepository roots) {
-    this(roots, null);
+    this(roots, null, null);
   }
 
   /** A root commit could not be applied; the calling mutation must fail. */
@@ -103,12 +113,28 @@ public class TableRootCommitter {
    * commit.
    */
   public Optional<TableRoot> commit(ResourceId tableId, RootMutator mutator) {
+    return commitRefreshingGuard(
+        tableId,
+        mutator,
+        () -> markerStore == null ? BatchGuard.NONE : markerStore.tableLiveGuard(tableId));
+  }
+
+  /** Commits only while the table definition captured by {@code tableGuard} remains live. */
+  public Optional<TableRoot> commit(
+      ResourceId tableId, RootMutator mutator, BatchGuard tableGuard) {
+    return commitRefreshingGuard(tableId, mutator, () -> tableGuard);
+  }
+
+  /** Commits with a freshly captured table guard on every CAS retry. */
+  Optional<TableRoot> commitRefreshingGuard(
+      ResourceId tableId, RootMutator mutator, Supplier<BatchGuard> tableGuardSupplier) {
     BaseResourceRepository.AbortRetryableException lastRetryable = null;
     BaseResourceRepository.NotFoundException lastGone = null;
     for (int attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
       boolean won;
       TableRoot desired;
       try {
+        BatchGuard tableGuard = tableGuardSupplier.get();
         // THE COMMIT FUNNEL READS LIVE, PERIOD — pointer AND blob. The live pointer read yields
         // the CAS expected-version and names the base root coherently (a cached pointer was a
         // lost-update hazard: a straggling reader could repopulate an older pointer and let this
@@ -155,7 +181,10 @@ public class TableRootCommitter {
                 .setCommittedAt(Timestamps.fromMillis(System.currentTimeMillis()))
                 .build();
 
-        won = fromStore ? roots.update(desired, expectedVersion) : roots.createIfAbsent(desired);
+        won =
+            fromStore
+                ? roots.update(desired, expectedVersion, tableGuard)
+                : roots.createIfAbsent(desired, tableGuard);
       } catch (BaseResourceRepository.AbortRetryableException retryable) {
         // Transient store contention on a read or the CAS itself: retry with fresh reads.
         lastRetryable = retryable;

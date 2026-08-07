@@ -294,9 +294,34 @@ public final class IdempotencyGuard {
           getAfterCreatePendingNanos,
           creatorNanos,
           finalizeSuccessNanos);
+      // The PENDING record is kept for a retryable failure because the creator may have committed
+      // before failing, and deleting it would let a retry write the resource twice. A broken batch
+      // guard is the one retryable failure where releasing the key is safe anyway, and the record
+      // must go — otherwise the retry the guard's own contract promises can never happen. Every
+      // later attempt with this key reads PENDING and aborts instead of re-running the creator, so
+      // the key stays unusable until its TTL expires and the resource is never created. A child
+      // fence breaks on any change to its namespace's pointer, a rename or a description edit
+      // included, so this is an ordinary outcome, not a rare one.
+      //
+      // What makes it safe is narrower than "nothing was written". The guarded batch itself
+      // certainly wrote nothing: the exception is raised either before it is assembled or after
+      // compareAndSetBatch refused the whole thing. But a creator may have committed earlier writes
+      // on the way to that batch — CreateNamespace with parents runs ensurePathChainExists first,
+      // which creates intermediate ancestors and bumps the catalog marker before the guarded leaf
+      // create that breaks. The real invariant is that every write reachable from the guarded leaf
+      // is idempotent on replay: those ancestors are keyed by path, so a retry resolves each level
+      // through refByPath and skips it, and the leaf gets a fresh id because none was committed.
+      //
+      // So a new multi-write creator may only rely on this release if its pre-writes are
+      // replay-idempotent too. One that is not — anything keyed by a value it generates per
+      // attempt,
+      // or any non-idempotent side effect — would have that work duplicated by the retry this
+      // release enables, and must keep its record instead.
+      boolean provablyUncommitted = t instanceof BaseResourceRepository.BatchGuardFailedException;
       boolean retryable =
-          (t instanceof BaseResourceRepository.AbortRetryableException)
-              || (t instanceof StorageAbortRetryableException);
+          !provablyUncommitted
+              && ((t instanceof BaseResourceRepository.AbortRetryableException)
+                  || (t instanceof StorageAbortRetryableException));
       if (!retryable) {
         try {
           store.delete(key);

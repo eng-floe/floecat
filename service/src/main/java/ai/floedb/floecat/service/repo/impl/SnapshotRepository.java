@@ -28,7 +28,9 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -62,8 +64,30 @@ public class SnapshotRepository {
   private final TableRootRepository roots;
   private final StatsStore statsStore;
   private final Clock clock;
+  private final MarkerStore markerStore;
 
   @Inject
+  public SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
+      TableRootRepository roots,
+      StatsStore statsStore,
+      ImmutableBlobCache blobCache,
+      MarkerStore markerStore) {
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        roots,
+        statsStore,
+        Clock.systemUTC(),
+        blobCache,
+        markerStore);
+  }
+
   public SnapshotRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -80,7 +104,8 @@ public class SnapshotRepository {
         roots,
         statsStore,
         Clock.systemUTC(),
-        blobCache);
+        blobCache,
+        null);
   }
 
   public SnapshotRepository(
@@ -98,6 +123,7 @@ public class SnapshotRepository {
         roots,
         statsStore,
         Clock.systemUTC(),
+        null,
         null);
   }
 
@@ -119,6 +145,7 @@ public class SnapshotRepository {
         roots,
         null,
         Clock.systemUTC(),
+        null,
         null);
   }
 
@@ -154,7 +181,8 @@ public class SnapshotRepository {
       TableRootRepository roots,
       StatsStore statsStore,
       Clock clock,
-      ImmutableBlobCache blobCache) {
+      ImmutableBlobCache blobCache,
+      MarkerStore markerStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -170,10 +198,15 @@ public class SnapshotRepository {
     this.roots = roots;
     this.statsStore = statsStore;
     this.clock = clock;
+    this.markerStore = markerStore;
   }
 
   public void create(Snapshot snapshot) {
-    repo.create(snapshot);
+    repo.create(snapshot, tableGuard(snapshot.getTableId()));
+  }
+
+  private BatchGuard tableGuard(ResourceId tableId) {
+    return markerStore == null ? BatchGuard.NONE : markerStore.tableLiveGuard(tableId);
   }
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {
@@ -183,12 +216,14 @@ public class SnapshotRepository {
     // snapshot current would move the pointer but leave the pinned identity stale, and new CURRENT
     // query pins would resolve the old snapshot. Advancing here silently pre-empted that service
     // advance (it saw the pointer already moved → UNCHANGED → no publish).
-    return repo.update(snapshot, expectedPointerVersion);
+    return repo.update(snapshot, expectedPointerVersion, tableGuard(snapshot.getTableId()));
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
     boolean deleted =
-        repo.delete(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+        repo.delete(
+            new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
+            tableGuard(tableId));
     if (deleted) {
       deleteCurrentPointerIfCurrent(tableId, snapshotId);
     }
@@ -200,7 +235,8 @@ public class SnapshotRepository {
     boolean deleted =
         repo.deleteWithPrecondition(
             new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
-            expectedPointerVersion);
+            expectedPointerVersion,
+            tableGuard(tableId));
     if (deleted) {
       deleteCurrentPointerIfCurrent(tableId, snapshotId);
     }
@@ -252,7 +288,7 @@ public class SnapshotRepository {
 
       CurrentSnapshotPointer next = buildCurrentPointer(tableId, candidate);
       if (currentPointer.isEmpty()) {
-        if (currentPointerRepo.createIfAbsent(next)) {
+        if (currentPointerRepo.createIfAbsent(next, tableGuard(tableId))) {
           return CurrentSnapshotPointerUpdateResult.UPDATED;
         }
       } else {
@@ -265,7 +301,7 @@ public class SnapshotRepository {
         if (!shouldAdvanceCurrentSnapshot(tableId, observed.get().pointer(), candidate)) {
           return CurrentSnapshotPointerUpdateResult.UNCHANGED;
         }
-        if (currentPointerRepo.update(next, observed.get().pointerVersion())) {
+        if (currentPointerRepo.update(next, observed.get().pointerVersion(), tableGuard(tableId))) {
           return CurrentSnapshotPointerUpdateResult.UPDATED;
         }
       }
@@ -564,7 +600,7 @@ public class SnapshotRepository {
         || !afterMeta.get().equals(before.get())) {
       return;
     }
-    currentPointerRepo.deleteWithPrecondition(tableId, expectedVersion);
+    currentPointerRepo.deleteWithPrecondition(tableId, expectedVersion, tableGuard(tableId));
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {

@@ -163,8 +163,22 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   }
 
   @Override
+  public boolean createIfAbsent(TableRoot value, BatchGuard tableGuard) {
+    boolean created = super.createIfAbsent(value, tableGuard);
+    refreshPointerAfterWrite(value.getTableId(), created);
+    return created;
+  }
+
+  @Override
   public boolean update(TableRoot value, long expectedPointerVersion) {
     boolean updated = super.update(value, expectedPointerVersion);
+    refreshPointerAfterWrite(value.getTableId(), updated);
+    return updated;
+  }
+
+  @Override
+  public boolean update(TableRoot value, long expectedPointerVersion, BatchGuard tableGuard) {
+    boolean updated = super.update(value, expectedPointerVersion, tableGuard);
     refreshPointerAfterWrite(value.getTableId(), updated);
     return updated;
   }

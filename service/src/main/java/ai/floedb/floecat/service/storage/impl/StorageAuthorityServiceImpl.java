@@ -160,7 +160,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   public Uni<CreateStorageAuthorityResponse> createStorageAuthority(
       CreateStorageAuthorityRequest request) {
     return mapFailures(
-        run(
+        runWithRetry(
             () -> {
               PrincipalContext principal = principalProvider.get();
               authz.require(principal, List.of("connector.manage", "connector.create"));
@@ -262,6 +262,12 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Override
   public Uni<DeleteStorageAuthorityResponse> deleteStorageAuthority(
       DeleteStorageAuthorityRequest request) {
+    // Retried, like every other delete that goes through MutationOps.deleteWithPreconditions: a
+    // lost
+    // pointer CAS on a resource that still exists is reported as retryable, and unretried that
+    // escapes to the caller as ABORTED while skipping the secret removal below. Safe to re-run —
+    // the
+    // delete is idempotent once the pointer is gone, and so is the secret delete.
     return mapFailures(
         runWithRetry(
             () -> {

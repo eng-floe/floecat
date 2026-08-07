@@ -21,6 +21,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.repo.model.TableScopedPointerKey;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.ProtoParser;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -74,12 +76,40 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.createIfAbsent(value);
   }
 
+  /** Creates this table-owned pointer only while the table definition remains live. */
+  public boolean createIfAbsent(T value, BatchGuard tableGuard) {
+    if (tableGuard == BatchGuard.NONE) {
+      return createIfAbsent(value);
+    }
+    try {
+      repo.create(value, tableGuard);
+      return true;
+    } catch (BaseResourceRepository.NameConflictException alreadyPresent) {
+      return false;
+    }
+  }
+
   public boolean update(T value, long expectedPointerVersion) {
     return repo.update(value, expectedPointerVersion);
   }
 
+  public boolean update(T value, long expectedPointerVersion, BatchGuard tableGuard) {
+    if (tableGuard == BatchGuard.NONE) {
+      return update(value, expectedPointerVersion);
+    }
+    return repo.update(value, expectedPointerVersion, tableGuard);
+  }
+
   public boolean deleteWithPrecondition(ResourceId tableId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(key(tableId), expectedPointerVersion);
+  }
+
+  public boolean deleteWithPrecondition(
+      ResourceId tableId, long expectedPointerVersion, BatchGuard tableGuard) {
+    if (tableGuard == BatchGuard.NONE) {
+      return deleteWithPrecondition(tableId, expectedPointerVersion);
+    }
+    return repo.deleteWithPrecondition(key(tableId), expectedPointerVersion, tableGuard);
   }
 
   public MutationMeta metaFor(ResourceId tableId) {

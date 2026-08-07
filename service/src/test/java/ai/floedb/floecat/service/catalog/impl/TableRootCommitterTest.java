@@ -30,8 +30,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -72,6 +75,94 @@ class TableRootCommitterTest {
 
   private void commitDefinition(String uri) {
     committer.commit(TABLE, current -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
+  }
+
+  @Test
+  void lazyRootPublicationCannotCommitAfterTheTableFenceBreaks() {
+    var pointers = new InMemoryPointerStore();
+    var guardedRoots = new TableRootRepository(pointers, new InMemoryBlobStore());
+    String tableKey = ai.floedb.floecat.service.repo.model.Keys.tablePointerById("acct", "tbl");
+    BatchGuard brokenTable =
+        new BatchGuard() {
+          @Override
+          public List<PointerStore.CasOp> ops() {
+            return List.of(new PointerStore.CasCheck(tableKey, 1L));
+          }
+
+          @Override
+          public Outcome reevaluate() {
+            return Outcome.BROKEN;
+          }
+
+          @Override
+          public String describe() {
+            return "table tbl";
+          }
+        };
+    var markers = mock(MarkerStore.class);
+    when(markers.tableLiveGuard(TABLE)).thenReturn(brokenTable);
+    var guardedCommitter = new TableRootCommitter(guardedRoots, null, markers);
+
+    assertThrows(
+        TableRootCommitter.CommitFailedException.class,
+        () ->
+            guardedCommitter.commit(
+                TABLE,
+                current ->
+                    TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def.pb")).build()));
+    assertTrue(guardedRoots.get(TABLE).isEmpty());
+  }
+
+  @Test
+  void retryRecapturesTheTableGuardAfterTheDefinitionAdvances() {
+    var pointers = new InMemoryPointerStore();
+    var guardedRoots = new TableRootRepository(pointers, new InMemoryBlobStore());
+    String tableKey = ai.floedb.floecat.service.repo.model.Keys.tablePointerById("acct", "tbl");
+    pointers.compareAndSet(
+        tableKey,
+        0L,
+        ai.floedb.floecat.service.repo.model.PointerReferences.blobPointer(
+            tableKey, "blob://table/v1", 1L));
+    pointers.compareAndSet(
+        tableKey,
+        1L,
+        ai.floedb.floecat.service.repo.model.PointerReferences.blobPointer(
+            tableKey, "blob://table/v2", 2L));
+    var captures = new AtomicInteger();
+    var markers =
+        new MarkerStore() {
+          @Override
+          public BatchGuard tableLiveGuard(ResourceId tableId) {
+            long expectedVersion = captures.incrementAndGet() == 1 ? 1L : 2L;
+            return new BatchGuard() {
+              @Override
+              public List<PointerStore.CasOp> ops() {
+                return List.of(new PointerStore.CasCheck(tableKey, expectedVersion));
+              }
+
+              @Override
+              public Outcome reevaluate() {
+                return pointers.get(tableKey).map(p -> p.getVersion()).orElse(0L) == expectedVersion
+                    ? Outcome.HOLDS
+                    : Outcome.BROKEN;
+              }
+
+              @Override
+              public String describe() {
+                return "table tbl";
+              }
+            };
+          }
+        };
+    var guardedCommitter = new TableRootCommitter(guardedRoots, null, markers);
+
+    var committed =
+        guardedCommitter.commit(
+            TABLE,
+            current -> TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def.pb")).build());
+
+    assertTrue(committed.isPresent());
+    assertEquals(2, captures.get());
   }
 
   @Test

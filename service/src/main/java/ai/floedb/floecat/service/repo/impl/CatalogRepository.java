@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -59,6 +61,15 @@ public class CatalogRepository {
     repo.create(catalog);
   }
 
+  /**
+   * Guarded create: the catalog becomes visible only while {@code guard} still holds. Used to
+   * publish into an account atomically with respect to that account's deletion — see {@link
+   * ai.floedb.floecat.service.repo.util.MarkerStore#accountLiveGuard}.
+   */
+  public void create(Catalog catalog, BatchGuard guard) {
+    repo.create(catalog, guard);
+  }
+
   public boolean update(Catalog catalog, long expectedPointerVersion) {
     return repo.update(catalog, expectedPointerVersion);
   }
@@ -67,10 +78,24 @@ public class CatalogRepository {
     return repo.delete(new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  /** Guarded delete by id; see {@link TableRepository#delete(ResourceId, BatchGuard)}. */
+  public boolean delete(ResourceId catalogResourceId, BatchGuard guard) {
+    return repo.delete(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()), guard);
+  }
+
   public boolean deleteWithPrecondition(ResourceId catalogResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()),
         expectedPointerVersion);
+  }
+
+  public boolean deleteWithPrecondition(
+      ResourceId catalogResourceId, long expectedPointerVersion, BatchGuard guard) {
+    return repo.deleteWithPrecondition(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()),
+        expectedPointerVersion,
+        guard);
   }
 
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
@@ -88,6 +113,53 @@ public class CatalogRepository {
 
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  }
+
+  /**
+   * Deletes the account's leftover catalog index rows — its by-id and by-name families — and
+   * reports how many.
+   *
+   * <p>Teardown only. Deleting a catalog whose blob cannot be read removes the canonical pointer
+   * but not the by-name row, because the name lives in the blob — so an account sweep has to clear
+   * the residue itself or leave an index row naming a catalog that is gone.
+   *
+   * <p>Scoped to those two families, NOT to {@link Keys#catalogRootPrefix}: a catalog's key space
+   * also contains everything nested beneath it — namespace by-path rows, and the by-name rows of
+   * every table, view and relation in them. Those are the only handles the recursive drop and a
+   * retried DeleteAccount have for reaching those resources, so sweeping the whole root would, on
+   * any teardown that had not finished, erase the index for resources that still exist and orphan
+   * them permanently — the exact outcome this sweep is here to prevent.
+   */
+  public int deleteResidualRows(String accountId) {
+    return repo.deleteByPrefix(Keys.catalogPointerByIdPrefix(accountId))
+        + repo.deleteByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  }
+
+  /** Guarded account-teardown counterpart of {@link #deleteResidualRows(String)}. */
+  public int deleteResidualRows(String accountId, BatchGuard accountGone) {
+    return repo.deleteByPrefix(Keys.catalogPointerByIdPrefix(accountId), accountGone)
+        + repo.deleteByPrefix(Keys.catalogPointerByNamePrefix(accountId), accountGone);
+  }
+
+  /**
+   * The account's catalog ids, streamed a page at a time from canonical pointer rows.
+   *
+   * <p>Identity only, and deliberately so: {@link #list} parses every catalog blob, so one
+   * unreadable blob fails the whole enumeration. Teardown cannot survive that — it runs after the
+   * account pointer is gone, so the exception is not retryable and every attempt fails identically,
+   * stranding every catalog behind the unreadable one. The by-id key carries the id, which is all a
+   * recursive drop needs.
+   */
+  public void forEachId(String accountId, java.util.function.Consumer<ResourceId> action) {
+    repo.forEachRefByPrefix(
+        Keys.catalogPointerByIdPrefix(accountId),
+        pointer ->
+            action.accept(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(Keys.extractLastSegment(pointer.getKey()))
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .build()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {

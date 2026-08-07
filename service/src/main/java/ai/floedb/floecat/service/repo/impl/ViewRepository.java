@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -63,17 +65,43 @@ public class ViewRepository {
     repo.create(view);
   }
 
+  /**
+   * Publishes a view atomically with respect to deletion of its namespace; see {@link BatchGuard}.
+   */
+  public void create(View view, BatchGuard namespaceGuard) {
+    repo.create(view, namespaceGuard);
+  }
+
   public boolean update(View view, long expectedPointerVersion) {
     return repo.update(view, expectedPointerVersion);
+  }
+
+  /** Guarded update, for a reparent that publishes the view into a different namespace. */
+  public boolean update(View view, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.update(view, expectedPointerVersion, namespaceGuard);
   }
 
   public boolean delete(ResourceId viewResourceId) {
     return repo.delete(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
+  /** Guarded delete by id; see {@link TableRepository#delete(ResourceId, BatchGuard)}. */
+  public boolean delete(ResourceId viewResourceId, BatchGuard guard) {
+    return repo.delete(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), guard);
+  }
+
   public boolean deleteWithPrecondition(ResourceId viewResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
+  }
+
+  /** Guarded delete, for removing a view only while its namespace is unchanged. */
+  public boolean deleteWithPrecondition(
+      ResourceId viewResourceId, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.deleteWithPrecondition(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()),
+        expectedPointerVersion,
+        namespaceGuard);
   }
 
   public Optional<View> getById(ResourceId viewResourceId) {
@@ -98,6 +126,29 @@ public class ViewRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * The raw by-name pointer rows {@link #count} counts, streamed a page at a time; see {@code
+   * TableRepository#forEachNamePointer}.
+   */
+  public void forEachNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Consumer<Pointer> action) {
+    repo.forEachRefByPrefix(
+        Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), action);
+  }
+
+  /** The same rows, stopped at the first hit; see {@code TableRepository#anyNamePointer}. */
+  public boolean anyNamePointer(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      java.util.function.Predicate<Pointer> test) {
+    return repo.anyRefByPrefix(
+        Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId), test);
   }
 
   /**

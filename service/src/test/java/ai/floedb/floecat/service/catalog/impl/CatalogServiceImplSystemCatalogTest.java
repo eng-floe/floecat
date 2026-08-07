@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -36,7 +37,9 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -52,6 +55,7 @@ class CatalogServiceImplSystemCatalogTest {
 
   private CatalogServiceImpl svc;
   private CatalogRepository catalogRepo;
+  private NamespaceRepository namespaceRepo;
   private CatalogOverlay overlay;
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
@@ -62,6 +66,7 @@ class CatalogServiceImplSystemCatalogTest {
     svc = new CatalogServiceImpl();
 
     catalogRepo = mock(CatalogRepository.class);
+    namespaceRepo = mock(NamespaceRepository.class);
     PrincipalProvider principal = mock(PrincipalProvider.class);
     Authorizer authz = mock(Authorizer.class);
     engineContext = mock(EngineContextProvider.class);
@@ -70,6 +75,7 @@ class CatalogServiceImplSystemCatalogTest {
     metadataGraph = mock(UserGraph.class);
 
     svc.catalogRepo = catalogRepo;
+    svc.namespaceRepo = namespaceRepo;
     svc.principal = principal;
     svc.authz = authz;
     svc.engineContext = engineContext;
@@ -142,6 +148,34 @@ class CatalogServiceImplSystemCatalogTest {
 
     assertEquals(0L, response.getMeta().getPointerVersion());
     verify(metadataGraph).invalidate(id);
+  }
+
+  @Test
+  void deleteCatalogChecksTheScannedMarkerInsideThePointerDelete() {
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("user-catalog")
+            .build();
+    var meta =
+        MutationMeta.newBuilder()
+            .setPointerVersion(7L)
+            .setPointerKey("/accounts/acct/catalogs/by-id/user-catalog")
+            .build();
+    var childrenGuard = mock(BatchGuard.class);
+    when(markerStore.catalogMarkerVersion(id)).thenReturn(4L);
+    when(markerStore.catalogChildrenUnchangedGuard(id, 4L)).thenReturn(childrenGuard);
+    when(catalogRepo.metaFor(id)).thenReturn(meta);
+    when(namespaceRepo.count("acct", "user-catalog", java.util.List.of())).thenReturn(0);
+    when(catalogRepo.deleteWithPrecondition(id, 7L, childrenGuard)).thenReturn(true);
+
+    svc.deleteCatalog(DeleteCatalogRequest.newBuilder().setCatalogId(id).build())
+        .await()
+        .indefinitely();
+
+    verify(catalogRepo).deleteWithPrecondition(eq(id), eq(7L), eq(childrenGuard));
+    verify(markerStore).deleteCatalogMarker(id);
   }
 
   private static ResourceId systemCatalogId() {
