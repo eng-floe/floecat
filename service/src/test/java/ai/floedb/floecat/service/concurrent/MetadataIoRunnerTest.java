@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,6 +74,119 @@ class MetadataIoRunnerTest {
         () ->
             assertThrows(
                 IllegalStateException.class, MetadataIoRunner::validateConfiguredCapacity));
+  }
+
+  @Test
+  void aRestartCannotExceedTheCeilingWhileAnOldCallIsStillRunning() {
+    // close() gives up after its timeout when a store call ignores interruption, so that worker is
+    // still running under its permit when the next lifecycle starts admitting. If the permits were
+    // per-generation the new one would start full and that round trip would not count against it.
+    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+    var blocker = new UninterruptibleBlocker();
+    var secondAdmitted = new java.util.concurrent.atomic.AtomicBoolean();
+    var contenderFailure = new AtomicReference<Throwable>();
+    var nestedFailure = new AtomicReference<Throwable>();
+    var nestedFinished = new java.util.concurrent.CountDownLatch(1);
+    Thread survivor = null;
+    Thread contender = null;
+    try {
+      System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "1");
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+      MetadataIoRunner.reopenSharedRuntime(); // drop any runtime an earlier test sized differently
+
+      survivor =
+          new Thread(
+              () -> {
+                try {
+                  new MetadataIoRunner()
+                      .callWithoutCancellation(
+                          () -> {
+                            blocker.await();
+                            try {
+                              new MetadataIoRunner()
+                                  .callWithoutCancellation(() -> "nested", FAILURES);
+                            } catch (Throwable failure) {
+                              nestedFailure.set(failure);
+                            } finally {
+                              nestedFinished.countDown();
+                            }
+                            return "survivor";
+                          },
+                          FAILURES);
+                } catch (Throwable expected) {
+                  // The shutdown below cancels this call; its permit is what matters here.
+                }
+              },
+              "restart-survivor");
+      survivor.start();
+      assertTrue(blocker.started.await(5, TimeUnit.SECONDS), "the first call must be admitted");
+
+      // Shut down and restart while that call is still holding its permit.
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+      MetadataIoRunner.reopenSharedRuntime();
+
+      MetadataIoRunner restarted = new MetadataIoRunner();
+      contender =
+          new Thread(
+              () -> {
+                try {
+                  restarted.callWithoutCancellation(
+                      () -> {
+                        secondAdmitted.set(true);
+                        return "contender";
+                      },
+                      FAILURES);
+                } catch (Throwable failure) {
+                  contenderFailure.set(failure);
+                }
+              },
+              "restart-contender");
+      contender.start();
+      awaitAdmissionWaiter(restarted);
+
+      assertFalse(
+          secondAdmitted.get(),
+          "the restarted runtime admitted a second call while the old one still held the only"
+              + " permit — the process-wide ceiling did not survive the restart");
+
+      blocker.release.countDown();
+      assertTrue(
+          nestedFinished.await(10, TimeUnit.SECONDS),
+          "a nested call from the retired runtime must not wait for its own permit");
+      assertInstanceOf(CancellationException.class, nestedFailure.get());
+      contender.join(TimeUnit.SECONDS.toMillis(10));
+      assertFalse(
+          contender.isAlive(), "the contender must run once the old call releases admission");
+      assertNull(contenderFailure.get());
+      assertTrue(
+          secondAdmitted.get(), "the contender must acquire the released process-wide permit");
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    } finally {
+      blocker.release.countDown();
+      if (contender != null) {
+        try {
+          contender.join(TimeUnit.SECONDS.toMillis(10));
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      if (survivor != null) {
+        try {
+          survivor.join(TimeUnit.SECONDS.toMillis(10));
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+      MetadataIoRunner.reopenSharedRuntime();
+      if (previous == null) {
+        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+      } else {
+        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
+      }
+    }
   }
 
   @Test
@@ -296,8 +410,8 @@ class MetadataIoRunnerTest {
     MetadataIoRunner before = new MetadataIoRunner();
     assertEquals("ok", before.callWithoutCancellation(() -> "ok", FAILURES));
 
-    MetadataIoRunner.closeSharedRuntimeIfStarted(); // the ShutdownEvent observer
-    MetadataIoRunner.reopenSharedRuntime(); // the next lifecycle's StartupEvent observer
+    MetadataIoRunner.closeSharedRuntimeIfStarted(); // an embedding-controlled lifecycle transition
+    MetadataIoRunner.reopenSharedRuntime(); // the next lifecycle's startup hook
 
     MetadataIoRunner afterRestart = new MetadataIoRunner();
     assertEquals(
@@ -314,9 +428,8 @@ class MetadataIoRunnerTest {
 
   @Test
   void noRuntimeIsBuiltAfterShutdownHasBegun() {
-    // A call arriving inside the shutdown window used to install a replacement runtime that
-    // outlived the shutdown, starting fresh platform threads after the ShutdownEvent and leaving
-    // nothing to reclaim them.
+    // A call arriving inside a controlled close used to install a replacement runtime after the
+    // latch went up, leaving platform threads that no owner would reclaim.
     new MetadataIoRunner().callWithoutCancellation(() -> "warm", FAILURES);
     MetadataIoRunner.closeSharedRuntimeIfStarted();
     try {

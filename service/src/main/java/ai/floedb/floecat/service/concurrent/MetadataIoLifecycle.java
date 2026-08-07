@@ -22,17 +22,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 
 /**
- * Owns the one process-lifecycle hook the metadata-I/O tier needs: closing the shared admission
- * runtime at application shutdown.
+ * Owns the process-lifecycle hooks the metadata-I/O tier needs: validating startup configuration
+ * and dropping container-owned telemetry references at shutdown.
  *
  * <p>Deliberately a separate bean rather than an observer on {@link MetadataIoRunner}. The shared
  * runtime can be started with no CDI instance of that bean in existence — {@link
- * MetadataIoRunner#shared()} and its default constructor are supported outside CDI — so an {@code
- * IF_EXISTS} observer there would silently never fire and leak the platform-worker pool (and the
- * context class loader its threads pin) across every dev-mode reload and {@code @QuarkusTest}
- * restart. This bean is always instantiated to receive the event, and costs nothing when the
- * runtime was never started: {@link MetadataIoRunner#closeSharedRuntimeIfStarted()} finds no
- * installed runtime and closes nothing, so an unused runner is not started just to be closed.
+ * MetadataIoRunner#shared()} and its default constructor are supported outside CDI — so no bean
+ * owns its lifetime. The runtime stays available through CDI teardown; its daemon pool releases
+ * idle workers independently and JVM exit does not wait for a stuck downstream client.
  */
 @ApplicationScoped
 public class MetadataIoLifecycle {
@@ -47,26 +44,22 @@ public class MetadataIoLifecycle {
   // KvStoreProducer.BOOTSTRAP_PRIORITY, which reserves 1 to run first.
   void validateMetadataIoConfig(@Observes @Priority(2) StartupEvent event) {
     // Re-arm first: the previous lifecycle's shutdown left the latch up so no pool could be built
-    // after its ShutdownEvent. Without this the restarted application never replaces the closed
+    // after an explicit close. Without this the restarted application never replaces the closed
     // runtime and refuses every call.
     MetadataIoRunner.reopenSharedRuntime();
     MetadataIoRunner.validateConfiguredCapacity();
   }
 
   /**
-   * Closes the shared runtime at shutdown.
+   * Drop the telemetry sink before this container's beans are destroyed.
    *
-   * <p>Ordering caveat, unresolved on purpose: {@code ShutdownEvent} fires at the start of
-   * shutdown, and whether the HTTP/gRPC layer has finished draining in-flight calls by then is a
-   * Quarkus-version detail. If it has not, a request still doing store I/O sees a rejected
-   * admission rather than completing. Nothing routes store I/O through this tier yet, so the
-   * question cannot be settled by test here; settle it in the change that wires the first caller,
-   * against a live request, rather than by guessing at container ordering.
+   * <p>The runtime deliberately remains open: neither {@code ShutdownEvent} nor any CDI destruction
+   * phase is after every potential consumer, including {@code @Singleton} beans. Closing there
+   * would reject their teardown metadata I/O. Daemon workers and idle-timeout pool reclamation make
+   * retaining the runtime safe across in-JVM restarts while process-wide admission remains shared.
    */
-  void closeSharedMetadataIoRuntime(@Observes ShutdownEvent event) {
-    // Drop the telemetry sink with the runtime: it closes over this container's beans, and the
-    // static that holds it outlives a dev-mode reload.
+  void clearSaturationSinkAtShutdown(@Observes ShutdownEvent event) {
+    // The sink closes over CDI beans, while the static that holds it survives a dev-mode reload.
     MetadataIoRunner.clearSaturationSink();
-    MetadataIoRunner.closeSharedRuntimeIfStarted();
   }
 }

@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import ai.floedb.floecat.engine.concurrent.ProcessWideAdmission;
 import ai.floedb.floecat.service.concurrent.CancellableCallRunner.FailureMessages;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -135,6 +136,22 @@ public class MetadataIoRunner {
    */
   private static boolean holdsPermit(RuntimeState resolved) {
     return IN_ADMITTED_OP.get() == resolved;
+  }
+
+  /**
+   * Stop an old admitted operation from entering a replacement runtime after shutdown.
+   *
+   * <p>A surviving worker retains its process-wide permit until its store call returns. After a
+   * same-classloader restart, resolving a nested call would find the replacement runtime rather
+   * than the closed runtime recorded in {@link #IN_ADMITTED_OP}; acquiring the shared semaphore
+   * would then wait on its own permit forever. The old operation has already been cancelled, so it
+   * must not start another store round trip.
+   */
+  private static void rejectNestedCallFromClosedRuntime() {
+    RuntimeState admitted = IN_ADMITTED_OP.get();
+    if (admitted != null && admitted.isClosed()) {
+      throw new CancellationException(CancellableCallRunner.RUNTIME_CLOSED);
+    }
   }
 
   /**
@@ -332,6 +349,7 @@ public class MetadataIoRunner {
     // it can raise would skip validation silently.
     ConfigValue configured = ConfigProvider.getConfig().getConfigValue(MAX_CONCURRENCY_PROPERTY);
     if (configured == null || configured.getRawValue() == null) {
+      ProcessWideAdmission.resolve(DEFAULT_CAPACITY);
       return;
     }
     String raw = configured.getValue();
@@ -366,6 +384,7 @@ public class MetadataIoRunner {
       throw new IllegalStateException(
           MAX_CONCURRENCY_PROPERTY + " must be between 1 and " + MAX_CAPACITY + "; got " + parsed);
     }
+    ProcessWideAdmission.resolve(parsed);
   }
 
   /** True when two facades share the same process or test runtime. */
@@ -389,6 +408,7 @@ public class MetadataIoRunner {
       rejectIfUnusable(current, cancelled, failureMessages);
       return operation.get();
     }
+    rejectNestedCallFromClosedRuntime();
     return CancellableCallRunner.call(
         current.executor(),
         current.permits,
@@ -409,6 +429,7 @@ public class MetadataIoRunner {
       rejectIfUnusable(current, null, failureMessages);
       return operation.get();
     }
+    rejectNestedCallFromClosedRuntime();
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),
         current.permits,
@@ -438,10 +459,8 @@ public class MetadataIoRunner {
     // is unspecified, and a runner constructed after teardown would get a closed runtime. Only an
     // isolated, explicit-capacity runtime is closed here.
     //
-    // The shared one is closed by the ShutdownEvent observer instead — which fires at the START of
-    // shutdown, BEFORE Arc runs any @PreDestroy, so it closes the runtime earlier than this hook
-    // would, not later. A bean performing metadata I/O in its own @PreDestroy would therefore see
-    // RejectedExecutionException. None does today; if one ever needs to, move the observer.
+    // The shared runtime remains open through CDI teardown. No single bean owns its shutdown:
+    // other application or singleton beans can still use metadata I/O from @PreDestroy.
     if (!ownsRuntime) {
       return;
     }
@@ -451,19 +470,11 @@ public class MetadataIoRunner {
   }
 
   /**
-   * Close the process-wide runtime once at application shutdown, reclaiming its platform-worker
-   * pool. The shared pool is a daemon-backed static with no per-instance owner, so no
-   * {@code @PreDestroy} may close it; the application {@code ShutdownEvent} fires once per
-   * lifecycle — including dev-mode live reload and {@code @QuarkusTest} restarts — so closing there
-   * reclaims the pool (and its context class loader) that would otherwise leak across in-JVM
-   * restarts, while production still relies on daemon status for JVM exit.
+   * Close the shared runtime for a controlled, non-CDI lifecycle transition.
    *
-   * <p>Driven by {@link MetadataIoLifecycle} rather than an observer on this bean: the shared
-   * runtime can be started without any CDI instance existing ({@link #shared()} and the default
-   * constructor are supported outside CDI), and an {@code IF_EXISTS} observer would then never fire
-   * — leaking exactly the pool this reclaims. That always-present observer can call this
-   * unconditionally: a never-started runtime leaves the reference null, so nothing is touched and
-   * an unused runner still never starts a pool just to close it.
+   * <p>CDI must not call this during shutdown: its event and destruction phases precede potential
+   * teardown consumers. This hook instead supports isolated tests and embedding code that has
+   * already stopped every metadata-I/O consumer.
    */
   static void closeSharedRuntimeIfStarted() {
     // Gated on the reference alone: a separate "started" flag is a second fact that can disagree
@@ -486,8 +497,15 @@ public class MetadataIoRunner {
       SHARED.compareAndSet(null, createSharedRuntime());
     }
     RuntimeState closing = SHARED.get();
-    if (closing != null && !closing.close()) {
-      LOG.warn("metadata I/O executor did not terminate during shutdown");
+    if (closing != null) {
+      if (!closing.close()) {
+        LOG.warn("metadata I/O executor did not terminate during shutdown");
+      } else {
+        // The close latch makes a full permit count reliable: no caller can retain this runtime
+        // and acquire after the executor has terminated. Now a later controlled lifecycle may
+        // establish a different configured ceiling without replacing a live gate.
+        ProcessWideAdmission.clearIfIdle(closing.permits);
+      }
     }
   }
 
@@ -512,7 +530,14 @@ public class MetadataIoRunner {
   }
 
   private static RuntimeState createSharedRuntime() {
-    return new RuntimeState(configuredCapacity());
+    int configuredCapacity = configuredCapacity();
+    ProcessWideAdmission.State admission = ProcessWideAdmission.resolve(configuredCapacity);
+    if (admission.capacity() != configuredCapacity) {
+      LOG.warnf(
+          "metadata I/O capacity is fixed at %d until the JVM restarts; ignoring configured %d",
+          admission.capacity(), configuredCapacity);
+    }
+    return new RuntimeState(admission.capacity(), admission.permits());
   }
 
   /**
@@ -546,9 +571,9 @@ public class MetadataIoRunner {
       RuntimeState fresh = createSharedRuntime();
       if (SHARED.compareAndSet(current, fresh)) {
         if (SHUTDOWN_LATCHED.get()) {
-          // Latched between the check above and this CAS. Undo rather than hand back a runtime the
-          // ShutdownEvent will never see: close() on a never-started runtime touches nothing, since
-          // the pool is built lazily by executor().
+          // Latched between the check above and this CAS. Undo rather than hand back a runtime an
+          // explicit close will never see: close() on a never-started runtime touches nothing,
+          // since the pool is built lazily by executor().
           fresh.close();
           throw new RejectedExecutionException("metadata I/O executor is closed");
         }
@@ -567,6 +592,10 @@ public class MetadataIoRunner {
     private volatile boolean closed;
 
     private RuntimeState(int capacity) {
+      this(capacity, null);
+    }
+
+    private RuntimeState(int capacity, Semaphore sharedPermits) {
       if (capacity < 1) {
         throw new IllegalArgumentException("metadata I/O capacity must be positive");
       }
@@ -577,7 +606,7 @@ public class MetadataIoRunner {
       // forbidding barging, so a polling waiter could lose a permit that is free at the moment it
       // wakes. Prompt abandonment is the property worth keeping; strict FIFO would need an untimed
       // acquire plus a watchdog to interrupt waiters.
-      this.permits = new Semaphore(capacity);
+      this.permits = sharedPermits != null ? sharedPermits : new Semaphore(capacity);
     }
 
     /**

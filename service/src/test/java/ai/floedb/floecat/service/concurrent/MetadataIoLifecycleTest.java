@@ -26,9 +26,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Covers the two observers directly. Booting the container to reach them would pull in the whole
- * application; what needs pinning is the order of the statements inside each method, which is
- * observable without CDI.
+ * Covers the startup and shutdown observers directly. Booting the container to reach them would
+ * pull in the whole application; what needs pinning is the order of the statements inside each
+ * method, which is observable without CDI.
  */
 class MetadataIoLifecycleTest {
 
@@ -38,8 +38,8 @@ class MetadataIoLifecycleTest {
   private final MetadataIoLifecycle lifecycle = new MetadataIoLifecycle();
 
   /**
-   * These call the real observers, which close the shared runtime and drop the telemetry sink.
-   * Restore both for the plain unit tests that run after this class in the same classloader.
+   * These call the real observers, which re-arm an explicitly closed runtime and drop the telemetry
+   * sink. Restore both for the plain unit tests that run after this class in the same classloader.
    */
   @AfterEach
   void restoreProcessWideState() {
@@ -52,7 +52,7 @@ class MetadataIoLifecycleTest {
     // The sentinel is sticky and nothing else clears it, so without the re-arm in this observer a
     // restarted plain-JUnit fork refuses every call. Statement order inside the method is not the
     // point — validation touches no runtime — reaching the re-arm at all is.
-    lifecycle.closeSharedMetadataIoRuntime(null);
+    MetadataIoRunner.closeSharedRuntimeIfStarted();
     assertThrows(
         RejectedExecutionException.class,
         () -> new MetadataIoRunner().callWithoutCancellation(() -> "before", FAILURES));
@@ -78,19 +78,16 @@ class MetadataIoLifecycleTest {
   }
 
   @Test
-  void shutdownDropsTheTelemetrySinkAndClosesTheRuntime() {
+  void shutdownDropsTheTelemetrySinkAndLeavesTheRuntimeAvailableForTeardown() {
     // The sink closes over this container's beans and lives in a static that outlives a dev-mode
     // reload, so leaving it installed sends later increments to a dead bean.
     var hits = new java.util.concurrent.atomic.AtomicInteger();
     MetadataIoRunner.setSaturationSink(hits::incrementAndGet);
     new MetadataIoRunner().callWithoutCancellation(() -> "warm", FAILURES);
 
-    lifecycle.closeSharedMetadataIoRuntime(null);
+    lifecycle.clearSaturationSinkAtShutdown(null);
 
-    assertThrows(
-        RejectedExecutionException.class,
-        () -> new MetadataIoRunner().callWithoutCancellation(() -> "late", FAILURES));
-    MetadataIoRunner.reopenSharedRuntime();
+    assertEquals("late", new MetadataIoRunner().callWithoutCancellation(() -> "late", FAILURES));
     // Saturate for real: an uncontended call never reaches the sink, so it would report 0 whether
     // or not shutdown dropped it.
     var runner = new MetadataIoRunner(1);
