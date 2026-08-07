@@ -452,7 +452,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             null);
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
-    when(snapshotPlanBlobStore.loadFileGroupsByUri("/snapshot-plan.json"))
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
         .thenThrow(new StorageAbortRetryableException("plan not yet visible"));
 
     ReconcileExecutor.ExecutionResult result =
