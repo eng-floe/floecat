@@ -184,6 +184,9 @@ public class ImmutableBlobCache {
     return get(CacheKey.projection(uri, projection), uri, loader);
   }
 
+  /** Identity for a pointer-specific projection of a shared immutable blob. */
+  public record ProjectionKey(String uri, String projection) {}
+
   @SuppressWarnings("unchecked")
   private <T> Optional<T> get(CacheKey cacheKey, String uri, Function<String, Optional<T>> loader) {
     if (!enabled || uri == null || uri.isBlank()) {
@@ -231,6 +234,36 @@ public class ImmutableBlobCache {
   }
 
   /**
+   * The cached pointer-specific projections among {@code projections}. Unlike the URI-only batch
+   * probe, two pointers into one shared blob remain distinct entries.
+   */
+  @SuppressWarnings("unchecked")
+  public <T> Map<ProjectionKey, T> getAllProjectionsPresent(Collection<ProjectionKey> projections) {
+    if (!enabled || projections == null || projections.isEmpty()) {
+      return Map.of();
+    }
+    var requested = projections.stream().filter(java.util.Objects::nonNull).distinct().toList();
+    Map<CacheKey, Object> present =
+        cache.getAllPresent(
+            requested.stream()
+                .map(key -> CacheKey.projection(key.uri(), key.projection()))
+                .toList());
+    if (metrics != null) {
+      for (int i = present.size(); i > 0; i--) {
+        metrics.recordHit();
+      }
+      for (int i = requested.size() - present.size(); i > 0; i--) {
+        metrics.recordMiss();
+      }
+    }
+    java.util.LinkedHashMap<ProjectionKey, T> byProjection = new java.util.LinkedHashMap<>();
+    present.forEach(
+        (key, value) ->
+            byProjection.put(new ProjectionKey(key.uri(), key.projection()), (T) value));
+    return Map.copyOf(byProjection);
+  }
+
+  /**
    * Presence probe for probe-then-build-then-put callers (derived indexes, graph nodes). Records a
    * HIT when present — that is real cache serving — but nothing on absence: the caller's build
    * loads through the underlying URI, which does its own miss accounting, and double-counting the
@@ -257,6 +290,14 @@ public class ImmutableBlobCache {
       return;
     }
     cache.put(CacheKey.blob(uri), value);
+  }
+
+  /** Populates a pointer-specific projection decoded by a batch reader. */
+  public void putProjection(String uri, String projection, Object value) {
+    if (!enabled || uri == null || uri.isBlank() || value == null) {
+      return;
+    }
+    cache.put(CacheKey.projection(uri, projection), value);
   }
 
   /** Belt-and-braces eviction (correctness never depends on it — content is immutable). */

@@ -131,6 +131,10 @@ class StatsRepositoryTargetStorageTest {
     repository.publishPreparedStatsGeneration(
         TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
 
+    assertThat(repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
+        .containsExactlyInAnyOrder(first, second);
+    assertThat(repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
+        .containsExactlyInAnyOrder(first, second);
     assertThat(
             repository.getTargetStats(
                 TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(firstPath)))

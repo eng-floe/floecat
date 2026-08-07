@@ -214,6 +214,24 @@ class ImmutableBlobCacheTest {
   }
 
   @Test
+  void batchProjectionProbeKeepsSharedBlobPointersDistinct() {
+    var cache = cache();
+    var first = new ImmutableBlobCache.ProjectionKey("s3://t/shared.pb", "pointer-1");
+    var second = new ImmutableBlobCache.ProjectionKey("s3://t/shared.pb", "pointer-2");
+    cache.putProjection(first.uri(), first.projection(), StringValue.of("one"));
+    cache.putProjection(second.uri(), second.projection(), StringValue.of("two"));
+
+    Map<ImmutableBlobCache.ProjectionKey, StringValue> present =
+        cache.getAllProjectionsPresent(List.of(first, second));
+
+    assertEquals("one", present.get(first).getValue());
+    assertEquals("two", present.get(second).getValue());
+    assertTrue(
+        cache.<StringValue>getAllPresent(List.of("s3://t/shared.pb")).isEmpty(),
+        "pointer projections must not leak into the bare-URI cache");
+  }
+
+  @Test
   void weightBoundEvictsInsteadOfGrowingUnbounded() {
     // Max weight ~2 entries of this size: inserting many must keep the cache bounded, not OOM.
     var cache = new ImmutableBlobCache(true, 3_000, Duration.ofMinutes(5));
