@@ -271,12 +271,12 @@ public class RecursiveResourceDropper {
   /** Drains stale or pending table cleanup handles before a plain namespace emptiness decision. */
   public int cleanupDeletedTablesInNamespace(ResourceId namespaceId) {
     int[] deleted = {0};
+    var deleteProgress = new BaseResourceRepository.GuardedDeleteProgress();
     tableCleanupRepo.forEach(
         namespaceId,
-        cleanup ->
-            deleted[0] +=
-                cleanupDeletedTable(
-                    cleanup, BatchGuard.NONE, new BaseResourceRepository.GuardedDeleteProgress()));
+        BatchGuard.NONE,
+        deleteProgress,
+        cleanup -> deleted[0] += cleanupDeletedTable(cleanup, BatchGuard.NONE, deleteProgress));
     return deleted[0];
   }
 
@@ -734,9 +734,14 @@ public class RecursiveResourceDropper {
     // A prior attempt may have removed a table pointer and died before purging its snapshots/root.
     // These handles are namespace-scoped precisely so this retry can resume them after the by-name
     // row — the original enumeration path — is already gone.
+    var cleanupProgress = new BaseResourceRepository.GuardedDeleteProgress();
     tableCleanupRepo.forEach(
         namespaceId,
-        cleanup -> summary.snapshotPointerRowsDeleted += cleanupDeletedTable(cleanup, subtreePin));
+        subtreePin,
+        cleanupProgress,
+        cleanup ->
+            summary.snapshotPointerRowsDeleted +=
+                cleanupDeletedTable(cleanup, subtreePin, cleanupProgress));
 
     // Streamed, not materialized: a namespace can hold any number of relations, and each row is
     // handled and then gone. Deleting the row just handed over does not disturb the scan — page

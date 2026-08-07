@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -25,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -46,9 +48,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.RecursiveResourceDropper;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -223,6 +227,76 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void postApplyConvergenceConsumesTransactionalTableDeleteCleanup() throws Exception {
+    var service = newService();
+    var dropper = Mockito.mock(RecursiveResourceDropper.class);
+    inject(service, "recursiveDropper", dropper);
+
+    var namespaceId = resourceId("ns-1", ResourceKind.RK_NAMESPACE);
+    var tableId = resourceId("tbl-1", ResourceKind.RK_TABLE);
+    var cleanup =
+        new TableCleanupRepository.Cleanup(
+            namespaceId, tableId, Keys.namespaceTableCleanupPointer("acct", "ns-1", "tbl-1"), 1L);
+    Method converge =
+        TransactionsServiceImpl.class.getDeclaredMethod(
+            "convergeAfterApply", List.class, List.class);
+    converge.setAccessible(true);
+    converge.invoke(service, List.of(), List.of(cleanup));
+
+    verify(dropper).cleanupDeletedTable(cleanup);
+  }
+
+  @Test
+  void appliedRetryDrainsDurableTableCleanupBeforeReleasingByTxIntent() throws Exception {
+    var service = newService();
+    var cleanupRepo = Mockito.mock(TableCleanupRepository.class);
+    var dropper = Mockito.mock(RecursiveResourceDropper.class);
+    inject(service, "tableCleanupRepo", cleanupRepo);
+    inject(service, "recursiveDropper", dropper);
+
+    var applied = preparedTxn().toBuilder().setState(TransactionState.TS_APPLIED).build();
+    var namespaceId = resourceId("ns-1", ResourceKind.RK_NAMESPACE);
+    var tableId = resourceId("tbl-1", ResourceKind.RK_TABLE);
+    var cleanup =
+        new TableCleanupRepository.Cleanup(
+            namespaceId, tableId, Keys.namespaceTableCleanupPointer("acct", "ns-1", "tbl-1"), 2L);
+    String target = Keys.tablePointerById("acct", "tbl-1");
+    var intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey(target)
+            .setBlobUri(Keys.transactionDeleteSentinelUri("acct", "tx-1", target))
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(applied));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent), List.of());
+    Mockito.doAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.function.Consumer<TableCleanupRepository.Cleanup> consumer =
+                  invocation.getArgument(1);
+              consumer.accept(cleanup);
+              return null;
+            })
+        .when(cleanupRepo)
+        .forTable(eq(tableId), any());
+    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    InOrder order = inOrder(dropper, intentRepo);
+    order.verify(dropper).cleanupDeletedTable(cleanup);
+    order.verify(intentRepo).deleteBothIndicesBestEffort(intent);
+  }
+
+  @Test
   void commitRetryableDoesNotCleanupIntents() throws Exception {
     var service = newService();
 
@@ -277,6 +351,51 @@ class TransactionsServiceImplTest {
     assertEquals(
         "true", committed.getPropertiesMap().get("floecat.transaction.apply-failure-retryable"));
     verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
+  }
+
+  @Test
+  void runtimeApplyFailureLeavesApplyingThroughTheRetryableState() throws Exception {
+    var service = newService();
+    Transaction txn = preparedTxn();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    TransactionIntent intent = defaultIntent();
+
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenThrow(new IllegalStateException("transient overlay read"));
+    when(intentRepo.update(any(TransactionIntent.class))).thenReturn(true);
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(12L).build(),
+            MutationMeta.newBuilder().setPointerVersion(13L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+    when(txRepo.update(
+            argThat(
+                updated ->
+                    updated != null
+                        && updated.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE),
+            anyLong()))
+        .thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLY_FAILED_RETRYABLE, committed.getState());
+    assertEquals(
+        "APPLY_PLANNING_FAILED",
+        committed.getPropertiesMap().get("floecat.transaction.apply-failure-code"));
   }
 
   @Test
@@ -696,6 +815,271 @@ class TransactionsServiceImplTest {
                         && intent.getExpectedVersion() == 7L));
   }
 
+  /**
+   * The prepare-time op estimate is only a pre-flight gate — apply re-checks against the real count
+   * — so it must not let through a transaction apply would refuse: that refusal is a terminal
+   * POINTER_TXN_TOO_LARGE, after the caller has already prepared. These intents name their blob
+   * directly, so prepare cannot see which namespace they publish into and charges each its own
+   * fence: 7 + 2 = 9. The account fence and transaction-finalize op add two more, making ten the
+   * largest that fits under the 100-op ceiling (10 * 9 + 2).
+   */
+  @Test
+  void prepareRejectsATableTransactionApplyCouldNotCommit() throws Exception {
+    assertEquals(TransactionState.TS_PREPARED, prepareTableIntents(10).getState());
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableIntents(11));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
+  }
+
+  /** A table delete emits two cleanup writes in addition to its deletes and retained-lock shape. */
+  @Test
+  void prepareChargesBothCleanupRowsForATableDelete() throws Exception {
+    assertEquals(
+        TransactionState.TS_PREPARED,
+        prepareTableDeleteIntents(16).getState(),
+        "16 table deletes cost 16*6 + 1 = 97 ops");
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeleteIntents(17));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "17 table deletes cost 17*6 + 1 = 103 ops; got: " + tooLarge.getCause().getMessage());
+  }
+
+  /**
+   * Apply emits one namespace fence per namespace, however many intents publish into it, so the
+   * estimate charges it the same way. Charging it per intent rejected transactions that fit
+   * comfortably — twelve creates in one namespace estimated 108 against a real 63.
+   *
+   * <p>Nineteen intents are accepted in one namespace and rejected across seven, on the same intent
+   * count: proof the fence is counted per distinct namespace rather than once for the transaction
+   * (which would accept both) or once per intent (which would reject both).
+   */
+  @Test
+  void prepareChargesTheNamespaceFenceOncePerNamespace() throws Exception {
+    assertEquals(
+        TransactionState.TS_PREPARED,
+        prepareTablePayloadIntents(19, 1).getState(),
+        "19 creates sharing one namespace cost 5*19 + 2 + 1 = 98 ops");
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () -> prepareTablePayloadIntents(19, 7));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "expected the op-budget rejection, got: " + tooLarge.getCause().getMessage());
+  }
+
+  /**
+   * A create has no predecessor, so it cannot emit the two ops that retire an old by-name pointer
+   * and an old relation claim. Charging every non-delete table intent as if it might rename
+   * rejected transactions apply would have committed comfortably.
+   *
+   * <p>The same nineteen intents, in the same single namespace, decided only by whether the target
+   * pointer already exists — which is a pointer read prepare already performs, not the blob read it
+   * is not allowed to do.
+   */
+  @Test
+  void prepareChargesACreateLessThanARenameItCannotRuleOut() throws Exception {
+    assertEquals(
+        TransactionState.TS_PREPARED,
+        prepareTablePayloadIntents(19, 1, 0L).getState(),
+        "19 creates cost 5*19 + 2 + 1 = 98 ops");
+
+    var tooLarge =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () -> prepareTablePayloadIntents(19, 1, 7L));
+    assertInstanceOf(IllegalArgumentException.class, tooLarge.getCause());
+    assertTrue(
+        tooLarge.getCause().getMessage().contains("more than 100 pointer operations"),
+        "19 intents against live tables cost 7*19 + 2 + 1 = 132 ops, so this must be rejected;"
+            + " got: "
+            + tooLarge.getCause().getMessage());
+  }
+
+  /** Prepares {@code intents} table-payload creates spread round-robin over {@code namespaces}. */
+  private Transaction prepareTablePayloadIntents(int intents, int namespaces) throws Exception {
+    return prepareTablePayloadIntents(intents, namespaces, 0L);
+  }
+
+  /**
+   * As above, but {@code existingVersion} decides whether the targets already exist: zero leaves
+   * the pointer absent, so every intent is a create, and anything else reports a live pointer at
+   * that version, which prepare must charge as if it were a rename.
+   */
+  private Transaction prepareTablePayloadIntents(int intents, int namespaces, long existingVersion)
+      throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    var resolver = Mockito.mock(NameResolver.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "nameResolver", resolver);
+    inject(service, "overlay", overlay);
+
+    String accountId = "acct";
+    String txId = "tx-fence-budget";
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(
+            Optional.of(
+                Transaction.newBuilder()
+                    .setAccountId(accountId)
+                    .setTxId(txId)
+                    .setState(TransactionState.TS_OPEN)
+                    .setUpdatedAt(Timestamps.fromMillis(1))
+                    .build()));
+    // Absent pointer: every intent is a fresh publish, which is what carries a fence. A non-zero
+    // existingVersion instead reports a live target, so prepare charges the rename cost.
+    when(pointerStore.get(org.mockito.ArgumentMatchers.anyString()))
+        .thenAnswer(
+            call ->
+                existingVersion == 0L
+                    ? Optional.empty()
+                    : Optional.of(
+                        Pointer.newBuilder()
+                            .setKey(call.getArgument(0))
+                            .setVersion(existingVersion)
+                            .build()));
+
+    var catalogId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("cat")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var catalogNode = Mockito.mock(ai.floedb.floecat.metagraph.model.CatalogNode.class);
+    var namespaceNode = Mockito.mock(ai.floedb.floecat.metagraph.model.NamespaceNode.class);
+    when(namespaceNode.origin()).thenReturn(ai.floedb.floecat.metagraph.model.GraphNodeOrigin.USER);
+    when(namespaceNode.catalogId()).thenReturn(catalogId);
+    when(overlay.resolve(any()))
+        .thenAnswer(
+            call -> {
+              ResourceId id = call.getArgument(0);
+              return switch (id.getKind()) {
+                case RK_CATALOG -> Optional.of(catalogNode);
+                case RK_NAMESPACE -> Optional.of(namespaceNode);
+                default -> Optional.of(Mockito.mock(UserTableNode.class));
+              };
+            });
+    when(intentRepo.getByTarget(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(Optional.empty());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(any(), anyLong())).thenReturn(true);
+
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
+    for (int i = 0; i < intents; i++) {
+      var tableId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId("table-" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      var namespaceId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId("ns-" + (i % namespaces))
+              .setKind(ResourceKind.RK_NAMESPACE)
+              .build();
+      request.addChanges(
+          TxChange.newBuilder()
+              .setTableId(tableId)
+              .setTable(
+                  ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+                      .setResourceId(tableId)
+                      .setCatalogId(catalogId)
+                      .setNamespaceId(namespaceId)
+                      .setDisplayName("t" + i)));
+    }
+    return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
+  }
+
+  private Transaction prepareTableIntents(int intents) throws Exception {
+    return prepareTableIntents(intents, false);
+  }
+
+  private Transaction prepareTableDeleteIntents(int intents) throws Exception {
+    return prepareTableIntents(intents, true);
+  }
+
+  private Transaction prepareTableIntents(int intents, boolean deletes) throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    var resolver = Mockito.mock(NameResolver.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "nameResolver", resolver);
+    inject(service, "overlay", overlay);
+
+    String accountId = "acct";
+    String txId = "tx-budget";
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(
+            Optional.of(
+                Transaction.newBuilder()
+                    .setAccountId(accountId)
+                    .setTxId(txId)
+                    .setState(TransactionState.TS_OPEN)
+                    .setUpdatedAt(Timestamps.fromMillis(1))
+                    .build()));
+    when(pointerStore.get(org.mockito.ArgumentMatchers.anyString()))
+        .thenAnswer(
+            call ->
+                Optional.of(
+                    Pointer.newBuilder().setKey(call.getArgument(0)).setVersion(7L).build()));
+    when(overlay.resolve(any())).thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
+    when(intentRepo.getByTarget(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(Optional.empty());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(any(), anyLong())).thenReturn(true);
+
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
+    for (int i = 0; i < intents; i++) {
+      var tableId =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId("table-" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      String targetKey = Keys.tablePointerById(accountId, tableId.getId());
+      request.addChanges(
+          TxChange.newBuilder()
+              .setTableId(tableId)
+              .setIntendedBlobUri(
+                  deletes
+                      ? Keys.transactionDeleteSentinelUri(accountId, txId, targetKey)
+                      : Keys.accountRootPrefix(accountId) + "/tables/intended-" + i));
+    }
+    return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
+  }
+
   @Test
   void prepareRejectsSystemTableTargetBeforeCreatingIntent() throws Exception {
     var service = new TransactionsServiceImpl();
@@ -744,6 +1128,93 @@ class TransactionsServiceImplTest {
     assertTrue(cause instanceof StatusRuntimeException);
     assertEquals(
         Status.Code.PERMISSION_DENIED, ((StatusRuntimeException) cause).getStatus().getCode());
+    verify(intentRepo, never()).create(any());
+  }
+
+  @Test
+  void prepareRejectsAnIntentThatTargetsATablePublishFenceKey() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(BlobStore.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "overlay", overlay);
+
+    String accountId = "acct";
+    String txId = "tx-fence-collision";
+    var catalogId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("cat")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("ns")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    when(txRepo.getById(accountId, txId))
+        .thenReturn(
+            Optional.of(
+                Transaction.newBuilder()
+                    .setAccountId(accountId)
+                    .setTxId(txId)
+                    .setState(TransactionState.TS_OPEN)
+                    .setUpdatedAt(Timestamps.fromMillis(1))
+                    .build()));
+    when(pointerStore.get(any())).thenReturn(Optional.empty());
+    var catalogNode = Mockito.mock(ai.floedb.floecat.metagraph.model.CatalogNode.class);
+    var namespaceNode = Mockito.mock(ai.floedb.floecat.metagraph.model.NamespaceNode.class);
+    when(namespaceNode.origin()).thenReturn(ai.floedb.floecat.metagraph.model.GraphNodeOrigin.USER);
+    when(namespaceNode.catalogId()).thenReturn(catalogId);
+    when(overlay.resolve(any()))
+        .thenAnswer(
+            invocation -> {
+              ResourceId id = invocation.getArgument(0);
+              return switch (id.getKind()) {
+                case RK_CATALOG -> Optional.of(catalogNode);
+                case RK_NAMESPACE -> Optional.of(namespaceNode);
+                default -> Optional.of(Mockito.mock(UserTableNode.class));
+              };
+            });
+
+    var request =
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTableId(tableId)
+                    .setTable(
+                        Table.newBuilder()
+                            .setResourceId(tableId)
+                            .setCatalogId(catalogId)
+                            .setNamespaceId(namespaceId)
+                            .setDisplayName("orders")))
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTargetPointerKey(Keys.namespaceChildrenMarker(accountId, "ns"))
+                    .setPayload(com.google.protobuf.ByteString.copyFromUtf8("marker rewrite")))
+            .build();
+
+    var reflected =
+        assertThrows(
+            InvocationTargetException.class,
+            () -> invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10)));
+
+    assertInstanceOf(IllegalArgumentException.class, reflected.getCause());
+    assertTrue(reflected.getCause().getMessage().contains("namespace fence key"));
     verify(intentRepo, never()).create(any());
   }
 

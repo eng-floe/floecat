@@ -567,6 +567,20 @@ public class TableCleanupRepository {
   }
 
   public void forEach(ResourceId namespaceId, Consumer<Cleanup> action) {
+    forEach(
+        namespaceId, BatchGuard.NONE, new BaseResourceRepository.GuardedDeleteProgress(), action);
+  }
+
+  /**
+   * Enumerates cleanup tasks and reclaims malformed rows under the same guard as the surrounding
+   * namespace teardown. A row without a table id cannot ever be consumed, while {@link #hasAny}
+   * must still count it until it is durably removed.
+   */
+  public void forEach(
+      ResourceId namespaceId,
+      BatchGuard guard,
+      BaseResourceRepository.GuardedDeleteProgress deleteProgress,
+      Consumer<Cleanup> action) {
     String prefix =
         Keys.namespaceTableCleanupPrefix(namespaceId.getAccountId(), namespaceId.getId());
     var seenTokens = new HashSet<String>();
@@ -576,6 +590,10 @@ public class TableCleanupRepository {
       for (var row : pointerStore.listPointersByPrefix(prefix, PAGE_SIZE, token, next, true)) {
         String tableId = row.hasResourceId() ? row.getResourceId().getId() : "";
         if (tableId.isBlank()) {
+          if (BaseResourceRepository.deletePointerWithGuard(
+              pointerStore, row, guard, deleteProgress.hasPriorWrite())) {
+            deleteProgress.recordWrite();
+          }
           continue;
         }
         String indexKey = Keys.tableCleanupPointerByTable(namespaceId.getAccountId(), tableId);

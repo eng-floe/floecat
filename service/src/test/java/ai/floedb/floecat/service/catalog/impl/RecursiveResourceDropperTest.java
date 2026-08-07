@@ -950,13 +950,13 @@ class RecursiveResourceDropperTest {
     doAnswer(
             invocation -> {
               if (cleanupScan.getAndIncrement() > 0) {
-                Consumer<TableCleanupRepository.Cleanup> consumer = invocation.getArgument(1);
+                Consumer<TableCleanupRepository.Cleanup> consumer = invocation.getArgument(3);
                 consumer.accept(task);
               }
               return null;
             })
         .when(tableCleanupRepo)
-        .forEach(eq(ROOT_NS), any());
+        .forEach(eq(ROOT_NS), any(), any(), any());
     when(tableCleanupRepo.deleteSnapshotPointers(eq(TABLE_ID), any(), any()))
         .thenThrow(new RuntimeException("storage down"))
         .thenReturn(3);

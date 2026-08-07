@@ -19,12 +19,17 @@ package ai.floedb.floecat.service.transaction.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -35,10 +40,13 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -59,13 +67,20 @@ public class TransactionIntentApplierSupport {
       String errorMessage,
       Long expectedVersion,
       Long actualVersion,
-      String conflictOwner) {
+      String conflictOwner,
+      List<TableCleanupRepository.Cleanup> tableCleanups) {
     public static ApplyOutcome applied() {
-      return new ApplyOutcome(ApplyStatus.APPLIED, null, null, null, null, null);
+      return applied(List.of());
+    }
+
+    public static ApplyOutcome applied(List<TableCleanupRepository.Cleanup> tableCleanups) {
+      return new ApplyOutcome(
+          ApplyStatus.APPLIED, null, null, null, null, null, List.copyOf(tableCleanups));
     }
 
     public static ApplyOutcome retryable(String errorCode, String errorMessage) {
-      return new ApplyOutcome(ApplyStatus.RETRYABLE, errorCode, errorMessage, null, null, null);
+      return new ApplyOutcome(
+          ApplyStatus.RETRYABLE, errorCode, errorMessage, null, null, null, List.of());
     }
 
     public static ApplyOutcome conflict(
@@ -80,13 +95,15 @@ public class TransactionIntentApplierSupport {
           errorMessage,
           expectedVersion,
           actualVersion,
-          conflictOwner);
+          conflictOwner,
+          List.of());
     }
   }
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogOverlay overlay;
+  @Inject MarkerStore markerStore;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -247,10 +264,28 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.retryable("EMPTY_TRANSACTION", "transaction has no intents");
     }
 
+    var tableIntentContext = analyzeTableIntents(intents);
+    if (tableIntentContext.conflict() != null) {
+      return tableIntentContext.conflict();
+    }
+
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    Set<String> fencedNamespaces = new HashSet<>();
+    Set<String> fencedAccounts = new HashSet<>();
+    Set<String> fencedTables = new HashSet<>();
+    var tableCleanups = new ArrayList<TableCleanupRepository.Cleanup>();
     for (var intent : intents) {
-      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
+      ApplyOutcome planOutcome =
+          planIntentOps(
+              intent,
+              ops,
+              touchedKeys,
+              fencedNamespaces,
+              fencedAccounts,
+              fencedTables,
+              tableIntentContext.mutations(),
+              tableCleanups);
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
@@ -272,7 +307,7 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
     }
 
-    return ApplyOutcome.applied();
+    return ApplyOutcome.applied(tableCleanups);
   }
 
   public ApplyOutcome applyTransactionAtomically(
@@ -291,10 +326,28 @@ public class TransactionIntentApplierSupport {
           "MISSING_INTENT_REPOSITORY", "transaction intent repository is required");
     }
 
+    var tableIntentContext = analyzeTableIntents(intents);
+    if (tableIntentContext.conflict() != null) {
+      return tableIntentContext.conflict();
+    }
+
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    Set<String> fencedNamespaces = new HashSet<>();
+    Set<String> fencedAccounts = new HashSet<>();
+    Set<String> fencedTables = new HashSet<>();
+    var tableCleanups = new ArrayList<TableCleanupRepository.Cleanup>();
     for (var intent : intents) {
-      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
+      ApplyOutcome planOutcome =
+          planIntentOps(
+              intent,
+              ops,
+              touchedKeys,
+              fencedNamespaces,
+              fencedAccounts,
+              fencedTables,
+              tableIntentContext.mutations(),
+              tableCleanups);
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
@@ -310,6 +363,15 @@ public class TransactionIntentApplierSupport {
             null,
             null);
       }
+    }
+
+    // The transaction-state publication is itself account-owned state. Table-only and
+    // delete-only batches may not otherwise need an account fence, so carry one unconditionally
+    // before making TS_APPLIED visible.
+    ApplyOutcome accountOutcome =
+        appendAccountFence(appliedTransaction.getAccountId(), fencedAccounts, touchedKeys, ops);
+    if (accountOutcome.status != ApplyStatus.APPLIED) {
+      return accountOutcome;
     }
 
     ApplyOutcome txOutcome =
@@ -328,20 +390,31 @@ public class TransactionIntentApplierSupport {
     }
 
     if (pointerStore.compareAndSetBatch(ops)) {
-      return ApplyOutcome.applied();
+      return ApplyOutcome.applied(tableCleanups);
     }
+    // None of this invocation's planned cleanup handles exist when its batch loses. In
+    // particular, a concurrent winner may have committed different generation keys. Leave the
+    // outcome empty so an observed TS_APPLIED state reconstructs the winner's durable handles
+    // from the retained by-transaction delete intents.
     return classifyAtomicApplyFailure(
         appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
   }
 
   private ApplyOutcome planIntentOps(
-      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+      TransactionIntent intent,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys,
+      Set<String> fencedNamespaces,
+      Set<String> fencedAccounts,
+      Set<String> fencedTables,
+      Map<String, Boolean> tableMutations,
+      List<TableCleanupRepository.Cleanup> tableCleanups) {
     String pointerKey = intent.getTargetPointerKey();
     if (isTableByIdPointer(pointerKey)) {
-      return planTableIntentOps(intent, ops, touchedKeys);
+      return planTableIntentOps(intent, ops, touchedKeys, fencedNamespaces, tableCleanups);
     }
     if (isConnectorByIdPointer(pointerKey)) {
-      return planConnectorIntentOps(intent, ops, touchedKeys);
+      return planConnectorIntentOps(intent, ops, touchedKeys, fencedAccounts);
     }
 
     var current = pointerStore.get(pointerKey).orElse(null);
@@ -355,23 +428,126 @@ public class TransactionIntentApplierSupport {
           null);
     }
 
+    final ApplyOutcome mutationOutcome;
     if (isDeleteSentinel(intent)) {
       if (current == null) {
-        return addAbsentCheck(pointerKey, touchedKeys, ops);
+        mutationOutcome = addAbsentCheck(pointerKey, touchedKeys, ops);
+      } else {
+        long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+        mutationOutcome =
+            addOp(new PointerStore.CasDelete(pointerKey, expected), pointerKey, touchedKeys, ops);
       }
+    } else if (current != null && intent.getBlobUri().equals(current.getBlobUri())) {
       long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
-      return addOp(new PointerStore.CasDelete(pointerKey, expected), pointerKey, touchedKeys, ops);
-    }
-
-    if (current != null && intent.getBlobUri().equals(current.getBlobUri())) {
+      mutationOutcome = addCheck(pointerKey, expected, touchedKeys, ops);
+    } else {
       long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
-      return addCheck(pointerKey, expected, touchedKeys, ops);
+      Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
+      mutationOutcome =
+          addOp(
+              new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
     }
+    if (mutationOutcome.status != ApplyStatus.APPLIED) {
+      return mutationOutcome;
+    }
+    ApplyOutcome tableOutcome =
+        appendTableFence(intent, fencedTables, tableMutations, touchedKeys, ops);
+    if (tableOutcome.status != ApplyStatus.APPLIED) {
+      return tableOutcome;
+    }
+    return appendAccountFence(intent.getAccountId(), fencedAccounts, touchedKeys, ops);
+  }
 
-    long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
-    Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
-    return addOp(
-        new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
+  /** Pins generic snapshot-pointer intents to their live owning table in the atomic apply batch. */
+  private ApplyOutcome appendTableFence(
+      TransactionIntent intent,
+      Set<String> fencedTables,
+      Map<String, Boolean> tableMutations,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    String tableIdValue = Keys.tableIdFromSnapshotPointerKey(intent.getTargetPointerKey());
+    if (tableIdValue == null || isDeleteSentinel(intent)) {
+      return ApplyOutcome.applied();
+    }
+    String tablePointerKey = Keys.tablePointerById(intent.getAccountId(), tableIdValue);
+    Boolean remainsLive = tableMutations.get(tablePointerKey);
+    if (Boolean.TRUE.equals(remainsLive)) {
+      // The table upsert/check is already in this same all-or-nothing batch. It is stronger than a
+      // separate liveness check and avoids claiming the canonical key twice.
+      return ApplyOutcome.applied();
+    }
+    if (Boolean.FALSE.equals(remainsLive)) {
+      return tableDeleteSnapshotPublishConflict(tablePointerKey);
+    }
+    if (!fencedTables.add(tablePointerKey)) {
+      return ApplyOutcome.applied();
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(intent.getAccountId())
+            .setId(tableIdValue)
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    final List<PointerStore.CasOp> fenceOps;
+    try {
+      fenceOps = markerStore.tableLiveGuard(tableId).ops();
+    } catch (BaseResourceRepository.BatchGuardFailedException tableGone) {
+      return ApplyOutcome.conflict("TABLE_MISSING", tableGone.getMessage(), null, null, null);
+    }
+    for (var op : fenceOps) {
+      ApplyOutcome added = addOp(op, op.key(), touchedKeys, ops);
+      if (added.status != ApplyStatus.APPLIED) {
+        return added;
+      }
+    }
+    return ApplyOutcome.applied();
+  }
+
+  private record TableIntentContext(Map<String, Boolean> mutations, ApplyOutcome conflict) {}
+
+  /**
+   * Classifies canonical table mutations before planning so a snapshot intent can share the table
+   * mutation's liveness proof regardless of intent order.
+   */
+  private TableIntentContext analyzeTableIntents(List<TransactionIntent> intents) {
+    Map<String, Boolean> mutations = new HashMap<>();
+    for (var intent : intents) {
+      String pointerKey = intent.getTargetPointerKey();
+      if (!isTableByIdPointer(pointerKey)) {
+        continue;
+      }
+      if (mutations.putIfAbsent(pointerKey, !isDeleteSentinel(intent)) != null) {
+        return new TableIntentContext(
+            Map.of(),
+            ApplyOutcome.conflict(
+                "POINTER_TXN_DUPLICATE_KEY",
+                "transaction attempts multiple updates to pointer key " + pointerKey,
+                null,
+                null,
+                null));
+      }
+    }
+    for (var intent : intents) {
+      String tableId = Keys.tableIdFromSnapshotPointerKey(intent.getTargetPointerKey());
+      if (tableId == null || isDeleteSentinel(intent)) {
+        continue;
+      }
+      String tablePointerKey = Keys.tablePointerById(intent.getAccountId(), tableId);
+      if (Boolean.FALSE.equals(mutations.get(tablePointerKey))) {
+        return new TableIntentContext(
+            Map.of(), tableDeleteSnapshotPublishConflict(tablePointerKey));
+      }
+    }
+    return new TableIntentContext(Map.copyOf(mutations), null);
+  }
+
+  private static ApplyOutcome tableDeleteSnapshotPublishConflict(String tablePointerKey) {
+    return ApplyOutcome.conflict(
+        "TABLE_DELETE_WITH_SNAPSHOT_PUBLISH",
+        "transaction cannot publish a snapshot while deleting table pointer " + tablePointerKey,
+        null,
+        null,
+        null);
   }
 
   private boolean isDeleteSentinel(TransactionIntent intent) {
@@ -392,7 +568,11 @@ public class TransactionIntentApplierSupport {
   }
 
   private ApplyOutcome planTableIntentOps(
-      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+      TransactionIntent intent,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys,
+      Set<String> fencedNamespaces,
+      List<TableCleanupRepository.Cleanup> tableCleanups) {
     String pointerKey = intent.getTargetPointerKey();
     var current = pointerStore.get(pointerKey).orElse(null);
     long actualVersion = current == null ? 0L : current.getVersion();
@@ -406,7 +586,8 @@ public class TransactionIntentApplierSupport {
     }
 
     if (isDeleteSentinel(intent)) {
-      return planTableDeleteIntentOps(intent, current, actualVersion, ops, touchedKeys);
+      return planTableDeleteIntentOps(
+          intent, current, actualVersion, ops, touchedKeys, tableCleanups);
     }
 
     Table nextTable = readTable(intent.getBlobUri());
@@ -433,6 +614,11 @@ public class TransactionIntentApplierSupport {
             nextTable.getDisplayName());
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+
+    // A table with no pointer yet becomes visible in its namespace when this batch commits, so the
+    // batch is a child publish and needs the namespace fence. A reparent is one too, and is
+    // detected below once the old table has been read.
+    boolean publishesChild = current == null;
 
     if (current == null || !Objects.equals(current.getBlobUri(), intent.getBlobUri())) {
       Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
@@ -473,6 +659,9 @@ public class TransactionIntentApplierSupport {
       if (oldTable == null) {
         return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
       }
+      publishesChild =
+          !oldTable.getNamespaceId().getId().equals(nextTable.getNamespaceId().getId())
+              || !oldTable.getCatalogId().getId().equals(nextTable.getCatalogId().getId());
       String oldNameKey =
           Keys.tablePointerByName(
               oldTable.getResourceId().getAccountId(),
@@ -499,6 +688,73 @@ public class TransactionIntentApplierSupport {
         }
       }
     }
+
+    // Last, so a name collision is still reported as such rather than as namespace contention.
+    if (publishesChild) {
+      return appendNamespaceChildFence(nextTable, fencedNamespaces, touchedKeys, ops);
+    }
+    return ApplyOutcome.applied();
+  }
+
+  /**
+   * Folds the namespace child fence into this batch when it publishes a newly visible table or
+   * reparents a table into the destination namespace.
+   *
+   * <p>The applier assembles its own {@link PointerStore#compareAndSetBatch} instead of going
+   * through the repository, so it does not inherit the guard the service-side create and reparent
+   * paths pass to {@code TableRepository} and {@code TableCleanupRepository} (see {@link
+   * MarkerStore#namespaceChildGuard}). Without the fence here, a committing transaction can publish
+   * a table or cleanup task into a namespace a concurrent {@code DeleteNamespace} is tearing down:
+   * the deleter's batch checks only the children marker, which an unfenced apply never moves, so
+   * both batches commit and state survives under a namespace that is gone (see {@link BatchGuard}).
+   *
+   * <p>One fence per namespace per batch. The marker advance is a single CAS, so two tables created
+   * in the same namespace by one transaction share it — and issuing it twice would collide on that
+   * key.
+   */
+  private ApplyOutcome appendNamespaceChildFence(
+      Table table,
+      Set<String> fencedNamespaces,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    ResourceId namespaceId =
+        table.getNamespaceId().toBuilder()
+            .setAccountId(table.getResourceId().getAccountId())
+            .build();
+    if (!fencedNamespaces.add(namespaceId.getId())) {
+      return ApplyOutcome.applied();
+    }
+    List<PointerStore.CasOp> fenceOps;
+    try {
+      var writePolicy = new CatalogSurfaceWritePolicy(overlay);
+      var namespace =
+          writePolicy.requireWritableNamespace(
+              namespaceId, "table.namespace_id", "transaction-apply");
+      writePolicy.requireNamespaceInCatalog(
+          namespace, namespaceId, table.getCatalogId(), "transaction-apply");
+      fenceOps = markerStore.namespaceChildGuard(namespaceId, namespace.blobUri()).ops();
+    } catch (BaseResourceRepository.BatchGuardFailedException namespaceGone) {
+      // No live namespace pointer to pin to, so there is nothing legitimate to publish into.
+      //
+      // Terminal, not retryable. Commit does not re-plan: it re-reads the intents frozen at
+      // prepare (TransactionsServiceImpl#commitTransaction) and applies them unchanged, so the
+      // namespace this intent names stays gone and every attempt fails here identically. Calling
+      // it retryable spent the transaction's whole attempt budget on a verdict that could not
+      // change, and the by-target and by-tx intent pointers — released only by a successful apply
+      // batch — stayed held against those tables for the duration, blocking any other transaction
+      // that wanted them.
+      return ApplyOutcome.conflict(
+          "NAMESPACE_MISSING", namespaceGone.getMessage(), null, null, null);
+    } catch (StatusRuntimeException namespaceChanged) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_NOT_WRITABLE", "table intent target namespace changed", null, null, null);
+    }
+    for (var op : fenceOps) {
+      ApplyOutcome added = addOp(op, op.key(), touchedKeys, ops);
+      if (added.status != ApplyStatus.APPLIED) {
+        return added;
+      }
+    }
     return ApplyOutcome.applied();
   }
 
@@ -507,7 +763,8 @@ public class TransactionIntentApplierSupport {
       Pointer current,
       long actualVersion,
       List<PointerStore.CasOp> ops,
-      Set<String> touchedKeys) {
+      Set<String> touchedKeys,
+      List<TableCleanupRepository.Cleanup> tableCleanups) {
     if (current == null) {
       return addAbsentCheck(intent.getTargetPointerKey(), touchedKeys, ops);
     }
@@ -528,6 +785,48 @@ public class TransactionIntentApplierSupport {
       return writeEligibility;
     }
 
+    String accountId = currentTable.getResourceId().getAccountId();
+    var namespaceId = currentTable.getNamespaceId().toBuilder().setAccountId(accountId).build();
+    var tableId = currentTable.getResourceId().toBuilder().setAccountId(accountId).build();
+    String cleanupKey =
+        Keys.namespaceTableCleanupGenerationPointer(
+            accountId, namespaceId.getId(), tableId.getId(), UUID.randomUUID().toString());
+    long cleanupVersion = 1L;
+    Pointer cleanupTask =
+        PointerReferences.asOpaqueMarkerPointer(
+                Pointer.newBuilder()
+                    .setKey(cleanupKey)
+                    .setVersion(cleanupVersion)
+                    .setResourceId(tableId),
+                cleanupKey)
+            .build();
+    PointerStore.CasOp cleanupOp = new PointerStore.CasUpsert(cleanupKey, 0L, cleanupTask);
+    ApplyOutcome stagedCleanup = addOp(cleanupOp, cleanupKey, touchedKeys, ops);
+    if (stagedCleanup.status != ApplyStatus.APPLIED) {
+      return stagedCleanup;
+    }
+    String cleanupIndexKey = Keys.tableCleanupPointerByTable(accountId, tableId.getId());
+    Pointer existingCleanupIndex = pointerStore.get(cleanupIndexKey).orElse(null);
+    long cleanupIndexExpected =
+        existingCleanupIndex == null ? 0L : existingCleanupIndex.getVersion();
+    long cleanupIndexVersion = cleanupIndexExpected + 1L;
+    Pointer cleanupIndex =
+        PointerReferences.asOpaqueMarkerPointer(
+                Pointer.newBuilder()
+                    .setKey(cleanupIndexKey)
+                    .setVersion(cleanupIndexVersion)
+                    .setResourceId(namespaceId),
+                cleanupKey)
+            .build();
+    ApplyOutcome stagedCleanupIndex =
+        addOp(
+            new PointerStore.CasUpsert(cleanupIndexKey, cleanupIndexExpected, cleanupIndex),
+            cleanupIndexKey,
+            touchedKeys,
+            ops);
+    if (stagedCleanupIndex.status != ApplyStatus.APPLIED) {
+      return stagedCleanupIndex;
+    }
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
     ApplyOutcome deletePrimary =
         addOp(
@@ -556,12 +855,27 @@ public class TransactionIntentApplierSupport {
             currentTable.getCatalogId().getId(),
             currentTable.getNamespaceId().getId(),
             currentTable.getDisplayName());
-    return buildOwnedRelationClaimDeleteOp(
-        relationKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    ApplyOutcome relationDelete =
+        buildOwnedRelationClaimDeleteOp(
+            relationKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    if (relationDelete.status == ApplyStatus.APPLIED) {
+      tableCleanups.add(
+          new TableCleanupRepository.Cleanup(
+              namespaceId,
+              tableId,
+              cleanupKey,
+              cleanupVersion,
+              cleanupIndexKey,
+              cleanupIndexVersion));
+    }
+    return relationDelete;
   }
 
   private ApplyOutcome planConnectorIntentOps(
-      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+      TransactionIntent intent,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys,
+      Set<String> fencedAccounts) {
     String pointerKey = intent.getTargetPointerKey();
     var current = pointerStore.get(pointerKey).orElse(null);
     long actualVersion = current == null ? 0L : current.getVersion();
@@ -658,6 +972,29 @@ public class TransactionIntentApplierSupport {
         if (oldNameOutcome.status != ApplyStatus.APPLIED) {
           return oldNameOutcome;
         }
+      }
+    }
+    return appendAccountFence(
+        nextConnector.getResourceId().getAccountId(), fencedAccounts, touchedKeys, ops);
+  }
+
+  private ApplyOutcome appendAccountFence(
+      String accountId,
+      Set<String> fencedAccounts,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    if (!fencedAccounts.add(accountId)) {
+      return ApplyOutcome.applied();
+    }
+    var accountLive = markerStore.accountLiveGuard(accountId);
+    if (accountLive.isEmpty()) {
+      return ApplyOutcome.conflict(
+          "ACCOUNT_MISSING", "transaction intent account is missing", null, null, null);
+    }
+    for (var op : accountLive.get().ops()) {
+      ApplyOutcome added = addOp(op, op.key(), touchedKeys, ops);
+      if (added.status != ApplyStatus.APPLIED) {
+        return added;
       }
     }
     return ApplyOutcome.applied();
@@ -1023,6 +1360,12 @@ public class TransactionIntentApplierSupport {
     var byTxPointer = pointerStore.get(byTxKey).orElse(null);
     if (byTxPointer == null) {
       return ApplyOutcome.retryable("LOCK_OWNERSHIP_MISMATCH", "tx intent pointer missing");
+    }
+    // A transactional table delete can commit TS_APPLIED before its durable cleanup task is
+    // consumed. Keep the by-tx intent as the recovery index until post-apply convergence succeeds;
+    // the by-target lock above is still released in this batch, so no other transaction is held.
+    if (isTableByIdPointer(intent.getTargetPointerKey()) && isDeleteSentinel(intent)) {
+      return ApplyOutcome.applied();
     }
     return addOp(
         new PointerStore.CasDelete(byTxKey, byTxPointer.getVersion()), byTxKey, touchedKeys, ops);

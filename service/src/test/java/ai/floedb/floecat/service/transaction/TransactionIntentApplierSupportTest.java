@@ -22,10 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -40,6 +42,166 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class TransactionIntentApplierSupportTest {
+
+  @Test
+  void genericIntentCannotPublishAfterItsAccountPointerIsRemoved() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountKey = Keys.accountPointerById("acct");
+    String targetKey = "/accounts/acct/custom/key";
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey(targetKey)
+            .setBlobUri("blob://generic")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    pointers.beforeBatch(() -> pointers.delete(accountKey));
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertTrue(pointers.get(targetKey).isEmpty());
+  }
+
+  @Test
+  void snapshotIntentCannotPublishAfterItsTablePointerIsRemoved() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String tableKey = Keys.tablePointerById("acct", "table-1");
+    pointers.compareAndSet(
+        tableKey, 0L, PointerReferences.blobPointer(tableKey, "blob://table", 1L));
+    String targetKey = Keys.snapshotPointerById("acct", "table-1", 7L);
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey(targetKey)
+            .setBlobUri("blob://snapshot")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    pointers.beforeBatch(() -> pointers.delete(tableKey));
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertTrue(
+        pointers.get(targetKey).isEmpty(),
+        "table fence and snapshot publication must commit atomically");
+  }
+
+  @Test
+  void tableAndSnapshotIntentsShareTheTableMutationAsTheirFenceInEitherOrder() throws Exception {
+    for (boolean snapshotFirst : List.of(false, true)) {
+      var pointers = new InMemoryPointerStore();
+      var blobs = new InMemoryBlobStore();
+      var intentRepo = new TransactionIntentRepository(pointers, blobs);
+      var support = newSupport(pointers, blobs);
+      String accountId = "acct";
+      String tableId = "table-1";
+      seedNamespace(pointers, accountId, "ns-1");
+
+      var tableIntent = tableCreateIntent(blobs, accountId, "cat-1", "ns-1", tableId, "orders");
+      String snapshotKey = Keys.snapshotPointerById(accountId, tableId, 7L);
+      var snapshotIntent =
+          TransactionIntent.newBuilder()
+              .setAccountId(accountId)
+              .setTxId("tx-1")
+              .setTargetPointerKey(snapshotKey)
+              .setBlobUri("blob://snapshot")
+              .setCreatedAt(Timestamps.fromMillis(2))
+              .build();
+      var intents =
+          snapshotFirst
+              ? List.of(snapshotIntent, tableIntent)
+              : List.of(tableIntent, snapshotIntent);
+
+      var outcome = support.applyTransactionBestEffort(intents, intentRepo);
+
+      assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+      assertTrue(pointers.get(Keys.tablePointerById(accountId, tableId)).isPresent());
+      assertTrue(pointers.get(snapshotKey).isPresent());
+    }
+  }
+
+  @Test
+  void tableDeleteCannotShareABatchWithSnapshotPublication() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String tableKey = Keys.tablePointerById(accountId, "table-1");
+    var tableDelete =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(tableKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, "tx-1", tableKey))
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    String snapshotKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
+    var snapshotPublish =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(snapshotKey)
+            .setBlobUri("blob://snapshot")
+            .setCreatedAt(Timestamps.fromMillis(2))
+            .build();
+
+    var outcome =
+        support.applyTransactionBestEffort(List.of(tableDelete, snapshotPublish), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("TABLE_DELETE_WITH_SNAPSHOT_PUBLISH", outcome.errorCode());
+    assertTrue(pointers.get(snapshotKey).isEmpty());
+  }
+
+  @Test
+  void connectorIntentCannotPublishAfterItsAccountPointerIsRemoved() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String accountKey = Keys.accountPointerById(accountId);
+    pointers.compareAndSet(
+        accountKey, 0L, PointerReferences.blobPointer(accountKey, "blob://account", 1L));
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("connector-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    Connector connector =
+        Connector.newBuilder().setResourceId(connectorId).setDisplayName("connector").build();
+    String blobUri = "blob://connector";
+    blobs.put(blobUri, connector.toByteArray(), "application/x-protobuf");
+    String connectorKey = Keys.connectorPointerById(accountId, connectorId.getId());
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(connectorKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    pointers.beforeBatch(() -> pointers.delete(accountKey));
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertTrue(
+        pointers.get(connectorKey).isEmpty(),
+        "account fence and connector publish must commit atomically");
+  }
 
   @Test
   void applyTransactionRejectsWhenPointerOpsExceedLimit() throws Exception {
@@ -224,6 +386,9 @@ class TransactionIntentApplierSupportTest {
     var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
+    String tableKey = Keys.tablePointerById(accountId, "table-1");
+    pointers.compareAndSet(
+        tableKey, 0L, PointerReferences.blobPointer(tableKey, "/blob/table-1", 1L));
     String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
     pointers.compareAndSet(
         targetKey, 0L, PointerReferences.blobPointer(targetKey, "/blob/snap-7", 1L));
@@ -260,6 +425,8 @@ class TransactionIntentApplierSupportTest {
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
     String byIdKey = Keys.tablePointerById(accountId, tableId);
     String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
 
     Table table =
         Table.newBuilder()
@@ -297,8 +464,209 @@ class TransactionIntentApplierSupportTest {
     var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
 
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(1, outcome.tableCleanups().size());
+    var cleanup = outcome.tableCleanups().getFirst();
+    assertEquals(accountId, cleanup.namespaceId().getAccountId());
+    assertEquals(namespaceId, cleanup.namespaceId().getId());
+    assertEquals(accountId, cleanup.tableId().getAccountId());
+    assertEquals(tableId, cleanup.tableId().getId());
+    assertTrue(
+        cleanup
+            .pointerKey()
+            .startsWith(Keys.namespaceTableCleanupPointer(accountId, namespaceId, tableId) + "/"));
+    assertEquals(1L, cleanup.pointerVersion());
+    assertEquals(Keys.tableCleanupPointerByTable(accountId, tableId), cleanup.indexKey());
+    assertEquals(1L, cleanup.indexVersion());
     assertTrue(pointers.get(byIdKey).isEmpty(), "table by-id pointer should be removed");
     assertTrue(pointers.get(byNameKey).isEmpty(), "owned table by-name pointer should be removed");
+    assertTrue(
+        pointers.get(cleanup.pointerKey()).isPresent(),
+        "table cleanup task must commit atomically with the last table indices");
+    assertTrue(
+        pointers.get(Keys.tableCleanupPointerByTable(accountId, tableId)).isPresent(),
+        "direct cleanup index must commit atomically with the namespace task");
+    assertEquals(
+        markerBefore,
+        markerVersion(pointers, accountId, namespaceId),
+        "replacing a visible table with its cleanup task is not a child publish");
+  }
+
+  @Test
+  void atomicTableDeleteRetainsRecoveryIntentUntilItsCleanupCompletes() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    seedNamespace(pointers, accountId, namespaceId);
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, blobUri, 1L));
+    pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, blobUri, 1L));
+
+    Transaction applying =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(applying);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    Transaction applied =
+        applying.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(applied, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(byIdKey).isEmpty());
+    assertTrue(intentRepo.getByTarget(accountId, byIdKey).isEmpty(), "target lock is released");
+    assertEquals(
+        1,
+        intentRepo.listByTx(accountId, txId).size(),
+        "by-tx intent remains as the durable cleanup recovery index");
+    assertEquals(1, outcome.tableCleanups().size());
+    assertTrue(pointers.get(outcome.tableCleanups().getFirst().pointerKey()).isPresent());
+    assertEquals(
+        TransactionState.TS_APPLIED,
+        readTransaction(
+                blobs,
+                pointers
+                    .get(Keys.transactionPointerById(accountId, txId))
+                    .orElseThrow()
+                    .getBlobUri())
+            .getState());
+  }
+
+  @Test
+  void losingAtomicTableDeleteDoesNotReturnItsUncommittedCleanupHandle() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    seedNamespace(pointers, accountId, namespaceId);
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, blobUri, 1L));
+    pointers.compareAndSet(byNameKey, 0L, PointerReferences.blobPointer(byNameKey, blobUri, 1L));
+
+    Transaction applying =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(applying);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+    Transaction applied =
+        applying.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+
+    var winner = new TransactionIntentApplierSupport.ApplyOutcome[1];
+    pointers.beforeBatch(
+        () ->
+            winner[0] =
+                support.applyTransactionAtomically(
+                    applied, txPointerVersion, List.of(intent), intentRepo));
+
+    var loser =
+        support.applyTransactionAtomically(applied, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, winner[0].status());
+    assertEquals(1, winner[0].tableCleanups().size());
+    assertTrue(pointers.get(winner[0].tableCleanups().getFirst().pointerKey()).isPresent());
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, loser.status());
+    assertTrue(
+        loser.tableCleanups().isEmpty(),
+        "the losing plan's random cleanup key was never committed and must not be returned");
+    assertEquals(
+        1,
+        intentRepo.listByTx(accountId, txId).size(),
+        "the winner's durable recovery intent must remain available for handle reconstruction");
   }
 
   @Test
@@ -673,6 +1041,7 @@ class TransactionIntentApplierSupportTest {
             .build();
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    seedNamespace(pointers, accountId, namespaceId);
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -688,6 +1057,265 @@ class TransactionIntentApplierSupportTest {
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
     assertTrue(pointers.get(relationKey).isPresent(), "shared relation-name claim must be created");
     assertEquals(tableId, pointers.get(relationKey).orElseThrow().getResourceId().getId());
+  }
+
+  /**
+   * The applier builds its own pointer batch instead of going through TableRepository, so it does
+   * not inherit the namespace child guard the service-side create path passes. Without the fence
+   * folded in here, a committing transaction and a concurrent DeleteNamespace can both succeed and
+   * leave the table orphaned: the deleter's batch only checks the children marker, which an
+   * unfenced apply never moves.
+   */
+  @Test
+  void applyTransactionAdvancesNamespaceChildMarkerWhenATableBecomesVisible() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
+
+    var outcome =
+        support.applyTransactionBestEffort(
+            List.of(tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders")),
+            intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(
+        markerBefore + 1,
+        markerVersion(pointers, accountId, namespaceId),
+        "the create batch itself must advance the namespace children marker");
+  }
+
+  @Test
+  void applyTransactionRefusesToPublishATableIntoAnAbsentNamespace() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    // No namespace pointer: the namespace never existed, or a DeleteNamespace already removed it.
+    var intent = tableCreateIntent(blobs, accountId, "cat-1", "ns-gone", "table-1", "orders");
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    // Terminal. Commit applies the intents frozen at prepare rather than re-planning them, so a
+    // namespace that is gone is gone for every attempt: retrying only burns the attempt budget
+    // while the intent locks stay held against the tables the transaction named.
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("NAMESPACE_MISSING", outcome.errorCode());
+    assertTrue(
+        pointers.get(Keys.tablePointerById(accountId, "table-1")).isEmpty(),
+        "no pointer write may be applied when the destination namespace is gone");
+  }
+
+  /**
+   * The marker advance is a single CAS, so two tables published into one namespace by the same
+   * transaction share one fence — issuing it twice would collide on that key and fail the batch.
+   */
+  @Test
+  void applyTransactionFencesOnceForTwoTablesCreatedInTheSameNamespace() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
+
+    var outcome =
+        support.applyTransactionBestEffort(
+            List.of(
+                tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders"),
+                tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-2", "returns")),
+            intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(markerBefore + 1, markerVersion(pointers, accountId, namespaceId));
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-1")).isPresent());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-2")).isPresent());
+  }
+
+  /** A create fenced to a namespace pointer cannot commit once that pointer has moved or gone. */
+  @Test
+  void applyTransactionFailsWhenTheDestinationNamespacePointerMovesBeforeTheBatch()
+      throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    String namespaceKey = Keys.namespacePointerById(accountId, namespaceId);
+    var intent = tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders");
+
+    // DeleteNamespace wins the race between planning and the apply batch.
+    pointers.beforeBatch(() -> pointers.delete(namespaceKey));
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertTrue(
+        pointers.get(Keys.tablePointerById(accountId, "table-1")).isEmpty(),
+        "the table must not be published under a namespace that is being removed");
+  }
+
+  @Test
+  void applyTransactionReparentAdvancesOnlyTheDestinationNamespaceMarker() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    seedNamespace(pointers, "acct", "ns-source");
+    seedNamespace(pointers, "acct", "ns-destination");
+    long sourceBefore = markerVersion(pointers, "acct", "ns-source");
+    long destinationBefore = markerVersion(pointers, "acct", "ns-destination");
+    var intent = tableReparentIntent(pointers, blobs, "ns-source", "ns-destination");
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(sourceBefore, markerVersion(pointers, "acct", "ns-source"));
+    assertEquals(destinationBefore + 1, markerVersion(pointers, "acct", "ns-destination"));
+    assertTrue(
+        pointers
+            .get(Keys.tablePointerByName("acct", "cat-1", "ns-destination", "orders"))
+            .isPresent());
+    assertTrue(
+        pointers.get(Keys.tablePointerByName("acct", "cat-1", "ns-source", "orders")).isEmpty());
+  }
+
+  @Test
+  void applyTransactionReparentIsRetryableWhenDestinationDisappearsBeforeCommit() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    seedNamespace(pointers, "acct", "ns-source");
+    seedNamespace(pointers, "acct", "ns-destination");
+    var intent = tableReparentIntent(pointers, blobs, "ns-source", "ns-destination");
+    String destinationPointer = Keys.namespacePointerById("acct", "ns-destination");
+    pointers.beforeBatch(() -> pointers.delete(destinationPointer));
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals(
+        "/accounts/acct/tables/table-1/table/current.pb",
+        pointers.get(Keys.tablePointerById("acct", "table-1")).orElseThrow().getBlobUri());
+    assertTrue(
+        pointers.get(Keys.tablePointerByName("acct", "cat-1", "ns-source", "orders")).isPresent());
+    assertTrue(
+        pointers
+            .get(Keys.tablePointerByName("acct", "cat-1", "ns-destination", "orders"))
+            .isEmpty());
+  }
+
+  private static TransactionIntent tableCreateIntent(
+      InMemoryBlobStore blobs,
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      String tableId,
+      String displayName) {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName(displayName)
+            .build();
+    String blobUri = "/accounts/" + accountId + "/tables/" + tableId + "/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    return TransactionIntent.newBuilder()
+        .setAccountId(accountId)
+        .setTxId("tx-1")
+        .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+        .setBlobUri(blobUri)
+        .setCreatedAt(Timestamps.fromMillis(1))
+        .build();
+  }
+
+  private static TransactionIntent tableReparentIntent(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      String sourceNamespaceId,
+      String destinationNamespaceId) {
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("cat-1")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var sourceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId(sourceNamespaceId)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var destinationId = sourceId.toBuilder().setId(destinationNamespaceId).build();
+    var current =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(sourceId)
+            .setDisplayName("orders")
+            .build();
+    String canonicalKey = Keys.tablePointerById("acct", "table-1");
+    String currentBlob = "/accounts/acct/tables/table-1/table/current.pb";
+    blobs.put(currentBlob, current.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(
+        canonicalKey,
+        0L,
+        PointerReferences.blobPointer(canonicalKey, currentBlob, 1L, tableId, "orders"));
+    String oldName = Keys.tablePointerByName("acct", "cat-1", sourceNamespaceId, "orders");
+    pointers.compareAndSet(
+        oldName, 0L, PointerReferences.blobPointer(oldName, currentBlob, 1L, tableId, "orders"));
+    String oldClaim = Keys.relationPointerByName("acct", "cat-1", sourceNamespaceId, "orders");
+    pointers.compareAndSet(
+        oldClaim, 0L, PointerReferences.blobPointer(oldClaim, currentBlob, 1L, tableId, "orders"));
+
+    var moved = current.toBuilder().setNamespaceId(destinationId).build();
+    String movedBlob = "/accounts/acct/tables/table-1/table/moved.pb";
+    blobs.put(movedBlob, moved.toByteArray(), "application/x-protobuf");
+    return TransactionIntent.newBuilder()
+        .setAccountId("acct")
+        .setTxId("tx-1")
+        .setTargetPointerKey(canonicalKey)
+        .setBlobUri(movedBlob)
+        .setExpectedVersion(1L)
+        .setCreatedAt(Timestamps.fromMillis(1))
+        .build();
   }
 
   @Test
@@ -779,6 +1407,8 @@ class TransactionIntentApplierSupportTest {
     String oldClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
     String newNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "invoices");
     String newClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "invoices");
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
 
     Table current =
         Table.newBuilder()
@@ -827,15 +1457,45 @@ class TransactionIntentApplierSupportTest {
     assertTrue(pointers.get(newClaimKey).isPresent(), "new name's claim must be reserved");
     assertEquals(tableRid.getId(), pointers.get(newClaimKey).orElseThrow().getResourceId().getId());
     assertTrue(pointers.get(newNameKey).isPresent(), "new by-name pointer must be reserved");
+    assertEquals(
+        markerBefore,
+        markerVersion(pointers, accountId, namespaceId),
+        "a same-namespace update is not a child publish");
   }
 
   private TransactionIntentApplierSupport newSupport(
       InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore) throws Exception {
+    String accountKey = Keys.accountPointerById("acct");
+    pointerStore.compareAndSet(
+        accountKey, 0L, PointerReferences.blobPointer(accountKey, "blob://account", 1L));
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointerStore);
     inject(support, "blobStore", blobStore);
     inject(support, "overlay", permissiveOverlay());
+    var markerStore = new MarkerStore();
+    inject(markerStore, "pointerStore", pointerStore);
+    inject(support, "markerStore", markerStore);
     return support;
+  }
+
+  /**
+   * A live namespace pointer for the destination of a table publish. Required by the namespace
+   * child fence: a table that becomes visible in a namespace pins that namespace's pointer, and the
+   * applier refuses to publish into one that has none rather than orphaning the table under a
+   * namespace a concurrent DeleteNamespace is removing.
+   */
+  private static void seedNamespace(
+      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+    String key = Keys.namespacePointerById(accountId, namespaceId);
+    pointers.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "blob://test/v1", 1L));
+  }
+
+  private static long markerVersion(
+      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+    return pointers
+        .get(Keys.namespaceChildrenMarker(accountId, namespaceId))
+        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
+        .orElse(0L);
   }
 
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)

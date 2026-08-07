@@ -44,6 +44,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.RecursiveResourceDropper;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -55,6 +56,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.TableCleanupRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -107,8 +109,50 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
+
+  // What one intent costs at apply: its own pointer writes plus the two lock-index releases
+  // (by-target and by-tx). A table delete retains its by-tx index as a durable post-apply recovery
+  // handle, so that shape is charged one release rather than two.
+  //
+  // The intent's own write is one CasUpsert, CasDelete or check on the target.
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
-  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 5;
+
+  // Canonical pointer, new by-name pointer, new relation claim, plus the old by-name and old claim
+  // a
+  // rename or reparent retires. Charged for any intent against a table that already exists: whether
+  // this particular one renames it cannot be told apart without its current blob, and prepare must
+  // not read blobs to decide a budget, so an update that renames nothing is still charged as if it
+  // did. Over-counting only rejects a transaction that would have fit; under-counting lets one past
+  // this gate to fail terminally at apply.
+  private static final int APPLY_OPS_PER_TABLE_INTENT = 7;
+
+  // A create has no predecessor, so there is no old by-name pointer and no old claim to retire: the
+  // canonical pointer, the new by-name pointer and the new claim, plus the two the lock release
+  // adds. Exact rather than conservative, and told apart from the above by the target pointer being
+  // absent — which prepare already reads to resolve the intent's expected version, so this costs
+  // nothing extra. Charging every non-delete table intent the rename cost rejected valid
+  // transactions: fourteen creates in one namespace estimated 101 ops against a real 73.
+  private static final int APPLY_OPS_PER_TABLE_CREATE_INTENT = 5;
+
+  // A delete writes the canonical delete, its two owned index deletes, the generation-scoped
+  // cleanup task and its direct by-table index, plus its by-target lock release. Its by-tx intent
+  // remains until cleanup succeeds, so a TS_APPLIED retry can resume cleanup.
+  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 6;
+
+  // The namespace fence a publishing table intent carries: the namespace pointer pin and the
+  // children-marker advance (MarkerStore#namespaceChildGuard). Apply emits one per namespace per
+  // batch, however many intents publish into it (appendNamespaceChildFence), so this is charged the
+  // same way — per distinct namespace, not per intent. Charging it per intent rejected transactions
+  // that fit comfortably: twelve table creates in one namespace estimated 108 ops against a real
+  // 63.
+  private static final int APPLY_OPS_PER_NAMESPACE_FENCE = 2;
+
+  // Canonical pointer, new by-name pointer, old by-name delete. Connectors are account-scoped,
+  // never namespace children, so a connector intent carries no namespace fence — charging it the
+  // table estimate would reject connector-heavy transactions that fit comfortably under the real
+  // limit.
+  private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 5;
+
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
@@ -125,6 +169,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       "floecat.transaction.reserved-table-id.";
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
+  @Inject TableCleanupRepository tableCleanupRepo;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ConnectorRepository connectorRepo;
   @Inject ReconcileJobStore reconcileJobs;
@@ -137,6 +182,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject UserGraph metadataGraph;
   @Inject TableRootWriter rootWriter;
   @Inject RootResyncQueue rootResyncQueue;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject CatalogOverlay overlay;
   private volatile java.util.concurrent.Executor postCommitExecutor =
       java.util.concurrent.ForkJoinPool.commonPool();
@@ -612,23 +658,28 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         materializeConnectorProvisioningChanges(
             accountId, txn.getTxId(), txn.getCreatedAt(), request.getChangesList());
     List<TransactionIntent> intents = new ArrayList<>();
+    List<PlannedChange> plannedChanges = new ArrayList<>();
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
     List<PendingBlob> pendingBlobs = new ArrayList<>();
-    int estimatedOps = 0;
+    // Mirrors the applier's own per-batch set: one fence per namespace, however many intents
+    // publish
+    // into it.
+    java.util.Set<String> fencedNamespaces = new java.util.HashSet<>();
+    // Mirrors appendAccountFence: one account-pointer check for all account-owned mutations.
+    java.util.Set<String> fencedAccounts = new java.util.HashSet<>();
+    // A table mutation in the same batch is itself the snapshot publisher's liveness proof.
+    java.util.Set<String> tableMutationTargets = new java.util.HashSet<>();
+    java.util.Set<String> fencedTables = new java.util.HashSet<>();
 
     for (var change : effectiveChanges) {
       PlannedIntent planned = planIntent(accountId, txn.getTxId(), change);
+      plannedChanges.add(new PlannedChange(change, planned));
       String pointerKey = planned.targetPointerKey();
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps +=
-          isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey)
-              ? APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT
-              : APPLY_OPS_PER_PLAIN_INTENT;
-      if (estimatedOps > MAX_POINTER_TXN_OPS) {
-        throw new IllegalArgumentException(
-            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
+      if (isTableByIdPointer(pointerKey)) {
+        tableMutationTargets.add(pointerKey);
       }
       if (planned.inlineBytes() != null) {
         pendingBlobs.add(
@@ -655,6 +706,27 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       TransactionIntent intent = intentBuilder.build();
       intents.add(intent);
     }
+    int estimatedOps = 0;
+    for (var plannedChange : plannedChanges) {
+      estimatedOps +=
+          estimatedApplyOps(
+              accountId,
+              txn.getTxId(),
+              plannedChange.change(),
+              plannedChange.planned(),
+              fencedNamespaces,
+              fencedAccounts,
+              tableMutationTargets,
+              fencedTables);
+      if (estimatedOps > MAX_POINTER_TXN_OPS) {
+        throw new IllegalArgumentException(
+            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
+      }
+    }
+    rejectNamespaceFenceTargetCollisions(accountId, txn.getTxId(), plannedChanges, seenTargets);
+    // TS_APPLIED is account-owned state too. A table-only or delete-only transaction may not have
+    // charged a fence while planning its intents, so ensure the final publication has one.
+    estimatedOps += accountFenceOps(accountId, fencedAccounts);
     estimatedOps += APPLY_OPS_FOR_TRANSACTION_FINALIZE;
     if (estimatedOps > MAX_POINTER_TXN_OPS) {
       throw new IllegalArgumentException(
@@ -701,7 +773,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       String accountId, CommitTransactionRequest request, Timestamp now) {
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
     if (txn.getState() == TransactionState.TS_APPLIED) {
-      return txn;
+      List<TransactionIntent> appliedIntents = intentRepo.listByTx(accountId, txn.getTxId());
+      return appliedIntents.isEmpty()
+          ? txn
+          : finishAppliedTransaction(txn, appliedIntents, List.of());
     }
     if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return txn;
@@ -729,7 +804,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               now,
               "prepared intent set is incomplete");
       if (failed.getState() == TransactionState.TS_APPLIED) {
-        return failed;
+        return finishAppliedTransaction(failed, intents, List.of());
       }
       logCommitFailure(
           accountId,
@@ -768,9 +843,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 now,
                 "lock ownership mismatch");
         if (failed.getState() == TransactionState.TS_APPLIED) {
-          schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-          convergeAfterApply(intents);
-          return failed;
+          return finishAppliedTransaction(failed, intents, List.of());
         }
         logCommitFailure(
             accountId,
@@ -786,25 +859,38 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         txRepo.metaFor(accountId, applyPhaseTxn.getTxId()).getPointerVersion();
     Transaction appliedCandidate =
         applyPhaseTxn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
-    var outcome =
-        intentApplierSupport.applyTransactionAtomically(
-            appliedCandidate, transactionPointerVersion, intents, intentRepo);
+    TransactionIntentApplierSupport.ApplyOutcome outcome;
+    try {
+      outcome =
+          intentApplierSupport.applyTransactionAtomically(
+              appliedCandidate, transactionPointerVersion, intents, intentRepo);
+    } catch (RuntimeException applyFailure) {
+      // The transaction is already TS_APPLYING. Never let a transient overlay, blob, or pointer
+      // read escape while leaving that state behind: TS_APPLYING owners are deliberately treated
+      // as non-stale, so no later transaction could reclaim their intent locks. Converting the
+      // failure to the normal retryable outcome drives the same durable state transition as an
+      // explicit planning retry and leaves commit retryable.
+      LOG.warnf(
+          applyFailure,
+          "transaction_apply_planning_failed account_id=%s tx_id=%s",
+          accountId,
+          applyPhaseTxn.getTxId());
+      outcome =
+          TransactionIntentApplierSupport.ApplyOutcome.retryable(
+              "APPLY_PLANNING_FAILED", "transient failure while planning transaction apply");
+    }
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
       Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       Transaction applied =
           latest.getState() == TransactionState.TS_APPLIED ? latest : appliedCandidate;
-      schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
-      convergeAfterApply(intents);
-      return applied;
+      return finishAppliedTransaction(applied, intents, outcome.tableCleanups());
     }
 
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
       Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       if (latest.getState() == TransactionState.TS_APPLIED) {
         Transaction applied = latest;
-        schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
-        convergeAfterApply(intents);
-        return applied;
+        return finishAppliedTransaction(applied, intents, outcome.tableCleanups());
       }
       annotateIntentApplyFailure(intents, outcome, now);
       Transaction failed =
@@ -817,9 +903,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               now,
               "cannot transition to apply_failed_conflict");
       if (failed.getState() == TransactionState.TS_APPLIED) {
-        schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-        convergeAfterApply(intents);
-        return failed;
+        return finishAppliedTransaction(failed, intents, outcome.tableCleanups());
       }
       logCommitFailure(accountId, failed, outcome, intents);
       return failed;
@@ -836,9 +920,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             now,
             "cannot transition to apply_failed_retryable");
     if (failed.getState() == TransactionState.TS_APPLIED) {
-      schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-      convergeAfterApply(intents);
-      return failed;
+      return finishAppliedTransaction(failed, intents, outcome.tableCleanups());
     }
     logCommitFailure(accountId, failed, outcome, intents);
     return failed;
@@ -1419,7 +1501,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         }
         if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)
             && isTableByIdPointer(pointerKey)) {
-          expectedOwnedNamePointerKey = expectedOwnedTableNamePointerKey(pointerKey, true);
+          var deleteContext = expectedOwnedTableDeleteContext(pointerKey, true);
+          if (deleteContext != null) {
+            expectedOwnedNamePointerKey = deleteContext.namePointerKey();
+          }
         }
       }
       case TABLE -> {
@@ -1513,7 +1598,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         }
         if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)
             && isTableByIdPointer(pointerKey)) {
-          expectedOwnedNamePointerKey = expectedOwnedTableNamePointerKey(pointerKey, true);
+          var deleteContext = expectedOwnedTableDeleteContext(pointerKey, true);
+          if (deleteContext != null) {
+            expectedOwnedNamePointerKey = deleteContext.namePointerKey();
+          }
         }
       }
       case TABLE -> {
@@ -1697,6 +1785,170 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
   }
 
+  /**
+   * Prepare-time upper bound on the pointer ops one intent contributes at apply.
+   *
+   * <p>Used only as a pre-flight gate — apply re-checks against the real op count — so
+   * under-counting turns a clear rejection here into a terminal {@code POINTER_TXN_TOO_LARGE} after
+   * the caller has already prepared. Over-counting rejects transactions that would have fit, so
+   * each shape is charged its own cost rather than the largest.
+   */
+  private int estimatedApplyOps(
+      String accountId,
+      String txId,
+      TxChange change,
+      PlannedIntent planned,
+      Set<String> fencedNamespaces,
+      Set<String> fencedAccounts,
+      Set<String> tableMutationTargets,
+      Set<String> fencedTables) {
+    String pointerKey = planned.targetPointerKey();
+    if (isTableByIdPointer(pointerKey)) {
+      if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, planned.blobUri())) {
+        return APPLY_OPS_PER_TABLE_DELETE_INTENT;
+      }
+      // An absent target pointer means there is nothing to rename away from, so the two retirement
+      // ops the rename cost includes cannot be emitted. expectedVersion is the version prepare read
+      // off that pointer, and a caller-supplied precondition has already been checked equal to it,
+      // so zero here cannot be anything but absent.
+      int ownOps =
+          planned.expectedVersion() == 0L
+              ? APPLY_OPS_PER_TABLE_CREATE_INTENT
+              : APPLY_OPS_PER_TABLE_INTENT;
+      return ownOps + namespaceFenceOps(change, fencedNamespaces);
+    }
+    if (isConnectorByIdPointer(pointerKey)) {
+      return APPLY_OPS_PER_CONNECTOR_INTENT
+          + connectorFenceOps(accountId, txId, pointerKey, planned.blobUri(), fencedAccounts);
+    }
+    return APPLY_OPS_PER_PLAIN_INTENT
+        + snapshotFenceOps(
+            accountId, txId, pointerKey, planned.blobUri(), tableMutationTargets, fencedTables)
+        + accountFenceOps(accountId, fencedAccounts);
+  }
+
+  /** Table-pointer check emitted once per distinct snapshot-owning table without its own intent. */
+  int snapshotFenceOps(
+      String accountId,
+      String txId,
+      String pointerKey,
+      String blobUri,
+      Set<String> tableMutationTargets,
+      Set<String> fencedTables) {
+    String tableId = Keys.tableIdFromSnapshotPointerKey(pointerKey);
+    if (tableId == null || isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)) {
+      return 0;
+    }
+    String tablePointer = Keys.tablePointerById(accountId, tableId);
+    if (tableMutationTargets.contains(tablePointer)) {
+      return 0;
+    }
+    return fencedTables.add(tablePointer) ? 1 : 0;
+  }
+
+  /** Account-pointer check emitted once per batch for non-delete connector intents. */
+  int connectorFenceOps(
+      String accountId,
+      String txId,
+      String pointerKey,
+      String blobUri,
+      Set<String> fencedAccounts) {
+    return !isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)
+        ? accountFenceOps(accountId, fencedAccounts)
+        : 0;
+  }
+
+  private int accountFenceOps(String accountId, Set<String> fencedAccounts) {
+    return fencedAccounts.add(accountId) ? 1 : 0;
+  }
+
+  /**
+   * The fence ops a publishing table intent adds, charged once per namespace exactly as apply emits
+   * them.
+   *
+   * <p>The namespace is known only from a table payload. A caller-supplied {@code
+   * intended_blob_uri} names a blob this method must not read — prepare would be reading storage to
+   * decide a budget — so those intents keep the conservative per-intent charge. Over-counting there
+   * only rejects a transaction that would have fit; under-counting anywhere would let one past this
+   * gate to fail terminally at apply.
+   */
+  private int namespaceFenceOps(TxChange change, Set<String> fencedNamespaces) {
+    if (change.getChangePayloadCase() != TxChange.ChangePayloadCase.TABLE) {
+      return APPLY_OPS_PER_NAMESPACE_FENCE;
+    }
+    String namespaceId = change.getTable().getNamespaceId().getId();
+    if (namespaceId.isBlank()) {
+      return APPLY_OPS_PER_NAMESPACE_FENCE;
+    }
+    return fencedNamespaces.add(namespaceId) ? APPLY_OPS_PER_NAMESPACE_FENCE : 0;
+  }
+
+  /**
+   * Rejects user intents that target a key the same batch must reserve for a namespace child fence.
+   * DynamoDB permits only one operation per key, and neither deleting nor arbitrarily rewriting a
+   * namespace pointer/children marker is compatible with publishing a table through the fence.
+   * Detecting the collision here keeps an otherwise prepared transaction from failing terminally
+   * only when commit assembles its batch.
+   */
+  private void rejectNamespaceFenceTargetCollisions(
+      String accountId, String txId, List<PlannedChange> plannedChanges, Set<String> targetKeys) {
+    var fenceKeys = new java.util.HashSet<String>();
+    boolean unknownPublishingNamespace = false;
+
+    for (var plannedChange : plannedChanges) {
+      var change = plannedChange.change();
+      var planned = plannedChange.planned();
+      if (!isTableByIdPointer(planned.targetPointerKey())) {
+        continue;
+      }
+
+      if (isDeleteSentinelBlobUri(accountId, txId, planned.targetPointerKey(), planned.blobUri())) {
+        continue;
+      }
+
+      Table next =
+          change.getChangePayloadCase() == TxChange.ChangePayloadCase.TABLE
+              ? change.getTable()
+              : readTable(planned.blobUri());
+      if (next == null || !next.hasNamespaceId()) {
+        unknownPublishingNamespace = true;
+        continue;
+      }
+
+      var currentPointer = pointerStore.get(planned.targetPointerKey()).orElse(null);
+      boolean publishesChild = currentPointer == null;
+      if (currentPointer != null) {
+        Table current = readTable(currentPointer.getBlobUri());
+        if (current == null) {
+          unknownPublishingNamespace = true;
+          continue;
+        }
+        publishesChild =
+            !current.getNamespaceId().getId().equals(next.getNamespaceId().getId())
+                || !current.getCatalogId().getId().equals(next.getCatalogId().getId());
+      }
+      if (publishesChild) {
+        String namespaceId = next.getNamespaceId().getId();
+        fenceKeys.add(Keys.namespacePointerById(accountId, namespaceId));
+        fenceKeys.add(Keys.namespaceChildrenMarker(accountId, namespaceId));
+      }
+    }
+
+    for (String targetKey : targetKeys) {
+      if (fenceKeys.contains(targetKey)
+          || (unknownPublishingNamespace && isNamespaceFenceTarget(accountId, targetKey))) {
+        throw new IllegalArgumentException(
+            "transaction change targets namespace fence key " + targetKey);
+      }
+    }
+  }
+
+  private boolean isNamespaceFenceTarget(String accountId, String targetKey) {
+    return targetKey.startsWith(Keys.namespacePointerByIdPrefix(accountId))
+        || (targetKey.startsWith(Keys.namespaceRootPrefix(accountId))
+            && targetKey.endsWith(Keys.SEG_MARKERS + "children"));
+  }
+
   private boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
   }
@@ -1802,7 +2054,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return encoded.isBlank() ? null : URLDecoder.decode(encoded, StandardCharsets.UTF_8);
   }
 
-  private String expectedOwnedTableNamePointerKey(
+  private OwnedTableDeleteContext expectedOwnedTableDeleteContext(
       String tableByIdPointerKey, boolean requireReadable) {
     var pointer = pointerStore.get(tableByIdPointerKey).orElse(null);
     if (pointer == null || pointer.getBlobUri().isBlank()) {
@@ -1817,11 +2069,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       return null;
     }
     validateCurrentTablePointerTarget(tableByIdPointerKey, table);
-    return Keys.tablePointerByName(
-        table.getResourceId().getAccountId(),
-        table.getCatalogId().getId(),
-        table.getNamespaceId().getId(),
-        table.getDisplayName());
+    return new OwnedTableDeleteContext(
+        Keys.tablePointerByName(
+            table.getResourceId().getAccountId(),
+            table.getCatalogId().getId(),
+            table.getNamespaceId().getId(),
+            table.getDisplayName()));
   }
 
   private void validateCurrentTablePointerTarget(String pointerKey, Table table) {
@@ -2009,10 +2262,92 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     cleanupIntentsBestEffort(intents);
   }
 
-  /** Post-apply convergence: graph caches and table roots re-derive from committed pointers. */
+  /** Completes recoverable post-apply work before releasing the durable by-tx delete intents. */
+  private Transaction finishAppliedTransaction(
+      Transaction applied,
+      List<TransactionIntent> intents,
+      List<TableCleanupRepository.Cleanup> plannedCleanups) {
+    schedulePostCommitCaptureBootstrap(
+        applied.getAccountId(), applied.getTxId(), List.copyOf(intents));
+    List<TableCleanupRepository.Cleanup> cleanups = plannedCleanups;
+    if (cleanups == null || cleanups.isEmpty()) {
+      cleanups = pendingTableCleanups(intents);
+    }
+    convergeAfterApply(intents, cleanups);
+    // Do this last. If cleanup throws, the by-tx table-delete intents remain and a TS_APPLIED retry
+    // reconstructs the surviving namespace-scoped tasks through pendingTableCleanups.
+    cleanupRetainedTableDeleteIntentsBestEffort(intents);
+    return applied;
+  }
+
+  private void cleanupRetainedTableDeleteIntentsBestEffort(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return;
+    }
+    cleanupIntentsBestEffort(
+        intents.stream()
+            .filter(
+                intent ->
+                    intent != null
+                        && isTableByIdPointer(intent.getTargetPointerKey())
+                        && isDeleteSentinelBlobUri(
+                            intent.getAccountId(),
+                            intent.getTxId(),
+                            intent.getTargetPointerKey(),
+                            intent.getBlobUri()))
+            .toList());
+  }
+
+  private List<TableCleanupRepository.Cleanup> pendingTableCleanups(
+      List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty() || tableCleanupRepo == null) {
+      return List.of();
+    }
+    var cleanups = new ArrayList<TableCleanupRepository.Cleanup>();
+    for (var intent : intents) {
+      if (intent == null
+          || !isDeleteSentinelBlobUri(
+              intent.getAccountId(),
+              intent.getTxId(),
+              intent.getTargetPointerKey(),
+              intent.getBlobUri())) {
+        continue;
+      }
+      String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
+      if (tableId == null || tableId.isBlank()) {
+        continue;
+      }
+      var resourceId =
+          ResourceId.newBuilder()
+              .setAccountId(intent.getAccountId())
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build();
+      tableCleanupRepo.forTable(resourceId, cleanups::add);
+    }
+    return List.copyOf(cleanups);
+  }
+
+  /** Post-apply convergence when no locally planned cleanup handles are available. */
   private void convergeAfterApply(List<TransactionIntent> intents) {
+    convergeAfterApply(intents, List.of());
+  }
+
+  /** Post-apply convergence: graph caches and table roots re-derive from committed pointers. */
+  private void convergeAfterApply(
+      List<TransactionIntent> intents, List<TableCleanupRepository.Cleanup> tableCleanups) {
     invalidateTouchedGraphEntries(intents);
+    cleanupDeletedTables(tableCleanups);
     resyncTouchedTableRoots(intents);
+  }
+
+  private void cleanupDeletedTables(List<TableCleanupRepository.Cleanup> tableCleanups) {
+    if (tableCleanups == null || tableCleanups.isEmpty() || recursiveDropper == null) {
+      return;
+    }
+    for (var cleanup : tableCleanups) {
+      recursiveDropper.cleanupDeletedTable(cleanup);
+    }
   }
 
   /**
@@ -2295,6 +2630,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private record ResolvedTxTarget(String pointerKey, ResourceId tableId) {}
 
+  private record OwnedTableDeleteContext(String namePointerKey) {}
+
   private record IntentFingerprint(
       String targetPointerKey,
       String blobUri,
@@ -2308,6 +2645,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       byte[] inlineBytes,
       String inlineContentType,
       String expectedOwnedNamePointerKey) {}
+
+  private record PlannedChange(TxChange change, PlannedIntent planned) {}
 
   private record PendingBlob(String uri, byte[] bytes, String contentType) {}
 }
