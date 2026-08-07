@@ -27,7 +27,7 @@ import java.lang.annotation.Target;
 
 /**
  * Marks a repository read whose store round-trip must run under the process-wide metadata-I/O
- * ceiling ({@code floecat.query.metadata_io.max_concurrency}). The {@link
+ * ceiling ({@code floecat.query.metadata-io.max-concurrency}). The {@link
  * MetadataIoAdmissionInterceptor} acquires a permit around the call automatically, so admission is
  * a property of the store method itself — no caller has to opt in, and none can bypass it.
  * Admission is re-entrant, so a read reached from within an already-admitted scope reuses the held

@@ -50,7 +50,8 @@ public class MetadataIoAdmissionInterceptor {
   @AroundInvoke
   Object admit(InvocationContext ctx) throws Exception {
     // The request's cancellation signal, propagated here even on a fan-out worker off the request
-    // thread. Present on a cancellable request (e.g. a GetUserObjects stream), absent otherwise.
+    // thread. Nothing binds one yet — the resolver does, in the PR that puts a cancellable request
+    // in front of this — so every read below takes the uncancellable path until then.
     BooleanSupplier cancelled = PropagatedContext.currentCancellation();
     try {
       // Repository reads are thread-safe blocking I/O, so run each on the shared admission pool

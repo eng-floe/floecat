@@ -75,13 +75,11 @@ public final class MetadataFanout {
       Function<? super I, ? extends O> unit,
       Consumer<? super O> consumer,
       BooleanSupplier cancelled) {
-    if (MetadataIoRunner.isRunningAdmittedOperation()) {
-      throw new IllegalStateException(
-          "a metadata fan-out must not start from within an admitted store operation — the"
-              + " orchestrating thread would hold a permit while its off-thread units wait for more,"
-              + " deadlocking the shared pool under saturation");
-    }
     if (concurrent) {
+      // Only the concurrent branch can deadlock, and BoundedFanout already rejects it — checking
+      // here too would give one rule two messages. Serial units run inline on this thread, which is
+      // the re-entrant case admission supports: MetadataIoRunner reuses the held permit rather than
+      // taking a second one, so rejecting it would refuse a nesting that cannot wedge the pool.
       BoundedFanout.forEachOrdered(
           units, permits, EXECUTOR, item -> unit.apply(item), consumer, cancelled);
       return;

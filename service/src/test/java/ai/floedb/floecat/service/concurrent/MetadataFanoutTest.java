@@ -211,10 +211,11 @@ class MetadataFanoutTest {
   }
 
   @Test
-  void aFanOutStartedFromWithinAnAdmittedOperationIsRejected() {
-    // Admitted store operations hold a permit on their thread. Starting a fan-out from within one
-    // would hold that permit while off-thread units wait for more — a saturation deadlock. Reject
-    // it.
+  void aConcurrentFanOutStartedFromWithinAnAdmittedOperationIsRejected() {
+    // Admitted store operations hold a permit on their thread. Dispatching units off-thread from
+    // within one holds that permit while each unit waits for its own — a saturation deadlock.
+    // Asserted on BoundedFanout's message: this stage no longer repeats the check, so one rule
+    // produces one message.
     MetadataIoRunner admission = new MetadataIoRunner(4);
     try {
       assertThatThrownBy(
@@ -224,7 +225,26 @@ class MetadataFanoutTest {
                       () -> MetadataFanout.mapOrdered(List.of(1), 4, true, i -> i, () -> false),
                       MSGS))
           .isInstanceOf(IllegalStateException.class)
-          .hasMessageContaining("must not start from within an admitted");
+          .hasMessageContaining("ran inside an admitted metadata-I/O operation");
+    } finally {
+      admission.close();
+    }
+  }
+
+  @Test
+  void aSerialFanOutIsAllowedFromWithinAnAdmittedOperation() {
+    // Serial units run inline on the admitted thread, so they reuse its permit instead of taking a
+    // second one — the re-entrant case admission exists to support. Rejecting it refused a nesting
+    // that cannot wedge the pool.
+    MetadataIoRunner admission = new MetadataIoRunner(4);
+    try {
+      assertThat(
+              admission.call(
+                  () -> false,
+                  () ->
+                      MetadataFanout.mapOrdered(List.of(1, 2), 4, false, i -> i * 10, () -> false),
+                  MSGS))
+          .containsExactly(10, 20);
     } finally {
       admission.close();
     }
