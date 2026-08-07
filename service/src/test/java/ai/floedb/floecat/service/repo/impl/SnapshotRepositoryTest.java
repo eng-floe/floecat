@@ -20,11 +20,15 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -37,6 +41,7 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -684,15 +689,22 @@ class SnapshotRepositoryTest {
     snapshotRepo.create(original);
 
     byte[] digest = new byte[32];
-    assertTrue(
-        snapshotRepo.recordReuseManifest(
-            tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb"));
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
+    Snapshot recorded =
+        snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).orElseThrow();
     Snapshot updated = snapshotRepo.getById(tableRid, 42L).orElseThrow();
-    assertTrue(
-        snapshotRepo.recordReuseManifest(
-            tableRid, 42L, "/reuse/manifest.pb", 123L, digest, "/stats/generation.pb"));
+    Snapshot replayedRecord =
+        snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).orElseThrow();
     Snapshot replayed = snapshotRepo.getById(tableRid, 42L).orElseThrow();
 
+    assertEquals(updated, recorded);
+    assertEquals(updated, replayedRecord);
     assertEquals("value", updated.getSummaryOrThrow("existing"));
     assertEquals("/reuse/manifest.pb", updated.getReuseManifestRef().getUri());
     assertEquals(123L, updated.getReuseManifestRef().getPayloadBytes());
@@ -704,12 +716,17 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void recordReuseManifestReturnsFalseWhenSnapshotWasDeleted() {
+  void recordReuseManifestReturnsEmptyWhenSnapshotWasDeleted() {
     var tableRid = newSeededTable();
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
 
-    assertFalse(
-        snapshotRepo.recordReuseManifest(
-            tableRid, 42L, "/reuse/manifest.pb", 123L, new byte[32], "/stats/generation.pb"));
+    assertTrue(snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).isEmpty());
   }
 
   @Test
@@ -770,6 +787,58 @@ class SnapshotRepositoryTest {
         1L,
         snapshotRepo
             .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseFallsBackWhenNewestCandidateIsUnusable() {
+    var tableRid = newSeededTable();
+    Snapshot newestWithoutReuseManifest =
+        Snapshot.newBuilder().setTableId(tableRid).setSnapshotId(2L).build();
+    Snapshot reusablePredecessor =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(1L)
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("/reuse/1.pb")
+                    .setPayloadBytes(123L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("/reuse-stats/1.pb"))
+            .build();
+    snapshotRepo.create(newestWithoutReuseManifest);
+    snapshotRepo.create(reusablePredecessor);
+
+    var roots = new TableRootRepository(ptr, blobs);
+    assertTrue(
+        roots.createIfAbsent(
+            TableRoot.newBuilder()
+                .setTableId(tableRid)
+                .setCurrentSnapshotId(2L)
+                .setSnapshotManifestRef(BlobRef.newBuilder().setUri("/manifest/head.pb"))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(2L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 2L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/2.pb")))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(1L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 1L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/1.pb")))
+                .build()));
+
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, null)
             .orElseThrow()
             .getSnapshotId());
   }

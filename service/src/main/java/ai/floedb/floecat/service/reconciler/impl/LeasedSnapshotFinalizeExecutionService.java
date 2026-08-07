@@ -16,13 +16,12 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
-import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -30,10 +29,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
-import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -46,7 +42,6 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -189,22 +184,24 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           blobStore.put(
               durableManifestUri, validatedManifest.serializedBytes(), "application/x-protobuf");
           publishCaptureArtifacts(lease, tableId, snapshotTask, manifest);
-          boolean snapshotPresent =
+          var finalizedSnapshot =
               snapshotRepo.recordReuseManifest(
                   tableId,
                   snapshotTask.snapshotId(),
-                  durableManifestUri,
-                  validated.getManifestBytes(),
-                  manifestDigest,
-                  Keys.snapshotTargetStatsManifestBlobUri(
-                      tableId.getAccountId(),
-                      tableId.getId(),
-                      snapshotTask.snapshotId(),
-                      "full-rescan-" + lease.parentJobId));
-          if (snapshotPresent) {
-            currentSnapshotPointerService.maybeAdvance(
-                tableId, snapshotTask.snapshotId(), lease.jobId);
-          }
+                  SnapshotReuseManifestRef.newBuilder()
+                      .setUri(durableManifestUri)
+                      .setPayloadBytes(validated.getManifestBytes())
+                      .setPayloadSha256(validated.getManifestSha256())
+                      .setStatsGenerationManifestUri(
+                          Keys.snapshotTargetStatsManifestBlobUri(
+                              tableId.getAccountId(),
+                              tableId.getId(),
+                              snapshotTask.snapshotId(),
+                              "full-rescan-" + lease.parentJobId))
+                      .build());
+          finalizedSnapshot.ifPresent(
+              snapshot ->
+                  currentSnapshotPointerService.maybeAdvance(tableId, snapshot, lease.jobId));
         } finally {
           publishNanos[0] = System.nanoTime() - publishStartNanos;
         }
@@ -433,6 +430,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           || !bundledStatsPrefixes.add(statsPrefix)
           || artifact.getPayloadBytes() <= 0L
           || artifact.getPayloadSha256().size() != 32
+          || !ReusableArtifactBundleUris.matchesDigest(
+              artifact.getPayloadUri(), artifact.getPayloadSha256().toByteArray())
           || !bundleUris.add(artifact.getPayloadUri())) {
         throw new IllegalArgumentException(
             "snapshot capture manifest reuse bundle identity mismatch");
@@ -648,7 +647,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     int declaredFileStats = 0;
     int declaredIndexArtifacts = 0;
-    Map<String, String> stagedArtifactDigests = new LinkedHashMap<>();
+    Set<String> stagedArtifactPrefixes = new HashSet<>();
     for (var fileGroup : manifest.getFileGroupsList()) {
       ReconcileFileGroupResultDescriptor stored =
           storedFileGroups.remove(fileGroup.getFileGroupJobId());
@@ -678,8 +677,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       String artifactReferencesSha256 =
           HexFormat.of().formatHex(fileGroup.getArtifactReferencesSha256().toByteArray());
-      if (stagedArtifactDigests.putIfAbsent(expectedStatsPrefix, artifactReferencesSha256)
-          != null) {
+      if (!stagedArtifactPrefixes.add(expectedStatsPrefix)) {
         throw new IllegalArgumentException("duplicate reusable artifact bundle identity");
       }
       if (!statsStore.isPreparedFileGroup(
@@ -695,19 +693,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       declaredFileStats += fileGroup.getFileStatsRecordCount();
       declaredIndexArtifacts += fileGroup.getIndexArtifactCount();
     }
-    Set<String> reusableStatsFiles = new HashSet<>();
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata>
-        payloadStatsMetadata = new LinkedHashMap<>();
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata>
-        submittedStatsMetadata = new LinkedHashMap<>();
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata>
-        payloadIndexMetadata = new LinkedHashMap<>();
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata>
-        submittedIndexMetadata = new LinkedHashMap<>();
-    int reusableStatsMetadataCount = 0;
     for (var bundle : manifest.getReusableArtifactBundlesList()) {
       String matchedPrefix = null;
-      for (String statsPrefix : stagedArtifactDigests.keySet()) {
+      for (String statsPrefix : stagedArtifactPrefixes) {
         if (bundle.getArtifact().getPayloadUri().startsWith(statsPrefix + "reuse-bundles/")) {
           if (matchedPrefix != null) {
             throw new IllegalArgumentException(
@@ -720,35 +708,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         throw new IllegalArgumentException(
             "snapshot reusable bundle does not match a staged file group");
       }
-      String expectedArtifactDigest = stagedArtifactDigests.remove(matchedPrefix);
-      ValidatedReusableArtifactBundle validatedBundle =
-          validateReusableArtifactBundle(bundle, expectedArtifactDigest);
-      mergeReusableMetadata(payloadStatsMetadata, validatedBundle.fileStats(), "stats payload");
-      mergeReusableMetadata(
-          payloadIndexMetadata, validatedBundle.indexArtifacts(), "index payload");
-      for (var metadata : bundle.getFileStatsList()) {
-        reusableStatsMetadataCount++;
-        if (metadata.getFilePath().isBlank() || !reusableStatsFiles.add(metadata.getFilePath())) {
-          throw new IllegalArgumentException(
-              "snapshot reusable bundle contains duplicate or invalid stats metadata");
-        }
-        submittedStatsMetadata.put(metadata.getFilePath(), metadata);
-      }
-      for (var metadata : bundle.getIndexArtifactsList()) {
-        if (metadata.getFilePath().isBlank()
-            || submittedIndexMetadata.putIfAbsent(metadata.getFilePath(), metadata) != null) {
-          throw new IllegalArgumentException(
-              "snapshot reusable bundle contains duplicate or invalid index metadata");
-        }
-      }
+      stagedArtifactPrefixes.remove(matchedPrefix);
     }
     if (!storedFileGroups.isEmpty()
-        || !stagedArtifactDigests.isEmpty()
+        || !stagedArtifactPrefixes.isEmpty()
         || declaredFileStats < manifest.getFileStatsRecordCount()
-        || reusableStatsMetadataCount != manifest.getFileStatsRecordCount()
-        || reusableStatsFiles.size() != manifest.getFileStatsRecordCount()
-        || !payloadStatsMetadata.equals(submittedStatsMetadata)
-        || !payloadIndexMetadata.equals(submittedIndexMetadata)
         || declaredIndexArtifacts != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot file-group artifact count mismatch");
     }
@@ -943,123 +907,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
-    }
-  }
-
-  ValidatedReusableArtifactBundle validateReusableArtifactBundle(
-      ReusableArtifactBundleReference submitted, String expectedArtifactDigest) {
-    StatsObjectDescriptor artifact = submitted.getArtifact();
-    byte[] bytes =
-        loadRequiredPublishedObject(
-            artifact.getPayloadUri(), "reusable artifact bundle " + artifact.getTargetStorageId());
-    byte[] digest = sha256(bytes);
-    if (artifact.getPayloadBytes() != bytes.length
-        || artifact.getPayloadSha256().size() != 32
-        || !MessageDigest.isEqual(digest, artifact.getPayloadSha256().toByteArray())
-        || !ReusableArtifactBundleUris.matchesDigest(artifact.getPayloadUri(), digest)) {
-      throw new IllegalArgumentException("reusable artifact bundle descriptor mismatch");
-    }
-    ReusableArtifactBundlePayload payload;
-    try {
-      payload = ReusableArtifactBundles.parse(bytes);
-    } catch (com.google.protobuf.InvalidProtocolBufferException | IllegalArgumentException error) {
-      throw new IllegalArgumentException("reusable artifact bundle payload is invalid", error);
-    }
-
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata> expectedStats =
-        new LinkedHashMap<>();
-    List<StatsObjectDescriptor> statsDescriptors = new ArrayList<>();
-    for (var record : payload.getFileStatsList()) {
-      String filePath =
-          record.hasTarget() && record.getTarget().hasFile()
-              ? record.getTarget().getFile().getFilePath()
-              : "";
-      var metadata =
-          ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
-              .setFilePath(filePath)
-              .setSourceFingerprint(
-                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
-              .setStatsCaptureSignature(
-                  record.getPropertiesOrDefault(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, ""))
-              .addAllRealizedStatsSelectors(
-                  FileArtifactReuse.decodeSelectors(
-                      record.getPropertiesOrDefault(
-                          FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "")))
-              .build();
-      if (filePath.isBlank() || expectedStats.putIfAbsent(filePath, metadata) != null) {
-        throw new IllegalArgumentException("reusable artifact bundle stats payload is invalid");
-      }
-      statsDescriptors.add(
-          artifact.toBuilder()
-              .setTargetStorageId(StatsTargetIdentity.storageId(record.getTarget()))
-              .build());
-    }
-    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata> expectedIndexes =
-        new LinkedHashMap<>();
-    List<StatsObjectDescriptor> indexDescriptors = new ArrayList<>();
-    for (var record : payload.getIndexArtifactsList()) {
-      String filePath =
-          record.hasTarget() && record.getTarget().hasFile()
-              ? record.getTarget().getFile().getFilePath()
-              : "";
-      var metadata =
-          ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
-              .setFilePath(filePath)
-              .setSourceFingerprint(
-                  record.getPropertiesOrDefault(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, ""))
-              .setIndexCaptureSignature(
-                  record.getPropertiesOrDefault(FileArtifactReuse.INDEX_SIGNATURE_PROPERTY, ""))
-              .addAllRealizedIndexSelectors(
-                  FileArtifactReuse.decodeSelectors(
-                          record.getPropertiesOrDefault(
-                              FileArtifactReuse.INDEXED_COLUMNS_PROPERTY, ""))
-                      .stream()
-                      .sorted()
-                      .toList())
-              .build();
-      if (filePath.isBlank() || expectedIndexes.putIfAbsent(filePath, metadata) != null) {
-        throw new IllegalArgumentException("reusable artifact bundle index payload is invalid");
-      }
-      indexDescriptors.add(artifact.toBuilder().setTargetStorageId("file:" + filePath).build());
-    }
-    if (!submittedMetadataBelongsToPayload(submitted.getFileStatsList(), expectedStats)
-        || !submittedMetadataBelongsToPayload(submitted.getIndexArtifactsList(), expectedIndexes)
-        || !ArtifactReferenceDigest.sha256(statsDescriptors, indexDescriptors)
-            .equalsIgnoreCase(expectedArtifactDigest)) {
-      throw new IllegalArgumentException(
-          "reusable artifact bundle metadata does not match staged artifacts");
-    }
-    return new ValidatedReusableArtifactBundle(expectedStats, expectedIndexes);
-  }
-
-  record ValidatedReusableArtifactBundle(
-      Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata> fileStats,
-      Map<String, ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata> indexArtifacts) {}
-
-  private static <T extends com.google.protobuf.Message> boolean submittedMetadataBelongsToPayload(
-      List<T> submitted, Map<String, T> expected) {
-    Set<String> paths = new HashSet<>();
-    for (T metadata : submitted) {
-      String path =
-          metadata instanceof ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata stats
-              ? stats.getFilePath()
-              : ((ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata) metadata)
-                  .getFilePath();
-      if (!paths.add(path) || !metadata.equals(expected.get(path))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private static <T> void mergeReusableMetadata(
-      Map<String, T> destination, Map<String, T> additions, String description) {
-    for (var entry : additions.entrySet()) {
-      T existing = destination.putIfAbsent(entry.getKey(), entry.getValue());
-      if (existing != null && !existing.equals(entry.getValue())) {
-        throw new IllegalArgumentException(
-            "conflicting reusable " + description + " metadata for " + entry.getKey());
-      }
     }
   }
 

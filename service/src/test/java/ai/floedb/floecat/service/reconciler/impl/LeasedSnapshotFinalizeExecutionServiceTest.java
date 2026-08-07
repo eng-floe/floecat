@@ -34,6 +34,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.FileArtifactReuse;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -53,7 +55,6 @@ import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
-import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -141,7 +142,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     .setArtifact(
                         StatsObjectDescriptor.newBuilder()
                             .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri(statsPrefix + "reuse-bundles/bundle.pb")
+                            .setPayloadUri(zeroDigestBundleUri(statsPrefix))
                             .setPayloadBytes(123)
                             .setPayloadSha256(ByteString.copyFrom(new byte[32])))
                     .addFileStats(
@@ -163,72 +164,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     assertDoesNotThrow(
         () -> LeasedSnapshotFinalizeExecutionService.validateReusableArtifactCoverage(manifest));
-  }
-
-  @Test
-  void reusableBundleMetadataMustMatchTheServiceStagedBundle() throws Exception {
-    String filePath = "s3://bucket/data.parquet";
-    var statsRecord =
-        ai.floedb.floecat.catalog.rpc.TargetStatsRecord.newBuilder()
-            .setTarget(StatsTargetIdentity.fileTarget(filePath))
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "source")
-            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
-            .build();
-    String sharedPath = "s3://bucket/delete.parquet";
-    var sharedStatsRecord =
-        ai.floedb.floecat.catalog.rpc.TargetStatsRecord.newBuilder()
-            .setTarget(StatsTargetIdentity.fileTarget(sharedPath))
-            .putProperties(FileArtifactReuse.SOURCE_FINGERPRINT_PROPERTY, "shared-source")
-            .putProperties(FileArtifactReuse.STATS_SIGNATURE_PROPERTY, "stats")
-            .putProperties(FileArtifactReuse.REALIZED_STATS_SELECTORS_PROPERTY, "[]")
-            .build();
-    byte[] payload =
-        ReusableArtifactBundlePayload.newBuilder()
-            .setFormatVersion(1)
-            .addFileStats(statsRecord)
-            .addFileStats(sharedStatsRecord)
-            .build()
-            .toByteArray();
-    byte[] payloadDigest = MessageDigest.getInstance("SHA-256").digest(payload);
-    String uri = "/stats/group/reuse-bundles/" + HexFormat.of().formatHex(payloadDigest) + ".pb";
-    StatsObjectDescriptor artifact =
-        StatsObjectDescriptor.newBuilder()
-            .setTargetStorageId("reuse-bundle:group-1")
-            .setPayloadUri(uri)
-            .setPayloadBytes(payload.length)
-            .setPayloadSha256(ByteString.copyFrom(payloadDigest))
-            .build();
-    ReusableArtifactBundleReference valid =
-        ReusableArtifactBundleReference.newBuilder()
-            .setArtifact(artifact)
-            .addFileStats(
-                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
-                    .setFilePath(filePath)
-                    .setSourceFingerprint("source")
-                    .setStatsCaptureSignature("stats"))
-            .build();
-    String stagedDigest =
-        ArtifactReferenceDigest.sha256(
-            List.of(
-                artifact.toBuilder()
-                    .setTargetStorageId(StatsTargetIdentity.storageId(statsRecord.getTarget()))
-                    .build(),
-                artifact.toBuilder()
-                    .setTargetStorageId(
-                        StatsTargetIdentity.storageId(sharedStatsRecord.getTarget()))
-                    .build()),
-            List.of());
-    when(blobs.get(uri)).thenReturn(payload);
-
-    assertDoesNotThrow(() -> service.validateReusableArtifactBundle(valid, stagedDigest));
-    ReusableArtifactBundleReference tampered =
-        valid.toBuilder()
-            .setFileStats(0, valid.getFileStats(0).toBuilder().setSourceFingerprint("substituted"))
-            .build();
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> service.validateReusableArtifactBundle(tampered, stagedDigest));
   }
 
   @Test
@@ -260,7 +195,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     .setArtifact(
                         StatsObjectDescriptor.newBuilder()
                             .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri(statsPrefix + "reuse-bundles/bundle.pb")
+                            .setPayloadUri(zeroDigestBundleUri(statsPrefix))
                             .setPayloadBytes(123)
                             .setPayloadSha256(ByteString.copyFrom(new byte[32])))
                     .addFileStats(
@@ -295,7 +230,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     .setArtifact(
                         StatsObjectDescriptor.newBuilder()
                             .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri("/stats/job-1/reuse-bundles/bundle.pb")
+                            .setPayloadUri(zeroDigestBundleUri("/stats/job-1/"))
                             .setPayloadBytes(1)
                             .setPayloadSha256(ByteString.copyFrom(new byte[32]))))
             .addReusableArtifactBundles(
@@ -303,7 +238,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     .setArtifact(
                         StatsObjectDescriptor.newBuilder()
                             .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri("/stats/job-2/reuse-bundles/bundle.pb")
+                            .setPayloadUri(zeroDigestBundleUri("/stats/job-2/"))
                             .setPayloadBytes(1)
                             .setPayloadSha256(ByteString.copyFrom(new byte[32]))))
             .build();
@@ -358,8 +293,16 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
         .thenReturn(true);
     when(service.snapshotRepo.recordReuseManifest(
-            any(), anyLong(), anyString(), anyLong(), any(byte[].class), anyString()))
-        .thenReturn(true);
+            any(), anyLong(), any(SnapshotReuseManifestRef.class)))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(
+                        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                            .setAccountId(ACCOUNT_ID)
+                            .setId(TABLE_ID))
+                    .setSnapshotId(SNAPSHOT_ID)
+                    .build()));
     when(persistence.prepareStatsGenerationForPublication(
             any(), anyLong(), anyString(), anyBoolean()))
         .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
@@ -412,13 +355,17 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .recordReuseManifest(
             any(),
             eq(SNAPSHOT_ID),
-            eq(durableManifestUri),
-            eq((long) manifestBytes().length),
-            aryEq(sha256(manifestBytes())),
             eq(
-                Keys.snapshotTargetStatsManifestBlobUri(
-                    ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "full-rescan-parent-job")));
-    verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri(durableManifestUri)
+                    .setPayloadBytes(manifestBytes().length)
+                    .setPayloadSha256(ByteString.copyFrom(sha256(manifestBytes())))
+                    .setStatsGenerationManifestUri(
+                        Keys.snapshotTargetStatsManifestBlobUri(
+                            ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "full-rescan-parent-job"))
+                    .build()));
+    verify(currentSnapshotPointerService)
+        .maybeAdvance(any(), any(Snapshot.class), eq(FINALIZE_JOB_ID));
   }
 
   @Test
@@ -426,12 +373,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
     when(blobs.get(manifestUri())).thenReturn(manifestBytes());
     when(service.snapshotRepo.recordReuseManifest(
-            any(), anyLong(), anyString(), anyLong(), any(byte[].class), anyString()))
-        .thenReturn(false);
+            any(), anyLong(), any(SnapshotReuseManifestRef.class)))
+        .thenReturn(Optional.empty());
 
     service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
 
-    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(currentSnapshotPointerService, never())
+        .maybeAdvance(any(), any(Snapshot.class), anyString());
     verify(jobs)
         .completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
@@ -548,7 +496,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             new SnapshotFinalizeChildStateService.ChildState(
                 1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
     when(blobs.get(manifestUri())).thenReturn(manifestBytes);
-    when(blobs.get(statsUri)).thenReturn(bundleBytes);
     when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, "parent-job", 500, ""))
         .thenReturn(
             new ReconcileJobStore.FileGroupResultDescriptorPage(
@@ -558,7 +505,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     verify(blobs, times(1)).get(manifestUri());
     verify(blobs, never()).get(payloadUri);
-    verify(blobs, times(1)).get(statsUri);
+    verify(blobs, never()).get(statsUri);
     verify(persistence)
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());
@@ -614,8 +561,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     .setArtifact(
                         StatsObjectDescriptor.newBuilder()
                             .setTargetStorageId("reuse-bundle:group-1")
-                            .setPayloadUri(
-                                fileGroup.getStatsObjectPrefix() + "reuse-bundles/bundle.pb")
+                            .setPayloadUri(zeroDigestBundleUri(fileGroup.getStatsObjectPrefix()))
                             .setPayloadBytes(123)
                             .setPayloadSha256(ByteString.copyFrom(new byte[32])))
                     .addFileStats(
@@ -989,7 +935,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 descriptor("s3://other/manifest.pb")));
 
     verify(blobs, never()).get(anyString());
-    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(currentSnapshotPointerService, never())
+        .maybeAdvance(any(), any(Snapshot.class), anyString());
   }
 
   @Test
@@ -1003,7 +950,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             service.persistSuccess(
                 principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
 
-    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(currentSnapshotPointerService, never())
+        .maybeAdvance(any(), any(Snapshot.class), anyString());
   }
 
   @Test
@@ -1018,7 +966,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             service.persistSuccess(
                 principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
 
-    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(currentSnapshotPointerService, never())
+        .maybeAdvance(any(), any(Snapshot.class), anyString());
   }
 
   @Test
@@ -1031,7 +980,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     verify(jobs, never()).renewLease(anyString(), anyString());
     verify(blobs, never()).head(anyString());
-    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+    verify(currentSnapshotPointerService, never())
+        .maybeAdvance(any(), any(Snapshot.class), anyString());
   }
 
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {
@@ -1155,6 +1105,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  private static String zeroDigestBundleUri(String statsPrefix) {
+    return statsPrefix + "reuse-bundles/" + "00".repeat(32) + ".pb";
   }
 
   private static String manifestUri() {

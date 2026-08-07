@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.List;
@@ -119,6 +121,40 @@ class TableRootSynthesizerTest {
             .setIngestedAt(Timestamps.fromMillis(upstreamMs))
             .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamMs))
             .build());
+  }
+
+  private void reusableLegacySnapshot(long id, long upstreamMs) {
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(id)
+            .setIngestedAt(Timestamps.fromMillis(upstreamMs))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamMs))
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("s3://legacy/reuse-" + id + ".pb")
+                    .setPayloadBytes(123L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("s3://legacy/stats-" + id + ".pb"))
+            .build());
+  }
+
+  @Test
+  void synthesizesTheTwoNewestReusableCandidatesAtOrBeforeCurrent() {
+    reusableLegacySnapshot(1, 1_000);
+    reusableLegacySnapshot(2, 2_000);
+    legacySnapshot(3, 3_000);
+    advanceCurrentTo(3);
+    reusableLegacySnapshot(4, 4_000);
+
+    TableRoot synthesized = synthesizer.synthesize(tableId).orElseThrow();
+
+    assertEquals(3L, synthesized.getCurrentSnapshotId());
+    assertEquals(
+        List.of(2L, 1L),
+        synthesized.getReusableSnapshotCandidatesList().stream()
+            .map(SnapshotManifestEntry::getSnapshotId)
+            .toList());
   }
 
   @Test

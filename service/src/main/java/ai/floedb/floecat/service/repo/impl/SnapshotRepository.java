@@ -35,7 +35,6 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -214,21 +213,17 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
-  /** Records the system-owned finalized reuse manifest without replacing concurrent updates. */
-  public boolean recordReuseManifest(
-      ResourceId tableId,
-      long snapshotId,
-      String uri,
-      long bytes,
-      byte[] sha256,
-      String statsGenerationManifestUri) {
-    if (uri == null
-        || uri.isBlank()
-        || bytes <= 0L
-        || sha256 == null
-        || sha256.length != 32
-        || statsGenerationManifestUri == null
-        || statsGenerationManifestUri.isBlank()) {
+  /**
+   * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
+   * the exact snapshot revision written so callers do not need a racy follow-up read.
+   */
+  public Optional<Snapshot> recordReuseManifest(
+      ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
+    if (reuseManifestRef == null
+        || reuseManifestRef.getUri().isBlank()
+        || reuseManifestRef.getPayloadBytes() <= 0L
+        || reuseManifestRef.getPayloadSha256().size() != 32
+        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
       throw new IllegalArgumentException("complete reuse manifest metadata is required");
     }
     SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
@@ -236,19 +231,11 @@ public class SnapshotRepository {
       MutationMeta meta = repo.pointerMetaForSafe(key);
       Snapshot current = repo.getByKey(key).orElse(null);
       if (current == null) {
-        return false;
+        return Optional.empty();
       }
-      Snapshot next =
-          current.toBuilder()
-              .setReuseManifestRef(
-                  SnapshotReuseManifestRef.newBuilder()
-                      .setUri(uri)
-                      .setPayloadBytes(bytes)
-                      .setPayloadSha256(ByteString.copyFrom(sha256))
-                      .setStatsGenerationManifestUri(statsGenerationManifestUri))
-              .build();
+      Snapshot next = current.toBuilder().setReuseManifestRef(reuseManifestRef).build();
       if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
-        return true;
+        return Optional.of(next);
       }
       if (attempt < 7) {
         backoffCurrentPointerAdvance(attempt);
@@ -418,9 +405,13 @@ public class SnapshotRepository {
         continue;
       }
       if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
-        return Optional.empty();
+        continue;
       }
-      return getByBlobUri(entry.getSnapshotRef().getUri()).filter(Snapshot::hasReuseManifestRef);
+      Optional<Snapshot> candidate =
+          getByBlobUri(entry.getSnapshotRef().getUri()).filter(Snapshot::hasReuseManifestRef);
+      if (candidate.isPresent()) {
+        return candidate;
+      }
     }
     return Optional.empty();
   }

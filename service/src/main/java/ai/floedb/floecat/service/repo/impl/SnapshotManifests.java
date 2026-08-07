@@ -53,6 +53,8 @@ public final class SnapshotManifests {
   /** Bounds a page so the common reads (current, recent AS_OF) touch one blob. */
   public static final int PAGE_ENTRY_BOUND = 256;
 
+  private static final int REUSABLE_CANDIDATE_BOUND = 2;
+
   /**
    * Sentinel fingerprint for a snapshot whose schema_json is blank: the read schema is then the
    * table definition's default, already covered by the root's definition ref, so every such
@@ -391,11 +393,11 @@ public final class SnapshotManifests {
    * directly.
    */
   public static List<SnapshotManifestEntry> latestReusableCandidates(
-      Chain chain, SnapshotManifestEntry committedCurrent, int limit) {
-    if (chain == null || committedCurrent == null || limit <= 0) {
+      Chain chain, SnapshotManifestEntry committedCurrent) {
+    if (chain == null || committedCurrent == null) {
       return List.of();
     }
-    List<SnapshotManifestEntry> best = new ArrayList<>(limit);
+    List<SnapshotManifestEntry> best = new ArrayList<>(REUSABLE_CANDIDATE_BOUND);
     chain.forEachEntry(
         entry -> {
           if (!entry.hasReuseStatsGenerationRef() || newer(entry, committedCurrent)) {
@@ -406,7 +408,7 @@ public final class SnapshotManifests {
             insertion++;
           }
           best.add(insertion, entry);
-          if (best.size() > limit) {
+          if (best.size() > REUSABLE_CANDIDATE_BOUND) {
             best.removeLast();
           }
         });

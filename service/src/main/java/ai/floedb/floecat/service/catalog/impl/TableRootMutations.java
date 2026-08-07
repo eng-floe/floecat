@@ -371,7 +371,7 @@ public final class TableRootMutations {
         .ifPresent(
             current ->
                 root.addAllReusableSnapshotCandidates(
-                    SnapshotManifests.latestReusableCandidates(chain, current, 2)));
+                    SnapshotManifests.latestReusableCandidates(chain, current)));
   }
 
   /**

@@ -149,7 +149,7 @@ public class TableRootSynthesizer {
           .ifPresent(
               current ->
                   root.addAllReusableSnapshotCandidates(
-                      SnapshotManifests.latestReusableCandidates(indexed, current, 2)));
+                      SnapshotManifests.latestReusableCandidates(indexed, current)));
     }
     return Optional.of(root.build());
   }
