@@ -44,7 +44,10 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
+import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.ArrayList;
 import java.util.List;
@@ -482,6 +485,88 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
                   .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE);
               assertThat(failure.retryClass())
                   .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR);
+            });
+    verify(runner.captureEngineRegistry, never()).capture(any(), any());
+  }
+
+  @Test
+  void executeTreatsReusableBundleReadConflictsAsRetryable() {
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/conflicted-bundle.pb";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle", bundleUri, 1L, new byte[32], List.of(path), List.of())));
+
+    for (RuntimeException storageFailure :
+        List.of(
+            new StorageConflictException("bundle read conflict"),
+            new StoragePreconditionFailedException("bundle read precondition failed"))) {
+      var runner = new StandaloneJavaFileGroupExecutionRunner();
+      runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+      runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+      runner.blobStore = mock(BlobStore.class);
+      when(runner.blobStore.get(bundleUri)).thenThrow(storageFailure);
+
+      assertThatThrownBy(
+              () ->
+                  runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+          .isInstanceOf(ReconcileFailureException.class)
+          .hasRootCause(storageFailure)
+          .satisfies(
+              error -> {
+                ReconcileFailureException failure = (ReconcileFailureException) error;
+                assertThat(failure.retryDisposition())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE);
+                assertThat(failure.retryClass())
+                    .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR);
+              });
+      verify(runner.captureEngineRegistry, never()).capture(any(), any());
+    }
+  }
+
+  @Test
+  void executeTreatsGenericReusableBundleStorageFailureAsTerminal() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    runner.blobStore = mock(BlobStore.class);
+    String path = "s3://bucket/path/file.parquet";
+    String bundleUri = "/forbidden-bundle.pb";
+    when(runner.blobStore.get(bundleUri))
+        .thenThrow(new StorageException("bundle read permission denied"));
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                path, 1L, "", null, "PARQUET", 0, List.of(), "content-identity")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-policy",
+                "index-policy",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle", bundleUri, 1L, new byte[32], List.of(path), List.of())));
+
+    assertThatThrownBy(
+            () -> runner.execute(payloadWithPlan(indexPayload(), plan), () -> false, ignored -> {}))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasRootCauseMessage("bundle read permission denied")
+        .satisfies(
+            error -> {
+              ReconcileFailureException failure = (ReconcileFailureException) error;
+              assertThat(failure.retryDisposition())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+              assertThat(failure.retryClass())
+                  .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.NONE);
             });
     verify(runner.captureEngineRegistry, never()).capture(any(), any());
   }

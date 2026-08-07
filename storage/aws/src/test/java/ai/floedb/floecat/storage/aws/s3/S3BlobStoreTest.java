@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +46,23 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 class S3BlobStoreTest {
+
+  @Test
+  void mapsRequestTimeoutAndThrottlingToRetryable() {
+    for (int statusCode : List.of(408, 429)) {
+      S3BlobStore store = failingStore(statusCode);
+
+      assertThrows(StorageAbortRetryableException.class, () -> store.get("key"));
+    }
+  }
+
+  @Test
+  void keepsPermanentClientErrorsNonRetryable() {
+    StorageException failure =
+        assertThrows(StorageException.class, () -> failingStore(403).get("key"));
+
+    assertEquals(StorageException.class, failure.getClass());
+  }
 
   @Test
   void headExposesTheS3VersionId() {
@@ -332,6 +350,17 @@ class S3BlobStoreTest {
           @Override
           public <T> T call(Function<S3Client, T> operation) {
             throw new IllegalStateException("Connection pool shut down");
+          }
+        },
+        Optional.of("bucket"));
+  }
+
+  private static S3BlobStore failingStore(int statusCode) {
+    return new S3BlobStore(
+        new S3BlobStore.S3Caller() {
+          @Override
+          public <T> T call(Function<S3Client, T> operation) {
+            throw S3Exception.builder().statusCode(statusCode).message("request failed").build();
           }
         },
         Optional.of("bucket"));

@@ -25,7 +25,9 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -307,7 +309,10 @@ public class StandaloneJavaFileGroupExecutionRunner {
         throwIfCancellationRequested(stop);
       } catch (java.util.concurrent.CancellationException error) {
         throw error;
-      } catch (StorageAbortRetryableException | StorageNotFoundException error) {
+      } catch (StorageAbortRetryableException
+          | StorageConflictException
+          | StorageNotFoundException
+          | StoragePreconditionFailedException error) {
         throw retryableReuseBundleRead(
             "Failed to load reusable artifact bundle " + selection.payloadUri(), error);
       } catch (ReconcileFailureException error) {

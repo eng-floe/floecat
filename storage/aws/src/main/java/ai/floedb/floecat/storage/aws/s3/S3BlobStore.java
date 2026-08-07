@@ -476,7 +476,7 @@ public class S3BlobStore implements BlobStore {
       return new StoragePreconditionFailedException(msg(op, key, detail));
     }
 
-    if (sc >= 500) {
+    if (sc == 408 || sc == 429 || sc >= 500) {
       return new StorageAbortRetryableException(msg(op, key, detail));
     }
 

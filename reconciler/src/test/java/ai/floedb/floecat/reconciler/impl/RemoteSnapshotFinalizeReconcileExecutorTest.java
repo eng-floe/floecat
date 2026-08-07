@@ -46,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import java.util.List;
@@ -405,6 +406,48 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any(),
             any());
+    verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
+  }
+
+  @Test
+  void retriesWhenImmutableSnapshotPlanIsTemporarilyUnavailable() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, mock(BlobStore.class), snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(1, ReconcileScope.empty());
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            0,
+            "/snapshot-plan.json",
+            1,
+            "/final-stats.pb",
+            "/capture-manifest.pb",
+            null);
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
+    when(snapshotPlanBlobStore.loadFileGroupsByUri("/snapshot-plan.json"))
+        .thenThrow(new StorageAbortRetryableException("plan not yet visible"));
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.RETRYABLE_FAILURE, result.outcome);
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE, result.retryDisposition);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR, result.retryClass);
+    verify(workerClient)
+        .submitSnapshotFinalizeFailure(any(), any(), contains("plan not yet visible"));
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
