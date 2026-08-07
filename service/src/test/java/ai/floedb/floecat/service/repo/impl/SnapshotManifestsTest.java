@@ -251,31 +251,32 @@ class SnapshotManifestsTest {
   }
 
   @Test
-  void latestReusableCurrentSkipsTheUnfinalizedCurrentAndExcludedReplayTarget() {
+  void latestReusableCandidatesPublishTheReplayTargetAndItsPredecessor() {
     var s4 = entry(4, 4_000, false);
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
     head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(2, 2_000));
     head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(3, 3_000));
     head = SnapshotManifests.upsert(roots, TABLE, head, s4);
 
+    var candidates =
+        SnapshotManifests.latestReusableCandidates(SnapshotManifests.chain(roots, TABLE, head), s4);
+
     assertEquals(
-        3L,
-        SnapshotManifests.latestReusableCurrent(roots, head, s4, 4L).orElseThrow().getSnapshotId());
-    assertEquals(
-        2L,
-        SnapshotManifests.latestReusableCurrent(roots, head, s4, 3L).orElseThrow().getSnapshotId());
+        List.of(3L, 2L), candidates.stream().map(SnapshotManifestEntry::getSnapshotId).toList());
   }
 
   @Test
-  void latestReusableCurrentRequiresPublishedReuseArtifacts() {
+  void latestReusableCandidatesRequirePublishedReuseArtifacts() {
     var s3 = entry(3, 3_000, false);
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
     head = SnapshotManifests.upsert(roots, TABLE, head, entry(2, 2_000, true));
     head = SnapshotManifests.upsert(roots, TABLE, head, s3);
 
+    var candidates =
+        SnapshotManifests.latestReusableCandidates(SnapshotManifests.chain(roots, TABLE, head), s3);
+
     assertEquals(
-        1L,
-        SnapshotManifests.latestReusableCurrent(roots, head, s3, 3L).orElseThrow().getSnapshotId());
+        List.of(1L), candidates.stream().map(SnapshotManifestEntry::getSnapshotId).toList());
   }
 
   private static String fingerprint(String schemaJson) {
