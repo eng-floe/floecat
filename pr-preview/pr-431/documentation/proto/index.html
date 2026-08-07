@@ -1174,6 +1174,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#remote-executor-versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      Remote executor versioning
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1716,6 +1731,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#remote-executor-versioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      Remote executor versioning
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1859,6 +1889,11 @@
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
+<h3 id="remote-executor-versioning">Remote executor versioning<a class="headerlink" href="#remote-executor-versioning" title="Permanent link">&para;</a></h3>
+<p>Snapshot plans now require one immutable file execution plan for every declared file path. Remote
+planner/finalizer executors and the control plane must therefore be cut over together after existing
+leases are drained. Rolling or split deployments containing both plan revisions are unsupported;
+there is intentionally no empty-plan compatibility fallback.</p>
 <p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>query/</code>, <code>execution/</code>,
 <code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
 under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
@@ -1922,8 +1957,8 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>SnapshotService</code></td>
-<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code></td>
-<td>Pins upstream checkpoints and timestamps. Finalized snapshots expose a system-owned <code>reuse_manifest_ref</code>; <code>SnapshotSpec</code> does not accept that field.</td>
+<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>GetLatestFinalizedSnapshot</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code></td>
+<td>Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned <code>reuse_manifest_ref</code>; <code>SnapshotSpec</code> does not accept that field.</td>
 </tr>
 <tr>
 <td><code>TableStatisticsService</code></td>
