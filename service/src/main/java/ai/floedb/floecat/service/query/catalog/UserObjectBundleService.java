@@ -286,8 +286,8 @@ public class UserObjectBundleService {
     this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
     // A permit count of 0 or negative would wedge every GetUserObjects request forever in the
-    // fan-out's permit wait, so reject it at startup: clamp to serial and warn rather than serve
-    // in a permanently-hanging state.
+    // fan-out's permit wait, so clamp to serial and warn rather than serve in a permanently-hanging
+    // state.
     if (maxParallelRelations < 1) {
       LOG.warnf(
           "floecat.catalog.bundle.max_parallel_relations=%d is invalid; clamping to 1 (serial)",

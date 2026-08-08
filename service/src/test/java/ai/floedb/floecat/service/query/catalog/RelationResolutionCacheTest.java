@@ -21,6 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.SummaryContext;
@@ -29,6 +32,7 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -159,6 +163,80 @@ class RelationResolutionCacheTest {
     Recording rec = flush();
     assertThat(rec.get("node_cache_misses")).isEqualTo(1L);
     assertThat(rec.get("node_cache_hits")).isEqualTo(1L);
+  }
+
+  @Test
+  void canonicalNameIncludesCatalogNamespacePathAndRelationId() {
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("CAT_X")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("NS_X")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    overlay.registerNode(
+        new NamespaceNode(
+            namespaceId,
+            "blob://test/ns-x",
+            catalogId,
+            List.of("parent"),
+            "child",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.registerCatalog(catalogId, "cat");
+    RelationNode relation =
+        new RelationNode() {
+          @Override
+          public ResourceId id() {
+            return TABLE;
+          }
+
+          @Override
+          public long version() {
+            return 1;
+          }
+
+          @Override
+          public ResourceId namespaceId() {
+            return namespaceId;
+          }
+
+          @Override
+          public String displayName() {
+            return "orders";
+          }
+
+          @Override
+          public GraphNodeKind kind() {
+            return GraphNodeKind.TABLE;
+          }
+
+          @Override
+          public GraphNodeOrigin origin() {
+            return GraphNodeOrigin.USER;
+          }
+
+          @Override
+          public Map<
+                  ai.floedb.floecat.metagraph.model.EngineHintKey,
+                  ai.floedb.floecat.metagraph.model.EngineHint>
+              engineHints() {
+            return Map.of();
+          }
+        };
+
+    NameRef name = cache.canonicalName(relation);
+
+    assertThat(name.getCatalog()).isEqualTo("cat");
+    assertThat(name.getPathList()).containsExactly("parent", "child");
+    assertThat(name.getName()).isEqualTo("orders");
+    assertThat(name.getResourceId()).isEqualTo(TABLE);
   }
 
   @Test

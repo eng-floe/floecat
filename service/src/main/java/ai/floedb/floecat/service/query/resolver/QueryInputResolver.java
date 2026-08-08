@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -339,8 +340,8 @@ public class QueryInputResolver {
           currentSnapshotPinCache,
           diagnostics);
     }
-      return withResolutionInvocation(
-          new ResolutionInvocation(currentSnapshotPinCache, Context.current()::isCancelled),
+    return withResolutionInvocation(
+        new ResolutionInvocation(currentSnapshotPinCache, Context.current()::isCancelled),
         () ->
             resolveInputsViaLegacyOverride(
                 queryId,

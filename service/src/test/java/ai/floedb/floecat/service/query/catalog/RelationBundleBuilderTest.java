@@ -57,6 +57,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -149,6 +155,46 @@ class RelationBundleBuilderTest {
     return TableReferenceCandidate.newBuilder()
         .addCandidates(QueryInput.newBuilder().setTableId(TABLE))
         .build();
+  }
+
+  private RelationBundleBuilder.BuildResult buildAfterStart(
+      RelationBundleBuilder builder,
+      ResourceId tableId,
+      CountDownLatch tasksReady,
+      CountDownLatch start) {
+    tasksReady.countDown();
+    awaitUninterruptibly(start);
+    return build(builder, tableId);
+  }
+
+  private RelationBundleBuilder.BuildResult build(
+      RelationBundleBuilder builder, ResourceId tableId) {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(tableId))
+            .build();
+    return builder.build(
+        "cid",
+        resolved(tableId, candidate),
+        ctx,
+        resolutionContext(StatsProvider.NONE),
+        StatsProvider.NONE,
+        Optional.empty());
+  }
+
+  private static void awaitUninterruptibly(CountDownLatch latch) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        latch.await();
+        break;
+      } catch (InterruptedException ignored) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   @Test
@@ -321,6 +367,95 @@ class RelationBundleBuilderTest {
     assertThat(info.getViewDefinition().getEngineSpecificList())
         .extracting(EngineSpecific::getPayloadType)
         .containsExactly("test.view-decoration");
+  }
+
+  @Test
+  void sharedDecoratorIsSerializedOnParallelBuildWorkers() throws Exception {
+    ResourceId tableY =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("TABLE_Y")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    overlay.registerTable(
+        TABLE,
+        UserObjectBundleTestSupport.schemaFor("id_x"),
+        NameRef.newBuilder().setName("x").build());
+    overlay.registerTable(
+        tableY,
+        UserObjectBundleTestSupport.schemaFor("id_y"),
+        NameRef.newBuilder().setName("y").build());
+    CountDownLatch tasksReady = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch firstCallback = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicInteger activeCallbacks = new AtomicInteger();
+    AtomicInteger maximumCallbacks = new AtomicInteger();
+    AtomicReference<Thread> callbackThread = new AtomicReference<>();
+    EngineMetadataDecorator decorator =
+        new EngineMetadataDecorator() {
+          @Override
+          public void decorateRelation(
+              EngineContext ignored,
+              ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration decoration) {
+            int active = activeCallbacks.incrementAndGet();
+            maximumCallbacks.accumulateAndGet(active, Math::max);
+            callbackThread.compareAndSet(null, Thread.currentThread());
+            firstCallback.countDown();
+            awaitUninterruptibly(release);
+            activeCallbacks.decrementAndGet();
+          }
+        };
+    RelationBundleBuilder builder = builder(ignored -> Optional.of(decorator), true);
+
+    try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+      var first = workers.submit(() -> buildAfterStart(builder, TABLE, tasksReady, start));
+      var second = workers.submit(() -> buildAfterStart(builder, tableY, tasksReady, start));
+      assertThat(tasksReady.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      assertThat(firstCallback.await(5, TimeUnit.SECONDS)).isTrue();
+      assertThat(activeCallbacks.get()).isEqualTo(1);
+      release.countDown();
+      first.get(5, TimeUnit.SECONDS);
+      second.get(5, TimeUnit.SECONDS);
+    }
+
+    assertThat(maximumCallbacks.get()).isEqualTo(1);
+    assertThat(callbackThread.get()).isNotSameAs(Thread.currentThread()).matches(Thread::isVirtual);
+  }
+
+  @Test
+  void cancellationInterruptsAnActiveDecoratorWorker() throws Exception {
+    overlay.registerTable(
+        TABLE,
+        UserObjectBundleTestSupport.schemaFor("id_x"),
+        NameRef.newBuilder().setName("x").build());
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    EngineMetadataDecorator decorator =
+        new EngineMetadataDecorator() {
+          @Override
+          public void decorateRelation(
+              EngineContext ignored,
+              ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration decoration) {
+            entered.countDown();
+            try {
+              new CountDownLatch(1).await();
+            } catch (InterruptedException expected) {
+              interrupted.countDown();
+              Thread.currentThread().interrupt();
+              throw new java.util.concurrent.CancellationException("decorator interrupted");
+            }
+          }
+        };
+    RelationBundleBuilder builder = builder(ignored -> Optional.of(decorator), true);
+
+    try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+      var build = workers.submit(() -> build(builder, TABLE));
+      assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+      build.cancel(true);
+      assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+    }
   }
 
   @Test

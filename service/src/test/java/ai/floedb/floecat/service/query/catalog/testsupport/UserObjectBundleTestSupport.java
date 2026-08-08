@@ -146,6 +146,11 @@ public final class UserObjectBundleTestSupport {
               Optional.empty(),
               Map.of());
       catalogs.put(id.getId(), node);
+      nodes.put(id.getId(), node);
+    }
+
+    public void registerNode(GraphNode node) {
+      nodes.put(node.id().getId(), node);
     }
 
     public void hideNode(ResourceId id) {
