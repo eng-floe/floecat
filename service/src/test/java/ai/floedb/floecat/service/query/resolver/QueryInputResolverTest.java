@@ -465,8 +465,8 @@ public class QueryInputResolverTest {
   @Test
   void flushesParallelPinDiagnosticsWhenSiblingPlanningFails() {
     var failingGraph = new FailingAfterFastPinGraph();
-    var withStore = new QueryInputResolver(failingGraph);
     var diagnostics = org.mockito.Mockito.mock(ai.floedb.floecat.telemetry.PhaseDiagnostics.class);
+    var withStore = new QueryInputResolver(failingGraph);
 
     assertThrows(
         IllegalStateException.class,
@@ -475,8 +475,8 @@ public class QueryInputResolverTest {
                 "q-diagnostics-failure",
                 "cid",
                 List.of(
-                    QueryInput.newBuilder().setTableId(rid("FAIL")).build(),
-                    QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                    QueryInput.newBuilder().setTableId(rid("FAST")).build(),
+                    QueryInput.newBuilder().setTableId(rid("FAIL")).build()),
                 Optional.empty(),
                 Optional.empty(),
                 new java.util.concurrent.ConcurrentHashMap<
