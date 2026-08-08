@@ -49,6 +49,7 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -1471,6 +1472,67 @@ public abstract class IcebergConnector implements FloecatConnector {
         // inside an optional parent struct is conditionally present, not flat-relational NOT NULL.
         collectNotNullConstraints(field.type().asStructType().fields(), path, out);
       }
+    }
+  }
+
+  /**
+   * Storage credential properties copied out of a delegated {@code loadTable}.
+   *
+   * <p>An explicit allowlist rather than a prefix match. The FileIO property map from a delegated
+   * load also contains the catalog's own {@code token}, and an "everything that looks like a
+   * credential" filter would copy it into the storage path -- handing a catalog credential to
+   * whatever reads data files.
+   */
+  private static final List<String> VENDED_STORAGE_KEYS =
+      List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token");
+
+  /** Iceberg's key for when vended session credentials stop working. */
+  private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
+
+  @Override
+  public Optional<VendedStorageCredentials> vendStorageCredentials(
+      String namespaceFq, String tableName) {
+    Table table = loadTableFromSource(namespaceFq, tableName);
+    if (table == null || table.io() == null) {
+      return Optional.empty();
+    }
+    Map<String, String> ioProps = table.io().properties();
+    if (ioProps == null || ioProps.isEmpty()) {
+      return Optional.empty();
+    }
+
+    Map<String, String> vended = new LinkedHashMap<>();
+    for (String key : VENDED_STORAGE_KEYS) {
+      String value = ioProps.get(key);
+      if (value != null && !value.isBlank()) {
+        vended.put(key, value);
+      }
+    }
+    // A catalog that does not delegate still returns a perfectly good table -- its FileIO simply
+    // carries no credentials. That is "unavailable", not a failure, so fall back to empty and let
+    // the caller use a storage authority.
+    if (!vended.containsKey("s3.access-key-id")) {
+      return Optional.empty();
+    }
+    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(ioProps)));
+  }
+
+  /**
+   * Reads the credential expiry, or null when absent or unparseable.
+   *
+   * <p>Null is deliberately not "never expires": callers are documented to treat it as "do not
+   * cache". Guessing a TTL here would produce credentials that fail mid-read.
+   */
+  private static Instant parseVendedExpiry(Map<String, String> ioProps) {
+    String raw = ioProps.get(VENDED_EXPIRY_KEY);
+    if (raw == null || raw.isBlank()) {
+      return null;
+    }
+    try {
+      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
+    } catch (NumberFormatException e) {
+      LOG.warnf("ignoring unparseable %s from delegated loadTable: %s", VENDED_EXPIRY_KEY, raw);
+      return null;
     }
   }
 }
