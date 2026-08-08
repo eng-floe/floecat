@@ -19,18 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.time.Duration;
-import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -76,17 +70,14 @@ class MetadataIoRunnerTest {
 
   @Test
   void aRestartCannotExceedTheCeilingWhileAnOldCallIsStillRunning() {
-    // close() gives up after its timeout when a store call ignores interruption, so that worker is
-    // still running under its permit when the next lifecycle starts admitting. If the permits were
-    // per-generation the new one would start full and that round trip would not count against it.
+    // close() gives up after its timeout when a store call ignores interruption. A restart must not
+    // treat that timed-out executor as a completed lifecycle: it rejects new work until the old
+    // worker has actually stopped, rather than creating a parallel admission executor.
     String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
     var blocker = new UninterruptibleBlocker();
-    var secondAdmitted = new java.util.concurrent.atomic.AtomicBoolean();
-    var contenderFailure = new AtomicReference<Throwable>();
     var nestedFailure = new AtomicReference<Throwable>();
     var nestedFinished = new java.util.concurrent.CountDownLatch(1);
     Thread survivor = null;
-    Thread contender = null;
     try {
       System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "1");
       MetadataIoRunner.closeSharedRuntimeIfStarted();
@@ -124,52 +115,24 @@ class MetadataIoRunnerTest {
       MetadataIoRunner.reopenSharedRuntime();
 
       MetadataIoRunner restarted = new MetadataIoRunner();
-      contender =
-          new Thread(
-              () -> {
-                try {
-                  restarted.callWithoutCancellation(
-                      () -> {
-                        secondAdmitted.set(true);
-                        return "contender";
-                      },
-                      FAILURES);
-                } catch (Throwable failure) {
-                  contenderFailure.set(failure);
-                }
-              },
-              "restart-contender");
-      contender.start();
-      awaitAdmissionWaiter(restarted);
-
-      assertFalse(
-          secondAdmitted.get(),
-          "the restarted runtime admitted a second call while the old one still held the only"
-              + " permit — the process-wide ceiling did not survive the restart");
+      assertThrows(
+          RejectedExecutionException.class,
+          () -> restarted.callWithoutCancellation(() -> "contender", FAILURES),
+          "a restarted lifecycle must not admit work while the previous executor is still running");
 
       blocker.release.countDown();
       assertTrue(
           nestedFinished.await(10, TimeUnit.SECONDS),
           "a nested call from the retired runtime must not wait for its own permit");
-      assertInstanceOf(CancellationException.class, nestedFailure.get());
-      contender.join(TimeUnit.SECONDS.toMillis(10));
-      assertFalse(
-          contender.isAlive(), "the contender must run once the old call releases admission");
-      assertNull(contenderFailure.get());
-      assertTrue(
-          secondAdmitted.get(), "the contender must acquire the released process-wide permit");
+      assertInstanceOf(RejectedExecutionException.class, nestedFailure.get());
+      survivor.join(TimeUnit.SECONDS.toMillis(10));
+      assertFalse(survivor.isAlive(), "the old executor must terminate once the blocker releases");
+      assertEquals("ok", restarted.callWithoutCancellation(() -> "ok", FAILURES));
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new AssertionError(e);
     } finally {
       blocker.release.countDown();
-      if (contender != null) {
-        try {
-          contender.join(TimeUnit.SECONDS.toMillis(10));
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-        }
-      }
       if (survivor != null) {
         try {
           survivor.join(TimeUnit.SECONDS.toMillis(10));
@@ -328,78 +291,6 @@ class MetadataIoRunnerTest {
   }
 
   @Test
-  void aNestedCallIntoAnotherRuntimeAcquiresThatRuntimesPermit() {
-    // S4: the re-entrant fast path compares RuntimeState by identity. Reusing a permit granted by a
-    // different runtime would leave that runtime's ceiling unenforced and run the work on the wrong
-    // pool — two semaphores where the design promises one per runtime.
-    var outer = new MetadataIoRunner(1);
-    var inner = new MetadataIoRunner(1);
-    try {
-      int innerInUse =
-          outer.callWithoutCancellation(
-              () -> inner.callWithoutCancellation(inner::permitsInUse, FAILURES), FAILURES);
-      assertEquals(1, innerInUse, "the nested call must hold a permit from the runtime it entered");
-      assertEquals(1, outer.capacity());
-    } finally {
-      outer.close();
-      inner.close();
-    }
-  }
-
-  @Test
-  void anAlreadyInterruptedCallerStartsNoNestedWork() {
-    // S5: the re-entrant path applies the same interrupt gate a fresh admission does. Without it a
-    // nested read starts store I/O for a caller whose owner thread has already been unwound.
-    var runner = new MetadataIoRunner(1);
-    try {
-      var nestedRan = new java.util.concurrent.atomic.AtomicBoolean();
-      assertThrows(
-          CancellationException.class,
-          () ->
-              runner.callWithoutCancellation(
-                  () -> {
-                    Thread.currentThread().interrupt();
-                    try {
-                      return runner.callWithoutCancellation(
-                          () -> {
-                            nestedRan.set(true);
-                            return "nested";
-                          },
-                          FAILURES);
-                    } finally {
-                      Thread.interrupted(); // clear so the pool worker is reusable
-                    }
-                  },
-                  FAILURES));
-      assertFalse(nestedRan.get(), "an interrupted caller must not start nested store work");
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
-  void anAdmittedOperationIsRefusedEvenWhenTheFanOutIsEmpty() {
-    // The guard is about the call site, not the data. Gating it on item count would make a wiring
-    // mistake data-dependent: invisible wherever a caller happens to have no rows — unit tests,
-    // fresh fixtures, "no rows matched" — and fatal in production the first time it has some.
-    var runner = new MetadataIoRunner(1);
-    try (ExecutorService units = Executors.newFixedThreadPool(1)) {
-      IllegalStateException thrown =
-          runner.callWithoutCancellation(
-              () ->
-                  assertThrows(
-                      IllegalStateException.class,
-                      () ->
-                          BoundedFanout.mapOrdered(
-                              List.<Integer>of(), 1, units, i -> i, BoundedFanout.NEVER_CANCELLED)),
-              FAILURES);
-      assertTrue(thrown.getMessage().contains("BoundedFanout.forEachOrdered"), thrown.getMessage());
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
   void theSharedRuntimeIsUsableAgainAfterAnApplicationRestart() {
     // Quarkus reuses the runtime classloader across dev-mode reloads and @QuarkusTest restarts, and
     // `closed` is sticky. A static-final holder therefore handed every call in the restarted
@@ -469,35 +360,6 @@ class MetadataIoRunnerTest {
   }
 
   @Test
-  void aNestedReadDuringShutdownOfTheSharedRuntimeSurfacesAsCancellation() {
-    // The sibling test uses an explicit-capacity runtime, which resolves through a field and never
-    // touches the shutdown latch. Only the shared runtime — the production one — takes the path
-    // where a drain in progress has to answer a re-entrancy check with something other than a
-    // rejection, and the contract for a call already in flight is cancellation.
-    try {
-      Throwable nested =
-          new MetadataIoRunner()
-              .callWithoutCancellation(
-                  () -> {
-                    MetadataIoRunner.closeSharedRuntimeIfStarted();
-                    // close() runs shutdownNow on this worker; clear it so the closure check, not
-                    // the interrupt check, is what answers.
-                    Thread.interrupted();
-                    return assertThrows(
-                        Throwable.class,
-                        () ->
-                            new MetadataIoRunner()
-                                .callWithoutCancellation(() -> "nested", FAILURES));
-                  },
-                  FAILURES);
-      assertInstanceOf(CancellationException.class, nested);
-      assertEquals(CancellableCallRunner.RUNTIME_CLOSED, nested.getMessage());
-    } finally {
-      MetadataIoRunner.reopenSharedRuntime();
-    }
-  }
-
-  @Test
   void theAdmissionGaugesKeepReadingThroughTheDrainWindow() {
     // These three feed Micrometer gauges. A throw here is not surfaced — DefaultGauge catches it
     // and publishes NaN, with a warning per scrape — so the whole graceful-shutdown drain would
@@ -514,86 +376,6 @@ class MetadataIoRunnerTest {
     } finally {
       MetadataIoRunner.reopenSharedRuntime();
     }
-  }
-
-  @Test
-  void aNestedReadDuringShutdownSurfacesAsCancellationNotRejection() {
-    // The re-entrant path only runs on a thread already holding a permit, so it is in flight by
-    // construction. Closure there is a cancellation; reporting a rejected submission would put a
-    // spurious INTERNAL beside the clean cancellations an identical non-nested call produces.
-    var runner = new MetadataIoRunner(1);
-    try {
-      Throwable nested =
-          runner.callWithoutCancellation(
-              () -> {
-                runner.close(); // latch closure while this admitted call is running
-                // close() runs shutdownNow on this worker, so this thread is also interrupted.
-                // Clearing it leaves the closure check as the only gate that can fire — without
-                // this the test passes off the interrupt branch and says nothing about closure.
-                Thread.interrupted();
-                return assertThrows(
-                    Throwable.class,
-                    () -> runner.callWithoutCancellation(() -> "nested", FAILURES));
-              },
-              FAILURES);
-      assertInstanceOf(CancellationException.class, nested);
-      assertEquals(CancellableCallRunner.RUNTIME_CLOSED, nested.getMessage());
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
-  void aFanOutDispatchedFromInsideAnAdmittedOperationIsRefused() {
-    // The deadlock this prevents: units dispatched to other threads acquire their own permits while
-    // the outer operation still holds one, so `capacity` such operations wedge the whole ceiling.
-    var runner = new MetadataIoRunner(1);
-    try {
-      IllegalStateException thrown =
-          runner.callWithoutCancellation(
-              () -> {
-                assertTrue(
-                    MetadataIoRunner.isRunningAdmittedOperation(),
-                    "precondition: the operation body runs marked as admitted");
-                return assertThrows(
-                    IllegalStateException.class,
-                    () -> MetadataIoRunner.rejectFanOutFromAdmittedOperation("TestFanout"));
-              },
-              FAILURES);
-      assertTrue(thrown.getMessage().contains("TestFanout"), thrown.getMessage());
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
-  void aRealFanOutStartedInsideAnAdmittedOperationIsRefused() {
-    // The guard wired at BoundedFanout's single dispatch point, exercised through the real API
-    // rather than by calling the predicate directly: this is the shape that would wedge the
-    // ceiling, so it must fail loudly instead of deadlocking.
-    var runner = new MetadataIoRunner(1);
-    try (ExecutorService units = Executors.newFixedThreadPool(2)) {
-      IllegalStateException thrown =
-          runner.callWithoutCancellation(
-              () ->
-                  assertThrows(
-                      IllegalStateException.class,
-                      () ->
-                          BoundedFanout.mapOrdered(
-                              List.of(1, 2), 2, units, i -> i, BoundedFanout.NEVER_CANCELLED)),
-              FAILURES);
-      assertTrue(
-          thrown.getMessage().contains("BoundedFanout.forEachOrdered"),
-          "the failure must name the dispatch site: " + thrown.getMessage());
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
-  void aFanOutDispatchedOutsideAnyAdmittedOperationIsAllowed() {
-    assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
-    assertDoesNotThrow(() -> MetadataIoRunner.rejectFanOutFromAdmittedOperation("TestFanout"));
   }
 
   @Test
@@ -926,59 +708,6 @@ class MetadataIoRunnerTest {
       assertEquals("active", active.get(1, TimeUnit.SECONDS));
     } finally {
       blocker.release.countDown();
-      runner.close();
-    }
-  }
-
-  @Test
-  void reentrantCancellableCallDoesNotStartNestedWorkAfterCancellation() {
-    // Re-entrant admission reuses the held permit and runs inline, but must still honor
-    // cancellation: an outer admitted call that ignores its cancellation interrupt must not be able
-    // to start a new nested store round-trip once the request has cancelled. The nested supplier
-    // must not run.
-    var runner = new MetadataIoRunner(1);
-    var cancelled = new AtomicBoolean(false);
-    var nestedRan = new AtomicBoolean(false);
-    try {
-      assertThrows(
-          CancellationException.class,
-          () ->
-              runner.call(
-                  cancelled::get,
-                  () -> {
-                    cancelled.set(true); // request cancels while the outer op holds the permit
-                    return runner.call(
-                        cancelled::get,
-                        () -> {
-                          nestedRan.set(true);
-                          return "nested";
-                        },
-                        FAILURES);
-                  },
-                  FAILURES));
-      assertFalse(nestedRan.get(), "a cancelled request must not start nested store work");
-    } finally {
-      runner.close();
-    }
-  }
-
-  @Test
-  void nestedAdmissionReusesTheHeldPermitInsteadOfDeadlocking() {
-    // Re-entrant admission: a store call reached from within an admitted operation on the same
-    // thread reuses the one held permit and runs inline. With capacity 1 a second acquire would
-    // block forever, so returning within the timeout proves the permit was reused, not re-acquired.
-    var runner = new MetadataIoRunner(1);
-    try {
-      String result =
-          assertTimeoutPreemptively(
-              Duration.ofSeconds(5),
-              () ->
-                  runner.call(
-                      () -> false,
-                      () -> runner.call(() -> false, () -> "inner", FAILURES),
-                      FAILURES));
-      assertEquals("inner", result);
-    } finally {
       runner.close();
     }
   }

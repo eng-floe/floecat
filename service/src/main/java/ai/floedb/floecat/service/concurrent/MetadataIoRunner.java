@@ -15,11 +15,8 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
-import ai.floedb.floecat.engine.concurrent.ProcessWideAdmission;
-import ai.floedb.floecat.service.concurrent.CancellableCallRunner.FailureMessages;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -69,16 +66,6 @@ public class MetadataIoRunner {
   // process-wide runtime is shared and daemon-backed, so no single bean's @PreDestroy may close it.
   private final boolean ownsRuntime;
 
-  // Set on whichever thread is running an admitted operation, so a nested admission on the SAME
-  // thread reuses the permit already held instead of acquiring a second one. A store call reached
-  // from within an outer admitted scope — one repository method calling another, or an explicit
-  // admit wrapping a call the repository interceptor also admits — therefore runs inline under the
-  // one permit: no double-count against the ceiling, no self-deadlock. Being thread-local, it does
-  // not span a fan-out's thread hop — units dispatched to other threads acquire their own permits
-  // while the caller still holds one, which is what would wedge the ceiling. That case is refused
-  // outright by rejectFanOutFromAdmittedOperation rather than avoided by convention.
-  private static final ThreadLocal<RuntimeState> IN_ADMITTED_OP = new ThreadLocal<>();
-
   // Notified when an admission has to wait for a permit. Telemetry installs a sink that increments
   // a counter; the default is a no-op so the acquire path works outside CDI.
   private static volatile Runnable saturationSink = () -> {};
@@ -95,73 +82,6 @@ public class MetadataIoRunner {
    */
   private static final java.util.concurrent.atomic.AtomicBoolean SHUTDOWN_LATCHED =
       new java.util.concurrent.atomic.AtomicBoolean();
-
-  /**
-   * True when the calling thread is currently inside an admitted operation. Drives re-entrant
-   * permit reuse (a nested admission on this thread runs inline under the held permit) and lets a
-   * caller detect whether its store access is already bounded.
-   */
-  public static boolean isRunningAdmittedOperation() {
-    return IN_ADMITTED_OP.get() != null;
-  }
-
-  /**
-   * Wrap {@code operation} so its execution thread is marked admitted for its duration, so a nested
-   * admission on that thread reuses this permit rather than acquiring another.
-   */
-  private <T> Supplier<T> guarded(RuntimeState granting, Supplier<T> operation) {
-    // The worker executes application code, so preserve the submitting thread's context loader for
-    // the call itself. Do not restore the worker's old loader afterwards: it may belong to the
-    // preceding Quarkus application generation and would pin that generation for the idle-worker
-    // timeout. The platform loader retains no application classes.
-    ClassLoader callerClassLoader = Thread.currentThread().getContextClassLoader();
-    return () -> {
-      Thread worker = Thread.currentThread();
-      worker.setContextClassLoader(callerClassLoader);
-      // The remove() below is load-bearing but has no test: nothing non-admitted runs on these
-      // workers today, so a leaked marker is unobservable from here. It becomes observable the
-      // moment a fan-out runs on one — isRunningAdmittedOperation would read true on an idle worker
-      // and trip rejectFanOutFromAdmittedOperation. Keep the finally.
-      IN_ADMITTED_OP.set(granting);
-      try {
-        return operation.get();
-      } finally {
-        IN_ADMITTED_OP.remove();
-        worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
-      }
-    };
-  }
-
-  /**
-   * Whether this thread's held permit was granted by <em>this</em> runtime. Only then may a nested
-   * admission run inline: a permit from another runtime says nothing about this one's ceiling, so
-   * reusing it would let the nested call bypass this runtime's semaphore entirely and run on the
-   * other's workers. Production has a single shared runtime, so this only separates explicit-
-   * capacity runtimes — which is exactly what that constructor (test-only) exists to isolate.
-   *
-   * <p>A thread holding another runtime's permit therefore waits for one of ours rather than
-   * running inline, so nesting admission across two runtimes can block. The single shared runtime
-   * makes that unreachable in production.
-   */
-  private static boolean holdsPermit(RuntimeState resolved) {
-    return IN_ADMITTED_OP.get() == resolved;
-  }
-
-  /**
-   * Stop an old admitted operation from entering a replacement runtime after shutdown.
-   *
-   * <p>A surviving worker retains its process-wide permit until its store call returns. After a
-   * same-classloader restart, resolving a nested call would find the replacement runtime rather
-   * than the closed runtime recorded in {@link #IN_ADMITTED_OP}; acquiring the shared semaphore
-   * would then wait on its own permit forever. The old operation has already been cancelled, so it
-   * must not start another store round trip.
-   */
-  private static void rejectNestedCallFromClosedRuntime() {
-    RuntimeState admitted = IN_ADMITTED_OP.get();
-    if (admitted != null && admitted.isClosed()) {
-      throw new CancellationException(CancellableCallRunner.RUNTIME_CLOSED);
-    }
-  }
 
   /**
    * Create a facade over the process-wide production runtime. Direct and CDI construction share the
@@ -282,58 +202,26 @@ public class MetadataIoRunner {
     return runtime().permits.getQueueLength();
   }
 
-  /**
-   * Refuse to fan out from inside an admitted operation.
-   *
-   * <p>Re-entrant permit reuse is thread-local, so units dispatched to other threads acquire their
-   * own permits while the outer operation still holds one. With {@code capacity} such operations in
-   * flight every permit is held by a thread waiting on its children, and admission has no deadline:
-   * all metadata I/O in the process wedges until each request's cancellation fires. Propagating the
-   * marker instead would let units inherit a permit and stop bounding store concurrency, which is
-   * the whole point of the tier.
-   *
-   * <p><b>Guarded today: {@code BoundedFanout}'s dispatch only.</b> Every other way an admitted
-   * operation can hand work to another thread — {@code CompletableFuture.supplyAsync}, an injected
-   * {@code ManagedExecutor}, a Mutiny hop, a store client's own worker pool — is unguarded, because
-   * the marker is thread-local and this check only fires where it is called. Call it from any new
-   * dispatch point that can run under admission; the alternative, if these grow, is to enforce at
-   * the executor boundary rather than per call site.
-   */
-  public static void rejectFanOutFromAdmittedOperation(String dispatchSite) {
-    if (isRunningAdmittedOperation()) {
-      throw new IllegalStateException(
-          dispatchSite
-              + " ran inside an admitted metadata-I/O operation. Its units would each acquire their"
-              + " own permit while this thread holds one, deadlocking the process-wide ceiling."
-              + " Fan out first, then admit each unit.");
-    }
-  }
-
-  /**
-   * Apply the gates a fresh admission would, before reusing a held permit inline. A closed runtime
-   * or an already-interrupted caller must stop a nested read too: otherwise re-entry starts store
-   * I/O in exactly the states where {@code acquire} refuses to.
-   */
-  private static void rejectIfUnusable(
-      RuntimeState granting, BooleanSupplier cancelled, FailureMessages failureMessages) {
-    if (granting.isClosed()) {
-      // In flight by construction — this only runs on a thread already holding a permit — so
-      // closure is a cancellation here, not a rejected submission. Throwing the rejection type
-      // would put a spurious INTERNAL next to the clean cancellations an identical non-nested call
-      // produces at the same instant.
-      throw new CancellationException(CancellableCallRunner.RUNTIME_CLOSED);
-    }
-    if (Thread.currentThread().isInterrupted()) {
-      throw new CancellationException(failureMessages.interruption());
-    }
-    if (cancelled != null && cancelled.getAsBoolean()) {
-      throw new CancellationException(failureMessages.cancellation());
-    }
-  }
-
   /** Report that an admission could not be granted immediately. */
   static void recordSaturatedWait() {
     saturationSink.run();
+  }
+
+  /**
+   * Run application code with the submitting generation's loader, then leave the pooled worker
+   * neutral.
+   */
+  private static <T> Supplier<T> withApplicationClassLoader(Supplier<T> operation) {
+    ClassLoader callerClassLoader = Thread.currentThread().getContextClassLoader();
+    return () -> {
+      Thread worker = Thread.currentThread();
+      worker.setContextClassLoader(callerClassLoader);
+      try {
+        return operation.get();
+      } finally {
+        worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+      }
+    };
   }
 
   /**
@@ -360,7 +248,7 @@ public class MetadataIoRunner {
    * it accepts traffic and establishes the process-wide gate before any consumer starts.
    */
   public static void validateConfiguredCapacity() {
-    ProcessWideAdmission.resolve(configuredCapacity());
+    MetadataIoProcessGate.resolve(configuredCapacity());
   }
 
   /** True when two facades share the same process or test runtime. */
@@ -373,24 +261,13 @@ public class MetadataIoRunner {
       BooleanSupplier cancelled,
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
-    // Resolved once, and for the same reason on both paths: two calls to runtime() can straddle a
-    // restart. Non-re-entrant that hands one call the executor and the semaphore of different
-    // runtimes; re-entrant, rejectIfUnusable would read a replacement's open `closed` flag and let
-    // the nested read proceed on a permit from the torn-down runtime it exists to stop.
     RuntimeState current = runtime();
-    if (holdsPermit(current)) {
-      // Re-entrant: reuse this thread's permit and run inline. Apply the same gates a fresh
-      // admission would, or a nested read starts store I/O in states where an outer call could not.
-      rejectIfUnusable(current, cancelled, failureMessages);
-      return operation.get();
-    }
-    rejectNestedCallFromClosedRuntime();
     return CancellableCallRunner.call(
         current.executor(),
         current.permits,
         cancelled,
         current::isClosed,
-        guarded(current, operation),
+        withApplicationClassLoader(operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -399,18 +276,11 @@ public class MetadataIoRunner {
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
-    if (holdsPermit(current)) {
-      // Re-entrant, and gated like a fresh admission minus request cancellation, which this entry
-      // point deliberately does not impose.
-      rejectIfUnusable(current, null, failureMessages);
-      return operation.get();
-    }
-    rejectNestedCallFromClosedRuntime();
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),
         current.permits,
         current::isClosed,
-        guarded(current, operation),
+        withApplicationClassLoader(operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -479,7 +349,7 @@ public class MetadataIoRunner {
         // The close latch makes a full permit count reliable: no caller can retain this runtime
         // and acquire after the executor has terminated. Now a later controlled lifecycle may
         // establish a different configured ceiling without replacing a live gate.
-        ProcessWideAdmission.clearIfIdle(closing.permits);
+        MetadataIoProcessGate.clearIfIdle(closing.permits);
       }
     }
   }
@@ -487,26 +357,18 @@ public class MetadataIoRunner {
   /**
    * Re-arm the shared runtime for a new application lifecycle.
    *
-   * <p>A no-op under Quarkus: this is an application class, so a dev-mode reload or
-   * {@code @QuarkusTest} restart mints a fresh {@code Class} with fresh statics and {@code SHARED}
-   * is already null. It is what lets a plain JUnit fork — where the statics really are shared —
-   * recover, and it keeps the latch from being a one-way door if that ever stops holding.
-   *
-   * <p>Clearing the latch is enough: {@link #sharedRuntime()} replaces a closed runtime once it is
-   * allowed to build one, so the next caller gets a fresh one without this having to null the
-   * reference and race a concurrent resolution.
+   * <p>Clearing the latch never revives or discards a closed runtime. {@link #sharedRuntime()}
+   * replaces it only after its executor has actually terminated, so a restart cannot overlap a
+   * timed-out predecessor. This hook exists for the explicit, non-CDI lifecycle used by embedding
+   * code and tests; CDI deliberately leaves the shared runtime available through bean teardown.
    */
   static void reopenSharedRuntime() {
     SHUTDOWN_LATCHED.set(false);
-    // Drop the dead reference too. sharedRuntime() would replace it on the next resolution anyway,
-    // so this changes no outcome; it just stops a closed runtime being pinned until someone happens
-    // to ask, and leaves the next lifecycle in the same state a fresh process starts in.
-    SHARED.updateAndGet(current -> current != null && current.isClosed() ? null : current);
   }
 
   private static RuntimeState createSharedRuntime() {
     int configuredCapacity = configuredCapacity();
-    ProcessWideAdmission.State admission = ProcessWideAdmission.resolve(configuredCapacity);
+    MetadataIoProcessGate.State admission = MetadataIoProcessGate.resolve(configuredCapacity);
     if (admission.capacity() != configuredCapacity) {
       LOG.warnf(
           "metadata I/O capacity is fixed at %d until the JVM restarts; ignoring configured %d",
@@ -518,12 +380,10 @@ public class MetadataIoRunner {
   /**
    * The process-wide runtime, replaceable across application lifecycles.
    *
-   * <p>Not a {@code static final} holder: {@code closed} is sticky, and Quarkus reuses the runtime
-   * classloader across dev-mode reloads and {@code @QuarkusTest} restarts. A one-shot holder would
-   * hand every call in the restarted application a closed runtime. Not cleared on shutdown — the
-   * closed instance stays installed so the drain window still has something to read — and replaced
-   * by {@link #sharedRuntime()} once {@link #reopenSharedRuntime()} lowers the latch. Still lazy,
-   * so an application that never reads metadata never starts a pool.
+   * <p>Not a {@code static final} holder because {@code closed} is sticky. The closed instance
+   * stays installed through its drain so every caller observes the same rejection; after a
+   * controlled reopen and actual executor termination, {@link #sharedRuntime()} replaces it. Still
+   * lazy, so an application that never reads metadata never starts a pool.
    */
   private static final java.util.concurrent.atomic.AtomicReference<RuntimeState> SHARED =
       new java.util.concurrent.atomic.AtomicReference<>();
@@ -532,6 +392,13 @@ public class MetadataIoRunner {
     while (true) {
       RuntimeState current = SHARED.get();
       if (current != null && !current.isClosed()) {
+        return current;
+      }
+      // A shutdown may time out while a store client ignores interruption. That call still owns a
+      // permit (and its application generation) until it returns, so the next lifecycle must not
+      // build another executor alongside it. Keep returning the closed runtime until termination;
+      // its normal admission path rejects every new call.
+      if (current != null && current.isTerminationPending()) {
         return current;
       }
       if (SHUTDOWN_LATCHED.get()) {
@@ -562,6 +429,10 @@ public class MetadataIoRunner {
     private final int capacity;
     private final Semaphore permits;
     private volatile ThreadPoolExecutor executor;
+    // Retained after close only while an interruption-insensitive call is still running. It lets a
+    // future lifecycle distinguish a fully stopped generation from one that must continue
+    // rejecting work.
+    private volatile ThreadPoolExecutor closingExecutor;
     // Read by waiting callers outside this object's monitor, so closure is visible to them
     // promptly. One-way: there is no reopen path.
     private volatile boolean closed;
@@ -617,6 +488,11 @@ public class MetadataIoRunner {
       return closed;
     }
 
+    private boolean isTerminationPending() {
+      ThreadPoolExecutor closing = closingExecutor;
+      return closing != null && !closing.isTerminated();
+    }
+
     private boolean close() {
       ThreadPoolExecutor closing;
       // Latch and detach under the monitor, then release it before waiting. start() contends on
@@ -627,6 +503,7 @@ public class MetadataIoRunner {
         closed = true;
         closing = executor;
         executor = null;
+        closingExecutor = closing;
         if (closing != null) {
           // Stop acceptance as early as possible: latching `closed` alone leaves the pool RUNNING
           // until shutdownNow runs below. This narrows the submit-after-latch window but does not
@@ -641,11 +518,16 @@ public class MetadataIoRunner {
       }
       // A queued call already holds its permit but will never run its finally, so releasing the
       // discarded tasks is this runtime's job, not the pool factory's.
-      return MetadataIoExecutors.shutdownNowAndAwait(
-          closing,
-          CancellableCallRunner::cancelDiscardedTasks,
-          SHUTDOWN_TIMEOUT_SECONDS,
-          TimeUnit.SECONDS);
+      boolean terminated =
+          MetadataIoExecutors.shutdownNowAndAwait(
+              closing,
+              CancellableCallRunner::cancelDiscardedTasks,
+              SHUTDOWN_TIMEOUT_SECONDS,
+              TimeUnit.SECONDS);
+      if (terminated) {
+        closingExecutor = null;
+      }
+      return terminated;
     }
   }
 }

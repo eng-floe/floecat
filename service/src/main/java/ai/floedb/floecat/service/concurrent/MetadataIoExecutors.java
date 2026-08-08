@@ -52,9 +52,9 @@ final class MetadataIoExecutors {
     }
     String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
     // This is a JDK factory, not a lambda owned by the current application classloader. An idle
-    // worker retains its executor and its factory until the keep-alive expires; keeping only JDK
+    // worker retains its executor and its factory until the keep-alive expires, so keeping only JDK
     // objects there lets a completed pre-reload task release its old application classloader
-    // promptly. guarded() restores the worker's context classloader after every metadata call.
+    // promptly.
     ThreadFactory threads = Thread.ofPlatform().daemon().name(prefix, 1).factory();
     ThreadPoolExecutor pool =
         new ThreadPoolExecutor(

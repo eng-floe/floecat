@@ -192,17 +192,6 @@ final class BoundedFanout {
       IntConsumer completionBarrier) {
     // Before capture() or any allocation: an invalid bound should cost nothing and name itself.
     validatePermits(permits);
-    // Every fan-out in this package funnels through here, so this is the one place the
-    // no-fan-out-under-admission invariant is checked rather than only documented. One surface,
-    // not the invariant: supplyAsync, a ManagedExecutor, a Mutiny hop and a store client's own pool
-    // all reach the same deadlock unguarded. A tripwire on the path most likely to take it, not
-    // proof the tier catches the mistake. Units dispatched to
-    // other threads acquire their own permits while the caller still holds one, so a fan-out
-    // started inside an admitted operation can wedge the process-wide ceiling.
-    // Unconditional, including for zero inputs. Gating this on item count would make a wiring
-    // mistake data-dependent: silent wherever a caller happens to have no rows, and fatal in
-    // production the first time it does. The caller is structurally wrong either way.
-    MetadataIoRunner.rejectFanOutFromAdmittedOperation("BoundedFanout.forEachOrdered");
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer, cancelled);
     completeAll(
