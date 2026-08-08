@@ -27,6 +27,8 @@ import com.google.protobuf.Timestamp;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -57,29 +59,93 @@ class MetadataIoAdmissionWiringTest {
   }
 
   @Test
-  void queryPathPointerReadsRemainBoundAtTheRepositoryBoundary() throws Exception {
-    assertBound(
+  void everyExposedMetadataReadRemainsBoundAtTheRepositoryBoundary() throws Exception {
+    assertReadsBound(
+        CatalogRepository.class,
+        read("getById", ResourceId.class),
+        read("getByName", String.class, String.class),
+        read("list", String.class, int.class, String.class, StringBuilder.class),
+        read("count", String.class),
+        read("metaFor", ResourceId.class),
+        read("metaFor", ResourceId.class, Timestamp.class),
+        read("metaForSafe", ResourceId.class),
+        read("pointerMetaForSafe", ResourceId.class),
+        read("getByBlobUri", String.class),
+        read("getByBlobUriLive", String.class),
+        read("listIds", String.class));
+    assertReadsBound(
+        NamespaceRepository.class,
+        read("getById", ResourceId.class),
+        read("getByPath", String.class, String.class, List.class),
+        read(
+            "list",
+            String.class,
+            String.class,
+            List.class,
+            int.class,
+            String.class,
+            StringBuilder.class),
+        read("count", String.class, String.class, List.class),
+        read("listTokenAfter", String.class, String.class, List.class),
+        read("listIds", String.class, String.class),
+        read("listRefs", String.class, String.class),
+        read("listRefsByName", String.class, String.class, Set.class),
+        read("metaFor", ResourceId.class),
+        read("metaFor", ResourceId.class, Timestamp.class),
+        read("metaForSafe", ResourceId.class),
+        read("pointerMetaForSafe", ResourceId.class),
+        read("getByBlobUri", String.class),
+        read("getByBlobUriLive", String.class));
+    assertReadsBound(
         TableRepository.class,
-        "relationNameClaim",
-        String.class,
-        String.class,
-        String.class,
-        String.class);
-    assertBound(CatalogRepository.class, "pointerMetaForSafe", ResourceId.class);
-    assertBound(NamespaceRepository.class, "pointerMetaForSafe", ResourceId.class);
-    assertBound(TableRepository.class, "pointerMetaForSafe", ResourceId.class);
-    assertBound(ViewRepository.class, "pointerMetaForSafe", ResourceId.class);
-    assertBound(TableRepository.class, "blobEtag", String.class);
-    assertMetadataReadsBound(CatalogRepository.class);
-    assertMetadataReadsBound(NamespaceRepository.class);
-    assertMetadataReadsBound(TableRepository.class);
-    assertMetadataReadsBound(ViewRepository.class);
+        read("getById", ResourceId.class),
+        read("getByName", String.class, String.class, String.class, String.class),
+        read(
+            "list",
+            String.class,
+            String.class,
+            String.class,
+            int.class,
+            String.class,
+            StringBuilder.class),
+        read("count", String.class, String.class, String.class),
+        read("listRefs", String.class, String.class, String.class),
+        read("relationNameClaim", String.class, String.class, String.class, String.class),
+        read("listRefsByName", String.class, String.class, String.class, Set.class),
+        read("metaFor", ResourceId.class),
+        read("metaFor", ResourceId.class, Timestamp.class),
+        read("metaForSafe", ResourceId.class),
+        read("pointerMetaForSafe", ResourceId.class),
+        read("getByBlobUri", String.class),
+        read("getByBlobUriLive", String.class),
+        read("blobEtag", String.class));
+    assertReadsBound(
+        ViewRepository.class,
+        read("getById", ResourceId.class),
+        read("getByName", String.class, String.class, String.class, String.class),
+        read(
+            "list",
+            String.class,
+            String.class,
+            String.class,
+            int.class,
+            String.class,
+            StringBuilder.class),
+        read("count", String.class, String.class, String.class),
+        read("listRefs", String.class, String.class, String.class),
+        read("listRefsByName", String.class, String.class, String.class, Set.class),
+        read("metaFor", ResourceId.class),
+        read("metaFor", ResourceId.class, Timestamp.class),
+        read("metaForSafe", ResourceId.class),
+        read("pointerMetaForSafe", ResourceId.class),
+        read("getByBlobUri", String.class),
+        read("getByBlobUriLive", String.class));
   }
 
-  private static void assertMetadataReadsBound(Class<?> type) throws Exception {
-    assertBound(type, "metaFor", ResourceId.class);
-    assertBound(type, "metaFor", ResourceId.class, Timestamp.class);
-    assertBound(type, "metaForSafe", ResourceId.class);
+  private static void assertReadsBound(Class<?> type, Read... reads) throws Exception {
+    for (Read read : reads) {
+      assertBound(type, read.name(), read.parameterTypes());
+    }
   }
 
   private static void assertBound(Class<?> type, String method, Class<?>... parameterTypes)
@@ -88,4 +154,10 @@ class MetadataIoAdmissionWiringTest {
         type.getMethod(method, parameterTypes).isAnnotationPresent(BoundMetadataIo.class),
         () -> type.getSimpleName() + "." + method + " bypasses metadata-I/O admission");
   }
+
+  private static Read read(String name, Class<?>... parameterTypes) {
+    return new Read(name, parameterTypes);
+  }
+
+  private record Read(String name, Class<?>... parameterTypes) {}
 }
