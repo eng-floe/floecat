@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
@@ -48,6 +49,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
 
   private final ResourceSchema<T, K> schema;
+  // Null for repository families outside metadata-I/O admission, and for direct unit-test setup.
+  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public GenericResourceRepository(
       PointerStore pointerStore,
@@ -56,7 +59,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null);
+    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null, null);
   }
 
   public GenericResourceRepository(
@@ -67,8 +70,21 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
+    this(pointerStore, blobStore, schema, parser, toBytes, contentType, blobCache, null);
+  }
+
+  public GenericResourceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ResourceSchema<T, K> schema,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache,
+      MetadataIoCacheMissAdmission cacheMissAdmission) {
     super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
+    this.cacheMissAdmission = cacheMissAdmission;
   }
 
   @Override
@@ -96,20 +112,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * not inherit a "read regardless of the pointer" primitive.
    */
   public Optional<T> getByBlobUri(String blobUri) {
-    return getByBlobUri(blobUri, this::loadAndParseBlob);
-  }
-
-  /**
-   * Cache-aware blob read whose loader is supplied by the repository boundary.
-   *
-   * <p>The four graph-hydration repositories pass an admitted loader here, so a cache hit or a
-   * single-flight follower stays outside metadata-I/O admission while the one cold backend read is
-   * bounded. Other callers retain the ordinary uncached loader through {@link #getByBlobUri}.
-   */
-  public Optional<T> getByBlobUri(String blobUri, Function<String, Optional<T>> cacheMissLoader) {
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }
+    Function<String, Optional<T>> cacheMissLoader =
+        cacheMissAdmission == null
+            ? this::loadAndParseBlob
+            : uri -> cacheMissAdmission.load(() -> loadAndParseBlob(uri));
     if (blobCacheable()) {
       // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
       // means absent but a present result does NOT prove the blob still exists. Callers whose

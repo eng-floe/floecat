@@ -15,19 +15,27 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
@@ -68,7 +76,7 @@ class MetadataIoAdmissionWiringTest {
             TableRepository.class,
             ViewRepository.class)) {
       assertAllPublicReadsAreBoundOrCacheFronted(repository);
-      assertCacheFrontedReadUsesBoundMissLoader(repository);
+      assertCacheFrontedReadIsNotOuterAdmitted(repository);
     }
 
     assertTrue(
@@ -79,6 +87,31 @@ class MetadataIoAdmissionWiringTest {
     assertTrue(
         cacheMissAdmission.load(MetadataIoRunner::isRunningAdmittedOperation),
         "the cache-miss loader must run under admission in the container");
+  }
+
+  @Test
+  void everyCacheFrontedRepositoryRoutesItsMissThroughAdmission() {
+    CountingCacheMissAdmission admission = new CountingCacheMissAdmission();
+    ImmutableBlobCache cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5));
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+
+    assertCacheMissInvokesAdmission(
+        "CatalogRepository",
+        uri -> new CatalogRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
+        admission);
+    assertCacheMissInvokesAdmission(
+        "NamespaceRepository",
+        uri -> new NamespaceRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
+        admission);
+    assertCacheMissInvokesAdmission(
+        "TableRepository",
+        uri -> new TableRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
+        admission);
+    assertCacheMissInvokesAdmission(
+        "ViewRepository",
+        uri -> new ViewRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
+        admission);
   }
 
   private static void assertAllPublicReadsAreBoundOrCacheFronted(Class<?> type) {
@@ -95,11 +128,20 @@ class MetadataIoAdmissionWiringTest {
     }
   }
 
-  private static void assertCacheFrontedReadUsesBoundMissLoader(Class<?> type) throws Exception {
+  private static void assertCacheFrontedReadIsNotOuterAdmitted(Class<?> type) throws Exception {
     Method cacheFronted = type.getMethod("getByBlobUri", String.class);
     assertFalse(
         cacheFronted.isAnnotationPresent(BoundMetadataIo.class),
         () -> type.getSimpleName() + ".getByBlobUri must admit only its cache miss");
+  }
+
+  private static void assertCacheMissInvokesAdmission(
+      String repository,
+      Function<String, Optional<?>> getByBlobUri,
+      CountingCacheMissAdmission admission) {
+    assertTrue(getByBlobUri.apply("blob://test/missing-" + repository).isEmpty());
+    assertEquals(
+        1, admission.loads.getAndSet(0), repository + " must admit exactly its cache-miss loader");
   }
 
   private static boolean isWrite(Method method) {
@@ -111,5 +153,15 @@ class MetadataIoAdmissionWiringTest {
     return method.getName().equals("getByBlobUri")
         && method.getParameterCount() == 1
         && method.getParameterTypes()[0] == String.class;
+  }
+
+  private static final class CountingCacheMissAdmission extends MetadataIoCacheMissAdmission {
+    private final AtomicInteger loads = new AtomicInteger();
+
+    @Override
+    public <T> T load(Supplier<T> loader) {
+      loads.incrementAndGet();
+      return loader.get();
+    }
   }
 }

@@ -43,7 +43,6 @@ public class NamespaceRepository {
 
   private final GenericResourceRepository<Namespace, NamespaceKey> repo;
   private final PointerStore pointerStore;
-  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
     this(pointerStore, blobStore, null, null);
@@ -56,7 +55,6 @@ public class NamespaceRepository {
       ImmutableBlobCache blobCache,
       MetadataIoCacheMissAdmission cacheMissAdmission) {
     this.pointerStore = pointerStore;
-    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -65,7 +63,8 @@ public class NamespaceRepository {
             Namespace::parseFrom,
             Namespace::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            cacheMissAdmission);
   }
 
   public void create(Namespace namespace) {
@@ -241,10 +240,7 @@ public class NamespaceRepository {
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Namespace> getByBlobUri(String blobUri) {
-    return cacheMissAdmission == null
-        ? repo.getByBlobUri(blobUri)
-        : repo.getByBlobUri(
-            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
+    return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */

@@ -42,7 +42,6 @@ import java.util.Set;
 public class TableRepository {
 
   private final GenericResourceRepository<Table, TableKey> repo;
-  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public TableRepository(PointerStore pointerStore, BlobStore blobStore) {
     this(pointerStore, blobStore, null, null);
@@ -54,7 +53,6 @@ public class TableRepository {
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       MetadataIoCacheMissAdmission cacheMissAdmission) {
-    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -63,7 +61,8 @@ public class TableRepository {
             Table::parseFrom,
             Table::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            cacheMissAdmission);
   }
 
   public void create(Table table) {
@@ -205,10 +204,7 @@ public class TableRepository {
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Table> getByBlobUri(String blobUri) {
-    return cacheMissAdmission == null
-        ? repo.getByBlobUri(blobUri)
-        : repo.getByBlobUri(
-            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
+    return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */

@@ -38,7 +38,6 @@ import java.util.Optional;
 public class CatalogRepository {
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
-  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
     this(pointerStore, blobStore, null, null);
@@ -50,7 +49,6 @@ public class CatalogRepository {
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       MetadataIoCacheMissAdmission cacheMissAdmission) {
-    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -59,7 +57,8 @@ public class CatalogRepository {
             Catalog::parseFrom,
             Catalog::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            cacheMissAdmission);
   }
 
   public void create(Catalog catalog) {
@@ -128,10 +127,7 @@ public class CatalogRepository {
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Catalog> getByBlobUri(String blobUri) {
-    return cacheMissAdmission == null
-        ? repo.getByBlobUri(blobUri)
-        : repo.getByBlobUri(
-            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
+    return repo.getByBlobUri(blobUri);
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
