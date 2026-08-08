@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
+import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -37,14 +38,19 @@ import java.util.Optional;
 public class CatalogRepository {
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
+  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, blobStore, null, null);
   }
 
   @Inject
   public CatalogRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      MetadataIoCacheMissAdmission cacheMissAdmission) {
+    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -121,9 +127,11 @@ public class CatalogRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
-  @BoundMetadataIo
   public Optional<Catalog> getByBlobUri(String blobUri) {
-    return repo.getByBlobUri(blobUri);
+    return cacheMissAdmission == null
+        ? repo.getByBlobUri(blobUri)
+        : repo.getByBlobUri(
+            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */

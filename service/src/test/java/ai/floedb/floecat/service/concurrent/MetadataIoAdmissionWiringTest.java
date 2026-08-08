@@ -18,17 +18,17 @@ package ai.floedb.floecat.service.concurrent;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import com.google.protobuf.Timestamp;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.List;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -48,6 +48,7 @@ class MetadataIoAdmissionWiringTest {
   }
 
   @Inject AdmissionProbe probe;
+  @Inject MetadataIoCacheMissAdmission cacheMissAdmission;
 
   @Test
   void containerWrapsBoundMetadataIoMethodsInAdmission() {
@@ -59,105 +60,56 @@ class MetadataIoAdmissionWiringTest {
   }
 
   @Test
-  void everyExposedMetadataReadRemainsBoundAtTheRepositoryBoundary() throws Exception {
-    assertReadsBound(
-        CatalogRepository.class,
-        read("getById", ResourceId.class),
-        read("getByName", String.class, String.class),
-        read("list", String.class, int.class, String.class, StringBuilder.class),
-        read("count", String.class),
-        read("metaFor", ResourceId.class),
-        read("metaFor", ResourceId.class, Timestamp.class),
-        read("metaForSafe", ResourceId.class),
-        read("pointerMetaForSafe", ResourceId.class),
-        read("getByBlobUri", String.class),
-        read("getByBlobUriLive", String.class),
-        read("listIds", String.class));
-    assertReadsBound(
-        NamespaceRepository.class,
-        read("getById", ResourceId.class),
-        read("getByPath", String.class, String.class, List.class),
-        read(
-            "list",
-            String.class,
-            String.class,
-            List.class,
-            int.class,
-            String.class,
-            StringBuilder.class),
-        read("count", String.class, String.class, List.class),
-        read("listTokenAfter", String.class, String.class, List.class),
-        read("listIds", String.class, String.class),
-        read("listRefs", String.class, String.class),
-        read("listRefsByName", String.class, String.class, Set.class),
-        read("metaFor", ResourceId.class),
-        read("metaFor", ResourceId.class, Timestamp.class),
-        read("metaForSafe", ResourceId.class),
-        read("pointerMetaForSafe", ResourceId.class),
-        read("getByBlobUri", String.class),
-        read("getByBlobUriLive", String.class));
-    assertReadsBound(
-        TableRepository.class,
-        read("getById", ResourceId.class),
-        read("getByName", String.class, String.class, String.class, String.class),
-        read(
-            "list",
-            String.class,
-            String.class,
-            String.class,
-            int.class,
-            String.class,
-            StringBuilder.class),
-        read("count", String.class, String.class, String.class),
-        read("listRefs", String.class, String.class, String.class),
-        read("relationNameClaim", String.class, String.class, String.class, String.class),
-        read("listRefsByName", String.class, String.class, String.class, Set.class),
-        read("metaFor", ResourceId.class),
-        read("metaFor", ResourceId.class, Timestamp.class),
-        read("metaForSafe", ResourceId.class),
-        read("pointerMetaForSafe", ResourceId.class),
-        read("getByBlobUri", String.class),
-        read("getByBlobUriLive", String.class),
-        read("blobEtag", String.class));
-    assertReadsBound(
-        ViewRepository.class,
-        read("getById", ResourceId.class),
-        read("getByName", String.class, String.class, String.class, String.class),
-        read(
-            "list",
-            String.class,
-            String.class,
-            String.class,
-            int.class,
-            String.class,
-            StringBuilder.class),
-        read("count", String.class, String.class, String.class),
-        read("listRefs", String.class, String.class, String.class),
-        read("listRefsByName", String.class, String.class, String.class, Set.class),
-        read("metaFor", ResourceId.class),
-        read("metaFor", ResourceId.class, Timestamp.class),
-        read("metaForSafe", ResourceId.class),
-        read("pointerMetaForSafe", ResourceId.class),
-        read("getByBlobUri", String.class),
-        read("getByBlobUriLive", String.class));
+  void everyExposedMetadataReadHasAdmissionAtItsStoreBoundary() throws Exception {
+    for (Class<?> repository :
+        Set.of(
+            CatalogRepository.class,
+            NamespaceRepository.class,
+            TableRepository.class,
+            ViewRepository.class)) {
+      assertAllPublicReadsAreBoundOrCacheFronted(repository);
+      assertCacheFrontedReadUsesBoundMissLoader(repository);
+    }
+
+    assertTrue(
+        MetadataIoCacheMissAdmission.class
+            .getMethod("load", Supplier.class)
+            .isAnnotationPresent(BoundMetadataIo.class),
+        "the cache-miss loader must remain the admitted store boundary");
+    assertTrue(
+        cacheMissAdmission.load(MetadataIoRunner::isRunningAdmittedOperation),
+        "the cache-miss loader must run under admission in the container");
   }
 
-  private static void assertReadsBound(Class<?> type, Read... reads) throws Exception {
-    for (Read read : reads) {
-      assertBound(type, read.name(), read.parameterTypes());
+  private static void assertAllPublicReadsAreBoundOrCacheFronted(Class<?> type) {
+    for (Method method : type.getDeclaredMethods()) {
+      if (!Modifier.isPublic(method.getModifiers())
+          || method.isSynthetic()
+          || isWrite(method)
+          || isCacheFrontedRead(method)) {
+        continue;
+      }
+      assertTrue(
+          method.isAnnotationPresent(BoundMetadataIo.class),
+          () -> type.getSimpleName() + "." + method + " bypasses metadata-I/O admission");
     }
   }
 
-  private static void assertBound(Class<?> type, String method, Class<?>... parameterTypes)
-      throws Exception {
-    assertTrue(
-        type.getMethod(method, parameterTypes).isAnnotationPresent(BoundMetadataIo.class),
-        () -> type.getSimpleName() + "." + method + " bypasses metadata-I/O admission");
+  private static void assertCacheFrontedReadUsesBoundMissLoader(Class<?> type) throws Exception {
+    Method cacheFronted = type.getMethod("getByBlobUri", String.class);
+    assertFalse(
+        cacheFronted.isAnnotationPresent(BoundMetadataIo.class),
+        () -> type.getSimpleName() + ".getByBlobUri must admit only its cache miss");
   }
 
-  private static Read read(String name, Class<?>... parameterTypes) {
-    return new Read(name, parameterTypes);
+  private static boolean isWrite(Method method) {
+    return Set.of("create", "update", "delete", "deleteWithPrecondition")
+        .contains(method.getName());
   }
 
-  private record Read(String name, Class<?>... parameterTypes) {}
+  private static boolean isCacheFrontedRead(Method method) {
+    return method.getName().equals("getByBlobUri")
+        && method.getParameterCount() == 1
+        && method.getParameterTypes()[0] == String.class;
+  }
 }

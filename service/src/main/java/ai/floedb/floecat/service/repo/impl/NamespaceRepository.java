@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
+import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
@@ -42,15 +43,20 @@ public class NamespaceRepository {
 
   private final GenericResourceRepository<Namespace, NamespaceKey> repo;
   private final PointerStore pointerStore;
+  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, blobStore, null, null);
   }
 
   @Inject
   public NamespaceRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      MetadataIoCacheMissAdmission cacheMissAdmission) {
     this.pointerStore = pointerStore;
+    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -234,9 +240,11 @@ public class NamespaceRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
-  @BoundMetadataIo
   public Optional<Namespace> getByBlobUri(String blobUri) {
-    return repo.getByBlobUri(blobUri);
+    return cacheMissAdmission == null
+        ? repo.getByBlobUri(blobUri)
+        : repo.getByBlobUri(
+            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */

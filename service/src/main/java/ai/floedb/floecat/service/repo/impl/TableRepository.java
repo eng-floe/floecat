@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
+import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -41,14 +42,19 @@ import java.util.Set;
 public class TableRepository {
 
   private final GenericResourceRepository<Table, TableKey> repo;
+  private final MetadataIoCacheMissAdmission cacheMissAdmission;
 
   public TableRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, blobStore, null, null);
   }
 
   @Inject
   public TableRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      MetadataIoCacheMissAdmission cacheMissAdmission) {
+    this.cacheMissAdmission = cacheMissAdmission;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -198,9 +204,11 @@ public class TableRepository {
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
-  @BoundMetadataIo
   public Optional<Table> getByBlobUri(String blobUri) {
-    return repo.getByBlobUri(blobUri);
+    return cacheMissAdmission == null
+        ? repo.getByBlobUri(blobUri)
+        : repo.getByBlobUri(
+            blobUri, uri -> cacheMissAdmission.load(() -> repo.getByBlobUriLive(uri)));
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */

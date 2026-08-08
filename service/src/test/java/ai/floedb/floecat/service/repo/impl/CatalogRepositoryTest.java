@@ -21,13 +21,18 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -166,5 +171,42 @@ class CatalogRepositoryTest {
 
     var after = catalogRepo.getByName(account, "sales").orElseThrow();
     assertEquals("v2", after.getDescription());
+  }
+
+  @Test
+  void blobUriCacheAdmitsOnlyItsColdLoader() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    ResourceId rid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    Catalog catalog = Catalog.newBuilder().setResourceId(rid).setDisplayName("sales").build();
+    catalogRepo.create(catalog);
+    String blobUri = catalogRepo.metaFor(rid).getBlobUri();
+
+    CountingCacheMissAdmission admission = new CountingCacheMissAdmission();
+    CatalogRepository cachedRepository =
+        new CatalogRepository(
+            ptr,
+            blobs,
+            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)),
+            admission);
+
+    assertEquals(catalog, cachedRepository.getByBlobUri(blobUri).orElseThrow());
+    assertEquals(catalog, cachedRepository.getByBlobUri(blobUri).orElseThrow());
+
+    assertEquals(1, admission.loads.get(), "the cached hit must not enter metadata-I/O admission");
+  }
+
+  private static final class CountingCacheMissAdmission extends MetadataIoCacheMissAdmission {
+    private final AtomicInteger loads = new AtomicInteger();
+
+    @Override
+    public <T> T load(Supplier<T> loader) {
+      loads.incrementAndGet();
+      return loader.get();
+    }
   }
 }

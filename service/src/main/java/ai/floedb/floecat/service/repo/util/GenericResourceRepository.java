@@ -96,6 +96,17 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * not inherit a "read regardless of the pointer" primitive.
    */
   public Optional<T> getByBlobUri(String blobUri) {
+    return getByBlobUri(blobUri, this::loadAndParseBlob);
+  }
+
+  /**
+   * Cache-aware blob read whose loader is supplied by the repository boundary.
+   *
+   * <p>The four graph-hydration repositories pass an admitted loader here, so a cache hit or a
+   * single-flight follower stays outside metadata-I/O admission while the one cold backend read is
+   * bounded. Other callers retain the ordinary uncached loader through {@link #getByBlobUri}.
+   */
+  public Optional<T> getByBlobUri(String blobUri, Function<String, Optional<T>> cacheMissLoader) {
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }
@@ -103,9 +114,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
       // means absent but a present result does NOT prove the blob still exists. Callers whose
       // emptiness doubles as a liveness/integrity check must use getByBlobUriLive.
-      return blobCache.get(blobUri, this::loadAndParseBlob);
+      return blobCache.get(blobUri, cacheMissLoader);
     }
-    return loadAndParseBlob(blobUri);
+    return cacheMissLoader.apply(blobUri);
   }
 
   /**
