@@ -80,9 +80,10 @@ public class ServerSideStorageConfigResolver {
   /**
    * Iceberg REST access-delegation header, as it appears in connector properties.
    *
-   * <p>Set on a connector with {@code --props header.X-Iceberg-Access-Delegation=vended-credentials}.
-   * Read here rather than from the derived catalog properties because this runs before the connector
-   * factory builds them; {@code IcebergConnectorFactory} reads the same key downstream.
+   * <p>Set on a connector with {@code --props
+   * header.X-Iceberg-Access-Delegation=vended-credentials}. Read here rather than from the derived
+   * catalog properties because this runs before the connector factory builds them; {@code
+   * IcebergConnectorFactory} reads the same key downstream.
    */
   private static final String ICEBERG_ACCESS_DELEGATION_PROP = "header.X-Iceberg-Access-Delegation";
 

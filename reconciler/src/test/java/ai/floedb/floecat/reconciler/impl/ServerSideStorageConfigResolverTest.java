@@ -404,8 +404,7 @@ class ServerSideStorageConfigResolverTest {
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
     resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
 
-    ConnectorConfig resolved =
-        resolveWithStorageLocation(resolver, config).config();
+    ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
 
     verify(resolver.storageAuthorities, never()).vendStorageCredentials(any());
     assertEquals(config.options(), resolved.options());
