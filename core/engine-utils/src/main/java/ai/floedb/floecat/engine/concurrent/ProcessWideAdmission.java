@@ -16,22 +16,24 @@
 package ai.floedb.floecat.engine.concurrent;
 
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Owns admission permits that must survive a Quarkus runtime-classloader restart.
  *
- * <p>This is deliberately a normal runtime dependency, rather than application code. Quarkus loads
- * such dependencies from its persistent base runtime classloader, so this state continues to
- * account for a previous lifecycle's store calls while a replacement application classloader starts
- * accepting work.
+ * <p>The gate is stored in the JVM's system-properties table, not a class static. Quarkus can load
+ * any application dependency in a reloadable runtime classloader, so a static here would silently
+ * mint a second semaphore on dev-mode reload. The stored values are JDK types only, which makes
+ * them safely readable from successive application classloaders without retaining one of them.
  */
 public final class ProcessWideAdmission {
 
   /** The fixed-capacity semaphore that every overlapping lifecycle must share. */
   public record State(int capacity, Semaphore permits) {}
 
-  private static final AtomicReference<State> CURRENT = new AtomicReference<>();
+  private static final String CAPACITY_KEY =
+      "ai.floedb.floecat.metadata-io.process-wide-admission.capacity";
+  private static final String PERMITS_KEY =
+      "ai.floedb.floecat.metadata-io.process-wide-admission.permits";
 
   private ProcessWideAdmission() {}
 
@@ -47,15 +49,20 @@ public final class ProcessWideAdmission {
     if (capacity < 1) {
       throw new IllegalArgumentException("process-wide metadata-I/O capacity must be positive");
     }
-    while (true) {
-      State current = CURRENT.get();
-      if (current != null) {
-        return current;
+    synchronized (System.getProperties()) {
+      Object storedCapacity = System.getProperties().get(CAPACITY_KEY);
+      Object storedPermits = System.getProperties().get(PERMITS_KEY);
+      if (storedCapacity == null && storedPermits == null) {
+        Semaphore permits = new Semaphore(capacity);
+        System.getProperties().put(CAPACITY_KEY, capacity);
+        System.getProperties().put(PERMITS_KEY, permits);
+        return new State(capacity, permits);
       }
-      State fresh = new State(capacity, new Semaphore(capacity));
-      if (CURRENT.compareAndSet(current, fresh)) {
-        return fresh;
+      if (!(storedCapacity instanceof Integer currentCapacity)
+          || !(storedPermits instanceof Semaphore currentPermits)) {
+        throw new IllegalStateException("process-wide metadata-I/O admission state is invalid");
       }
+      return new State(currentCapacity, currentPermits);
     }
   }
 
@@ -67,11 +74,15 @@ public final class ProcessWideAdmission {
    * lifecycle.
    */
   public static void clearIfIdle(Semaphore permits) {
-    State current = CURRENT.get();
-    if (current != null
-        && current.permits() == permits
-        && current.permits().availablePermits() == current.capacity()) {
-      CURRENT.compareAndSet(current, null);
+    synchronized (System.getProperties()) {
+      Object storedCapacity = System.getProperties().get(CAPACITY_KEY);
+      Object storedPermits = System.getProperties().get(PERMITS_KEY);
+      if (storedCapacity instanceof Integer capacity
+          && storedPermits == permits
+          && permits.availablePermits() == capacity) {
+        System.getProperties().remove(CAPACITY_KEY);
+        System.getProperties().remove(PERMITS_KEY);
+      }
     }
   }
 }

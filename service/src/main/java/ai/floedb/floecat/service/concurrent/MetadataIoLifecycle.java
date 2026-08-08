@@ -29,7 +29,9 @@ import jakarta.enterprise.event.Observes;
  * runtime can be started with no CDI instance of that bean in existence — {@link
  * MetadataIoRunner#shared()} and its default constructor are supported outside CDI — so no bean
  * owns its lifetime. The runtime stays available through CDI teardown; its daemon pool releases
- * idle workers independently and JVM exit does not wait for a stuck downstream client.
+ * idle workers independently and JVM exit does not wait for a stuck downstream client. Workers
+ * discard a completed call's application classloader before they become idle, so retaining the
+ * runtime does not retain a completed pre-reload application generation.
  */
 @ApplicationScoped
 public class MetadataIoLifecycle {
@@ -55,8 +57,11 @@ public class MetadataIoLifecycle {
    *
    * <p>The runtime deliberately remains open: neither {@code ShutdownEvent} nor any CDI destruction
    * phase is after every potential consumer, including {@code @Singleton} beans. Closing there
-   * would reject their teardown metadata I/O. Daemon workers and idle-timeout pool reclamation make
-   * retaining the runtime safe across in-JVM restarts while process-wide admission remains shared.
+   * would reject their teardown metadata I/O. Daemon workers, JDK-owned pool plumbing, and per-call
+   * context-classloader cleanup make retaining the runtime safe across in-JVM restarts while
+   * process-wide admission remains shared. A downstream call that never returns necessarily retains
+   * its own generation and permit until its client timeout fires; this tier cannot reclaim an
+   * executing Java thread safely.
    */
   void clearSaturationSinkAtShutdown(@Observes ShutdownEvent event) {
     // The sink closes over CDI beans, while the static that holds it survives a dev-mode reload.

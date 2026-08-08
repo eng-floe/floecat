@@ -427,6 +427,32 @@ class MetadataIoRunnerTest {
   }
 
   @Test
+  void anIdleWorkerDoesNotRetainTheSubmittingApplicationClassloader() {
+    // The shared runtime deliberately stays open through CDI teardown so later @PreDestroy
+    // consumers can finish. Its workers therefore must not keep an old application classloader
+    // alive merely while they are idle between a dev-mode reload and their keep-alive timeout.
+    var runner = new MetadataIoRunner(1);
+    var worker = new AtomicReference<Thread>();
+    try {
+      assertEquals(
+          "ok",
+          runner.callWithoutCancellation(
+              () -> {
+                worker.set(Thread.currentThread());
+                return "ok";
+              },
+              FAILURES));
+
+      assertEquals(
+          ClassLoader.getPlatformClassLoader(),
+          worker.get().getContextClassLoader(),
+          "an idle worker must not retain the submitting application classloader");
+    } finally {
+      runner.close();
+    }
+  }
+
+  @Test
   void noRuntimeIsBuiltAfterShutdownHasBegun() {
     // A call arriving inside a controlled close used to install a replacement runtime after the
     // latch went up, leaving platform threads that no owner would reclaim.

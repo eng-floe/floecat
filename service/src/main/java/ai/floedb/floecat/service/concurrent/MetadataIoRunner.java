@@ -43,7 +43,8 @@ import org.jboss.logging.Logger;
  * a client that hangs rather than fails pins its permit for the life of the process. With one
  * process-wide semaphore, {@code capacity} such hangs wedge all metadata I/O — the gauges show
  * {@code in_use == capacity} but nothing here can name the stuck call. Verify the timeout for each
- * client as it is wired in.
+ * client as it is wired in. The hung task also necessarily retains its application generation until
+ * it returns; no Java lifecycle callback can forcibly reclaim a running thread safely.
  */
 @ApplicationScoped
 public class MetadataIoRunner {
@@ -109,7 +110,14 @@ public class MetadataIoRunner {
    * admission on that thread reuses this permit rather than acquiring another.
    */
   private <T> Supplier<T> guarded(RuntimeState granting, Supplier<T> operation) {
+    // The worker executes application code, so preserve the submitting thread's context loader for
+    // the call itself. Do not restore the worker's old loader afterwards: it may belong to the
+    // preceding Quarkus application generation and would pin that generation for the idle-worker
+    // timeout. The platform loader retains no application classes.
+    ClassLoader callerClassLoader = Thread.currentThread().getContextClassLoader();
     return () -> {
+      Thread worker = Thread.currentThread();
+      worker.setContextClassLoader(callerClassLoader);
       // The remove() below is load-bearing but has no test: nothing non-admitted runs on these
       // workers today, so a leaked marker is unobservable from here. It becomes observable the
       // moment a fan-out runs on one — isRunningAdmittedOperation would read true on an idle worker
@@ -119,6 +127,7 @@ public class MetadataIoRunner {
         return operation.get();
       } finally {
         IN_ADMITTED_OP.remove();
+        worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
       }
     };
   }

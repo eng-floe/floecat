@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.concurrent;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -54,6 +55,9 @@ class MetadataIoExecutorsTest {
       assertTrue(
           observed.get().getName().startsWith("test-md-io-"),
           "the prefix is what identifies these threads in a dump: " + observed.get().getName());
+      assertNull(
+          pool.getThreadFactory().getClass().getClassLoader(),
+          "the executor must not retain the application classloader through its thread factory");
     } finally {
       pool.shutdownNow();
     }

@@ -22,7 +22,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.jboss.logging.Logger;
 
@@ -52,13 +51,11 @@ final class MetadataIoExecutors {
       throw new IllegalArgumentException("metadata worker and queue sizes must be positive");
     }
     String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
-    AtomicInteger sequence = new AtomicInteger();
-    ThreadFactory threads =
-        runnable -> {
-          Thread thread = new Thread(runnable, prefix + sequence.incrementAndGet());
-          thread.setDaemon(true);
-          return thread;
-        };
+    // This is a JDK factory, not a lambda owned by the current application classloader. An idle
+    // worker retains its executor and its factory until the keep-alive expires; keeping only JDK
+    // objects there lets a completed pre-reload task release its old application classloader
+    // promptly. guarded() restores the worker's context classloader after every metadata call.
+    ThreadFactory threads = Thread.ofPlatform().daemon().name(prefix, 1).factory();
     ThreadPoolExecutor pool =
         new ThreadPoolExecutor(
             workers,
