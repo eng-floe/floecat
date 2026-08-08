@@ -2166,8 +2166,8 @@ rows upserted after all batches have been consumed.</p>
 <td>Per-request query-input pin-resolution fan-out. Defaults to <code>8</code>; values are clamped to <code>1</code>–<code>16</code>.</td>
 </tr>
 <tr>
-<td><code>floecat.query.metadata_io.max_concurrency</code></td>
-<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Defaults to <code>64</code>; values are clamped to <code>1</code>–<code>256</code>.</td>
+<td><code>floecat.query.metadata-io.max-concurrency</code></td>
+<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Defaults to <code>64</code>; missing, malformed, blank, or out-of-range values fail startup.</td>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
