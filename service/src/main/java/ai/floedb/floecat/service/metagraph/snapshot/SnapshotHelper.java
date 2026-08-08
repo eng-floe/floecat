@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
 import ai.floedb.floecat.service.query.PinValidator;
@@ -113,6 +114,7 @@ public class SnapshotHelper {
    * pair to keep in step. A legacy table's root is synthesized at first touch ({@code ensureRoot}),
    * so pre-existing data needs no migration step.
    */
+  @BoundMetadataIo
   public TablePin tablePinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
 

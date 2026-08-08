@@ -27,6 +27,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -40,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -396,8 +398,13 @@ public final class NameResolver {
    */
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
     return MetadataFanout.mapOrdered(
-            nsIds, MAX_PARALLEL_NS_SCANS, true, task, BoundedFanout.NEVER_CANCELLED)
+            nsIds,
+            MAX_PARALLEL_NS_SCANS,
+            true,
+            task,
+            cancelled == null ? BoundedFanout.NEVER_CANCELLED : cancelled)
         .stream()
         .flatMap(List::stream)
         .toList();

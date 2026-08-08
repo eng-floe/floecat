@@ -31,7 +31,6 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -42,6 +41,7 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
+import io.grpc.Context;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -441,7 +441,7 @@ public class QueryInputResolver {
     }
     return withResolutionInvocation(
         currentSnapshotPinCache,
-        BoundedFanout.NEVER_CANCELLED,
+        Context.current()::isCancelled,
         () ->
             resolveViaLegacyOverride(
                 queryId,
@@ -491,7 +491,7 @@ public class QueryInputResolver {
             defaultCatalogId,
             singleFlightCache,
             diagnostics,
-            BoundedFanout.NEVER_CANCELLED);
+            Context.current()::isCancelled);
     try {
       completedPins(singleFlightCache)
           .forEach(
