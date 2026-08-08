@@ -17,6 +17,7 @@ package ai.floedb.floecat.service.concurrent;
 
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -65,6 +66,9 @@ public class MetadataIoRunner {
   // Only an isolated, explicit-capacity runtime is owned (and torn down) by this facade. The
   // process-wide runtime is shared and daemon-backed, so no single bean's @PreDestroy may close it.
   private final boolean ownsRuntime;
+
+  /** The runtime whose permit the current worker owns, for same-runtime nesting only. */
+  private static final ThreadLocal<RuntimeState> HELD_ADMISSION = new ThreadLocal<>();
 
   // Notified when an admission has to wait for a permit. Telemetry installs a sink that increments
   // a counter; the default is a no-op so the acquire path works outside CDI.
@@ -211,14 +215,22 @@ public class MetadataIoRunner {
    * Run application code with the submitting generation's loader, then leave the pooled worker
    * neutral.
    */
-  private static <T> Supplier<T> withApplicationClassLoader(Supplier<T> operation) {
+  private static <T> Supplier<T> withApplicationClassLoader(
+      RuntimeState runtime, Supplier<T> operation) {
     ClassLoader callerClassLoader = Thread.currentThread().getContextClassLoader();
     return () -> {
       Thread worker = Thread.currentThread();
       worker.setContextClassLoader(callerClassLoader);
+      RuntimeState previous = HELD_ADMISSION.get();
+      HELD_ADMISSION.set(runtime);
       try {
         return operation.get();
       } finally {
+        if (previous == null) {
+          HELD_ADMISSION.remove();
+        } else {
+          HELD_ADMISSION.set(previous);
+        }
         worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
       }
     };
@@ -256,18 +268,37 @@ public class MetadataIoRunner {
     return other != null && runtime() == other.runtime();
   }
 
+  private static void rejectNestedIfUnusable(
+      RuntimeState runtime,
+      BooleanSupplier cancelled,
+      CancellableCallRunner.FailureMessages failureMessages) {
+    if (runtime.isClosed()) {
+      throw new CancellationException(CancellableCallRunner.RUNTIME_CLOSED);
+    }
+    if (Thread.currentThread().isInterrupted()) {
+      throw new CancellationException(failureMessages.interruption());
+    }
+    if (cancelled != null && cancelled.getAsBoolean()) {
+      throw new CancellationException(failureMessages.cancellation());
+    }
+  }
+
   /** Run one blocking call with cancellation polling and application-wide admission. */
   <T> T call(
       BooleanSupplier cancelled,
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
+    if (HELD_ADMISSION.get() == current) {
+      rejectNestedIfUnusable(current, cancelled, failureMessages);
+      return operation.get();
+    }
     return CancellableCallRunner.call(
         current.executor(),
         current.permits,
         cancelled,
         current::isClosed,
-        withApplicationClassLoader(operation),
+        withApplicationClassLoader(current, operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -276,11 +307,15 @@ public class MetadataIoRunner {
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
+    if (HELD_ADMISSION.get() == current) {
+      rejectNestedIfUnusable(current, null, failureMessages);
+      return operation.get();
+    }
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),
         current.permits,
         current::isClosed,
-        withApplicationClassLoader(operation),
+        withApplicationClassLoader(current, operation),
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
@@ -501,9 +536,11 @@ public class MetadataIoRunner {
       // opposite of the prompt rejection this runtime promises.
       synchronized (this) {
         closed = true;
-        closing = executor;
+        closing = executor != null ? executor : closingExecutor;
         executor = null;
-        closingExecutor = closing;
+        if (closing != null) {
+          closingExecutor = closing;
+        }
         if (closing != null) {
           // Stop acceptance as early as possible: latching `closed` alone leaves the pool RUNNING
           // until shutdownNow runs below. This narrows the submit-after-latch window but does not
@@ -514,7 +551,7 @@ public class MetadataIoRunner {
         }
       }
       if (closing == null) {
-        return true;
+        return closingExecutor == null || closingExecutor.isTerminated();
       }
       // A queued call already holds its permit but will never run its finally, so releasing the
       // discarded tasks is this runtime's job, not the pool factory's.

@@ -112,6 +112,9 @@ class MetadataIoRunnerTest {
 
       // Shut down and restart while that call is still holding its permit.
       MetadataIoRunner.closeSharedRuntimeIfStarted();
+      // A repeated close must keep the first timed-out executor as the drain owner; otherwise it
+      // would overwrite closingExecutor with null and the reopen below could mint a replacement.
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
       MetadataIoRunner.reopenSharedRuntime();
 
       MetadataIoRunner restarted = new MetadataIoRunner();
@@ -124,7 +127,7 @@ class MetadataIoRunnerTest {
       assertTrue(
           nestedFinished.await(10, TimeUnit.SECONDS),
           "a nested call from the retired runtime must not wait for its own permit");
-      assertInstanceOf(RejectedExecutionException.class, nestedFailure.get());
+      assertInstanceOf(CancellationException.class, nestedFailure.get());
       survivor.join(TimeUnit.SECONDS.toMillis(10));
       assertFalse(survivor.isAlive(), "the old executor must terminate once the blocker releases");
       assertEquals("ok", restarted.callWithoutCancellation(() -> "ok", FAILURES));
@@ -660,6 +663,26 @@ class MetadataIoRunnerTest {
       assertEquals("second", second.get(1, TimeUnit.SECONDS));
     } finally {
       releaseFirst.countDown();
+      runner.close();
+    }
+  }
+
+  @Test
+  void sameRuntimeNestedCallsReuseTheHeldPermit() {
+    var runner = new MetadataIoRunner(1);
+    try {
+      assertEquals(
+          "without-cancellation",
+          runner.callWithoutCancellation(
+              () -> runner.callWithoutCancellation(() -> "without-cancellation", FAILURES),
+              FAILURES));
+      assertEquals(
+          "cancellable",
+          runner.call(
+              () -> false,
+              () -> runner.call(() -> false, () -> "cancellable", FAILURES),
+              FAILURES));
+    } finally {
       runner.close();
     }
   }

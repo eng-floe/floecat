@@ -289,22 +289,17 @@ final class CancellableCallRunner {
       }
       running.set(true);
       runner = Thread.currentThread();
-      if (isCancelled()) {
-        releasePermit();
-        return;
-      }
-      operationStarted.set(true);
-      if (isCancelled() || closed.getAsBoolean()) {
-        setException(new CancellationException(RUNTIME_CLOSED));
-        releasePermit();
-        return;
-      }
-      if (rejectCancelledStart && cancelled.getAsBoolean()) {
-        setException(new CancellationException(messages.cancellation()));
-        releasePermit();
-        return;
-      }
       try {
+        if (isCancelled()) {
+          return;
+        }
+        operationStarted.set(true);
+        if (isCancelled() || closed.getAsBoolean()) {
+          throw new CancellationException(RUNTIME_CLOSED);
+        }
+        if (rejectCancelledStart && cancelled.getAsBoolean()) {
+          throw new CancellationException(messages.cancellation());
+        }
         set(context.supply(operation));
       } catch (Throwable failure) {
         if (failure instanceof Error) {
@@ -314,6 +309,7 @@ final class CancellableCallRunner {
         }
         setException(failure);
       } finally {
+        runner = null;
         releasePermit();
       }
     }

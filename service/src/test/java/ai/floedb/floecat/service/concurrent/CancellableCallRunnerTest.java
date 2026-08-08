@@ -105,6 +105,35 @@ class CancellableCallRunnerTest {
   }
 
   @Test
+  void aWorkerOnlyCancellationPredicateFailureReleasesAdmission() {
+    var permits = new Semaphore(1);
+    Thread caller = Thread.currentThread();
+    try (ExecutorService pool = Executors.newFixedThreadPool(1)) {
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              CancellableCallRunner.call(
+                  pool,
+                  permits,
+                  () -> {
+                    if (Thread.currentThread() != caller) {
+                      throw new IllegalStateException("worker cancellation predicate failed");
+                    }
+                    return false;
+                  },
+                  notClosed,
+                  () -> "unreachable",
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      awaitPermits(permits, 1, "a preflight failure must not retire admission");
+      assertEquals(
+          "next",
+          CancellableCallRunner.callWithoutCancellation(
+              pool, permits, notClosed, () -> "next", CALL_FAILURES, saturations::incrementAndGet));
+    }
+  }
+
+  @Test
   void anAlreadyInterruptedCallerIsRejectedBeforeTakingAPermit() {
     // acquire's interrupt gate. rejectCancelledStart reads the cancellation signal, not the
     // interrupt flag, so nothing else covers this.
