@@ -65,10 +65,8 @@ class MetadataIoRunnerTest {
   @ParameterizedTest
   @ValueSource(strings = {"", "   ", "\t"})
   void aBlankConfiguredCapacityFailsStartup(String blank) {
-    // Declared and resolved, just empty. configuredCapacity() reads it as an empty Optional and
-    // hands back the default ceiling, so without this an operator who blanked the key — a stray
-    // "FLOECAT_QUERY_METADATA_IO_MAX_CONCURRENCY=" in a deployment — boots on 64 having asked for
-    // something else, which is the outcome the whole validator exists to prevent.
+    // A stray "FLOECAT_QUERY_METADATA_IO_MAX_CONCURRENCY=" must not boot on 64 after the operator
+    // explicitly tried to configure another ceiling.
     withCapacityProperty(
         blank,
         () ->
@@ -227,9 +225,8 @@ class MetadataIoRunnerTest {
 
   @Test
   void anUnresolvableConfiguredCapacityFailsStartup() {
-    // getOptionalValue reports a declared-but-unexpanded ${VAR} as an empty Optional rather than
-    // throwing, so reading through it accepts the property and configuredCapacity() then falls back
-    // to the default: an operator who lowered the ceiling silently gets it back.
+    // ConfigValue exposes an unresolved expression as a null resolved value. Treat that as invalid
+    // rather than silently accepting a ceiling different from the one the operator supplied.
     String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
     try {
       System.setProperty(
@@ -601,8 +598,9 @@ class MetadataIoRunnerTest {
 
   @Test
   void theConcurrencyKnobIsDeclaredUnderTheExactKeyTheRunnerReads() throws Exception {
-    // The clamp test below exercises clampConfiguredCapacity but never the property NAME, so a
-    // spelling drift between the constant and application.properties would go unnoticed: SmallRye
+    // The direct-construction validation tests below never exercise the property name, so a
+    // spelling
+    // drift between the constant and application.properties would go unnoticed: SmallRye
     // treats floecat.query.metadata-io.max-concurrency and ...metadata_io.max_concurrency as
     // different keys, so an operator lowering the ceiling would silently keep the 64 default.
     // Kebab-case is the repo convention (every other declared key uses it).
@@ -632,9 +630,7 @@ class MetadataIoRunnerTest {
 
   @Test
   void aMalformedCapacityValueFailsStartupRatherThanDefaultingSilently() {
-    // configuredCapacity() falls back so a config failure cannot break every later admission; the
-    // validator is what turns a typo into a failed deployment instead of a silent 64-permit
-    // ceiling. System properties are a SmallRye config source, so this exercises the real lookup.
+    // System properties are a SmallRye config source, so this exercises the real lookup.
     System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "sixty-four");
     try {
       IllegalStateException thrown =
@@ -677,6 +673,31 @@ class MetadataIoRunnerTest {
           "the failure must quote the offending value: " + thrown.getMessage());
     } finally {
       System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", "sixty-four", "0", "257", "${FLOECAT_NO_SUCH_VAR_FOR_THIS_TEST}"})
+  void directConstructionRejectsAnInvalidConfiguredCapacity(String configured) {
+    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+    try {
+      // Make the next public/default call resolve a runtime rather than inheriting one from a
+      // preceding test. It must validate the same configuration as CDI startup.
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+      MetadataIoRunner.reopenSharedRuntime();
+      System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, configured);
+
+      assertThrows(
+          IllegalStateException.class,
+          () -> new MetadataIoRunner().callWithoutCancellation(() -> "unreachable", FAILURES));
+    } finally {
+      if (previous == null) {
+        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
+      } else {
+        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
+      }
+      MetadataIoRunner.closeSharedRuntimeIfStarted();
+      MetadataIoRunner.reopenSharedRuntime();
     }
   }
 
@@ -806,13 +827,6 @@ class MetadataIoRunnerTest {
       Thread.sleep(10);
     }
     throw new AssertionError("no caller ever parked waiting for admission");
-  }
-
-  @Test
-  void configuredProcessCapacityIsClampedToSafeBounds() {
-    assertEquals(1, MetadataIoRunner.clampConfiguredCapacity(Integer.MIN_VALUE));
-    assertEquals(64, MetadataIoRunner.clampConfiguredCapacity(64));
-    assertEquals(256, MetadataIoRunner.clampConfiguredCapacity(Integer.MAX_VALUE));
   }
 
   @Test

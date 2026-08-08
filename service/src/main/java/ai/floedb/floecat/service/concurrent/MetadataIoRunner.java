@@ -186,38 +186,47 @@ public class MetadataIoRunner {
     this(new RuntimeState(capacity), true);
   }
 
-  /** Clamp deployment input before it can determine semaphore, worker, and queue sizes. */
-  static int clampConfiguredCapacity(int configured) {
-    return Math.max(1, Math.min(MAX_CAPACITY, configured));
-  }
-
   /**
-   * Read the process-wide capacity once per application lifecycle when the shared runtime is first
-   * requested.
+   * Read and validate the process-wide capacity when the shared runtime is first requested.
+   *
+   * <p>Default construction is a supported non-CDI API, so this cannot defer validation to the CDI
+   * startup observer. Otherwise an embedding that never starts CDI would silently use the default
+   * ceiling for a malformed value that a service deployment correctly refuses.
    */
   private static int configuredCapacity() {
-    int configured;
-    try {
-      configured =
-          ConfigProvider.getConfig()
-              .getOptionalValue(MAX_CONCURRENCY_PROPERTY, Integer.class)
-              .orElse(DEFAULT_CAPACITY);
-    } catch (RuntimeException unusable) {
-      // Covers both an unparseable value and a missing config provider. Reading the ceiling is a
-      // startup concern, not a per-call one, so a config failure must not turn every later
-      // admission into a hard failure: fall back and let validateConfiguredCapacity reject a bad
-      // value at StartupEvent, where the message can name the property and the offending value.
-      LOG.warnf(
-          unusable, "cannot read %s; using %d permits", MAX_CONCURRENCY_PROPERTY, DEFAULT_CAPACITY);
+    return parseConfiguredCapacity(
+        ConfigProvider.getConfig().getConfigValue(MAX_CONCURRENCY_PROPERTY));
+  }
+
+  /** Convert the raw deployment value to a valid admission capacity. */
+  private static int parseConfiguredCapacity(ConfigValue configured) {
+    if (configured == null || configured.getRawValue() == null) {
       return DEFAULT_CAPACITY;
     }
-    int clamped = clampConfiguredCapacity(configured);
-    if (configured != clamped) {
-      LOG.warnf(
-          "%s must be between 1 and %d; using %d instead of %d",
-          MAX_CONCURRENCY_PROPERTY, MAX_CAPACITY, clamped, configured);
+    String raw = configured.getValue();
+    if (raw == null) {
+      // Declared, but the expression did not expand — an unresolvable ${ENV_VAR}, typically.
+      throw new IllegalStateException(
+          MAX_CONCURRENCY_PROPERTY
+              + " is set to \""
+              + configured.getRawValue()
+              + "\" but could not be resolved");
     }
-    return clamped;
+    if (raw.isBlank()) {
+      throw new IllegalStateException(MAX_CONCURRENCY_PROPERTY + " is set to a blank value");
+    }
+    int parsed;
+    try {
+      parsed = Integer.parseInt(raw.trim());
+    } catch (NumberFormatException badValue) {
+      throw new IllegalStateException(
+          MAX_CONCURRENCY_PROPERTY + " must be an integer; got \"" + raw + "\"", badValue);
+    }
+    if (parsed < 1 || parsed > MAX_CAPACITY) {
+      throw new IllegalStateException(
+          MAX_CONCURRENCY_PROPERTY + " must be between 1 and " + MAX_CAPACITY + "; got " + parsed);
+    }
+    return parsed;
   }
 
   /**
@@ -347,53 +356,11 @@ public class MetadataIoRunner {
   /**
    * Reject a malformed capacity value at startup.
    *
-   * <p>{@link #configuredCapacity()} falls back rather than throwing, so a config failure cannot
-   * turn every later admission into a hard failure. That fallback would otherwise let a service
-   * start on the default ceiling when the operator asked for fewer, so the value is validated here,
-   * once at startup, where the failure names the property and the offending value.
+   * <p>Default construction validates by the same path, so this observer fails a deployment before
+   * it accepts traffic and establishes the process-wide gate before any consumer starts.
    */
   public static void validateConfiguredCapacity() {
-    // No catch here: SmallRyeConfigProviderResolver builds and registers a Config on demand, so
-    // there is no "no provider" case to swallow, and swallowing every other IllegalStateException
-    // it can raise would skip validation silently.
-    ConfigValue configured = ConfigProvider.getConfig().getConfigValue(MAX_CONCURRENCY_PROPERTY);
-    if (configured == null || configured.getRawValue() == null) {
-      ProcessWideAdmission.resolve(DEFAULT_CAPACITY);
-      return;
-    }
-    String raw = configured.getValue();
-    if (raw == null) {
-      // Declared, but the expression did not expand — an unresolvable ${ENV_VAR}, typically.
-      // getOptionalValue reports this as an empty Optional rather than throwing, so reading through
-      // it here would accept the property and let configuredCapacity() fall back: an operator who
-      // lowered the ceiling would silently get the default back.
-      throw new IllegalStateException(
-          MAX_CONCURRENCY_PROPERTY
-              + " is set to \""
-              + configured.getRawValue()
-              + "\" but could not be resolved");
-    }
-    if (raw.isBlank()) {
-      // Declared and resolved, just empty. Only a missing raw value means absent; reaching here
-      // means an operator set the key, and configuredCapacity() would read it as empty and hand
-      // back the default ceiling they were trying to change.
-      throw new IllegalStateException(MAX_CONCURRENCY_PROPERTY + " is set to a blank value");
-    }
-    int parsed;
-    try {
-      parsed = Integer.parseInt(raw.trim());
-    } catch (NumberFormatException badValue) {
-      throw new IllegalStateException(
-          MAX_CONCURRENCY_PROPERTY + " must be an integer; got \"" + raw + "\"", badValue);
-    }
-    // Out of range is rejected, not clamped. Clamping is silent, and 0 or a negative value clamps
-    // to 1 — serialising every metadata round trip in the process behind a single permit, with one
-    // WARN line as the only trace.
-    if (parsed != clampConfiguredCapacity(parsed)) {
-      throw new IllegalStateException(
-          MAX_CONCURRENCY_PROPERTY + " must be between 1 and " + MAX_CAPACITY + "; got " + parsed);
-    }
-    ProcessWideAdmission.resolve(parsed);
+    ProcessWideAdmission.resolve(configuredCapacity());
   }
 
   /** True when two facades share the same process or test runtime. */
@@ -496,13 +463,12 @@ public class MetadataIoRunner {
     // already did still loses: it re-checks after winning the CAS and closes what it built.
     SHUTDOWN_LATCHED.set(true);
     // Leave something readable behind even if nothing ever resolved a runtime. The gauges are
-    // registered at startup and no caller routes store I/O through this tier yet, so a first scrape
-    // during the drain is exactly the likely case; with nothing installed it would publish NaN.
+    // registered at startup and a first scrape can arrive before any admitted call, so with nothing
+    // installed it would publish NaN during the drain.
     // Never started, so this closes without touching a pool.
     if (SHARED.get() == null) {
       // Guarded because the argument would be evaluated on every shutdown: createSharedRuntime()
-      // reads config, and configuredCapacity() WARNs if the provider is already torn down — a
-      // warning about a ceiling that was never used, on a value thrown away immediately.
+      // reads and validates config. Avoid that entirely when a runtime already exists.
       SHARED.compareAndSet(null, createSharedRuntime());
     }
     RuntimeState closing = SHARED.get();
