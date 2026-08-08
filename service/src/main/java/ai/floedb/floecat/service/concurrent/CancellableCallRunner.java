@@ -142,6 +142,8 @@ final class CancellableCallRunner {
           return task.get(pollMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ignored) {
           // Re-check cancellation and closure.
+        } catch (CancellationException taskCancelled) {
+          throw new CancellationException(RUNTIME_CLOSED);
         } catch (InterruptedException e) {
           task.cancel(true);
           Thread.currentThread().interrupt();
@@ -155,9 +157,6 @@ final class CancellableCallRunner {
       // A task cancelled by shutdown rather than this caller never reaches an operation result.
       if (!task.isDone()) {
         task.cancel(true);
-      }
-      if (cancellation.getMessage() == null) {
-        throw new CancellationException(RUNTIME_CLOSED);
       }
       throw cancellation;
     }

@@ -134,6 +134,28 @@ class CancellableCallRunnerTest {
   }
 
   @Test
+  void anOperationThrownMessageLessCancellationIsPreserved() {
+    var permits = new Semaphore(1);
+    try (ExecutorService pool = Executors.newFixedThreadPool(1)) {
+      CancellationException thrown =
+          assertThrows(
+              CancellationException.class,
+              () ->
+                  CancellableCallRunner.callWithoutCancellation(
+                      pool,
+                      permits,
+                      notClosed,
+                      () -> {
+                        throw new CancellationException();
+                      },
+                      CALL_FAILURES,
+                      saturations::incrementAndGet));
+      assertNull(thrown.getMessage());
+      awaitPermits(permits, 1, "the cancelled operation must release admission");
+    }
+  }
+
+  @Test
   void anAlreadyInterruptedCallerIsRejectedBeforeTakingAPermit() {
     // acquire's interrupt gate. rejectCancelledStart reads the cancellation signal, not the
     // interrupt flag, so nothing else covers this.

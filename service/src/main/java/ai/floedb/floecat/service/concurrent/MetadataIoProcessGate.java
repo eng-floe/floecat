@@ -16,20 +16,22 @@
 package ai.floedb.floecat.service.concurrent;
 
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The one typed owner of metadata-I/O admission state for this runtime.
  *
- * <p>Configuration enters as a number; the resulting semaphore never crosses the system-properties
- * string boundary. The first resolved capacity remains fixed while work exists, so replacing an
- * executor during a controlled lifecycle transition cannot create a second admission ceiling.
+ * <p>The holder is the bootstrap-owned system-properties table, which is shared by every Quarkus
+ * application classloader. Only JDK values cross that classloader seam: an {@link Integer} capacity
+ * and a {@link Semaphore}. The first resolved capacity remains fixed while work exists, so
+ * replacing an executor during a controlled lifecycle transition cannot create a second admission
+ * ceiling.
  */
 final class MetadataIoProcessGate {
 
   record State(int capacity, Semaphore permits) {}
 
-  private static final AtomicReference<State> CURRENT = new AtomicReference<>();
+  private static final String CAPACITY_KEY = "ai.floedb.floecat.metadata-io.process-gate.capacity";
+  private static final String PERMITS_KEY = "ai.floedb.floecat.metadata-io.process-gate.permits";
 
   private MetadataIoProcessGate() {}
 
@@ -37,24 +39,33 @@ final class MetadataIoProcessGate {
     if (capacity < 1) {
       throw new IllegalArgumentException("process-wide metadata-I/O capacity must be positive");
     }
-    while (true) {
-      State current = CURRENT.get();
-      if (current != null) {
-        return current;
+    synchronized (System.getProperties()) {
+      Object currentCapacity = System.getProperties().get(CAPACITY_KEY);
+      Object currentPermits = System.getProperties().get(PERMITS_KEY);
+      if (currentCapacity == null && currentPermits == null) {
+        Semaphore permits = new Semaphore(capacity);
+        System.getProperties().put(CAPACITY_KEY, capacity);
+        System.getProperties().put(PERMITS_KEY, permits);
+        return new State(capacity, permits);
       }
-      State fresh = new State(capacity, new Semaphore(capacity));
-      if (CURRENT.compareAndSet(null, fresh)) {
-        return fresh;
+      if (!(currentCapacity instanceof Integer storedCapacity)
+          || !(currentPermits instanceof Semaphore storedPermits)) {
+        throw new IllegalStateException("metadata-I/O process gate state is invalid");
       }
+      return new State(storedCapacity, storedPermits);
     }
   }
 
   static void clearIfIdle(Semaphore permits) {
-    State current = CURRENT.get();
-    if (current != null
-        && current.permits() == permits
-        && permits.availablePermits() == current.capacity()) {
-      CURRENT.compareAndSet(current, null);
+    synchronized (System.getProperties()) {
+      Object currentCapacity = System.getProperties().get(CAPACITY_KEY);
+      Object currentPermits = System.getProperties().get(PERMITS_KEY);
+      if (currentCapacity instanceof Integer capacity
+          && currentPermits == permits
+          && permits.availablePermits() == capacity) {
+        System.getProperties().remove(CAPACITY_KEY);
+        System.getProperties().remove(PERMITS_KEY);
+      }
     }
   }
 }
