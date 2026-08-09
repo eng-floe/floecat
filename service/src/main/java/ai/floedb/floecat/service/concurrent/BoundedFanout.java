@@ -44,10 +44,8 @@ import org.jboss.logging.Logger;
  * available. Once that prefix exposes a failure, active siblings are cancelled or abandoned and the
  * original failure returns without waiting for unrelated work.
  *
- * <p>This is orchestration only — it applies no I/O admission of its own. Its fan-out methods are
- * package-private on purpose: an I/O-admission tier is meant to wrap them, so widening them to
- * {@code public} would let a caller fan out per-unit store calls that bypass admission entirely.
- * Keep them package-private.
+ * <p>This is orchestration only. Resource-specific admission belongs at the leaf operation each
+ * task invokes; the scheduler neither acquires nor inspects those resources.
  *
  * <p>{@code permits} bounds concurrency, not buffered results. The window refills past a
  * still-running input-order head, so a completed later result is retained until the head lets the
@@ -192,9 +190,6 @@ final class BoundedFanout {
       IntConsumer completionBarrier) {
     // Before capture() or any allocation: an invalid bound should cost nothing and name itself.
     validatePermits(permits);
-    // Check even an empty batch so invalid wiring fails deterministically rather than only when
-    // production data happens to contain work.
-    MetadataIoRunner.rejectFanOutFromAdmittedOperation("BoundedFanout.forEachOrdered");
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer, cancelled);
     completeAll(

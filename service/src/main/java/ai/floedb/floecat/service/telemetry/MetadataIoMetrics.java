@@ -69,11 +69,7 @@ public class MetadataIoMetrics {
         ServiceMetrics.MetadataIo.WAITERS_DESC,
         component,
         operation);
-    // A counter, incremented where the wait happens, so rate() and reset detection behave. The
-    // sink runs on the waiting thread and only forwards to Observability.
-    MetadataIoRunner.setSaturationSink(
-        () ->
-            observability.counter(
-                ServiceMetrics.MetadataIo.ADMISSION_SATURATED_WAITS, 1, component, operation));
+    // Saturated arrivals are counted directly by MetadataIoRunner through the same Observability
+    // instance; this bean owns only gauges sampled from the process gate.
   }
 }

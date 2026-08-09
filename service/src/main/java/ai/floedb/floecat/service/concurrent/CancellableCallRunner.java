@@ -16,367 +16,176 @@
 package ai.floedb.floecat.service.concurrent;
 
 import ai.floedb.floecat.service.context.PropagatedContext;
-import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
-/**
- * Runs one blocking call behind process-wide admission while preserving prompt caller cancellation.
- *
- * <p>{@link AdmittedTask} is the sole owner of a call's result, cancellation, queue-discard
- * cleanup, and permit release. A caller can stop waiting immediately, but the task retains its
- * permit until a downstream operation that ignores interruption has genuinely returned.
- */
+/** Runs one blocking call on a virtual thread while holding process-wide admission. */
 final class CancellableCallRunner {
 
   private static final Logger LOG = Logger.getLogger(CancellableCallRunner.class);
-  private static final int MAX_CAUSE_DEPTH = 32;
+  private static final long CANCELLATION_POLL_MILLIS = 25;
   private static final long SLOW_ADMISSION_WARN_NANOS = TimeUnit.SECONDS.toNanos(30);
-  private static final long CLOSURE_POLL_MILLIS = 250;
-  private static final long ADMITTED_CANCELLATION_POLL_MILLIS = 25;
-  private static final BooleanSupplier NEVER_CANCELLED = () -> false;
-  private static final Executor NESTED_EXECUTOR =
-      command -> Thread.ofVirtual().name("floecat-metadata-io-nested").start(command);
-  private static final ThreadLocal<AdmissionLease> CURRENT_ADMISSION = new ThreadLocal<>();
-
-  static final String RUNTIME_CLOSED = "metadata I/O executor closed while the call was in flight";
+  private static final ThreadFactory THREADS =
+      Thread.ofVirtual()
+          .inheritInheritableThreadLocals(false)
+          .name("floecat-metadata-io-", 1)
+          .factory();
 
   private CancellableCallRunner() {}
 
-  /** Run a cancellable blocking operation under newly acquired admission. */
+  /** Run a cancellable operation after acquiring one permit. */
   static <T> T call(
-      Executor executor,
       Semaphore permits,
       BooleanSupplier cancelled,
-      BooleanSupplier closed,
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation) {
-    return call(
-        executor,
-        permits,
-        cancelled,
-        closed,
-        operation,
-        messages,
-        onSaturation,
-        PropagatedContext::capture);
+    Objects.requireNonNull(cancelled, "cancelled");
+    return call(permits, cancelled, operation, messages, onSaturation, PropagatedContext::capture);
   }
 
-  /**
-   * Run a cancellable blocking operation under newly acquired admission using an injectable
-   * context-capture seam for lifecycle tests.
-   */
+  /** Cancellable call with injectable context capture for focused tests. */
   static <T> T call(
-      Executor executor,
       Semaphore permits,
       BooleanSupplier cancelled,
-      BooleanSupplier closed,
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
-    return callWithAdmission(
-        executor,
-        permits,
-        closed,
-        operation,
-        messages,
-        onSaturation,
-        captureContext,
-        new CallControl(
-            cancelled,
-            true,
-            () ->
-                cancelled.getAsBoolean()
-                    ? messages.cancellation()
-                    : closed.getAsBoolean() ? RUNTIME_CLOSED : null,
-            ADMITTED_CANCELLATION_POLL_MILLIS));
+    acquire(permits, cancelled, messages, onSaturation, true);
+    AdmittedTask<T> task =
+        startTask(
+            permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
+    return awaitCancellable(task, cancelled, messages);
   }
 
-  /** Run a blocking operation under newly acquired admission, observing only runtime closure. */
+  /**
+   * Run an operation without cooperative cancellation; caller interruption still aborts waiting.
+   */
   static <T> T callWithoutCancellation(
-      Executor executor,
-      Semaphore permits,
-      BooleanSupplier closed,
-      Supplier<T> operation,
-      FailureMessages messages,
-      Runnable onSaturation) {
+      Semaphore permits, Supplier<T> operation, FailureMessages messages, Runnable onSaturation) {
     return callWithoutCancellation(
-        executor, permits, closed, operation, messages, onSaturation, PropagatedContext::capture);
+        permits, operation, messages, onSaturation, PropagatedContext::capture);
   }
 
-  /**
-   * Run a closure-aware blocking operation under newly acquired admission using an injectable
-   * context-capture seam for lifecycle tests.
-   */
+  /** Uncancellable call with injectable context capture for focused tests. */
   static <T> T callWithoutCancellation(
-      Executor executor,
       Semaphore permits,
-      BooleanSupplier closed,
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
-    return callWithAdmission(
-        executor,
-        permits,
-        closed,
-        operation,
-        messages,
-        onSaturation,
-        captureContext,
-        new CallControl(
-            NEVER_CANCELLED,
-            false,
-            () -> closed.getAsBoolean() ? RUNTIME_CLOSED : null,
-            CLOSURE_POLL_MILLIS));
+    acquire(permits, () -> false, messages, onSaturation, false);
+    AdmittedTask<T> task =
+        startTask(
+            permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
+    return awaitUncancellable(task, messages);
   }
 
-  /** Acquire, dispatch, and await one call according to its cancellation policy. */
-  private static <T> T callWithAdmission(
-      Executor executor,
+  /** Construct and start the sole owner of execution, outcome, interruption, and permit release. */
+  private static <T> AdmittedTask<T> startTask(
       Semaphore permits,
-      BooleanSupplier closed,
       Supplier<T> operation,
-      FailureMessages messages,
-      Runnable onSaturation,
       Supplier<PropagatedContext> captureContext,
-      CallControl control) {
-    PropagatedContext context = captureContext.get();
-    AdmissionLease admission =
-        acquire(permits, control.cancelled(), closed, messages, onSaturation, control.pollMillis());
-    AdmittedTask<T> task =
-        newTask(
-            admission,
-            operation,
-            control.cancelled(),
-            closed,
-            control.rejectCancelledStart(),
-            messages,
-            context,
-            executor);
-    submit(executor, task);
-    return awaitOutcome(task, messages, control.abortReason(), control.pollMillis());
-  }
-
-  /**
-   * Run nested work under a permit that its caller already owns.
-   *
-   * <p>The nested task gets another reference to the same admission lease rather than acquiring a
-   * second permit. Its caller can therefore abandon the wait promptly while the lease remains held
-   * until the downstream operation has actually stopped.
-   */
-  static <T> T callAlreadyAdmitted(
-      AdmissionLease parentAdmission,
-      BooleanSupplier cancelled,
-      BooleanSupplier closed,
-      Supplier<T> operation,
-      FailureMessages messages) {
-    PropagatedContext context = PropagatedContext.capture();
-    AdmissionLease childAdmission = parentAdmission.fork();
-    AdmittedTask<T> task =
-        newTask(
-            childAdmission, operation, cancelled, closed, true, messages, context, NESTED_EXECUTOR);
-    submit(NESTED_EXECUTOR, task);
+      ClassLoader applicationClassLoader) {
+    AdmittedTask<T> task = null;
     try {
-      return awaitOutcome(
-          task,
-          messages,
-          () ->
-              cancelled.getAsBoolean()
-                  ? messages.cancellation()
-                  : closed.getAsBoolean() ? RUNTIME_CLOSED : null,
-          ADMITTED_CANCELLATION_POLL_MILLIS);
-    } catch (CancellationException cancellation) {
-      if (task.isCancelled() && !task.isAdmissionReleased()) {
-        parentAdmission.invalidateLineage();
-      }
-      throw cancellation;
-    }
-  }
-
-  /** Return the lease installed for the operation executing on this worker, if any. */
-  static AdmissionLease currentAdmission() {
-    return CURRENT_ADMISSION.get();
-  }
-
-  /** Cancellation and polling policy shared by admission, task start, and caller waiting. */
-  private record CallControl(
-      BooleanSupplier cancelled,
-      boolean rejectCancelledStart,
-      Supplier<String> abortReason,
-      long pollMillis) {}
-
-  /** Caller-facing cancellation outcomes for a dispatched blocking call. */
-  record FailureMessages(String label, String cancellation, String interruption) {
-    public FailureMessages {
-      java.util.Objects.requireNonNull(label, "label");
-      java.util.Objects.requireNonNull(cancellation, "cancellation");
-      java.util.Objects.requireNonNull(interruption, "interruption");
-    }
-
-    FailureMessages(String cancellation, String interruption) {
-      this("metadata-io", cancellation, interruption);
-    }
-  }
-
-  /** Return permits owned by calls removed from a shutdown executor's queue. */
-  static void cancelDiscardedTasks(List<Runnable> discardedTasks) {
-    for (Runnable task : discardedTasks) {
-      if (task instanceof AdmittedTask<?> admitted) {
-        admitted.cancel(false);
-      }
-    }
-  }
-
-  /** Submit a task while preserving its lease if the executor throws after handoff. */
-  private static <T> void submit(Executor executor, AdmittedTask<T> task) {
-    try {
-      executor.execute(task);
+      task =
+          new AdmittedTask<>(
+              permits,
+              Objects.requireNonNull(captureContext, "captureContext").get(),
+              Objects.requireNonNull(operation, "operation"),
+              applicationClassLoader);
+      Thread worker = THREADS.newThread(task);
+      worker.start();
+      return task;
     } catch (RuntimeException | Error failure) {
-      // An executor is allowed to throw after handing the task to a worker. Cancellation prevents
-      // a not-yet-started task from running; a task that already passed its cancellation gate
-      // retains its admission until its own finally releases it.
-      task.cancel(false);
+      if (task == null) {
+        permits.release();
+      } else {
+        task.releaseBeforeStart();
+      }
       throw failure;
     }
   }
 
-  /** Construct the sole task owner, returning admission if construction itself fails. */
-  private static <T> AdmittedTask<T> newTask(
-      AdmissionLease admission,
-      Supplier<T> operation,
-      BooleanSupplier cancelled,
-      BooleanSupplier closed,
-      boolean rejectCancelledStart,
-      FailureMessages messages,
-      PropagatedContext context,
-      Executor executor) {
-    try {
-      return new AdmittedTask<>(
-          admission,
-          operation,
-          cancelled,
-          closed,
-          rejectCancelledStart,
-          messages,
-          context,
-          executor);
-    } catch (RuntimeException | Error failure) {
-      admission.release();
-      throw failure;
-    }
-  }
-
-  /** Await task completion while allowing cancellation or closure to abandon the caller wait. */
-  private static <T> T awaitOutcome(
-      AdmittedTask<T> task,
-      FailureMessages messages,
-      Supplier<String> abortReason,
-      long pollMillis) {
-    try {
-      while (true) {
-        if (task.isDone()) {
-          return drain(task, messages);
-        }
-        String reason = abortReason.get();
-        if (reason != null) {
-          // FutureTask is the arbitration point: a completed value or failure wins when cancel
-          // loses the race, while a successful cancel makes the caller return immediately.
-          if (task.cancel(true)) {
-            throw new CancellationException(reason);
-          }
-          return drain(task, messages);
-        }
-        try {
-          return task.get(pollMillis, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException ignored) {
-          // Re-check cancellation and closure.
-        } catch (CancellationException taskCancelled) {
-          throw new CancellationException(RUNTIME_CLOSED);
-        } catch (InterruptedException e) {
-          task.cancel(true);
-          Thread.currentThread().interrupt();
-          throw new CancellationException(messages.interruption());
-        } catch (ExecutionException e) {
-          throw Futures.propagate(
-              e.getCause(), "unexpected checked exception from cancellable call");
-        }
+  /** Wait until completion or cooperative cancellation wins FutureTask's terminal transition. */
+  private static <T> T awaitCancellable(
+      AdmittedTask<T> task, BooleanSupplier cancelled, FailureMessages messages) {
+    while (true) {
+      if (cancelled.getAsBoolean() && task.cancel(true)) {
+        throw new CancellationException(messages.cancellation());
       }
-    } catch (CancellationException cancellation) {
-      // A task cancelled by shutdown rather than this caller never reaches an operation result.
-      if (!task.isDone()) {
+      try {
+        return task.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+      } catch (TimeoutException ignored) {
+        // Re-read the live cancellation signal.
+      } catch (InterruptedException interrupted) {
         task.cancel(true);
+        Thread.currentThread().interrupt();
+        throw new CancellationException(messages.interruption());
+      } catch (CancellationException cancelledTask) {
+        throw new CancellationException(messages.cancellation());
+      } catch (ExecutionException failed) {
+        throw Futures.propagate(
+            failed.getCause(), "unexpected checked exception from metadata I/O");
       }
-      throw cancellation;
     }
   }
 
-  /** Read a terminal task outcome and translate only interruption and checked-wrapper failures. */
-  private static <T> T drain(AdmittedTask<T> task, FailureMessages messages) {
+  /** Await completion without polling; interruption abandons the caller but not the permit. */
+  private static <T> T awaitUncancellable(AdmittedTask<T> task, FailureMessages messages) {
     try {
       return task.get();
-    } catch (InterruptedException e) {
+    } catch (InterruptedException interrupted) {
       task.cancel(true);
       Thread.currentThread().interrupt();
       throw new CancellationException(messages.interruption());
-    } catch (CancellationException cancelled) {
-      throw new CancellationException(RUNTIME_CLOSED);
-    } catch (ExecutionException e) {
-      throw Futures.propagate(e.getCause(), "unexpected checked exception from cancellable call");
+    } catch (CancellationException cancelledTask) {
+      throw new CancellationException(messages.cancellation());
+    } catch (ExecutionException failed) {
+      throw Futures.propagate(failed.getCause(), "unexpected checked exception from metadata I/O");
     }
   }
 
-  /** Acquire admission in cancellable polling intervals without losing interrupt semantics. */
-  private static AdmissionLease acquire(
+  /** Acquire admission, reporting saturation once and preserving interruption semantics. */
+  private static void acquire(
       Semaphore permits,
       BooleanSupplier cancelled,
-      BooleanSupplier closed,
       FailureMessages messages,
       Runnable onSaturation,
-      long pollMillis) {
+      boolean pollCancellation) {
+    Objects.requireNonNull(permits, "permits");
+    Objects.requireNonNull(messages, "messages");
+    Objects.requireNonNull(onSaturation, "onSaturation");
     try {
       if (Thread.currentThread().isInterrupted()) {
         throw new InterruptedException();
       }
-      boolean sawCeilingFull;
-      if (permits.getQueueLength() == 0) {
-        if (permits.tryAcquire()) {
-          return takeAcquiredPermit(permits, closed);
-        }
-        sawCeilingFull = true;
-      } else {
-        sawCeilingFull = permits.availablePermits() == 0;
+      if (pollCancellation && cancelled.getAsBoolean()) {
+        throw new CancellationException(messages.cancellation());
       }
-      if (sawCeilingFull) {
-        try {
-          onSaturation.run();
-        } catch (RuntimeException sinkFailure) {
-          LOG.warnf(sinkFailure, "metadata I/O saturation sink failed");
-        }
+      if (permits.tryAcquire()) {
+        return;
       }
-      long waitingSinceNanos = System.nanoTime();
-      boolean reportedSlowWait = false;
+      recordSaturation(onSaturation);
+      long waitingSince = System.nanoTime();
+      boolean warned = false;
       while (true) {
-        if (cancelled.getAsBoolean()) {
+        if (pollCancellation && cancelled.getAsBoolean()) {
           throw new CancellationException(messages.cancellation());
         }
-        if (!reportedSlowWait
-            && System.nanoTime() - waitingSinceNanos > SLOW_ADMISSION_WARN_NANOS) {
-          reportedSlowWait = true;
+        if (!warned && System.nanoTime() - waitingSince >= SLOW_ADMISSION_WARN_NANOS) {
+          warned = true;
           LOG.warnf(
               "%s has waited over %ds for metadata I/O admission (%d free, %d waiting)",
               messages.label(),
@@ -384,255 +193,84 @@ final class CancellableCallRunner {
               permits.availablePermits(),
               permits.getQueueLength());
         }
-        if (closed.getAsBoolean()) {
-          throw new RejectedExecutionException("metadata I/O executor is closed");
-        }
-        if (permits.tryAcquire(pollMillis, TimeUnit.MILLISECONDS)) {
-          return takeAcquiredPermit(permits, closed);
+        if (pollCancellation) {
+          if (permits.tryAcquire(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+            return;
+          }
+        } else {
+          permits.acquire();
+          return;
         }
       }
-    } catch (InterruptedException e) {
+    } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
       throw new CancellationException(messages.interruption());
     }
   }
 
-  /** Turn a raw semaphore permit into a lease before any fallible post-acquisition work. */
-  private static AdmissionLease takeAcquiredPermit(Semaphore permits, BooleanSupplier closed) {
-    AdmissionLease admission = null;
+  private static void recordSaturation(Runnable onSaturation) {
     try {
-      admission = new Admission(permits).root();
-      if (closed.getAsBoolean()) {
-        throw new RejectedExecutionException("metadata I/O executor is closed");
-      }
-      return admission;
-    } catch (RuntimeException | Error failure) {
-      if (admission == null) {
-        permits.release();
-      } else {
-        admission.release();
-      }
-      throw failure;
+      onSaturation.run();
+    } catch (RuntimeException telemetryFailure) {
+      LOG.warnf(telemetryFailure, "metadata I/O saturation telemetry failed");
     }
   }
 
-  /** A permit that remains held until every nested operation using it has genuinely returned. */
-  static final class Admission {
-    private final Semaphore permits;
-    private final AtomicInteger references = new AtomicInteger(1);
+  /** Caller-facing failure text for one admitted operation family. */
+  record FailureMessages(String label, String cancellation, String interruption) {
+    FailureMessages {
+      Objects.requireNonNull(label, "label");
+      Objects.requireNonNull(cancellation, "cancellation");
+      Objects.requireNonNull(interruption, "interruption");
+    }
 
-    Admission(Semaphore permits) {
+    FailureMessages(String cancellation, String interruption) {
+      this("metadata-io", cancellation, interruption);
+    }
+  }
+
+  /** FutureTask remains terminal owner while this wrapper retains admission until run returns. */
+  private static final class AdmittedTask<T> extends FutureTask<T> {
+    private final Semaphore permits;
+    private boolean released;
+
+    AdmittedTask(
+        Semaphore permits,
+        PropagatedContext context,
+        Supplier<T> operation,
+        ClassLoader applicationClassLoader) {
+      super(
+          () -> {
+            Thread worker = Thread.currentThread();
+            worker.setContextClassLoader(applicationClassLoader);
+            try {
+              return context.supply(operation);
+            } finally {
+              worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+            }
+          });
       this.permits = permits;
     }
 
-    /** Add one live branch reference, rejecting resurrection after terminal release. */
-    private void retain() {
-      int current;
-      do {
-        current = references.get();
-        if (current == 0) {
-          throw new IllegalStateException("metadata I/O admission was already released");
-        }
-      } while (!references.compareAndSet(current, current + 1));
+    @Override
+    public void run() {
+      try {
+        super.run();
+      } finally {
+        release();
+      }
     }
 
-    /** Return the semaphore permit when the final branch reference exits. */
-    private void release() {
-      if (references.decrementAndGet() == 0) {
+    synchronized void releaseBeforeStart() {
+      cancel(false);
+      release();
+    }
+
+    private synchronized void release() {
+      if (!released) {
+        released = true;
         permits.release();
       }
     }
-
-    /** Create the initial lease that owns this admission's first reference. */
-    AdmissionLease root() {
-      return new AdmissionLease(this, null);
-    }
-  }
-
-  /** One logical execution branch sharing an admission with its nested descendants. */
-  static final class AdmissionLease {
-    private final Admission admission;
-    private final AdmissionLease parent;
-    private final AtomicBoolean reusable = new AtomicBoolean(true);
-    private final AtomicBoolean released = new AtomicBoolean();
-
-    private AdmissionLease(Admission admission, AdmissionLease parent) {
-      this.admission = admission;
-      this.parent = parent;
-    }
-
-    /** Create a child branch that keeps the same admission alive independently. */
-    AdmissionLease fork() {
-      AdmissionLease child = new AdmissionLease(admission, this);
-      admission.retain();
-      return child;
-    }
-
-    /** Whether this branch may still lend its admission to additional nested work. */
-    boolean isReusable() {
-      return reusable.get();
-    }
-
-    /** Prevent this branch and its ancestors from admitting work beside an abandoned descendant. */
-    void invalidateLineage() {
-      for (AdmissionLease current = this; current != null; current = current.parent) {
-        current.reusable.set(false);
-      }
-    }
-
-    /** Idempotently release this branch's reference to the shared admission. */
-    void release() {
-      if (released.compareAndSet(false, true)) {
-        admission.release();
-      }
-    }
-  }
-
-  /** The one terminal-state owner for a dispatched admitted call. */
-  private static final class AdmittedTask<T> extends FutureTask<T> {
-    private final AdmissionLease admission;
-    private final Supplier<T> operation;
-    private final BooleanSupplier cancelled;
-    private final BooleanSupplier closed;
-    private final boolean rejectCancelledStart;
-    private final FailureMessages messages;
-    private final PropagatedContext context;
-    private final ThreadPoolExecutor owningPool;
-    private final Thread submissionThread;
-    private final AtomicBoolean running = new AtomicBoolean();
-    private final AtomicBoolean permitReleased = new AtomicBoolean();
-    private final Object runnerHandoff = new Object();
-    private Thread runner;
-
-    /** Capture all state needed for one task to own execution, outcome, and admission cleanup. */
-    AdmittedTask(
-        AdmissionLease admission,
-        Supplier<T> operation,
-        BooleanSupplier cancelled,
-        BooleanSupplier closed,
-        boolean rejectCancelledStart,
-        FailureMessages messages,
-        PropagatedContext context,
-        Executor executor) {
-      super(() -> null);
-      this.admission = admission;
-      this.operation = operation;
-      this.cancelled = cancelled;
-      this.closed = closed;
-      this.rejectCancelledStart = rejectCancelledStart;
-      this.messages = messages;
-      this.context = context;
-      this.owningPool = executor instanceof ThreadPoolExecutor pool ? pool : null;
-      this.submissionThread = Thread.currentThread();
-    }
-
-    /** Execute the operation once, publish its outcome, and release all worker-owned state. */
-    @Override
-    public void run() {
-      Thread worker = Thread.currentThread();
-      if (worker == submissionThread) {
-        setException(
-            new IllegalArgumentException("blocking call executor must dispatch asynchronously"));
-        releasePermit();
-        return;
-      }
-      try {
-        running.set(true);
-        synchronized (runnerHandoff) {
-          runner = worker;
-        }
-        if (isCancelled()) {
-          return;
-        }
-        if (isCancelled() || closed.getAsBoolean()) {
-          throw new CancellationException(RUNTIME_CLOSED);
-        }
-        if (rejectCancelledStart && cancelled.getAsBoolean()) {
-          throw new CancellationException(messages.cancellation());
-        }
-        AdmissionLease previousAdmission = CURRENT_ADMISSION.get();
-        CURRENT_ADMISSION.set(admission);
-        try {
-          set(context.supply(operation));
-        } finally {
-          if (previousAdmission == null) {
-            CURRENT_ADMISSION.remove();
-          } else {
-            CURRENT_ADMISSION.set(previousAdmission);
-          }
-        }
-      } catch (Throwable failure) {
-        if (failure instanceof Error) {
-          LOG.errorf(failure, "JVM-level failure in a metadata I/O call");
-        } else if (isCancelled() && !causedByInterruption(failure)) {
-          LOG.warnf(failure, "metadata I/O call failed after its caller abandoned it");
-        }
-        setException(failure);
-      } finally {
-        // Cancellation holds this lock through interrupt delivery. Clearing under the same lock
-        // prevents a stale interrupt from following this worker into its next pool task.
-        synchronized (runnerHandoff) {
-          runner = null;
-        }
-        try {
-          worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
-        } finally {
-          releasePermit();
-        }
-      }
-    }
-
-    /**
-     * Arbitrate caller cancellation through {@link FutureTask} and interrupt a running operation
-     * only when requested.
-     */
-    @Override
-    public boolean cancel(boolean mayInterruptIfRunning) {
-      boolean cancelled = super.cancel(false);
-      if (cancelled && mayInterruptIfRunning) {
-        synchronized (runnerHandoff) {
-          if (runner != null) {
-            runner.interrupt();
-          }
-        }
-      }
-      return cancelled;
-    }
-
-    /** Remove a cancelled queued task and return the permit that its run method cannot release. */
-    @Override
-    protected void done() {
-      if (isCancelled() && !running.get()) {
-        if (owningPool != null) {
-          owningPool.remove(this);
-        }
-        releasePermit();
-      }
-    }
-
-    /** Idempotently release this task's branch lease. */
-    void releasePermit() {
-      if (permitReleased.compareAndSet(false, true)) {
-        admission.release();
-      }
-    }
-
-    /** Whether this task has already returned its branch lease. */
-    boolean isAdmissionReleased() {
-      return permitReleased.get();
-    }
-  }
-
-  /** Detect interruption-shaped failures without traversing an unbounded or cyclic cause chain. */
-  private static boolean causedByInterruption(Throwable failure) {
-    int depth = 0;
-    for (Throwable current = failure;
-        current != null && current != current.getCause() && depth++ < MAX_CAUSE_DEPTH;
-        current = current.getCause()) {
-      if (current instanceof InterruptedException || current instanceof CancellationException) {
-        return true;
-      }
-    }
-    return false;
   }
 }

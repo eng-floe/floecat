@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.engine.concurrent;
+package ai.floedb.floecat.runtime.concurrent;
 
-/** A reloadable caller used to verify that the admission holder remains parent-loaded. */
-public final class ReloadedProcessWideAdmissionCaller {
-
-  private ReloadedProcessWideAdmissionCaller() {}
+/**
+ * Loaded as a simulated application generation while the admission holder remains parent-loaded.
+ */
+public final class ReloadedAdmissionCaller {
+  private ReloadedAdmissionCaller() {}
 
   public static ProcessWideAdmission.State resolve(int capacity) {
     return ProcessWideAdmission.resolve(capacity);

@@ -140,7 +140,7 @@
     </dependency>
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-engine-utils</artifactId>
+      <artifactId>floecat-metadata-admission-runtime</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>

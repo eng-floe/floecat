@@ -46,35 +46,6 @@ import org.junit.jupiter.api.Test;
 class BoundedFanoutTest {
 
   @Test
-  void fanOutIsRejectedInsideAnAdmittedMetadataOperation() {
-    var runner = new MetadataIoRunner(1);
-    ExecutorService fanoutExecutor = Executors.newSingleThreadExecutor();
-    var failures = new CancellableCallRunner.FailureMessages("cancelled", "interrupted");
-    try {
-      assertTimeoutPreemptively(
-          Duration.ofSeconds(1),
-          () ->
-              assertThatThrownBy(
-                      () ->
-                          runner.callWithoutCancellation(
-                              () ->
-                                  BoundedFanout.mapOrdered(
-                                      List.of(1),
-                                      1,
-                                      fanoutExecutor,
-                                      ignored ->
-                                          runner.callWithoutCancellation(() -> "unit", failures),
-                                      BoundedFanout.NEVER_CANCELLED),
-                              failures))
-                  .isInstanceOf(IllegalStateException.class)
-                  .hasMessageContaining("Fan out first, then admit each unit"));
-    } finally {
-      fanoutExecutor.shutdownNow();
-      runner.close();
-    }
-  }
-
-  @Test
   void resultsAreReturnedInInputOrder() {
     List<Integer> inputs = IntStream.range(0, 50).boxed().toList();
     // Reverse the completion order (later items sleep less) to prove ordering is by input, not
