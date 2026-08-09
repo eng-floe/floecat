@@ -55,6 +55,7 @@ final class CancellableCallRunner {
 
   private CancellableCallRunner() {}
 
+  /** Run a cancellable blocking operation under newly acquired admission. */
   static <T> T call(
       Executor executor,
       Semaphore permits,
@@ -74,6 +75,10 @@ final class CancellableCallRunner {
         PropagatedContext::capture);
   }
 
+  /**
+   * Run a cancellable blocking operation under newly acquired admission using an injectable
+   * context-capture seam for lifecycle tests.
+   */
   static <T> T call(
       Executor executor,
       Semaphore permits,
@@ -83,23 +88,25 @@ final class CancellableCallRunner {
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
-    PropagatedContext context = captureContext.get();
-    AdmissionLease admission =
-        acquire(
-            permits, cancelled, closed, messages, onSaturation, ADMITTED_CANCELLATION_POLL_MILLIS);
-    AdmittedTask<T> task =
-        newTask(admission, operation, cancelled, closed, true, messages, context, executor);
-    submit(executor, task);
-    return awaitOutcome(
-        task,
+    return callWithAdmission(
+        executor,
+        permits,
+        closed,
+        operation,
         messages,
-        () ->
-            cancelled.getAsBoolean()
-                ? messages.cancellation()
-                : closed.getAsBoolean() ? RUNTIME_CLOSED : null,
-        ADMITTED_CANCELLATION_POLL_MILLIS);
+        onSaturation,
+        captureContext,
+        new CallControl(
+            cancelled,
+            true,
+            () ->
+                cancelled.getAsBoolean()
+                    ? messages.cancellation()
+                    : closed.getAsBoolean() ? RUNTIME_CLOSED : null,
+            ADMITTED_CANCELLATION_POLL_MILLIS));
   }
 
+  /** Run a blocking operation under newly acquired admission, observing only runtime closure. */
   static <T> T callWithoutCancellation(
       Executor executor,
       Semaphore permits,
@@ -111,6 +118,10 @@ final class CancellableCallRunner {
         executor, permits, closed, operation, messages, onSaturation, PropagatedContext::capture);
   }
 
+  /**
+   * Run a closure-aware blocking operation under newly acquired admission using an injectable
+   * context-capture seam for lifecycle tests.
+   */
   static <T> T callWithoutCancellation(
       Executor executor,
       Semaphore permits,
@@ -119,14 +130,46 @@ final class CancellableCallRunner {
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
+    return callWithAdmission(
+        executor,
+        permits,
+        closed,
+        operation,
+        messages,
+        onSaturation,
+        captureContext,
+        new CallControl(
+            NEVER_CANCELLED,
+            false,
+            () -> closed.getAsBoolean() ? RUNTIME_CLOSED : null,
+            CLOSURE_POLL_MILLIS));
+  }
+
+  /** Acquire, dispatch, and await one call according to its cancellation policy. */
+  private static <T> T callWithAdmission(
+      Executor executor,
+      Semaphore permits,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation,
+      Supplier<PropagatedContext> captureContext,
+      CallControl control) {
     PropagatedContext context = captureContext.get();
     AdmissionLease admission =
-        acquire(permits, NEVER_CANCELLED, closed, messages, onSaturation, CLOSURE_POLL_MILLIS);
+        acquire(permits, control.cancelled(), closed, messages, onSaturation, control.pollMillis());
     AdmittedTask<T> task =
-        newTask(admission, operation, NEVER_CANCELLED, closed, false, messages, context, executor);
+        newTask(
+            admission,
+            operation,
+            control.cancelled(),
+            closed,
+            control.rejectCancelledStart(),
+            messages,
+            context,
+            executor);
     submit(executor, task);
-    return awaitOutcome(
-        task, messages, () -> closed.getAsBoolean() ? RUNTIME_CLOSED : null, CLOSURE_POLL_MILLIS);
+    return awaitOutcome(task, messages, control.abortReason(), control.pollMillis());
   }
 
   /**
@@ -165,9 +208,17 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Return the lease installed for the operation executing on this worker, if any. */
   static AdmissionLease currentAdmission() {
     return CURRENT_ADMISSION.get();
   }
+
+  /** Cancellation and polling policy shared by admission, task start, and caller waiting. */
+  private record CallControl(
+      BooleanSupplier cancelled,
+      boolean rejectCancelledStart,
+      Supplier<String> abortReason,
+      long pollMillis) {}
 
   /** Caller-facing cancellation outcomes for a dispatched blocking call. */
   record FailureMessages(String label, String cancellation, String interruption) {
@@ -191,6 +242,7 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Submit a task while preserving its lease if the executor throws after handoff. */
   private static <T> void submit(Executor executor, AdmittedTask<T> task) {
     try {
       executor.execute(task);
@@ -203,6 +255,7 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Construct the sole task owner, returning admission if construction itself fails. */
   private static <T> AdmittedTask<T> newTask(
       AdmissionLease admission,
       Supplier<T> operation,
@@ -228,6 +281,7 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Await task completion while allowing cancellation or closure to abandon the caller wait. */
   private static <T> T awaitOutcome(
       AdmittedTask<T> task,
       FailureMessages messages,
@@ -271,6 +325,7 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Read a terminal task outcome and translate only interruption and checked-wrapper failures. */
   private static <T> T drain(AdmittedTask<T> task, FailureMessages messages) {
     try {
       return task.get();
@@ -370,6 +425,7 @@ final class CancellableCallRunner {
       this.permits = permits;
     }
 
+    /** Add one live branch reference, rejecting resurrection after terminal release. */
     private void retain() {
       int current;
       do {
@@ -380,12 +436,14 @@ final class CancellableCallRunner {
       } while (!references.compareAndSet(current, current + 1));
     }
 
+    /** Return the semaphore permit when the final branch reference exits. */
     private void release() {
       if (references.decrementAndGet() == 0) {
         permits.release();
       }
     }
 
+    /** Create the initial lease that owns this admission's first reference. */
     AdmissionLease root() {
       return new AdmissionLease(this, null);
     }
@@ -403,22 +461,26 @@ final class CancellableCallRunner {
       this.parent = parent;
     }
 
+    /** Create a child branch that keeps the same admission alive independently. */
     AdmissionLease fork() {
       AdmissionLease child = new AdmissionLease(admission, this);
       admission.retain();
       return child;
     }
 
+    /** Whether this branch may still lend its admission to additional nested work. */
     boolean isReusable() {
       return reusable.get();
     }
 
+    /** Prevent this branch and its ancestors from admitting work beside an abandoned descendant. */
     void invalidateLineage() {
       for (AdmissionLease current = this; current != null; current = current.parent) {
         current.reusable.set(false);
       }
     }
 
+    /** Idempotently release this branch's reference to the shared admission. */
     void release() {
       if (released.compareAndSet(false, true)) {
         admission.release();
@@ -439,8 +501,10 @@ final class CancellableCallRunner {
     private final Thread submissionThread;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean permitReleased = new AtomicBoolean();
-    private volatile Thread runner;
+    private final Object runnerHandoff = new Object();
+    private Thread runner;
 
+    /** Capture all state needed for one task to own execution, outcome, and admission cleanup. */
     AdmittedTask(
         AdmissionLease admission,
         Supplier<T> operation,
@@ -462,6 +526,7 @@ final class CancellableCallRunner {
       this.submissionThread = Thread.currentThread();
     }
 
+    /** Execute the operation once, publish its outcome, and release all worker-owned state. */
     @Override
     public void run() {
       Thread worker = Thread.currentThread();
@@ -472,7 +537,9 @@ final class CancellableCallRunner {
         return;
       }
       running.set(true);
-      runner = worker;
+      synchronized (runnerHandoff) {
+        runner = worker;
+      }
       try {
         if (isCancelled()) {
           return;
@@ -502,7 +569,11 @@ final class CancellableCallRunner {
         }
         setException(failure);
       } finally {
-        runner = null;
+        // Cancellation holds this lock through interrupt delivery. Clearing under the same lock
+        // prevents a stale interrupt from following this worker into its next pool task.
+        synchronized (runnerHandoff) {
+          runner = null;
+        }
         try {
           worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
         } finally {
@@ -511,18 +582,24 @@ final class CancellableCallRunner {
       }
     }
 
+    /**
+     * Arbitrate caller cancellation through {@link FutureTask} and interrupt a running operation
+     * only when requested.
+     */
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
       boolean cancelled = super.cancel(false);
       if (cancelled && mayInterruptIfRunning) {
-        Thread currentRunner = runner;
-        if (currentRunner != null) {
-          currentRunner.interrupt();
+        synchronized (runnerHandoff) {
+          if (runner != null) {
+            runner.interrupt();
+          }
         }
       }
       return cancelled;
     }
 
+    /** Remove a cancelled queued task and return the permit that its run method cannot release. */
     @Override
     protected void done() {
       if (isCancelled() && !running.get()) {
@@ -533,17 +610,20 @@ final class CancellableCallRunner {
       }
     }
 
+    /** Idempotently release this task's branch lease. */
     void releasePermit() {
       if (permitReleased.compareAndSet(false, true)) {
         admission.release();
       }
     }
 
+    /** Whether this task has already returned its branch lease. */
     boolean isAdmissionReleased() {
       return permitReleased.get();
     }
   }
 
+  /** Detect interruption-shaped failures without traversing an unbounded or cyclic cause chain. */
   private static boolean causedByInterruption(Throwable failure) {
     int depth = 0;
     for (Throwable current = failure;

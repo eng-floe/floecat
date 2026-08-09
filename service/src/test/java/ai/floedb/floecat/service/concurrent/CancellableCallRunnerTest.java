@@ -389,10 +389,8 @@ class CancellableCallRunnerTest {
 
   @Test
   void eachEntryPointPollsAtItsOwnCadence() throws Exception {
-    // The two intervals were once swapped and nothing noticed: a grep for the constant name passes
-    // while it sits in the wrong method. Cadence is only observable by counting reads, so count
-    // them. call() polls at request scale to stay responsive to cancellation; the non-cancellable
-    // path has only a shutdown flag to watch and polls an order of magnitude slower.
+    // Count predicate reads to observe cadence. call() polls at request scale for prompt
+    // cancellation; the non-cancellable path watches only shutdown and polls much more slowly.
     var release = new CountDownLatch(1);
     var cancelReads = new java.util.concurrent.atomic.AtomicInteger();
     var closedReads = new java.util.concurrent.atomic.AtomicInteger();
@@ -467,9 +465,6 @@ class CancellableCallRunnerTest {
 
   @Test
   void aPermitTakenByThePollingLoopIsReturnedWhenClosureLatchesFirst() {
-    // The fast path's copy of this guard is pinned; the polling loop's was not, so deleting it left
-    // the suite green — the exact regression the shared helper exists to prevent.
-    //
     // Closure must land between the loop-top check and tryAcquire succeeding: the signal reports
     // open for the loop-top reads and closed only once a permit has been handed over.
     var permits = new Semaphore(1);
@@ -814,16 +809,11 @@ class CancellableCallRunnerTest {
 
   @Test
   void aCompletedFailureWinsOverCancellationObservedAfterTheOperationFinished() {
-    // Reviewer scenario: the operation finishes exceptionally, then cancellation flips before the
-    // waiting caller next looks. The completed store failure must propagate unchanged — a racing
-    // cancellation must not mask it. This executor runs the task on another thread but blocks until
-    // it finishes, so the future is already completed exceptionally when call() begins waiting. The
-    // operation flips cancellation as its last act (so acquire() does not reject the call before it
-    // runs). What surfaces the failure is abort()'s completeExceptionally arbiter, not the
-    // isDone-before-cancelled fast path — mutating that check to false leaves this green.
-    // assertThrowsExactly
-    // matters: CancellationException — what the masking bug would throw — is a subclass of
-    // IllegalStateException and would slip past assertThrows.
+    // The operation finishes exceptionally, then cancellation flips before the waiting caller next
+    // looks. The completed store failure must propagate unchanged. This executor completes the task
+    // before call() begins waiting, while the operation flips cancellation as its last act so
+    // acquisition still succeeds. assertThrowsExactly matters because CancellationException is an
+    // IllegalStateException subclass and would slip past assertThrows.
     Executor completeBeforeWaiting =
         runnable -> {
           Thread worker = new Thread(runnable, "completed-before-waiting");
@@ -1282,6 +1272,89 @@ class CancellableCallRunnerTest {
     }
   }
 
+  @Test
+  void cancellationDeliversItsInterruptBeforeTheWorkerCanRunAnotherCall() throws Exception {
+    var worker = new AtomicReference<DelayedInterruptThread>();
+    var permits = new Semaphore(1);
+    var cancelled = new AtomicBoolean();
+    var firstStarted = new CountDownLatch(1);
+    var releaseFirst = new CountDownLatch(1);
+    var secondStarted = new CountDownLatch(1);
+    var releaseSecond = new CountDownLatch(1);
+    try (ExecutorService executor =
+        Executors.newSingleThreadExecutor(
+            runnable -> {
+              var thread = new DelayedInterruptThread(runnable);
+              worker.set(thread);
+              return thread;
+            })) {
+      CompletableFuture<Throwable> firstCaller =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  CancellableCallRunner.call(
+                      executor,
+                      permits,
+                      cancelled::get,
+                      notClosed,
+                      () -> {
+                        firstStarted.countDown();
+                        awaitLatch(releaseFirst);
+                        return "first";
+                      },
+                      CALL_FAILURES,
+                      saturations::incrementAndGet);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+      assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+      cancelled.set(true);
+      DelayedInterruptThread reusedWorker = worker.get();
+      assertTrue(reusedWorker.interruptCaptured.await(1, TimeUnit.SECONDS));
+      releaseFirst.countDown();
+
+      CompletableFuture<Boolean> secondCaller =
+          CompletableFuture.supplyAsync(
+              () ->
+                  CancellableCallRunner.callWithoutCancellation(
+                      executor,
+                      permits,
+                      notClosed,
+                      () -> {
+                        secondStarted.countDown();
+                        try {
+                          releaseSecond.await();
+                          return Thread.currentThread().isInterrupted();
+                        } catch (InterruptedException staleCancellation) {
+                          return true;
+                        }
+                      },
+                      CALL_FAILURES,
+                      saturations::incrementAndGet));
+
+      boolean startedBeforeInterruptDelivery = secondStarted.await(250, TimeUnit.MILLISECONDS);
+      reusedWorker.deliverInterrupt.countDown();
+      assertTrue(reusedWorker.interruptDelivered.await(1, TimeUnit.SECONDS));
+      releaseSecond.countDown();
+
+      assertFalse(
+          startedBeforeInterruptDelivery,
+          "the worker must not be reused while its previous cancellation still owns an interrupt");
+      assertFalse(secondCaller.get(1, TimeUnit.SECONDS), "the next call must not be interrupted");
+      assertInstanceOf(CancellationException.class, firstCaller.get(1, TimeUnit.SECONDS));
+    } finally {
+      releaseFirst.countDown();
+      releaseSecond.countDown();
+      DelayedInterruptThread thread = worker.get();
+      if (thread != null) {
+        thread.deliverInterrupt.countDown();
+      }
+    }
+  }
+
   /**
    * Wait for admission to settle at {@code expected}. The submitted runnable publishes its result
    * before releasing the permit in its {@code finally}, so a caller that has observed the value can
@@ -1305,5 +1378,28 @@ class CancellableCallRunnerTest {
       Thread.sleep(10);
     }
     assertEquals(expected, executor.getQueue().size());
+  }
+
+  /** Worker that lets a test pause one interrupt between target capture and delivery. */
+  private static final class DelayedInterruptThread extends Thread {
+    private final CountDownLatch interruptCaptured = new CountDownLatch(1);
+    private final CountDownLatch deliverInterrupt = new CountDownLatch(1);
+    private final CountDownLatch interruptDelivered = new CountDownLatch(1);
+    private final AtomicBoolean delayNextInterrupt = new AtomicBoolean(true);
+
+    private DelayedInterruptThread(Runnable target) {
+      super(target, "delayed-interrupt-worker");
+    }
+
+    /** Pause the first interrupt until the test has exercised worker reuse. */
+    @Override
+    public void interrupt() {
+      if (delayNextInterrupt.compareAndSet(true, false)) {
+        interruptCaptured.countDown();
+        awaitLatch(deliverInterrupt);
+      }
+      super.interrupt();
+      interruptDelivered.countDown();
+    }
   }
 }
