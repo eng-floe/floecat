@@ -506,6 +506,90 @@ class StorageAuthorityServiceImplTest {
     verify(tableRepo, org.mockito.Mockito.never()).getById(any());
   }
 
+  /**
+   * Registering files in place (add_files) leaves an Iceberg table's data outside its own location,
+   * so scoping a lease to the table location alone rejects the very files the lease planned. A
+   * leased file must be readable even from an unrelated prefix.
+   */
+  @Test
+  void leasedFileOutsideTheTableLocationIsInScope() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView(
+                    "job-1",
+                    "acct",
+                    "JS_RUNNING",
+                    java.util.List.of("s3://elsewhere/registered/part-000.parquet"))));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://elsewhere/registered/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    // Admitted: it reached authority resolution and source-catalog vending. Had the location been
+    // out of scope this would be PERMISSION_DENIED instead.
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(connectorRepo).getById(CONNECTOR_ID);
+  }
+
+  /**
+   * The leased-file allowance is exact membership. Asking for the parent prefix of a leased file
+   * would hand out credentials for everything beside it, so it stays denied.
+   */
+  @Test
+  void parentPrefixOfALeasedFileIsStillOutOfScope() {
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView(
+                    "job-1",
+                    "acct",
+                    "JS_RUNNING",
+                    java.util.List.of("s3://elsewhere/registered/part-000.parquet"))));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://elsewhere/registered/")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+  }
+
   @Test
   void resolveForDiscoveryPlannerUsesConnectorBootstrapScopeBeforeTableExists() {
     when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));

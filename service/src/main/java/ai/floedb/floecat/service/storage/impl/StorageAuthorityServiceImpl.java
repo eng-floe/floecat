@@ -542,6 +542,17 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return scope;
     }
     if (!isWithinExecutionScope(requestedLocationPrefix, scope)) {
+      // An Iceberg table may reference data anywhere -- registering files in place (add_files)
+      // leaves them outside the table location entirely. The lease already enumerates the exact
+      // files planned for this job, so a request for one of them is in scope even though it sits
+      // under a different prefix.
+      //
+      // Scope to the requested file rather than widening the table scope: authority lookup and the
+      // minted session policy then follow the location actually being read, and a table whose data
+      // does live under its own location is unaffected.
+      if (isLeasedFilePath(job, requestedLocationPrefix)) {
+        return CredentialScope.forSingleLocation(requestedLocationPrefix);
+      }
       throw io.grpc.Status.PERMISSION_DENIED
           .withDescription("requested location is outside the leased reconcile storage scope")
           .asRuntimeException();
@@ -854,6 +865,21 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
             .asRuntimeException();
       }
     }
+  }
+
+  /**
+   * Whether the location is one of the files this lease planned.
+   *
+   * <p>Deliberately exact membership rather than a prefix match: the lease authorizes those files
+   * and nothing else, so a caller cannot widen its own scope by asking for a parent prefix.
+   */
+  private static boolean isLeasedFilePath(
+      ReconcileJobStore.ReconcileJob job, String requestedLocation) {
+    if (job == null || job.fileGroupTask == null || requestedLocation == null) {
+      return false;
+    }
+    List<String> filePaths = job.fileGroupTask.filePaths();
+    return filePaths != null && filePaths.contains(requestedLocation);
   }
 
   private static String leasedTableId(ReconcileJobStore.ReconcileJob job) {
