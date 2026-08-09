@@ -21,13 +21,13 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
-import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
-import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
+import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -42,9 +42,10 @@ import java.util.Set;
 public class ViewRepository {
 
   private final GenericResourceRepository<View, ViewKey> repo;
+  private final MetadataReadPolicy metadataReads;
 
   public ViewRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, null);
+    this(pointerStore, blobStore, null, MetadataReadPolicy.DIRECT);
   }
 
   @Inject
@@ -52,7 +53,17 @@ public class ViewRepository {
       PointerStore pointerStore,
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
-      MetadataIoCacheMissAdmission cacheMissAdmission) {
+      MetadataResourceReader metadataReads) {
+    this(pointerStore, blobStore, blobCache, (MetadataReadPolicy) metadataReads);
+  }
+
+  /** Build a repository with the selected policy for metadata reads and cold blob loads. */
+  public ViewRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      MetadataReadPolicy metadataReads) {
+    this.metadataReads = metadataReads;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -62,7 +73,7 @@ public class ViewRepository {
             View::toByteArray,
             "application/x-protobuf",
             blobCache,
-            cacheMissAdmission);
+            metadataReads);
   }
 
   public void create(View view) {
@@ -82,18 +93,17 @@ public class ViewRepository {
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
   }
 
-  @BoundMetadataIo
   public Optional<View> getById(ResourceId viewResourceId) {
-    return repo.getByKey(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+    return metadataReads.read(
+        () -> repo.getByKey(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId())));
   }
 
-  @BoundMetadataIo
   public Optional<View> getByName(
       String accountId, String catalogId, String namespaceId, String viewName) {
-    return repo.get(Keys.viewPointerByName(accountId, catalogId, namespaceId, viewName));
+    return metadataReads.read(
+        () -> repo.get(Keys.viewPointerByName(accountId, catalogId, namespaceId, viewName)));
   }
 
-  @BoundMetadataIo
   public List<View> list(
       String accountId,
       String catalogId,
@@ -101,69 +111,79 @@ public class ViewRepository {
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
-    return repo.listByPrefix(prefix, limit, pageToken, nextOut);
+    return metadataReads.read(
+        () -> {
+          String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+          return repo.listByPrefix(prefix, limit, pageToken, nextOut);
+        });
   }
 
-  @BoundMetadataIo
   public int count(String accountId, String catalogId, String namespaceId) {
-    return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+    return metadataReads.read(
+        () -> repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId)));
   }
 
   /**
    * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.
    */
-  @BoundMetadataIo
   public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
-    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
-    var pointers = repo.listRefsByPrefix(prefix);
-    var refs = new ArrayList<RelationRef>(pointers.size());
-    for (var p : pointers) {
-      TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p).ifPresent(refs::add);
-    }
-    return refs;
+    return metadataReads.read(
+        () -> {
+          String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+          var pointers = repo.listRefsByPrefix(prefix);
+          var refs = new ArrayList<RelationRef>(pointers.size());
+          for (var p : pointers) {
+            TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p).ifPresent(refs::add);
+          }
+          return refs;
+        });
   }
 
   /** Reads exact by-name view pointers and returns refs without fetching blobs from S3. */
-  @BoundMetadataIo
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    List<RelationRef> refs = new ArrayList<>(names.size());
-    for (String name : names) {
-      if (name == null || name.isBlank()) {
-        continue;
-      }
-      repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
-          .flatMap(p -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p))
-          .ifPresent(refs::add);
-    }
-    return refs;
+    return metadataReads.read(
+        () -> {
+          List<RelationRef> refs = new ArrayList<>(names.size());
+          for (String name : names) {
+            if (name == null || name.isBlank()) {
+              continue;
+            }
+            repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
+                .flatMap(p -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p))
+                .ifPresent(refs::add);
+          }
+          return refs;
+        });
   }
 
-  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId viewResourceId) {
-    return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+    return metadataReads.read(
+        () -> repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId())));
   }
 
-  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId viewResourceId, Timestamp nowTs) {
-    return repo.metaFor(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), nowTs);
+    return metadataReads.read(
+        () ->
+            repo.metaFor(
+                new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), nowTs));
   }
 
-  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId viewResourceId) {
-    return repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+    return metadataReads.read(
+        () -> repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId())));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
-  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId viewResourceId) {
-    return repo.pointerMetaForSafe(
-        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+    return metadataReads.read(
+        () ->
+            repo.pointerMetaForSafe(
+                new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId())));
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
@@ -172,8 +192,7 @@ public class ViewRepository {
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
-  @BoundMetadataIo
   public Optional<View> getByBlobUriLive(String blobUri) {
-    return repo.getByBlobUriLive(blobUri);
+    return metadataReads.read(() -> repo.getByBlobUriLive(blobUri));
   }
 }

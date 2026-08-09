@@ -21,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -186,7 +186,7 @@ class CatalogRepositoryTest {
     catalogRepo.create(catalog);
     String blobUri = catalogRepo.metaFor(rid).getBlobUri();
 
-    CountingCacheMissAdmission admission = new CountingCacheMissAdmission();
+    CountingMetadataReadPolicy admission = new CountingMetadataReadPolicy();
     CatalogRepository cachedRepository =
         new CatalogRepository(
             ptr,
@@ -200,11 +200,11 @@ class CatalogRepositoryTest {
     assertEquals(1, admission.loads.get(), "the cached hit must not enter metadata-I/O admission");
   }
 
-  private static final class CountingCacheMissAdmission extends MetadataIoCacheMissAdmission {
+  private static final class CountingMetadataReadPolicy implements MetadataReadPolicy {
     private final AtomicInteger loads = new AtomicInteger();
 
     @Override
-    public <T> T load(Supplier<T> loader) {
+    public <T> T read(Supplier<T> loader) {
       loads.incrementAndGet();
       return loader.get();
     }

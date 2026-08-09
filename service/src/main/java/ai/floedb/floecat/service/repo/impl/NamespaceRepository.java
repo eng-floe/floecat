@@ -21,13 +21,13 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
-import ai.floedb.floecat.service.concurrent.BoundMetadataIo;
-import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
+import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -42,10 +42,11 @@ import java.util.Set;
 public class NamespaceRepository {
 
   private final GenericResourceRepository<Namespace, NamespaceKey> repo;
+  private final MetadataReadPolicy metadataReads;
   private final PointerStore pointerStore;
 
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, null);
+    this(pointerStore, blobStore, null, MetadataReadPolicy.DIRECT);
   }
 
   @Inject
@@ -53,8 +54,18 @@ public class NamespaceRepository {
       PointerStore pointerStore,
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
-      MetadataIoCacheMissAdmission cacheMissAdmission) {
+      MetadataResourceReader metadataReads) {
+    this(pointerStore, blobStore, blobCache, (MetadataReadPolicy) metadataReads);
+  }
+
+  /** Build a repository with the selected policy for metadata reads and cold blob loads. */
+  public NamespaceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      MetadataReadPolicy metadataReads) {
     this.pointerStore = pointerStore;
+    this.metadataReads = metadataReads;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -64,7 +75,7 @@ public class NamespaceRepository {
             Namespace::toByteArray,
             "application/x-protobuf",
             blobCache,
-            cacheMissAdmission);
+            metadataReads);
   }
 
   public void create(Namespace namespace) {
@@ -87,19 +98,19 @@ public class NamespaceRepository {
         expectedPointerVersion);
   }
 
-  @BoundMetadataIo
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {
-    return repo.getByKey(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+    return metadataReads.read(
+        () ->
+            repo.getByKey(
+                new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId())));
   }
 
-  @BoundMetadataIo
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
-    return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
+    return metadataReads.read(
+        () -> repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments)));
   }
 
-  @BoundMetadataIo
   public List<Namespace> list(
       String accountId,
       String catalogId,
@@ -107,14 +118,21 @@ public class NamespaceRepository {
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
-    return repo.listByPrefix(prefix, limit, pageToken, nextOut);
+    return metadataReads.read(
+        () -> {
+          String prefix =
+              Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+          return repo.listByPrefix(prefix, limit, pageToken, nextOut);
+        });
   }
 
-  @BoundMetadataIo
   public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
-    return repo.countByPrefix(prefix);
+    return metadataReads.read(
+        () -> {
+          String prefix =
+              Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+          return repo.countByPrefix(prefix);
+        });
   }
 
   /**
@@ -122,59 +140,67 @@ public class NamespaceRepository {
    * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
    * instead of after the whole over-fetched batch.
    */
-  @BoundMetadataIo
   public String listTokenAfter(String accountId, String catalogId, List<String> fullPath) {
-    return pointerStore.pageTokenAfterKey(
-        Keys.namespacePointerByPath(accountId, catalogId, fullPath));
+    return metadataReads.read(
+        () ->
+            pointerStore.pageTokenAfterKey(
+                Keys.namespacePointerByPath(accountId, catalogId, fullPath)));
   }
 
-  @BoundMetadataIo
   public List<ResourceId> listIds(String accountId, String catalogId) {
-    // empty parent path -> all namespaces in catalog
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
-    List<Namespace> namespaces =
-        repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
-    List<ResourceId> ids = new java.util.ArrayList<>(namespaces.size());
-    for (Namespace ns : namespaces) {
-      ids.add(ns.getResourceId());
-    }
-    return ids;
+    return metadataReads.read(
+        () -> {
+          // empty parent path -> all namespaces in catalog
+          String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
+          List<Namespace> namespaces =
+              repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
+          List<ResourceId> ids = new java.util.ArrayList<>(namespaces.size());
+          for (Namespace ns : namespaces) {
+            ids.add(ns.getResourceId());
+          }
+          return ids;
+        });
   }
 
   /**
    * Scans the by-path pointer prefix for a catalog and returns lightweight refs without loading
    * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.
    */
-  @BoundMetadataIo
   public List<NamespaceRef> listRefs(String accountId, String catalogId) {
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
-    var pointers = repo.listRefsByPrefix(prefix);
-    var refs = new ArrayList<NamespaceRef>(pointers.size());
-    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
-    for (var p : pointers) {
-      toNamespaceRef(accountId, catalogId, catalogResourceId, p).ifPresent(refs::add);
-    }
-    return refs;
+    return metadataReads.read(
+        () -> {
+          String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
+          var pointers = repo.listRefsByPrefix(prefix);
+          var refs = new ArrayList<NamespaceRef>(pointers.size());
+          ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+          for (var p : pointers) {
+            toNamespaceRef(accountId, catalogId, catalogResourceId, p).ifPresent(refs::add);
+          }
+          return refs;
+        });
   }
 
   /** Reads exact by-path namespace pointers and returns refs without fetching blobs from S3. */
-  @BoundMetadataIo
   public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
-    List<NamespaceRef> refs = new ArrayList<>(names.size());
-    for (String name : names) {
-      if (name == null || name.isBlank()) {
-        continue;
-      }
-      repo.refByPointer(
-              Keys.namespacePointerByPath(accountId, catalogId, List.of(name.split("\\.", -1))))
-          .flatMap(p -> toNamespaceRef(accountId, catalogId, catalogResourceId, p))
-          .ifPresent(refs::add);
-    }
-    return refs;
+    return metadataReads.read(
+        () -> {
+          ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+          List<NamespaceRef> refs = new ArrayList<>(names.size());
+          for (String name : names) {
+            if (name == null || name.isBlank()) {
+              continue;
+            }
+            repo.refByPointer(
+                    Keys.namespacePointerByPath(
+                        accountId, catalogId, List.of(name.split("\\.", -1))))
+                .flatMap(p -> toNamespaceRef(accountId, catalogId, catalogResourceId, p))
+                .ifPresent(refs::add);
+          }
+          return refs;
+        });
   }
 
   private static ResourceId catalogResourceId(String accountId, String catalogId) {
@@ -213,29 +239,34 @@ public class NamespaceRepository {
     return Optional.of(new NamespaceRef(rid, name, catalogResourceId, pathSegments));
   }
 
-  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId namespaceResourceId) {
-    return repo.metaFor(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+    return metadataReads.read(
+        () ->
+            repo.metaFor(
+                new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId())));
   }
 
-  @BoundMetadataIo
   public MutationMeta metaFor(ResourceId namespaceResourceId, Timestamp nowTs) {
-    return repo.metaFor(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()), nowTs);
+    return metadataReads.read(
+        () ->
+            repo.metaFor(
+                new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
+                nowTs));
   }
 
-  @BoundMetadataIo
   public MutationMeta metaForSafe(ResourceId namespaceResourceId) {
-    return repo.metaForSafe(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+    return metadataReads.read(
+        () ->
+            repo.metaForSafe(
+                new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId())));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
-  @BoundMetadataIo
   public MutationMeta pointerMetaForSafe(ResourceId namespaceResourceId) {
-    return repo.pointerMetaForSafe(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+    return metadataReads.read(
+        () ->
+            repo.pointerMetaForSafe(
+                new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId())));
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
@@ -244,8 +275,7 @@ public class NamespaceRepository {
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
-  @BoundMetadataIo
   public Optional<Namespace> getByBlobUriLive(String blobUri) {
-    return repo.getByBlobUriLive(blobUri);
+    return metadataReads.read(() -> repo.getByBlobUriLive(blobUri));
   }
 }

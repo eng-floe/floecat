@@ -65,8 +65,8 @@ import org.jboss.logging.MDC;
 public final class PropagatedContext {
 
   // The request's cancellation signal, carried here so it follows work across a thread hop the same
-  // way OTel/MDC do. Auto-admitted store reads (MetadataIoAdmissionInterceptor) read it to abort an
-  // admission wait when the request cancels, even on a fan-out worker off the request thread.
+  // way OTel/MDC do. MetadataResourceReader reads it to abort an admission wait when the request
+  // cancels, even on a fan-out worker off the request thread.
   private static final ThreadLocal<BooleanSupplier> REQUEST_CANCELLATION = new ThreadLocal<>();
 
   private final Context otel;

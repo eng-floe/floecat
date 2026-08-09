@@ -24,139 +24,94 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.quarkus.test.junit.QuarkusTest;
-import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
-/**
- * Proves the CDI wiring, not just the interceptor logic: in the real container, a {@link
- * BoundMetadataIo} method is actually wrapped in admission. The probe method does no admission
- * itself, so a true reading can only come from the interceptor having fired.
- */
+/** Verifies CDI and repository composition route metadata reads through explicit admission. */
 @QuarkusTest
 class MetadataIoAdmissionWiringTest {
 
-  @ApplicationScoped
-  static class AdmissionProbe {
-    @BoundMetadataIo
-    public boolean observedAdmission() {
-      return MetadataIoRunner.isRunningAdmittedOperation();
-    }
-  }
-
-  @Inject AdmissionProbe probe;
-  @Inject MetadataIoCacheMissAdmission cacheMissAdmission;
+  @Inject MetadataResourceReader metadataReads;
 
   @Test
-  void containerWrapsBoundMetadataIoMethodsInAdmission() {
+  void containerProvidesAnAdmittedMetadataReadPolicy() {
     assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
     assertTrue(
-        probe.observedAdmission(),
-        "the @BoundMetadataIo method must run under admission — the interceptor did not fire");
+        metadataReads.read(MetadataIoRunner::isRunningAdmittedOperation),
+        "the CDI metadata-read policy must establish admission around its operation");
     assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
   }
 
   @Test
-  void everyExposedMetadataReadHasAdmissionAtItsStoreBoundary() throws Exception {
-    for (Class<?> repository :
-        Set.of(
-            CatalogRepository.class,
-            NamespaceRepository.class,
-            TableRepository.class,
-            ViewRepository.class)) {
-      assertAllPublicReadsAreBoundOrCacheFronted(repository);
-      assertCacheFrontedReadIsNotOuterAdmitted(repository);
-    }
-
-    assertTrue(
-        MetadataIoCacheMissAdmission.class
-            .getMethod("load", Supplier.class)
-            .isAnnotationPresent(BoundMetadataIo.class),
-        "the cache-miss loader must remain the admitted store boundary");
-    assertTrue(
-        cacheMissAdmission.load(MetadataIoRunner::isRunningAdmittedOperation),
-        "the cache-miss loader must run under admission in the container");
-  }
-
-  @Test
-  void everyCacheFrontedRepositoryRoutesItsMissThroughAdmission() {
-    CountingCacheMissAdmission admission = new CountingCacheMissAdmission();
+  void everyAdmittedRepositoryUsesOnePolicyForReadsAndColdBlobLoads() {
+    CountingMetadataReadPolicy policy = new CountingMetadataReadPolicy();
     ImmutableBlobCache cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5));
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
 
-    assertCacheMissInvokesAdmission(
-        "CatalogRepository",
-        uri -> new CatalogRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
-        admission);
-    assertCacheMissInvokesAdmission(
+    CatalogRepository catalogs = new CatalogRepository(pointers, blobs, cache, policy);
+    assertPolicyInvoked(
+        "CatalogRepository", () -> catalogs.count("acct"), catalogs::getByBlobUri, policy);
+
+    NamespaceRepository namespaces = new NamespaceRepository(pointers, blobs, cache, policy);
+    assertPolicyInvoked(
         "NamespaceRepository",
-        uri -> new NamespaceRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
-        admission);
-    assertCacheMissInvokesAdmission(
+        () -> namespaces.count("acct", "catalog", List.of()),
+        namespaces::getByBlobUri,
+        policy);
+
+    TableRepository tables = new TableRepository(pointers, blobs, cache, policy);
+    assertPolicyInvoked(
         "TableRepository",
-        uri -> new TableRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
-        admission);
-    assertCacheMissInvokesAdmission(
+        () -> tables.count("acct", "catalog", "namespace"),
+        tables::getByBlobUri,
+        policy);
+
+    ViewRepository views = new ViewRepository(pointers, blobs, cache, policy);
+    assertPolicyInvoked(
         "ViewRepository",
-        uri -> new ViewRepository(pointers, blobs, cache, admission).getByBlobUri(uri),
-        admission);
+        () -> views.count("acct", "catalog", "namespace"),
+        views::getByBlobUri,
+        policy);
   }
 
-  private static void assertAllPublicReadsAreBoundOrCacheFronted(Class<?> type) {
-    for (Method method : type.getDeclaredMethods()) {
-      if (!Modifier.isPublic(method.getModifiers())
-          || method.isSynthetic()
-          || isWrite(method)
-          || isCacheFrontedRead(method)) {
-        continue;
-      }
-      assertTrue(
-          method.isAnnotationPresent(BoundMetadataIo.class),
-          () -> type.getSimpleName() + "." + method + " bypasses metadata-I/O admission");
-    }
-  }
-
-  private static void assertCacheFrontedReadIsNotOuterAdmitted(Class<?> type) throws Exception {
-    Method cacheFronted = type.getMethod("getByBlobUri", String.class);
-    assertFalse(
-        cacheFronted.isAnnotationPresent(BoundMetadataIo.class),
-        () -> type.getSimpleName() + ".getByBlobUri must admit only its cache miss");
-  }
-
-  private static void assertCacheMissInvokesAdmission(
+  /** Assert one outer read and one cache-miss load use the repository's selected policy. */
+  private static void assertPolicyInvoked(
       String repository,
+      Supplier<?> read,
       Function<String, Optional<?>> getByBlobUri,
-      CountingCacheMissAdmission admission) {
+      CountingMetadataReadPolicy policy) {
+    read.get();
+    assertEquals(1, policy.reads.getAndSet(0), repository + " must route reads through its policy");
+
     assertTrue(getByBlobUri.apply("blob://test/missing-" + repository).isEmpty());
     assertEquals(
-        1, admission.loads.getAndSet(0), repository + " must admit exactly its cache-miss loader");
+        1,
+        policy.loads.getAndSet(0),
+        repository + " must route cold blob loads through its policy");
+    assertEquals(0, policy.reads.get(), repository + " must not admit the cache probe itself");
   }
 
-  private static boolean isWrite(Method method) {
-    return Set.of("create", "update", "delete", "deleteWithPrecondition")
-        .contains(method.getName());
-  }
-
-  private static boolean isCacheFrontedRead(Method method) {
-    return method.getName().equals("getByBlobUri")
-        && method.getParameterCount() == 1
-        && method.getParameterTypes()[0] == String.class;
-  }
-
-  private static final class CountingCacheMissAdmission extends MetadataIoCacheMissAdmission {
+  /** Policy that records outer reads and cold blob loads independently. */
+  private static final class CountingMetadataReadPolicy implements MetadataReadPolicy {
+    private final AtomicInteger reads = new AtomicInteger();
     private final AtomicInteger loads = new AtomicInteger();
+
+    @Override
+    public <T> T read(Supplier<T> reader) {
+      reads.incrementAndGet();
+      return reader.get();
+    }
 
     @Override
     public <T> T load(Supplier<T> loader) {

@@ -30,19 +30,19 @@ import java.util.function.Function;
  * cancellation, and re-establish the caller's request context on each worker (via {@link
  * BoundedFanout}). One place owns that, so no resolution stage re-wires it.
  *
- * <p>This stage does <em>not</em> apply admission — that is enforced at the store, by the {@link
- * MetadataIoAdmissionInterceptor} on {@link BoundMetadataIo} repository reads. A unit simply calls
- * the store; an admitted read acquires a permit when (and only when) it makes a round-trip, and the
- * orchestrating thread holds none. That is why a fan-out must never be started from within an
+ * <p>This stage does <em>not</em> apply admission — repository families composed with {@link
+ * MetadataResourceReader} enforce it at their explicit read boundary. A unit simply calls the
+ * repository; an admitted read acquires a permit when (and only when) it makes a round-trip, and
+ * the orchestrating thread holds none. That is why a fan-out must never be started from within an
  * admitted store operation: that thread would hold a permit while its off-thread units wait for
  * more, deadlocking under saturation. The stage rejects that case.
  *
- * <p><b>Admission covers the annotated repositories only</b> — today the catalog, namespace, table
- * and view families. A unit that reads through an unannotated repository (the snapshot, stats,
+ * <p><b>Admission covers explicitly composed repositories only</b> — the catalog, namespace, table
+ * and view families. A unit that reads through a direct repository (the snapshot, stats,
  * current-snapshot-pointer and table-root families) is <em>not</em> bounded by the process-wide
  * ceiling, so such a fan-out's store concurrency is bounded by its own {@code permits} alone and
- * scales with concurrent requests. Widening the annotation is the way to bring a family under the
- * ceiling; do not assume this stage does it.
+ * scales with concurrent requests. Composing a family with the admitted read policy brings it under
+ * the ceiling; do not assume this stage does it.
  *
  * <p>When the metadata source cannot resolve concurrently — a thread-confined overlay — pass {@code
  * concurrent=false} and units run serially on the caller thread with the same ordering and
@@ -53,12 +53,26 @@ import java.util.function.Function;
 public final class MetadataFanout {
 
   // Process-wide virtual-thread executor: a unit parked on store admission consumes a virtual
-  // thread,
-  // not a platform worker, and it carries no Vert.x context, so PropagatedContext's MDC isolation
-  // holds off-thread. Virtual-thread carriers are daemons, so there is no lifecycle to manage.
+  // thread, not a platform worker, and it carries no Vert.x context, so PropagatedContext's MDC
+  // isolation holds off-thread. Virtual-thread carriers are daemons, so there is no lifecycle to
+  // manage.
   private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
   private MetadataFanout() {}
+
+  /**
+   * Apply an uncancellable {@code unit} to each element with the ordering and failure semantics of
+   * {@link #forEachOrdered(List, int, boolean, Function, Consumer, BooleanSupplier)}. Thread
+   * interruption still aborts the stage.
+   */
+  public static <I, O> void forEachOrdered(
+      List<I> units,
+      int permits,
+      boolean concurrent,
+      Function<? super I, ? extends O> unit,
+      Consumer<? super O> consumer) {
+    forEachOrdered(units, permits, concurrent, unit, consumer, BoundedFanout.NEVER_CANCELLED);
+  }
 
   /**
    * Apply {@code unit} to each element in input order, delivering each result to {@code consumer}
@@ -87,8 +101,7 @@ public final class MetadataFanout {
     // The source owns thread-confined state, so units cannot run off-thread. Preserve the same
     // ordered delivery and first-failure precedence: a throwing unit or consumer stops the stage at
     // once. Re-check cancellation after each unit's post-I/O work so a cancellation that became
-    // true
-    // between the store call and here does not publish a result.
+    // true between the store call and here does not publish a result.
     for (I item : units) {
       throwIfCancelled(cancelled);
       O result = unit.apply(item);
@@ -97,7 +110,20 @@ public final class MetadataFanout {
     }
   }
 
-  /** {@link #forEachOrdered} collecting the results into an input-ordered list. */
+  /**
+   * Run uncancellable units and collect their results into an input-ordered list. Thread
+   * interruption still aborts the stage.
+   */
+  public static <I, O> List<O> mapOrdered(
+      List<I> units, int permits, boolean concurrent, Function<? super I, ? extends O> unit) {
+    return mapOrdered(units, permits, concurrent, unit, BoundedFanout.NEVER_CANCELLED);
+  }
+
+  /**
+   * Run cancellable units and collect their results into an input-ordered list. {@code cancelled}
+   * follows the contract of {@link #forEachOrdered(List, int, boolean, Function, Consumer,
+   * BooleanSupplier)}.
+   */
   public static <I, O> List<O> mapOrdered(
       List<I> units,
       int permits,
@@ -109,6 +135,7 @@ public final class MetadataFanout {
     return results;
   }
 
+  /** Throw when either cooperative cancellation or thread interruption stops the serial stage. */
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     // Honor a scheduler interrupt as well as the cooperative signal, matching the concurrent path
     // (BoundedFanout.checkCancelled/abortIfCancelled). Otherwise a serial batch on an interrupted

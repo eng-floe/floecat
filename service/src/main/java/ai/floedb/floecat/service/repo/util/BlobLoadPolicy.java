@@ -13,23 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.service.concurrent;
+package ai.floedb.floecat.service.repo.util;
 
-import jakarta.enterprise.context.ApplicationScoped;
 import java.util.function.Supplier;
 
-/**
- * The admitted cache-miss seam for immutable metadata blobs.
- *
- * <p>A content-cache probe is local work, and Caffeine single-flights a cold URI before this seam
- * is reached. Admitting only {@link #load} therefore bounds the one backend read, without making
- * cache hits or followers consume a process-wide metadata-I/O permit.
- */
-@ApplicationScoped
-public class MetadataIoCacheMissAdmission {
+/** Selects how one uncached immutable-blob load is executed. */
+@FunctionalInterface
+public interface BlobLoadPolicy {
 
-  @BoundMetadataIo
-  public <T> T load(Supplier<T> loader) {
-    return loader.get();
-  }
+  /** Execute an immutable-blob cache miss directly on the calling thread. */
+  BlobLoadPolicy DIRECT =
+      new BlobLoadPolicy() {
+        @Override
+        public <T> T load(Supplier<T> loader) {
+          return loader.get();
+        }
+      };
+
+  /** Execute one backend load selected after the immutable-blob cache reports a miss. */
+  <T> T load(Supplier<T> loader);
 }

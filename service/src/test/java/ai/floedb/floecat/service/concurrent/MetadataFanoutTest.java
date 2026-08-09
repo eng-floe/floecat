@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -28,12 +29,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
 /**
- * The parallel stage delivers in input order and cancels; admission is no longer its concern (the
- * store self-admits), so these cover ordering, serial mode, cancellation, and the guard against
+ * The parallel stage delivers in input order and cancels while repository reads apply admission at
+ * the store boundary. These tests cover ordering, serial mode, cancellation, and the guard against
  * starting a fan-out from within an admitted store operation.
  */
 class MetadataFanoutTest {
@@ -57,8 +59,7 @@ class MetadataFanoutTest {
                 Thread.currentThread().interrupt();
               }
               return item * 10;
-            },
-            () -> false);
+            });
     assertThat(out).isEqualTo(inputs.stream().map(i -> i * 10).toList());
   }
 
@@ -76,16 +77,21 @@ class MetadataFanoutTest {
                 ranOffThread.set(true);
               }
               return item * 10;
-            },
-            () -> false);
+            });
     assertThat(out).containsExactly(10, 20, 30);
     assertThat(ranOffThread).isFalse();
   }
 
   @Test
+  void uncancellableForEachOverloadDeliversResultsInOrder() {
+    List<Integer> published = new ArrayList<>();
+    MetadataFanout.forEachOrdered(List.of(3, 1, 2), 2, true, item -> item * 10, published::add);
+    assertThat(published).containsExactly(30, 10, 20);
+  }
+
+  @Test
   void concurrentModeRejectsPermitsBelowOne() {
-    assertThatThrownBy(
-            () -> MetadataFanout.mapOrdered(List.of(1, 2), 0, true, item -> item, () -> false))
+    assertThatThrownBy(() -> MetadataFanout.mapOrdered(List.of(1, 2), 0, true, item -> item))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -162,8 +168,7 @@ class MetadataFanoutTest {
                         throw new IllegalStateException("boom on input 1");
                       }
                       return item;
-                    },
-                    () -> false))
+                    }))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("boom on input 1");
   }
@@ -214,54 +219,27 @@ class MetadataFanoutTest {
   void aConcurrentFanOutStartedFromWithinAnAdmittedOperationIsRejected() {
     // Admitted store operations hold a permit on their thread. Dispatching units off-thread from
     // within one holds that permit while each unit waits for its own — a saturation deadlock.
-    // Asserted on BoundedFanout's message: this stage no longer repeats the check, so one rule
-    // produces one message.
-    MetadataIoRunner admission = new MetadataIoRunner(4);
-    try {
-      assertThatThrownBy(
-              () ->
-                  admission.call(
-                      () -> false,
-                      () -> MetadataFanout.mapOrdered(List.of(1), 4, true, i -> i, () -> false),
-                      MSGS))
-          .isInstanceOf(IllegalStateException.class)
-          .hasMessageContaining("ran inside an admitted metadata-I/O operation");
-    } finally {
-      admission.close();
-    }
+    // BoundedFanout owns the dispatch-boundary check, so the invariant has one failure message.
+    assertThatThrownBy(() -> admitted(() -> MetadataFanout.mapOrdered(List.of(1), 4, true, i -> i)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("ran inside an admitted metadata-I/O operation");
   }
 
   @Test
   void aSerialFanOutIsAllowedFromWithinAnAdmittedOperation() {
     // Serial units run inline on the admitted thread, so they reuse its permit instead of taking a
-    // second one — the re-entrant case admission exists to support. Rejecting it refused a nesting
-    // that cannot wedge the pool.
-    MetadataIoRunner admission = new MetadataIoRunner(4);
-    try {
-      assertThat(
-              admission.call(
-                  () -> false,
-                  () ->
-                      MetadataFanout.mapOrdered(List.of(1, 2), 4, false, i -> i * 10, () -> false),
-                  MSGS))
-          .containsExactly(10, 20);
-    } finally {
-      admission.close();
-    }
+    // second one — the re-entrant case admission supports without risking pool saturation.
+    assertThat(admitted(() -> MetadataFanout.mapOrdered(List.of(1, 2), 4, false, i -> i * 10)))
+        .containsExactly(10, 20);
   }
 
-  private static void awaitUninterruptibly(CountDownLatch latch) {
-    boolean interrupted = false;
-    while (true) {
-      try {
-        latch.await();
-        break;
-      } catch (InterruptedException e) {
-        interrupted = true;
-      }
-    }
-    if (interrupted) {
-      Thread.currentThread().interrupt();
+  /** Run one fan-out body inside isolated metadata admission and always close its worker pool. */
+  private static <T> T admitted(Supplier<T> body) {
+    MetadataIoRunner admission = new MetadataIoRunner(4);
+    try {
+      return admission.call(() -> false, body, MSGS);
+    } finally {
+      admission.close();
     }
   }
 }

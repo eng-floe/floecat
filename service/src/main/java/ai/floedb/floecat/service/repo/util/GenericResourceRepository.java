@@ -20,7 +20,6 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.concurrent.MetadataIoCacheMissAdmission;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
@@ -49,9 +48,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
 
   private final ResourceSchema<T, K> schema;
-  // Null for repository families outside metadata-I/O admission, and for direct unit-test setup.
-  private final MetadataIoCacheMissAdmission cacheMissAdmission;
+  private final BlobLoadPolicy blobLoadPolicy;
 
+  /** Build a repository without an immutable-blob cache or admitted cache-miss policy. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -59,9 +58,18 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null, null);
+    this(
+        pointerStore,
+        blobStore,
+        schema,
+        parser,
+        toBytes,
+        contentType,
+        null,
+        MetadataReadPolicy.DIRECT);
   }
 
+  /** Build a cached repository whose cold immutable-blob loads run directly. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -70,9 +78,21 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
-    this(pointerStore, blobStore, schema, parser, toBytes, contentType, blobCache, null);
+    this(
+        pointerStore,
+        blobStore,
+        schema,
+        parser,
+        toBytes,
+        contentType,
+        blobCache,
+        MetadataReadPolicy.DIRECT);
   }
 
+  /**
+   * Build a repository with the selected policy for cold immutable-blob cache loads. The policy is
+   * invoked only by the cache's single-flight loader, so cache hits and followers bypass it.
+   */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -81,10 +101,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache,
-      MetadataIoCacheMissAdmission cacheMissAdmission) {
+      BlobLoadPolicy blobLoadPolicy) {
     super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
-    this.cacheMissAdmission = cacheMissAdmission;
+    this.blobLoadPolicy = Objects.requireNonNull(blobLoadPolicy, "blobLoadPolicy");
   }
 
   @Override
@@ -116,9 +136,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       return Optional.empty();
     }
     Function<String, Optional<T>> cacheMissLoader =
-        cacheMissAdmission == null
-            ? this::loadAndParseBlob
-            : uri -> cacheMissAdmission.load(() -> loadAndParseBlob(uri));
+        uri -> blobLoadPolicy.load(() -> loadAndParseBlob(uri));
     if (blobCacheable()) {
       // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
       // means absent but a present result does NOT prove the blob still exists. Callers whose
