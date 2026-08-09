@@ -536,11 +536,11 @@ final class CancellableCallRunner {
         releasePermit();
         return;
       }
-      running.set(true);
-      synchronized (runnerHandoff) {
-        runner = worker;
-      }
       try {
+        running.set(true);
+        synchronized (runnerHandoff) {
+          runner = worker;
+        }
         if (isCancelled()) {
           return;
         }
