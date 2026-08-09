@@ -73,16 +73,11 @@ class MetadataIoRunnerTest {
     // close() gives up after its timeout when a store call ignores interruption. A restart must not
     // treat that timed-out executor as a completed lifecycle: it rejects new work until the old
     // worker has actually stopped, rather than creating a parallel admission executor.
-    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
     var blocker = new UninterruptibleBlocker();
     var nestedFailure = new AtomicReference<Throwable>();
     var nestedFinished = new java.util.concurrent.CountDownLatch(1);
     Thread survivor = null;
     try {
-      System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "1");
-      MetadataIoRunner.closeSharedRuntimeIfStarted();
-      MetadataIoRunner.reopenSharedRuntime(); // drop any runtime an earlier test sized differently
-
       survivor =
           new Thread(
               () -> {
@@ -130,7 +125,7 @@ class MetadataIoRunnerTest {
       assertInstanceOf(CancellationException.class, nestedFailure.get());
       survivor.join(TimeUnit.SECONDS.toMillis(10));
       assertFalse(survivor.isAlive(), "the old executor must terminate once the blocker releases");
-      assertEquals("ok", restarted.callWithoutCancellation(() -> "ok", FAILURES));
+      assertEquals("ok", awaitUsableAfterDrain(restarted));
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new AssertionError(e);
@@ -145,11 +140,6 @@ class MetadataIoRunnerTest {
       }
       MetadataIoRunner.closeSharedRuntimeIfStarted();
       MetadataIoRunner.reopenSharedRuntime();
-      if (previous == null) {
-        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
-      } else {
-        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
-      }
     }
   }
 
@@ -411,6 +401,27 @@ class MetadataIoRunnerTest {
         declaredSomewhere,
         "the knob must be declared in application.properties so it is discoverable, under the same"
             + " key the runner reads");
+  }
+
+  @Test
+  void theProcessWideAdmissionHolderIsConfiguredParentFirst() throws Exception {
+    // The core holder is intentionally the only application-owned static that spans Quarkus
+    // reloads. This assertion protects the configuration link that makes the loader arrangement
+    // exercised by ProcessWideAdmissionTest match the one used by Quarkus.
+    String expected =
+        "quarkus.class-loading.parent-first-artifacts=ai.floedb.floecat:floecat-core-engine-utils";
+    java.nio.file.Path testClasses =
+        java.nio.file.Path.of(
+            MetadataIoRunnerTest.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+    java.nio.file.Path deployedProperties =
+        testClasses.resolveSibling("classes/application.properties");
+    assertTrue(
+        java.nio.file.Files.isRegularFile(deployedProperties),
+        "the deployed application.properties must be available to this test");
+    String body = java.nio.file.Files.readString(deployedProperties);
+    assertTrue(
+        body.contains(expected),
+        "the deployed ProcessWideAdmission holder must remain parent-first across reloads");
   }
 
   @Test
@@ -791,6 +802,20 @@ class MetadataIoRunnerTest {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new CancellationException("interrupted");
+    }
+  }
+
+  private static String awaitUsableAfterDrain(MetadataIoRunner runner) {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (true) {
+      try {
+        return runner.callWithoutCancellation(() -> "ok", FAILURES);
+      } catch (RejectedExecutionException stillDraining) {
+        if (System.nanoTime() >= deadline) {
+          throw stillDraining;
+        }
+        java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+      }
     }
   }
 }

@@ -134,6 +134,100 @@ class CancellableCallRunnerTest {
   }
 
   @Test
+  void aContextCaptureFailureDoesNotRetireAdmissionFromEitherEntryPoint() {
+    var permits = new Semaphore(1);
+    java.util.function.Supplier<ai.floedb.floecat.service.context.PropagatedContext> brokenCapture =
+        () -> {
+          throw new IllegalStateException("context capture failed");
+        };
+    try (ExecutorService pool = Executors.newFixedThreadPool(1)) {
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              CancellableCallRunner.call(
+                  pool,
+                  permits,
+                  () -> false,
+                  notClosed,
+                  () -> "unreachable",
+                  CALL_FAILURES,
+                  saturations::incrementAndGet,
+                  brokenCapture));
+      assertEquals(1, permits.availablePermits());
+
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              CancellableCallRunner.callWithoutCancellation(
+                  pool,
+                  permits,
+                  notClosed,
+                  () -> "unreachable",
+                  CALL_FAILURES,
+                  saturations::incrementAndGet,
+                  brokenCapture));
+      assertEquals(1, permits.availablePermits());
+    }
+  }
+
+  @Test
+  void aClosurePredicateFailureAfterAcquisitionReturnsThePermit() {
+    var permits = new Semaphore(1);
+    try (ExecutorService pool = Executors.newFixedThreadPool(1)) {
+      assertThrows(
+          IllegalStateException.class,
+          () ->
+              CancellableCallRunner.callWithoutCancellation(
+                  pool,
+                  permits,
+                  () -> {
+                    throw new IllegalStateException("closure check failed");
+                  },
+                  () -> "unreachable",
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      assertEquals(1, permits.availablePermits());
+    }
+  }
+
+  @Test
+  void anExecutorThatStartsThenThrowsCannotRunOutsideAdmission() throws Exception {
+    var permits = new Semaphore(1);
+    var blocker = new UninterruptibleBlocker();
+    Executor startsThenThrows =
+        command -> {
+          Thread.ofVirtual().start(command);
+          try {
+            assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+          }
+          throw new RejectedExecutionException("started then threw");
+        };
+
+    try {
+      assertThrows(
+          RejectedExecutionException.class,
+          () ->
+              CancellableCallRunner.callWithoutCancellation(
+                  startsThenThrows,
+                  permits,
+                  notClosed,
+                  () -> {
+                    blocker.await();
+                    return "unreachable";
+                  },
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      assertEquals(0, permits.availablePermits());
+    } finally {
+      blocker.release.countDown();
+    }
+    awaitPermits(permits, 1, "a started task must retain admission until it exits");
+  }
+
+  @Test
   void anOperationThrownMessageLessCancellationIsPreserved() {
     var permits = new Semaphore(1);
     try (ExecutorService pool = Executors.newFixedThreadPool(1)) {

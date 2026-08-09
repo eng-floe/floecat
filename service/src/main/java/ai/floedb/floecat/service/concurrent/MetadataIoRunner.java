@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import ai.floedb.floecat.engine.concurrent.ProcessWideAdmission;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.concurrent.CancellationException;
@@ -261,7 +262,7 @@ public class MetadataIoRunner {
    * it accepts traffic and establishes the process-wide gate before any consumer starts.
    */
   public static void validateConfiguredCapacity() {
-    MetadataIoProcessGate.resolve(configuredCapacity());
+    ProcessWideAdmission.resolve(configuredCapacity());
   }
 
   /** True when two facades share the same process or test runtime. */
@@ -391,11 +392,6 @@ public class MetadataIoRunner {
     if (closing != null) {
       if (!closing.close()) {
         LOG.warn("metadata I/O executor did not terminate during shutdown");
-      } else {
-        // The close latch makes a full permit count reliable: no caller can retain this runtime
-        // and acquire after the executor has terminated. Now a later controlled lifecycle may
-        // establish a different configured ceiling without replacing a live gate.
-        MetadataIoProcessGate.clearIfIdle(closing.permits);
       }
     }
   }
@@ -414,7 +410,7 @@ public class MetadataIoRunner {
 
   private static RuntimeState createSharedRuntime() {
     int configuredCapacity = configuredCapacity();
-    MetadataIoProcessGate.State admission = MetadataIoProcessGate.resolve(configuredCapacity);
+    ProcessWideAdmission.State admission = ProcessWideAdmission.resolve(configuredCapacity);
     if (admission.capacity() != configuredCapacity) {
       LOG.warnf(
           "metadata I/O capacity is fixed at %d until the JVM restarts; ignoring configured %d",

@@ -63,10 +63,32 @@ final class CancellableCallRunner {
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation) {
-    acquire(permits, cancelled, closed, messages, onSaturation, ADMITTED_CANCELLATION_POLL_MILLIS);
+    return call(
+        executor,
+        permits,
+        cancelled,
+        closed,
+        operation,
+        messages,
+        onSaturation,
+        PropagatedContext::capture);
+  }
+
+  static <T> T call(
+      Executor executor,
+      Semaphore permits,
+      BooleanSupplier cancelled,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation,
+      Supplier<PropagatedContext> captureContext) {
+    PropagatedContext context = captureContext.get();
+    AdmissionLease admission =
+        acquire(
+            permits, cancelled, closed, messages, onSaturation, ADMITTED_CANCELLATION_POLL_MILLIS);
     AdmittedTask<T> task =
-        new AdmittedTask<>(
-            new Admission(permits).root(), operation, cancelled, closed, true, messages, executor);
+        newTask(admission, operation, cancelled, closed, true, messages, context, executor);
     submit(executor, task);
     return awaitOutcome(
         task,
@@ -85,16 +107,23 @@ final class CancellableCallRunner {
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation) {
-    acquire(permits, NEVER_CANCELLED, closed, messages, onSaturation, CLOSURE_POLL_MILLIS);
+    return callWithoutCancellation(
+        executor, permits, closed, operation, messages, onSaturation, PropagatedContext::capture);
+  }
+
+  static <T> T callWithoutCancellation(
+      Executor executor,
+      Semaphore permits,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation,
+      Supplier<PropagatedContext> captureContext) {
+    PropagatedContext context = captureContext.get();
+    AdmissionLease admission =
+        acquire(permits, NEVER_CANCELLED, closed, messages, onSaturation, CLOSURE_POLL_MILLIS);
     AdmittedTask<T> task =
-        new AdmittedTask<>(
-            new Admission(permits).root(),
-            operation,
-            NEVER_CANCELLED,
-            closed,
-            false,
-            messages,
-            executor);
+        newTask(admission, operation, NEVER_CANCELLED, closed, false, messages, context, executor);
     submit(executor, task);
     return awaitOutcome(
         task, messages, () -> closed.getAsBoolean() ? RUNTIME_CLOSED : null, CLOSURE_POLL_MILLIS);
@@ -113,16 +142,11 @@ final class CancellableCallRunner {
       BooleanSupplier closed,
       Supplier<T> operation,
       FailureMessages messages) {
+    PropagatedContext context = PropagatedContext.capture();
     AdmissionLease childAdmission = parentAdmission.fork();
-    AdmittedTask<T> task;
-    try {
-      task =
-          new AdmittedTask<>(
-              childAdmission, operation, cancelled, closed, true, messages, NESTED_EXECUTOR);
-    } catch (RuntimeException | Error failure) {
-      childAdmission.release();
-      throw failure;
-    }
+    AdmittedTask<T> task =
+        newTask(
+            childAdmission, operation, cancelled, closed, true, messages, context, NESTED_EXECUTOR);
     submit(NESTED_EXECUTOR, task);
     try {
       return awaitOutcome(
@@ -171,7 +195,35 @@ final class CancellableCallRunner {
     try {
       executor.execute(task);
     } catch (RuntimeException | Error failure) {
-      task.releasePermit();
+      // An executor is allowed to throw after handing the task to a worker. Cancellation prevents
+      // a not-yet-started task from running; a task that already passed its cancellation gate
+      // retains its admission until its own finally releases it.
+      task.cancel(false);
+      throw failure;
+    }
+  }
+
+  private static <T> AdmittedTask<T> newTask(
+      AdmissionLease admission,
+      Supplier<T> operation,
+      BooleanSupplier cancelled,
+      BooleanSupplier closed,
+      boolean rejectCancelledStart,
+      FailureMessages messages,
+      PropagatedContext context,
+      Executor executor) {
+    try {
+      return new AdmittedTask<>(
+          admission,
+          operation,
+          cancelled,
+          closed,
+          rejectCancelledStart,
+          messages,
+          context,
+          executor);
+    } catch (RuntimeException | Error failure) {
+      admission.release();
       throw failure;
     }
   }
@@ -233,15 +285,8 @@ final class CancellableCallRunner {
     }
   }
 
-  private static void rejectIfClosed(Semaphore permits, BooleanSupplier closed) {
-    if (closed.getAsBoolean()) {
-      permits.release();
-      throw new RejectedExecutionException("metadata I/O executor is closed");
-    }
-  }
-
   /** Acquire admission in cancellable polling intervals without losing interrupt semantics. */
-  private static void acquire(
+  private static AdmissionLease acquire(
       Semaphore permits,
       BooleanSupplier cancelled,
       BooleanSupplier closed,
@@ -255,8 +300,7 @@ final class CancellableCallRunner {
       boolean sawCeilingFull;
       if (permits.getQueueLength() == 0) {
         if (permits.tryAcquire()) {
-          rejectIfClosed(permits, closed);
-          return;
+          return takeAcquiredPermit(permits, closed);
         }
         sawCeilingFull = true;
       } else {
@@ -289,13 +333,31 @@ final class CancellableCallRunner {
           throw new RejectedExecutionException("metadata I/O executor is closed");
         }
         if (permits.tryAcquire(pollMillis, TimeUnit.MILLISECONDS)) {
-          rejectIfClosed(permits, closed);
-          return;
+          return takeAcquiredPermit(permits, closed);
         }
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new CancellationException(messages.interruption());
+    }
+  }
+
+  /** Turn a raw semaphore permit into a lease before any fallible post-acquisition work. */
+  private static AdmissionLease takeAcquiredPermit(Semaphore permits, BooleanSupplier closed) {
+    AdmissionLease admission = null;
+    try {
+      admission = new Admission(permits).root();
+      if (closed.getAsBoolean()) {
+        throw new RejectedExecutionException("metadata I/O executor is closed");
+      }
+      return admission;
+    } catch (RuntimeException | Error failure) {
+      if (admission == null) {
+        permits.release();
+      } else {
+        admission.release();
+      }
+      throw failure;
     }
   }
 
@@ -342,8 +404,9 @@ final class CancellableCallRunner {
     }
 
     AdmissionLease fork() {
+      AdmissionLease child = new AdmissionLease(admission, this);
       admission.retain();
-      return new AdmissionLease(admission, this);
+      return child;
     }
 
     boolean isReusable() {
@@ -385,6 +448,7 @@ final class CancellableCallRunner {
         BooleanSupplier closed,
         boolean rejectCancelledStart,
         FailureMessages messages,
+        PropagatedContext context,
         Executor executor) {
       super(() -> null);
       this.admission = admission;
@@ -393,7 +457,7 @@ final class CancellableCallRunner {
       this.closed = closed;
       this.rejectCancelledStart = rejectCancelledStart;
       this.messages = messages;
-      this.context = PropagatedContext.capture();
+      this.context = context;
       this.owningPool = executor instanceof ThreadPoolExecutor pool ? pool : null;
       this.submissionThread = Thread.currentThread();
     }
