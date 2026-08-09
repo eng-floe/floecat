@@ -31,7 +31,6 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -105,9 +104,6 @@ public class QueryInputResolver {
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
-  // The shared sentinel, not a local () -> false: BoundedFanout recognizes THIS instance by
-  // identity to take its blocking wait instead of a 10ms cancellation poll loop.
-  private static final BooleanSupplier NEVER_CANCELLED = BoundedFanout.NEVER_CANCELLED;
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a

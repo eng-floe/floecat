@@ -85,6 +85,24 @@ class MetadataFanoutTest {
   }
 
   @Test
+  void concurrentModeUsesTheSubmittingApplicationClassLoader() {
+    Thread caller = Thread.currentThread();
+    ClassLoader prior = caller.getContextClassLoader();
+    ClassLoader application = new ClassLoader(prior) {};
+    try {
+      caller.setContextClassLoader(application);
+
+      List<ClassLoader> observed =
+          MetadataFanout.concurrent(1)
+              .mapOrdered(List.of(1), ignored -> Thread.currentThread().getContextClassLoader());
+
+      assertThat(observed).containsExactly(application);
+    } finally {
+      caller.setContextClassLoader(prior);
+    }
+  }
+
+  @Test
   void serialModeRunsInlineOnADuplicatedVertxContext() throws Exception {
     Vertx vertx = Vertx.vertx();
     try {

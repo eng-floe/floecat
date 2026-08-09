@@ -205,7 +205,7 @@ public class UserObjectBundleService {
   // round-trips without flooding the store. Per-request bound only: the virtual-thread executor has
   // no shared-pool ceiling, so total store concurrency scales with concurrent requests times this
   // value (upstream gRPC concurrency bounds the request count).
-  private final int maxParallelRelations;
+  private final MetadataFanout relationFanout;
 
   /** Stop the owned executor while bounding teardown if a downstream call ignores interruption. */
   @PreDestroy
@@ -293,7 +293,11 @@ public class UserObjectBundleService {
           "floecat.catalog.bundle.max_parallel_relations=%d is invalid; clamping to 1 (serial)",
           maxParallelRelations);
     }
-    this.maxParallelRelations = Math.max(1, maxParallelRelations);
+    int effectiveMaxParallelRelations = Math.max(1, maxParallelRelations);
+    this.relationFanout =
+        overlay.supportsConcurrentResolution()
+            ? MetadataFanout.concurrent(effectiveMaxParallelRelations)
+            : MetadataFanout.serial();
     FlightEndpointRef advertisedFlightEndpoint =
         FlightEndpointRef.newBuilder()
             .setHost(flightHost)
@@ -1035,13 +1039,7 @@ public class UserObjectBundleService {
             };
         long selectStageStartNs = System.nanoTime();
         try {
-          MetadataFanout.forEachOrdered(
-              plan,
-              maxParallelRelations,
-              overlay.supportsConcurrentResolution(),
-              this::selectOne,
-              consumeSelected,
-              this::isCancelled);
+          relationFanout.forEachOrdered(plan, this::selectOne, consumeSelected, this::isCancelled);
         } finally {
           timings.addResolveNanos(System.nanoTime() - selectStageStartNs);
         }
@@ -1543,10 +1541,8 @@ public class UserObjectBundleService {
       List<Integer> indices = java.util.stream.IntStream.range(0, toBuild.size()).boxed().toList();
       long buildFanoutStartNs = System.nanoTime();
       List<BuildOutcome> outcomes =
-          MetadataFanout.mapOrdered(
+          relationFanout.mapOrdered(
               indices,
-              maxParallelRelations,
-              overlay.supportsConcurrentResolution(),
               j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)),
               this::isCancelled);
       timings.addBuildFanoutNanos(System.nanoTime() - buildFanoutStartNs);

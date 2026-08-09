@@ -137,7 +137,7 @@ public final class StatsProviderFactory {
   private static final class CachedStatsProvider implements StatsProvider {
     // Bound on concurrent stats warms per chunk (chunk cap is 25); virtual threads make this cheap.
     // Local per-request bound; total store concurrency is bounded by the shared executor pool.
-    private final int maxParallelStatsWarms;
+    private final MetadataFanout statsFanout;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -169,7 +169,7 @@ public final class StatsProviderFactory {
       this.correlationId = correlationId == null ? "" : correlationId;
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
-      this.maxParallelStatsWarms = maxParallelStatsWarms;
+      this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -207,14 +207,11 @@ public final class StatsProviderFactory {
       // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
       // (on cheap virtual threads); these reads are thread-safe, and each call populates the shared
       // tableCache so the subsequent per-relation tableStats() is a hit. A single table's failure
-      // yields empty, never aborts the batch. Note the stats/snapshot repositories carry no
-      // @BoundMetadataIo, so this fan-out's store concurrency is bounded by maxParallelStatsWarms
-      // alone — not by the process-wide metadata-I/O ceiling.
+      // yields empty, never aborts the batch. The stats/snapshot repositories are outside the
+      // process-wide metadata-I/O ceiling, so this fan-out's configured concurrency is their bound.
       List<Optional<StatsProvider.TableStatsView>> results =
-          MetadataFanout.mapOrdered(
+          statsFanout.mapOrdered(
               ids,
-              maxParallelStatsWarms,
-              true,
               id -> {
                 try {
                   return tableStats(id);
