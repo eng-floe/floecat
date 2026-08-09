@@ -50,6 +50,7 @@ class ProcessWideAdmissionTest {
     return ReloadedAdmissionCaller.class.getProtectionDomain().getCodeSource().getLocation();
   }
 
+  /** Reloads the application caller while preserving parent ownership of the process gate. */
   private static final class ReloadingCallerClassLoader extends URLClassLoader {
     ReloadingCallerClassLoader(URL classes, ClassLoader parent) {
       super(new URL[] {classes}, parent);

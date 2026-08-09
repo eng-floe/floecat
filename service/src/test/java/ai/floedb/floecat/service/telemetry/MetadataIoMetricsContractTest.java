@@ -89,8 +89,8 @@ class MetadataIoMetricsContractTest {
 
   @Test
   void everyAdmissionMetricIsDeclaredAsTheKindItIsPublishedAs() {
-    // Observability validates the declared type against the method used to publish, on every
-    // emission. Nothing checks this at compile time.
+    // Observability performs this type check at runtime on every emission, so this assertion keeps
+    // the declarations aligned with their publishing methods before telemetry starts.
     for (MetricId gauge :
         List.of(
             ServiceMetrics.MetadataIo.PERMITS_CAPACITY,

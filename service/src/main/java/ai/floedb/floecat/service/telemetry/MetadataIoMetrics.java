@@ -41,8 +41,8 @@ public class MetadataIoMetrics {
   @Inject MetadataIoRunner admission;
 
   /**
-   * Observes {@link StartupEvent} so Arc retains this bean and instantiates it eagerly; nothing
-   * injects it, and an unobserved {@code @PostConstruct} bean is a removal candidate.
+   * Uses a {@link StartupEvent} observer as Arc's retention root and eager-instantiation trigger
+   * for the gauge publisher.
    */
   void registerAdmissionGauges(@Observes @Priority(100) StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
