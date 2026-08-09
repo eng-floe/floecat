@@ -508,8 +508,7 @@ class CancellableCallRunnerTest {
 
   @Test
   void aSaturatedArrivalIsCountedAndAnUncontendedOneIsNot() {
-    // S2: the saturated-wait counter feeds a published metric and nothing exercised it — neither
-    // that it fires when the ceiling is full, nor that it stays quiet when it is not.
+    // The published counter advances only when admission finds the ceiling full.
     var permits = new Semaphore(1);
     try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
       CancellableCallRunner.call(
@@ -777,6 +776,7 @@ class CancellableCallRunnerTest {
     }
   }
 
+  /** Await a bounded test barrier and fail without leaking interruption into later assertions. */
   private static void awaitLatch(CountDownLatch latch) {
     try {
       if (!latch.await(5, TimeUnit.SECONDS)) {
@@ -1373,6 +1373,7 @@ class CancellableCallRunnerTest {
     assertEquals(expected, permits.availablePermits(), message);
   }
 
+  /** Wait for the executor queue to reach the state required by a deterministic race test. */
   private static void awaitQueueSize(ThreadPoolExecutor executor, int expected) throws Exception {
     for (int attempt = 0; attempt < 100 && executor.getQueue().size() != expected; attempt++) {
       Thread.sleep(10);

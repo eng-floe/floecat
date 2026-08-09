@@ -81,6 +81,7 @@ class ProcessWideAdmissionTest {
       super(new URL[] {classes}, parent);
     }
 
+    /** Reload only the caller fixture while delegating all production classes to the parent. */
     @Override
     protected synchronized Class<?> loadClass(String name, boolean resolve)
         throws ClassNotFoundException {

@@ -316,21 +316,33 @@ public class MetadataIoRunner {
             + " admitted operation before retrying");
   }
 
+  /** Return reusable same-runtime admission, rejecting nested work that cannot safely proceed. */
+  private static HeldAdmission reusableHeldAdmission(
+      RuntimeState runtime,
+      BooleanSupplier cancelled,
+      CancellableCallRunner.FailureMessages failureMessages) {
+    HeldAdmission held = HELD_ADMISSION.get();
+    if (held == null || held.runtime() != runtime) {
+      return null;
+    }
+    rejectNestedIfUnusable(runtime, cancelled, failureMessages);
+    if (!held.admission().isReusable()) {
+      throw nonReusableAdmissionReentry();
+    }
+    return held;
+  }
+
   /** Run one blocking call with cancellation polling and application-wide admission. */
   <T> T call(
       BooleanSupplier cancelled,
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
-    HeldAdmission held = HELD_ADMISSION.get();
-    if (held != null && held.runtime() == current) {
-      rejectNestedIfUnusable(current, cancelled, failureMessages);
+    HeldAdmission held = reusableHeldAdmission(current, cancelled, failureMessages);
+    if (held != null) {
       Supplier<T> nestedOperation = withApplicationClassLoader(current, operation);
-      if (held.admission().isReusable()) {
-        return CancellableCallRunner.callAlreadyAdmitted(
-            held.admission(), cancelled, current::isClosed, nestedOperation, failureMessages);
-      }
-      throw nonReusableAdmissionReentry();
+      return CancellableCallRunner.callAlreadyAdmitted(
+          held.admission(), cancelled, current::isClosed, nestedOperation, failureMessages);
     }
     return CancellableCallRunner.call(
         current.executor(),
@@ -346,13 +358,9 @@ public class MetadataIoRunner {
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
-    HeldAdmission held = HELD_ADMISSION.get();
-    if (held != null && held.runtime() == current) {
-      rejectNestedIfUnusable(current, null, failureMessages);
-      if (held.admission().isReusable()) {
-        return operation.get();
-      }
-      throw nonReusableAdmissionReentry();
+    HeldAdmission held = reusableHeldAdmission(current, null, failureMessages);
+    if (held != null) {
+      return operation.get();
     }
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),

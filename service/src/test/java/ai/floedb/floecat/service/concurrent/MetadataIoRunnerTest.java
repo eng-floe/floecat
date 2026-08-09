@@ -166,6 +166,7 @@ class MetadataIoRunnerTest {
     }
   }
 
+  /** Run one assertion with a temporary metadata-I/O capacity property value. */
   private static void withCapacityProperty(String value, Runnable body) {
     String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
     try {
@@ -184,18 +185,11 @@ class MetadataIoRunnerTest {
   void anUnresolvableConfiguredCapacityFailsStartup() {
     // ConfigValue exposes an unresolved expression as a null resolved value. Treat that as invalid
     // rather than silently accepting a ceiling different from the one the operator supplied.
-    String previous = System.getProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
-    try {
-      System.setProperty(
-          MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, "${FLOECAT_NO_SUCH_VAR_FOR_THIS_TEST}");
-      assertThrows(IllegalStateException.class, MetadataIoRunner::validateConfiguredCapacity);
-    } finally {
-      if (previous == null) {
-        System.clearProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY);
-      } else {
-        System.setProperty(MetadataIoRunner.MAX_CONCURRENCY_PROPERTY, previous);
-      }
-    }
+    withCapacityProperty(
+        "${FLOECAT_NO_SUCH_VAR_FOR_THIS_TEST}",
+        () ->
+            assertThrows(
+                IllegalStateException.class, MetadataIoRunner::validateConfiguredCapacity));
   }
 
   @Test
@@ -214,10 +208,8 @@ class MetadataIoRunnerTest {
 
   @Test
   void aCachedFacadeFollowsTheRuntimeAcrossARestart() {
-    // A facade outlives the runtime it was created against. A CDI-scoped bean is exactly this
-    // shape:
-    // built once, held for the container's life. If it captured the RuntimeState it would keep
-    // serving the one a shutdown closed — closed is sticky and reopen only clears the sentinel.
+    // A CDI-scoped facade outlives individual runtimes, so each call must resolve the replacement
+    // after sticky closure rather than retaining the runtime captured at construction.
     MetadataIoRunner longLived = new MetadataIoRunner();
     assertEquals("ok", longLived.callWithoutCancellation(() -> "ok", FAILURES));
 
@@ -232,8 +224,7 @@ class MetadataIoRunnerTest {
 
   @Test
   void theSaturationSinkIsInstalledAndClearedAcrossTheBeanBoundary() {
-    // setSaturationSink lives in this class, the install is in the telemetry bean and the clear is
-    // in the lifecycle bean — three files, and nothing exercised the wire itself.
+    // The telemetry and lifecycle beans install and clear this process-wide callback.
     var hits = new java.util.concurrent.atomic.AtomicInteger();
     MetadataIoRunner.setSaturationSink(hits::incrementAndGet);
     var runner = new MetadataIoRunner(1);
@@ -273,6 +264,7 @@ class MetadataIoRunnerTest {
     }
   }
 
+  /** Wait until a saturated admission reports through the installed telemetry sink. */
   private static void awaitSaturation(java.util.concurrent.atomic.AtomicInteger hits) {
     for (int i = 0; i < 500 && hits.get() == 0; i++) {
       try {
@@ -823,6 +815,7 @@ class MetadataIoRunnerTest {
     }
   }
 
+  /** Await a test barrier while preserving cancellation-style interruption semantics. */
   private static void await(CountDownLatch latch) {
     try {
       latch.await();
@@ -832,6 +825,7 @@ class MetadataIoRunnerTest {
     }
   }
 
+  /** Retry through the bounded shutdown drain until the replacement runtime becomes usable. */
   private static String awaitUsableAfterDrain(MetadataIoRunner runner) {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
     while (true) {
