@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -276,22 +277,6 @@ class MetadataIoRunnerTest {
       Thread.sleep(5);
     }
     assertThat(condition.getAsBoolean()).isTrue();
-  }
-
-  /** Await a latch through interrupts and restore the worker's interrupted status on return. */
-  private static void awaitUninterruptibly(CountDownLatch latch) {
-    boolean interrupted = false;
-    while (true) {
-      try {
-        latch.await();
-        break;
-      } catch (InterruptedException ignored) {
-        interrupted = true;
-      }
-    }
-    if (interrupted) {
-      Thread.currentThread().interrupt();
-    }
   }
 
   /** Build the minimal resolved/raw configuration view used by capacity parser tests. */

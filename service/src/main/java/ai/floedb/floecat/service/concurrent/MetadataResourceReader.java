@@ -15,21 +15,21 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
-import ai.floedb.floecat.common.rpc.BlobHeader;
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
-import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.function.Supplier;
 
-/** Builds read-only storage adapters that admit exactly one backend read at a time. */
+/**
+ * Admission policy for one leaf metadata-store read.
+ *
+ * <p>The current {@link ai.floedb.floecat.service.context.PropagatedContext} supplies cooperative
+ * request cancellation when available. Cancellation may abandon the waiting caller, while the
+ * admitted task retains its permit until the backend operation returns. Backend runtime failures
+ * propagate unchanged.
+ */
 @ApplicationScoped
-public class MetadataResourceReader {
+public class MetadataResourceReader implements RepositoryReads.ReadPolicy {
 
   private static final CancellableCallRunner.FailureMessages FAILURES =
       new CancellableCallRunner.FailureMessages(
@@ -42,46 +42,9 @@ public class MetadataResourceReader {
     this.admission = admission;
   }
 
-  /** Bind admission to the read methods of the supplied stores; mutation methods stay unwrapped. */
-  public RepositoryReads bind(PointerStore pointers, BlobStore blobs) {
-    return new RepositoryReads(
-        new RepositoryReads.Pointers() {
-          @Override
-          public Optional<Pointer> get(String key) {
-            return read(() -> pointers.get(key));
-          }
-
-          @Override
-          public List<Pointer> list(
-              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            return read(
-                () -> pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut));
-          }
-
-          @Override
-          public int count(String prefix) {
-            return read(() -> pointers.countByPrefix(prefix));
-          }
-        },
-        new RepositoryReads.Blobs() {
-          @Override
-          public byte[] get(String uri) {
-            return read(() -> blobs.get(uri));
-          }
-
-          @Override
-          public Map<String, byte[]> getBatch(List<String> uris) {
-            return read(() -> blobs.getBatch(uris));
-          }
-
-          @Override
-          public Optional<BlobHeader> head(String uri) {
-            return read(() -> blobs.head(uri));
-          }
-        });
-  }
-
-  private <T> T read(Supplier<T> operation) {
+  /** Execute one leaf read under process-wide admission and propagated request cancellation. */
+  @Override
+  public <T> T read(Supplier<T> operation) {
     return admission.callWithCurrentCancellation(operation, FAILURES);
   }
 }

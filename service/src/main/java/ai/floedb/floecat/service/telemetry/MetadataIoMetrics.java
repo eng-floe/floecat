@@ -29,10 +29,9 @@ import jakarta.inject.Inject;
 /**
  * Publishes the process-wide metadata-I/O admission ceiling as metrics.
  *
- * <p>Scope: these count the repository families composed with the admitted read policy only
- * (catalog, namespace, table, view). Reads through a direct family do not appear here, so {@code
- * in_use} below {@code capacity} does not mean the process is idle on store I/O. Kept out of the
- * metric descriptions, which are a versioned contract.
+ * <p>Scope: these count the catalog, namespace, table, and view families composed with the admitted
+ * read policy. {@code in_use} therefore describes that admitted subset of process store activity.
+ * This scope stays in the operator documentation because metric descriptions are versioned.
  *
  * <p>A permit is held until the downstream call exits, so a stalled store keeps the ceiling full
  * after its callers have given up. {@code in_use} against {@code capacity} shows whether the

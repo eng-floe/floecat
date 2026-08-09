@@ -23,70 +23,102 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /** Read-only storage seam used by resource repositories. */
 public record RepositoryReads(Pointers pointers, Blobs blobs) {
 
+  /** Require both read capabilities so a repository cannot be partially composed. */
   public RepositoryReads {
     Objects.requireNonNull(pointers, "pointers");
     Objects.requireNonNull(blobs, "blobs");
   }
 
-  /** Direct reads for repository families that are outside metadata admission. */
+  /** Build read capabilities that invoke each supplied store on the calling thread. */
   public static RepositoryReads direct(PointerStore pointers, BlobStore blobs) {
+    return bind(
+        pointers,
+        blobs,
+        new ReadPolicy() {
+          @Override
+          public <T> T read(Supplier<T> operation) {
+            return operation.get();
+          }
+        });
+  }
+
+  /**
+   * Build both store adapters under one execution policy. Every backend read passes through {@code
+   * policy} exactly once; cache placement remains the repository's responsibility.
+   */
+  public static RepositoryReads bind(PointerStore pointers, BlobStore blobs, ReadPolicy policy) {
     Objects.requireNonNull(pointers, "pointers");
     Objects.requireNonNull(blobs, "blobs");
+    Objects.requireNonNull(policy, "policy");
     return new RepositoryReads(
         new Pointers() {
           @Override
           public Optional<Pointer> get(String key) {
-            return pointers.get(key);
+            return policy.read(() -> pointers.get(key));
           }
 
           @Override
           public List<Pointer> list(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            return pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+            return policy.read(
+                () -> pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut));
           }
 
           @Override
           public int count(String prefix) {
-            return pointers.countByPrefix(prefix);
+            return policy.read(() -> pointers.countByPrefix(prefix));
           }
         },
         new Blobs() {
           @Override
           public byte[] get(String uri) {
-            return blobs.get(uri);
+            return policy.read(() -> blobs.get(uri));
           }
 
           @Override
           public Map<String, byte[]> getBatch(List<String> uris) {
-            return blobs.getBatch(uris);
+            return policy.read(() -> blobs.getBatch(uris));
           }
 
           @Override
           public Optional<BlobHeader> head(String uri) {
-            return blobs.head(uri);
+            return policy.read(() -> blobs.head(uri));
           }
         });
   }
 
-  /** Pointer-store operations that cannot mutate durable state. */
+  /** Defines how one leaf store read is executed and how its failure reaches the repository. */
+  public interface ReadPolicy {
+    /** Execute one backend operation, preserving its result type and runtime failure. */
+    <T> T read(Supplier<T> operation);
+  }
+
+  /** Pointer-store read operations exposed to resource repositories. */
   public interface Pointers {
+    /** Read one pointer by its canonical storage key. */
     Optional<Pointer> get(String key);
 
+    /** Read one ordered page and append the continuation token to {@code nextTokenOut}. */
     List<Pointer> list(String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+    /** Count pointers below one storage prefix. */
     int count(String prefix);
   }
 
-  /** Blob-store operations that cannot mutate durable state. */
+  /** Blob-store read operations exposed to resource repositories. */
   public interface Blobs {
+    /** Read one blob body by URI. */
     byte[] get(String uri);
 
+    /** Read a batch of blob bodies keyed by URI. */
     Map<String, byte[]> getBatch(List<String> uris);
 
+    /** Read one blob's metadata without loading its body. */
     Optional<BlobHeader> head(String uri);
   }
 }

@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
@@ -48,7 +49,7 @@ class MetadataResourceReaderTest {
               return new byte[] {1, 2, 3};
             });
     RepositoryReads reads =
-        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
 
     assertThat(reads.blobs().get("blob")).containsExactly(1, 2, 3);
     assertThat(runner.permitsInUse()).isZero();
@@ -59,7 +60,7 @@ class MetadataResourceReaderTest {
     MetadataIoRunner runner = new MetadataIoRunner(1);
     BlobStore blobs = mock(BlobStore.class);
     RepositoryReads reads =
-        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
 
     try (PropagatedContext.CancellationScope ignored =
         PropagatedContext.bindCancellation(() -> true)) {
@@ -82,7 +83,7 @@ class MetadataResourceReaderTest {
               return new byte[] {1};
             });
     RepositoryReads reads =
-        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
     AtomicBoolean cancelled = new AtomicBoolean();
     CompletableFuture<byte[]> call =
         CompletableFuture.supplyAsync(
@@ -104,21 +105,7 @@ class MetadataResourceReaderTest {
     verify(blobs).get("blob");
   }
 
-  private static void awaitUninterruptibly(CountDownLatch latch) {
-    boolean interrupted = false;
-    while (true) {
-      try {
-        latch.await();
-        break;
-      } catch (InterruptedException ignored) {
-        interrupted = true;
-      }
-    }
-    if (interrupted) {
-      Thread.currentThread().interrupt();
-    }
-  }
-
+  /** Wait for the abandoned backend task to return its admission permit. */
   private static void awaitPermitRelease(MetadataIoRunner runner) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
     while (runner.permitsInUse() != 0 && System.nanoTime() < deadline) {

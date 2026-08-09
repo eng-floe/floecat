@@ -49,7 +49,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private final ResourceSchema<T, K> schema;
 
-  /** Build a repository without an immutable-blob cache. */
+  /** Build a direct-loading repository over the supplied stores. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,

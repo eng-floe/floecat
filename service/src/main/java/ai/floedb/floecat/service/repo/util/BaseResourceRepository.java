@@ -152,6 +152,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         RepositoryReads.direct(pointerStore, blobStore));
   }
 
+  /**
+   * Compose raw stores for mutation transactions with the read capabilities selected for this
+   * repository family. Reads performed as part of a write protocol stay on the raw stores so the
+   * protocol retains one direct consistency boundary.
+   */
   protected BaseResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,

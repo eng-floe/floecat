@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.repo.util;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
@@ -27,17 +26,15 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.time.Duration;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 /** Verifies repository reads invoke the backend seam only when storage is actually consulted. */
 class RepositoryReadsTest {
 
   @Test
-  void immutableBlobCacheHitsAndFollowersStayOutsideTheBackendRead() {
+  void immutableBlobCacheHitsStayOutsideTheBackendRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     GenericResourceRepository<Catalog, CatalogKey> writer =
@@ -59,25 +56,15 @@ class RepositoryReadsTest {
     String blobUri = writer.metaFor(new CatalogKey("account", "catalog")).getBlobUri();
 
     AtomicInteger backendGets = new AtomicInteger();
-    RepositoryReads direct = RepositoryReads.direct(pointers, blobs);
     RepositoryReads counted =
-        new RepositoryReads(
-            direct.pointers(),
-            new RepositoryReads.Blobs() {
+        RepositoryReads.bind(
+            pointers,
+            blobs,
+            new RepositoryReads.ReadPolicy() {
               @Override
-              public byte[] get(String uri) {
+              public <T> T read(Supplier<T> operation) {
                 backendGets.incrementAndGet();
-                return direct.blobs().get(uri);
-              }
-
-              @Override
-              public Map<String, byte[]> getBatch(List<String> uris) {
-                return direct.blobs().getBatch(uris);
-              }
-
-              @Override
-              public Optional<BlobHeader> head(String uri) {
-                return direct.blobs().head(uri);
+                return operation.get();
               }
             });
     GenericResourceRepository<Catalog, CatalogKey> reader =

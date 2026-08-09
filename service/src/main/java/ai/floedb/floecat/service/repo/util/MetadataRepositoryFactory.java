@@ -42,7 +42,7 @@ public class MetadataRepositoryFactory {
     this.pointers = pointers;
     this.blobs = blobs;
     this.cache = cache;
-    this.reads = admittedReads.bind(pointers, blobs);
+    this.reads = RepositoryReads.bind(pointers, blobs, admittedReads);
   }
 
   /** Build one admitted metadata repository while leaving its mutation path direct. */

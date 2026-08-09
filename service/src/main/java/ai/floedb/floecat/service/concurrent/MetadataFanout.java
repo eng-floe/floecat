@@ -26,8 +26,8 @@ import java.util.function.Function;
  * Ordered metadata fan-out configured as either caller-thread serial work or bounded concurrency.
  *
  * <p>Both modes use the same scheduler and therefore share ordering, first-failure, cancellation,
- * and context-propagation behavior. This module performs orchestration only; storage adapters apply
- * metadata admission to each backend read invoked by a unit.
+ * and context-propagation behavior. This module owns orchestration; storage adapters own metadata
+ * admission for each backend read invoked by a unit.
  */
 public final class MetadataFanout {
 
