@@ -308,6 +308,12 @@ public class MetadataIoRunner {
     }
   }
 
+  private static IllegalStateException nonReusableAdmissionReentry() {
+    return new IllegalStateException(
+        "cannot re-enter metadata I/O after abandoning a nested call; return from the outer"
+            + " admitted operation before retrying");
+  }
+
   /** Run one blocking call with cancellation polling and application-wide admission. */
   <T> T call(
       BooleanSupplier cancelled,
@@ -322,14 +328,7 @@ public class MetadataIoRunner {
         return CancellableCallRunner.callAlreadyAdmitted(
             held.admission(), cancelled, current::isClosed, nestedOperation, failureMessages);
       }
-      return CancellableCallRunner.callWithFreshNestedAdmission(
-          held.admission(),
-          current.permits,
-          cancelled,
-          current::isClosed,
-          nestedOperation,
-          failureMessages,
-          MetadataIoRunner::recordSaturatedWait);
+      throw nonReusableAdmissionReentry();
     }
     return CancellableCallRunner.call(
         current.executor(),
@@ -351,13 +350,7 @@ public class MetadataIoRunner {
       if (held.admission().isReusable()) {
         return operation.get();
       }
-      return CancellableCallRunner.callWithoutCancellationWithFreshNestedAdmission(
-          held.admission(),
-          current.permits,
-          current::isClosed,
-          withApplicationClassLoader(current, operation),
-          failureMessages,
-          MetadataIoRunner::recordSaturatedWait);
+      throw nonReusableAdmissionReentry();
     }
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),

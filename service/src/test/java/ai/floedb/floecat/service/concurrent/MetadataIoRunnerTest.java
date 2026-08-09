@@ -701,13 +701,15 @@ class MetadataIoRunnerTest {
 
   @ParameterizedTest
   @ValueSource(booleans = {true, false})
-  void cancelledNestedCallCanBeRetriedBeforeTheOuterOperationReturns(boolean cancellableRetry)
+  void cancelledNestedCallCannotBeRetriedBeforeTheOuterOperationReturns(boolean cancellableRetry)
       throws Exception {
     var runner = new MetadataIoRunner(1);
     var blocker = new UninterruptibleBlocker();
     var cancelled = new AtomicBoolean();
-    var nestedCallerReturned = new CountDownLatch(1);
-    var laterOperationStarted = new CountDownLatch(1);
+    var nestedOperationReturned = new CountDownLatch(1);
+    var retryRejected = new CountDownLatch(1);
+    var allowOuterReturn = new CountDownLatch(1);
+    var contenderStarted = new CountDownLatch(1);
     runner.start();
     try {
       CompletableFuture<String> outer =
@@ -720,35 +722,59 @@ class MetadataIoRunnerTest {
                               cancelled::get,
                               () -> {
                                 blocker.await();
+                                nestedOperationReturned.countDown();
                                 return "nested";
                               },
                               FAILURES);
                         } catch (CancellationException expected) {
-                          nestedCallerReturned.countDown();
+                          // Retry is intentionally attempted before this outer operation returns.
                         }
-                        Supplier<String> retry =
-                            () -> {
-                              laterOperationStarted.countDown();
-                              return "after-nested-cancellation";
-                            };
-                        return cancellableRetry
-                            ? runner.call(() -> false, retry, FAILURES)
-                            : runner.callWithoutCancellation(retry, FAILURES);
+                        IllegalStateException rejection =
+                            assertThrows(
+                                IllegalStateException.class,
+                                () -> {
+                                  Supplier<String> retry = () -> "unexpected";
+                                  if (cancellableRetry) {
+                                    runner.call(() -> false, retry, FAILURES);
+                                  } else {
+                                    runner.callWithoutCancellation(retry, FAILURES);
+                                  }
+                                });
+                        retryRejected.countDown();
+                        await(allowOuterReturn);
+                        return rejection.getMessage();
                       },
                       FAILURES));
       assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
 
       cancelled.set(true);
-      assertTrue(nestedCallerReturned.await(250, TimeUnit.MILLISECONDS));
+      assertTrue(
+          retryRejected.await(250, TimeUnit.MILLISECONDS),
+          "same-runtime retry must reject rather than wait for fresh admission");
       assertEquals(1, runner.permitsInUse());
-      assertFalse(
-          laterOperationStarted.await(50, TimeUnit.MILLISECONDS),
-          "the nested operation must keep its inherited permit before later work starts");
 
       blocker.release.countDown();
-      assertEquals("after-nested-cancellation", outer.get(1, TimeUnit.SECONDS));
+      assertTrue(nestedOperationReturned.await(1, TimeUnit.SECONDS));
+
+      CompletableFuture<String> contender =
+          CompletableFuture.supplyAsync(
+              () ->
+                  runner.callWithoutCancellation(
+                      () -> {
+                        contenderStarted.countDown();
+                        return "contender";
+                      },
+                      FAILURES));
+      assertFalse(
+          contenderStarted.await(50, TimeUnit.MILLISECONDS),
+          "the outer operation must retain admission after its abandoned child exits");
+
+      allowOuterReturn.countDown();
+      assertTrue(outer.get(1, TimeUnit.SECONDS).contains("outer admitted operation"));
+      assertEquals("contender", contender.get(1, TimeUnit.SECONDS));
     } finally {
       blocker.release.countDown();
+      allowOuterReturn.countDown();
       runner.close();
     }
   }
