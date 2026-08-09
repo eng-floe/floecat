@@ -17,14 +17,21 @@
 package ai.floedb.floecat.service.storage.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -60,18 +67,26 @@ import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
+import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @GrpcService
 public class StorageAuthorityServiceImpl extends BaseServiceImpl implements StorageAuthorities {
+  private static final org.jboss.logging.Logger LOG =
+      org.jboss.logging.Logger.getLogger(StorageAuthorityServiceImpl.class);
+
   private static final Set<String> MUTABLE_PATHS =
       Set.of(
           "display_name",
@@ -98,6 +113,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject ReconcileJobStore reconcileJobs;
+  @Inject CredentialResolver credentialResolver;
 
   @ConfigProperty(name = "floecat.blob")
   String blobStoreType;
@@ -309,6 +325,21 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   StorageAuthorityResolver.resolveBest(
                           authorities, credentialScope.authorityLookupLocationPrefix())
                       .orElse(null);
+              if (authority == null && request.hasTableId()) {
+                // No authority covers this location. Before failing, ask the source catalog: an
+                // Iceberg REST catalog with access delegation issues its own short-lived
+                // credentials, which makes a separately configured authority unnecessary.
+                //
+                // Deliberately a fallback rather than the first choice -- an existing authority
+                // stays authoritative, so this cannot change behaviour for any catalog that
+                // already works.
+                ResolveStorageAuthorityResponse vended =
+                    vendFromSourceCatalog(
+                        accountId, request.getTableId(), credentialScope.responseLocationPrefix());
+                if (vended != null) {
+                  return vended;
+                }
+              }
               validateAuthorityCoversSessionScope(
                   authority, credentialScope.sessionScopeLocations());
               return resolver.buildResponse(
@@ -596,6 +627,82 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           .asRuntimeException();
     }
     return CredentialScope.forSingleLocation(resolveTableLocationPrefix(table));
+  }
+
+  /**
+   * Asks the table's source catalog to vend storage credentials, or returns null when it will not.
+   *
+   * <p>Reached only when no storage authority covers the location. Returning null means "the
+   * catalog does not delegate" and lets the caller fail with the usual missing-authority error; it
+   * does not swallow a catalog that delegates but refused, which surfaces as a thrown exception.
+   *
+   * <p>NOTE: builds a connector per call, which for an Iceberg REST catalog means an OAuth exchange
+   * and a fresh HTTP client. Vending happens per file group, so this wants a cache keyed on the
+   * table and bounded by the credential expiry before it carries production traffic. Left out here
+   * because the invalidation policy is a design decision, not an implementation detail.
+   */
+  private ResolveStorageAuthorityResponse vendFromSourceCatalog(
+      String accountId, ResourceId requestedTableId, String responseLocationPrefix) {
+    Table table;
+    try {
+      table = loadVisibleTable(scopedTableId(accountId, requestedTableId, correlationId()));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    UpstreamRef upstream = table.getUpstream();
+    if (!upstream.hasConnectorId() || upstream.getTableDisplayName().isBlank()) {
+      return null;
+    }
+    Connector connector = connectorRepo.getById(upstream.getConnectorId()).orElse(null);
+    if (connector == null) {
+      return null;
+    }
+
+    String namespaceFq = String.join(".", upstream.getNamespacePathList());
+    Optional<FloecatConnector.VendedStorageCredentials> vended;
+    try (FloecatConnector source =
+        ConnectorFactory.create(resolveConnectorCredentials(connector))) {
+      vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
+    }
+    if (vended.isEmpty() || vended.get().isEmpty()) {
+      return null;
+    }
+
+    LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
+    storageConfig.put("type", "s3");
+    storageConfig.putAll(vended.get().properties());
+    VendedStorageCredential.Builder credential =
+        VendedStorageCredential.newBuilder()
+            .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
+            .putAllConfig(Map.copyOf(storageConfig));
+    Instant expiresAt = vended.get().expiresAt();
+    if (expiresAt != null) {
+      credential.setExpiresAt(Timestamps.fromMillis(expiresAt.toEpochMilli()));
+    }
+    LOG.infof(
+        "vended storage credentials from source catalog connector=%s table=%s.%s expiresAt=%s",
+        connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName(), expiresAt);
+    return ResolveStorageAuthorityResponse.newBuilder().addStorageCredentials(credential).build();
+  }
+
+  /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */
+  private ConnectorConfig resolveConnectorCredentials(Connector connector) {
+    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+    AuthConfig auth = connector.getAuth();
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (!connector.hasResourceId()
+        || auth.getScheme().isBlank()
+        || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    return credentialResolver
+        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
   }
 
   private CredentialScope resolvePlannerBootstrapLocation(
