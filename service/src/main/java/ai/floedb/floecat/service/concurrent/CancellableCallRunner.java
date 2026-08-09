@@ -27,6 +27,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
@@ -46,6 +47,9 @@ final class CancellableCallRunner {
   private static final long CLOSURE_POLL_MILLIS = 250;
   private static final long ADMITTED_CANCELLATION_POLL_MILLIS = 25;
   private static final BooleanSupplier NEVER_CANCELLED = () -> false;
+  private static final Executor NESTED_EXECUTOR =
+      command -> Thread.ofVirtual().name("floecat-metadata-io-nested").start(command);
+  private static final ThreadLocal<AdmissionLease> CURRENT_ADMISSION = new ThreadLocal<>();
 
   static final String RUNTIME_CLOSED = "metadata I/O executor closed while the call was in flight";
 
@@ -59,9 +63,10 @@ final class CancellableCallRunner {
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation) {
-    AdmittedTask<T> task =
-        new AdmittedTask<>(permits, operation, cancelled, closed, true, messages, executor);
     acquire(permits, cancelled, closed, messages, onSaturation, ADMITTED_CANCELLATION_POLL_MILLIS);
+    AdmittedTask<T> task =
+        new AdmittedTask<>(
+            new Admission(permits).root(), operation, cancelled, closed, true, messages, executor);
     submit(executor, task);
     return awaitOutcome(
         task,
@@ -80,12 +85,64 @@ final class CancellableCallRunner {
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation) {
-    AdmittedTask<T> task =
-        new AdmittedTask<>(permits, operation, NEVER_CANCELLED, closed, false, messages, executor);
     acquire(permits, NEVER_CANCELLED, closed, messages, onSaturation, CLOSURE_POLL_MILLIS);
+    AdmittedTask<T> task =
+        new AdmittedTask<>(
+            new Admission(permits).root(),
+            operation,
+            NEVER_CANCELLED,
+            closed,
+            false,
+            messages,
+            executor);
     submit(executor, task);
     return awaitOutcome(
         task, messages, () -> closed.getAsBoolean() ? RUNTIME_CLOSED : null, CLOSURE_POLL_MILLIS);
+  }
+
+  /**
+   * Run nested work under a permit that its caller already owns.
+   *
+   * <p>The nested task gets another reference to the same admission lease rather than acquiring a
+   * second permit. Its caller can therefore abandon the wait promptly while the lease remains held
+   * until the downstream operation has actually stopped.
+   */
+  static <T> T callAlreadyAdmitted(
+      AdmissionLease parentAdmission,
+      BooleanSupplier cancelled,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages) {
+    AdmissionLease childAdmission = parentAdmission.fork();
+    AdmittedTask<T> task;
+    try {
+      task =
+          new AdmittedTask<>(
+              childAdmission, operation, cancelled, closed, true, messages, NESTED_EXECUTOR);
+    } catch (RuntimeException | Error failure) {
+      childAdmission.release();
+      throw failure;
+    }
+    submit(NESTED_EXECUTOR, task);
+    try {
+      return awaitOutcome(
+          task,
+          messages,
+          () ->
+              cancelled.getAsBoolean()
+                  ? messages.cancellation()
+                  : closed.getAsBoolean() ? RUNTIME_CLOSED : null,
+          ADMITTED_CANCELLATION_POLL_MILLIS);
+    } catch (CancellationException cancellation) {
+      if (task.isCancelled() && !task.isAdmissionReleased()) {
+        parentAdmission.invalidateLineage();
+      }
+      throw cancellation;
+    }
+  }
+
+  static AdmissionLease currentAdmission() {
+    return CURRENT_ADMISSION.get();
   }
 
   /** Caller-facing cancellation outcomes for a dispatched blocking call. */
@@ -242,9 +299,73 @@ final class CancellableCallRunner {
     }
   }
 
+  /** A permit that remains held until every nested operation using it has genuinely returned. */
+  static final class Admission {
+    private final Semaphore permits;
+    private final AtomicInteger references = new AtomicInteger(1);
+
+    Admission(Semaphore permits) {
+      this.permits = permits;
+    }
+
+    private void retain() {
+      int current;
+      do {
+        current = references.get();
+        if (current == 0) {
+          throw new IllegalStateException("metadata I/O admission was already released");
+        }
+      } while (!references.compareAndSet(current, current + 1));
+    }
+
+    private void release() {
+      if (references.decrementAndGet() == 0) {
+        permits.release();
+      }
+    }
+
+    AdmissionLease root() {
+      return new AdmissionLease(this, null);
+    }
+  }
+
+  /** One logical execution branch sharing an admission with its nested descendants. */
+  static final class AdmissionLease {
+    private final Admission admission;
+    private final AdmissionLease parent;
+    private final AtomicBoolean reusable = new AtomicBoolean(true);
+    private final AtomicBoolean released = new AtomicBoolean();
+
+    private AdmissionLease(Admission admission, AdmissionLease parent) {
+      this.admission = admission;
+      this.parent = parent;
+    }
+
+    AdmissionLease fork() {
+      admission.retain();
+      return new AdmissionLease(admission, this);
+    }
+
+    boolean isReusable() {
+      return reusable.get();
+    }
+
+    void invalidateLineage() {
+      for (AdmissionLease current = this; current != null; current = current.parent) {
+        current.reusable.set(false);
+      }
+    }
+
+    void release() {
+      if (released.compareAndSet(false, true)) {
+        admission.release();
+      }
+    }
+  }
+
   /** The one terminal-state owner for a dispatched admitted call. */
   private static final class AdmittedTask<T> extends FutureTask<T> {
-    private final Semaphore permits;
+    private final AdmissionLease admission;
     private final Supplier<T> operation;
     private final BooleanSupplier cancelled;
     private final BooleanSupplier closed;
@@ -254,12 +375,11 @@ final class CancellableCallRunner {
     private final ThreadPoolExecutor owningPool;
     private final Thread submissionThread;
     private final AtomicBoolean running = new AtomicBoolean();
-    private final AtomicBoolean operationStarted = new AtomicBoolean();
     private final AtomicBoolean permitReleased = new AtomicBoolean();
     private volatile Thread runner;
 
     AdmittedTask(
-        Semaphore permits,
+        AdmissionLease admission,
         Supplier<T> operation,
         BooleanSupplier cancelled,
         BooleanSupplier closed,
@@ -267,7 +387,7 @@ final class CancellableCallRunner {
         FailureMessages messages,
         Executor executor) {
       super(() -> null);
-      this.permits = permits;
+      this.admission = admission;
       this.operation = operation;
       this.cancelled = cancelled;
       this.closed = closed;
@@ -292,14 +412,23 @@ final class CancellableCallRunner {
         if (isCancelled()) {
           return;
         }
-        operationStarted.set(true);
         if (isCancelled() || closed.getAsBoolean()) {
           throw new CancellationException(RUNTIME_CLOSED);
         }
         if (rejectCancelledStart && cancelled.getAsBoolean()) {
           throw new CancellationException(messages.cancellation());
         }
-        set(context.supply(operation));
+        AdmissionLease previousAdmission = CURRENT_ADMISSION.get();
+        CURRENT_ADMISSION.set(admission);
+        try {
+          set(context.supply(operation));
+        } finally {
+          if (previousAdmission == null) {
+            CURRENT_ADMISSION.remove();
+          } else {
+            CURRENT_ADMISSION.set(previousAdmission);
+          }
+        }
       } catch (Throwable failure) {
         if (failure instanceof Error) {
           LOG.errorf(failure, "JVM-level failure in a metadata I/O call");
@@ -337,8 +466,12 @@ final class CancellableCallRunner {
 
     void releasePermit() {
       if (permitReleased.compareAndSet(false, true)) {
-        permits.release();
+        admission.release();
       }
+    }
+
+    boolean isAdmissionReleased() {
+      return permitReleased.get();
     }
   }
 

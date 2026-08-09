@@ -67,8 +67,8 @@ public class MetadataIoRunner {
   // process-wide runtime is shared and daemon-backed, so no single bean's @PreDestroy may close it.
   private final boolean ownsRuntime;
 
-  /** The runtime whose permit the current worker owns, for same-runtime nesting only. */
-  private static final ThreadLocal<RuntimeState> HELD_ADMISSION = new ThreadLocal<>();
+  /** The runtime and permit lease the current worker owns, for same-runtime nesting only. */
+  private static final ThreadLocal<HeldAdmission> HELD_ADMISSION = new ThreadLocal<>();
 
   // Notified when an admission has to wait for a permit. Telemetry installs a sink that increments
   // a counter; the default is a no-op so the acquire path works outside CDI.
@@ -221,8 +221,9 @@ public class MetadataIoRunner {
     return () -> {
       Thread worker = Thread.currentThread();
       worker.setContextClassLoader(callerClassLoader);
-      RuntimeState previous = HELD_ADMISSION.get();
-      HELD_ADMISSION.set(runtime);
+      HeldAdmission previous = HELD_ADMISSION.get();
+      CancellableCallRunner.AdmissionLease admission = CancellableCallRunner.currentAdmission();
+      HELD_ADMISSION.set(new HeldAdmission(runtime, admission));
       try {
         return operation.get();
       } finally {
@@ -289,9 +290,15 @@ public class MetadataIoRunner {
       Supplier<T> operation,
       CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
-    if (HELD_ADMISSION.get() == current) {
+    HeldAdmission held = HELD_ADMISSION.get();
+    if (held != null && held.runtime() == current && held.admission().isReusable()) {
       rejectNestedIfUnusable(current, cancelled, failureMessages);
-      return operation.get();
+      return CancellableCallRunner.callAlreadyAdmitted(
+          held.admission(),
+          cancelled,
+          current::isClosed,
+          withApplicationClassLoader(current, operation),
+          failureMessages);
     }
     return CancellableCallRunner.call(
         current.executor(),
@@ -307,7 +314,8 @@ public class MetadataIoRunner {
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
-    if (HELD_ADMISSION.get() == current) {
+    HeldAdmission held = HELD_ADMISSION.get();
+    if (held != null && held.runtime() == current && held.admission().isReusable()) {
       rejectNestedIfUnusable(current, null, failureMessages);
       return operation.get();
     }
@@ -319,6 +327,9 @@ public class MetadataIoRunner {
         failureMessages,
         MetadataIoRunner::recordSaturatedWait);
   }
+
+  private record HeldAdmission(
+      RuntimeState runtime, CancellableCallRunner.AdmissionLease admission) {}
 
   /**
    * Stop this runtime's workers.

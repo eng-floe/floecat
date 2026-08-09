@@ -22,9 +22,18 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.concurrent.Semaphore;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class MetadataIoProcessGateTest {
+
+  @BeforeEach
+  @AfterEach
+  void clearIdleProcessGate() {
+    MetadataIoProcessGate.State current = MetadataIoProcessGate.resolve(1);
+    MetadataIoProcessGate.clearIfIdle(current.permits());
+  }
 
   @Test
   void aReloadedApplicationClassReusesTheExistingGate() throws Exception {

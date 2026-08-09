@@ -688,6 +688,56 @@ class MetadataIoRunnerTest {
   }
 
   @Test
+  void aCancelledNestedCallReturnsPromptlyWithoutReleasingItsHeldPermit() throws Exception {
+    var runner = new MetadataIoRunner(1);
+    var blocker = new UninterruptibleBlocker();
+    var cancelled = new AtomicBoolean();
+    var nestedCallerReturned = new CountDownLatch(1);
+    var laterOperationStarted = new CountDownLatch(1);
+    runner.start();
+    try {
+      CompletableFuture<String> outer =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  runner.callWithoutCancellation(
+                      () ->
+                          runner.call(
+                              cancelled::get,
+                              () -> {
+                                blocker.await();
+                                return "nested";
+                              },
+                              FAILURES),
+                      FAILURES);
+                } catch (CancellationException expected) {
+                  nestedCallerReturned.countDown();
+                }
+                return runner.callWithoutCancellation(
+                    () -> {
+                      laterOperationStarted.countDown();
+                      return "after-nested-cancellation";
+                    },
+                    FAILURES);
+              });
+      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
+
+      cancelled.set(true);
+      assertTrue(nestedCallerReturned.await(250, TimeUnit.MILLISECONDS));
+      assertEquals(1, runner.permitsInUse());
+      assertFalse(
+          laterOperationStarted.await(50, TimeUnit.MILLISECONDS),
+          "the nested operation must keep its inherited permit before later work starts");
+
+      blocker.release.countDown();
+      assertEquals("after-nested-cancellation", outer.get(1, TimeUnit.SECONDS));
+    } finally {
+      blocker.release.countDown();
+      runner.close();
+    }
+  }
+
+  @Test
   void cancelledCallerReturnsWhileWaitingForSharedAdmission() throws Exception {
     var runner = new MetadataIoRunner(1);
     var blocker = new UninterruptibleBlocker();
