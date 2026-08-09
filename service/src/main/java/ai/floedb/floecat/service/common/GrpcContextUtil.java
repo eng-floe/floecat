@@ -33,6 +33,11 @@ public final class GrpcContextUtil {
     return new GrpcContextUtil(Context.current());
   }
 
+  /** Whether the captured request context has been cancelled. */
+  public boolean isCancelled() {
+    return context.isCancelled();
+  }
+
   /** Executes {@code runnable} inside the captured context. */
   public void run(Runnable runnable) {
     Objects.requireNonNull(runnable, "runnable");
