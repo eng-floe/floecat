@@ -313,6 +313,7 @@ class MetadataIoRunnerTest {
               },
               FAILURES));
 
+      awaitIdle(worker.get());
       assertEquals(
           ClassLoader.getPlatformClassLoader(),
           worker.get().getContextClassLoader(),
@@ -320,6 +321,19 @@ class MetadataIoRunnerTest {
     } finally {
       runner.close();
     }
+  }
+
+  /** Wait until the captured worker has finished task cleanup and is polling for more work. */
+  private static void awaitIdle(Thread worker) {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    while (System.nanoTime() < deadline) {
+      Thread.State state = worker.getState();
+      if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING) {
+        return;
+      }
+      java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+    }
+    throw new AssertionError("timed out waiting for metadata worker to become idle");
   }
 
   @Test
