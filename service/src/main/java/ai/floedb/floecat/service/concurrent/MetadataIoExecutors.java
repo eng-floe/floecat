@@ -43,6 +43,7 @@ final class MetadataIoExecutors {
 
   /**
    * Create a fixed-size daemon pool with a bounded handoff queue and diagnostic thread names.
+   * Workers inherit no request-thread state; callers must propagate required context explicitly.
    * Invalid sizes fail before a request can submit work.
    */
   static ThreadPoolExecutor newBoundedDaemonPool(
@@ -55,7 +56,12 @@ final class MetadataIoExecutors {
     // worker retains its executor and its factory until the keep-alive expires, so keeping only JDK
     // objects there lets a completed pre-reload task release its old application classloader
     // promptly.
-    ThreadFactory threads = Thread.ofPlatform().daemon().name(prefix, 1).factory();
+    ThreadFactory threads =
+        Thread.ofPlatform()
+            .inheritInheritableThreadLocals(false)
+            .daemon()
+            .name(prefix, 1)
+            .factory();
     ThreadPoolExecutor pool =
         new ThreadPoolExecutor(
             workers,

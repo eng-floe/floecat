@@ -63,6 +63,30 @@ class MetadataIoExecutorsTest {
   }
 
   @Test
+  void workersDoNotInheritRequestLocalStateFromTheSubmittingThread() throws Exception {
+    ThreadPoolExecutor pool = MetadataIoExecutors.newBoundedDaemonPool(1, 1, "test-md-io-");
+    var requestState = new InheritableThreadLocal<Object>();
+    var observed = new AtomicReference<Object>();
+    var ran = new CountDownLatch(1);
+    try {
+      requestState.set(new Object());
+      pool.execute(
+          () -> {
+            observed.set(requestState.get());
+            ran.countDown();
+          });
+
+      assertTrue(ran.await(5, TimeUnit.SECONDS));
+      assertNull(
+          observed.get(),
+          "metadata workers must receive request state only through explicit propagation");
+    } finally {
+      requestState.remove();
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
   void aFullQueueRejectsRatherThanSilentlyDiscarding() throws Exception {
     // The scheduler's only exits are a completion notification, cancellation, or an interrupt, so a
     // silently dropped task would park its caller forever. Rejection is the contract.
