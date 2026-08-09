@@ -58,7 +58,6 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.concurrent.MetadataIoExecutors;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -243,8 +242,15 @@ public class UserObjectBundleService {
 
   /** Bound bean destruction even if a store call ignores interruption during shutdown. */
   private static void shutdownExecutor(ExecutorService executor) {
-    if (!MetadataIoExecutors.shutdownNowAndAwait(
-        executor, EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+    executor.shutdownNow();
+    boolean terminated;
+    try {
+      terminated = executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      terminated = false;
+    }
+    if (!terminated) {
       LOG.warn("bundle cancellation teardown executor did not terminate before shutdown timeout");
     }
   }

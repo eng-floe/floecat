@@ -766,13 +766,14 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Map<NameRef, Optional<ResourceId>> resolvedNames,
       BooleanSupplier cancelled) {
-    boolean concurrent = metadataGraph.supportsConcurrentResolution();
+    MetadataFanout fanout =
+        metadataGraph.supportsConcurrentResolution()
+            ? MetadataFanout.concurrent(maxParallelInputResolutions)
+            : MetadataFanout.serial();
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
     try {
-      MetadataFanout.forEachOrdered(
+      fanout.forEachOrdered(
           inputs,
-          maxParallelInputResolutions,
-          concurrent,
           in -> planInput(state.withDiagnostics(taskDiagnostics), in, resolvedNames),
           plan -> mergePlan(state, plan),
           cancelled);

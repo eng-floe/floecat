@@ -25,7 +25,6 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -399,15 +398,12 @@ public final class NameResolver {
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
     BooleanSupplier cancelled = PropagatedContext.currentCancellation();
-    return MetadataFanout.mapOrdered(
-            nsIds,
-            MAX_PARALLEL_NS_SCANS,
-            true,
-            task,
-            cancelled == null ? BoundedFanout.NEVER_CANCELLED : cancelled)
-        .stream()
-        .flatMap(List::stream)
-        .toList();
+    MetadataFanout fanout = MetadataFanout.concurrent(MAX_PARALLEL_NS_SCANS);
+    List<List<T>> results =
+        cancelled == null
+            ? fanout.mapOrdered(nsIds, task)
+            : fanout.mapOrdered(nsIds, task, cancelled);
+    return results.stream().flatMap(List::stream).toList();
   }
 
   private ResourceId requireCanonicalTableId(ResourceId tableId) {
