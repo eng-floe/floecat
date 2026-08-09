@@ -13,75 +13,80 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.service.concurrent;
+package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Supplier;
 
-/** Builds read-only storage adapters that admit exactly one backend read at a time. */
-@ApplicationScoped
-public class MetadataResourceReader {
+/** Read-only storage seam used by resource repositories. */
+public record RepositoryReads(Pointers pointers, Blobs blobs) {
 
-  private static final CancellableCallRunner.FailureMessages FAILURES =
-      new CancellableCallRunner.FailureMessages(
-          "metadata read cancelled", "interrupted while awaiting metadata-I/O admission");
-
-  private final MetadataIoRunner admission;
-
-  @Inject
-  public MetadataResourceReader(MetadataIoRunner admission) {
-    this.admission = admission;
+  public RepositoryReads {
+    Objects.requireNonNull(pointers, "pointers");
+    Objects.requireNonNull(blobs, "blobs");
   }
 
-  /** Bind admission to the read methods of the supplied stores; mutation methods stay unwrapped. */
-  public RepositoryReads bind(PointerStore pointers, BlobStore blobs) {
+  /** Direct reads for repository families that are outside metadata admission. */
+  public static RepositoryReads direct(PointerStore pointers, BlobStore blobs) {
+    Objects.requireNonNull(pointers, "pointers");
+    Objects.requireNonNull(blobs, "blobs");
     return new RepositoryReads(
-        new RepositoryReads.Pointers() {
+        new Pointers() {
           @Override
           public Optional<Pointer> get(String key) {
-            return read(() -> pointers.get(key));
+            return pointers.get(key);
           }
 
           @Override
           public List<Pointer> list(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            return read(
-                () -> pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut));
+            return pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
           }
 
           @Override
           public int count(String prefix) {
-            return read(() -> pointers.countByPrefix(prefix));
+            return pointers.countByPrefix(prefix);
           }
         },
-        new RepositoryReads.Blobs() {
+        new Blobs() {
           @Override
           public byte[] get(String uri) {
-            return read(() -> blobs.get(uri));
+            return blobs.get(uri);
           }
 
           @Override
           public Map<String, byte[]> getBatch(List<String> uris) {
-            return read(() -> blobs.getBatch(uris));
+            return blobs.getBatch(uris);
           }
 
           @Override
           public Optional<BlobHeader> head(String uri) {
-            return read(() -> blobs.head(uri));
+            return blobs.head(uri);
           }
         });
   }
 
-  private <T> T read(Supplier<T> operation) {
-    return admission.callWithCurrentCancellation(operation, FAILURES);
+  /** Pointer-store operations that cannot mutate durable state. */
+  public interface Pointers {
+    Optional<Pointer> get(String key);
+
+    List<Pointer> list(String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
+
+    int count(String prefix);
+  }
+
+  /** Blob-store operations that cannot mutate durable state. */
+  public interface Blobs {
+    byte[] get(String uri);
+
+    Map<String, byte[]> getBatch(List<String> uris);
+
+    Optional<BlobHeader> head(String uri);
   }
 }

@@ -21,13 +21,11 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
-import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -42,38 +40,27 @@ import java.util.Set;
 public class TableRepository {
 
   private final GenericResourceRepository<Table, TableKey> repo;
-  private final MetadataReadPolicy metadataReads;
 
   public TableRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, MetadataReadPolicy.DIRECT);
-  }
-
-  @Inject
-  public TableRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      ImmutableBlobCache blobCache,
-      MetadataResourceReader metadataReads) {
-    this(pointerStore, blobStore, blobCache, (MetadataReadPolicy) metadataReads);
-  }
-
-  /** Build a repository with the selected policy for metadata reads and cold blob loads. */
-  public TableRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      ImmutableBlobCache blobCache,
-      MetadataReadPolicy metadataReads) {
-    this.metadataReads = metadataReads;
-    this.repo =
+    this(
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.TABLE,
             Table::parseFrom,
             Table::toByteArray,
-            "application/x-protobuf",
-            blobCache,
-            metadataReads);
+            "application/x-protobuf"));
+  }
+
+  @Inject
+  public TableRepository(MetadataRepositoryFactory repositories) {
+    this(
+        repositories.create(
+            Schemas.TABLE, Table::parseFrom, Table::toByteArray, "application/x-protobuf"));
+  }
+
+  private TableRepository(GenericResourceRepository<Table, TableKey> repo) {
+    this.repo = repo;
   }
 
   public void create(Table table) {
@@ -95,14 +82,12 @@ public class TableRepository {
   }
 
   public Optional<Table> getById(ResourceId tableResourceId) {
-    return metadataReads.read(
-        () -> repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId())));
+    return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   public Optional<Table> getByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
-    return metadataReads.read(
-        () -> repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName)));
+    return repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName));
   }
 
   public List<Table> list(
@@ -112,16 +97,12 @@ public class TableRepository {
       int limit,
       String pageToken,
       StringBuilder nextOut) {
-    return metadataReads.read(
-        () -> {
-          String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
-          return repo.listByPrefix(prefix, limit, pageToken, nextOut);
-        });
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
   public int count(String accountId, String catalogId, String namespaceId) {
-    return metadataReads.read(
-        () -> repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId)));
+    return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   /**
@@ -130,16 +111,13 @@ public class TableRepository {
    * Pointer.resource_id / display_name.
    */
   public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
-    return metadataReads.read(
-        () -> {
-          String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
-          var pointers = repo.listRefsByPrefix(prefix);
-          var refs = new ArrayList<RelationRef>(pointers.size());
-          for (var p : pointers) {
-            toRelationRef(accountId, ResourceKind.RK_TABLE, p).ifPresent(refs::add);
-          }
-          return refs;
-        });
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
+    var pointers = repo.listRefsByPrefix(prefix);
+    var refs = new ArrayList<RelationRef>(pointers.size());
+    for (var p : pointers) {
+      toRelationRef(accountId, ResourceKind.RK_TABLE, p).ifPresent(refs::add);
+    }
+    return refs;
   }
 
   /**
@@ -152,15 +130,11 @@ public class TableRepository {
    */
   public Optional<ResourceId> relationNameClaim(
       String accountId, String catalogId, String namespaceId, String name) {
-    return metadataReads.read(
-        () ->
-            repo.refByPointer(Keys.relationPointerByName(accountId, catalogId, namespaceId, name))
-                .map(p -> p.getResourceId())
-                .filter(rid -> !rid.getId().isEmpty())
-                .filter(
-                    rid ->
-                        rid.getKind() == ResourceKind.RK_TABLE
-                            || rid.getKind() == ResourceKind.RK_VIEW));
+    return repo.refByPointer(Keys.relationPointerByName(accountId, catalogId, namespaceId, name))
+        .map(p -> p.getResourceId())
+        .filter(rid -> !rid.getId().isEmpty())
+        .filter(
+            rid -> rid.getKind() == ResourceKind.RK_TABLE || rid.getKind() == ResourceKind.RK_VIEW);
   }
 
   /** Reads exact by-name table pointers and returns refs without fetching blobs from S3. */
@@ -169,19 +143,16 @@ public class TableRepository {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    return metadataReads.read(
-        () -> {
-          List<RelationRef> refs = new ArrayList<>(names.size());
-          for (String name : names) {
-            if (name == null || name.isBlank()) {
-              continue;
-            }
-            repo.refByPointer(Keys.tablePointerByName(accountId, catalogId, namespaceId, name))
-                .flatMap(p -> toRelationRef(accountId, ResourceKind.RK_TABLE, p))
-                .ifPresent(refs::add);
-          }
-          return refs;
-        });
+    List<RelationRef> refs = new ArrayList<>(names.size());
+    for (String name : names) {
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      repo.refByPointer(Keys.tablePointerByName(accountId, catalogId, namespaceId, name))
+          .flatMap(p -> toRelationRef(accountId, ResourceKind.RK_TABLE, p))
+          .ifPresent(refs::add);
+    }
+    return refs;
   }
 
   static Optional<RelationRef> toRelationRef(
@@ -200,30 +171,22 @@ public class TableRepository {
   }
 
   public MutationMeta metaFor(ResourceId tableResourceId) {
-    return metadataReads.read(
-        () -> repo.metaFor(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId())));
+    return repo.metaFor(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId tableResourceId, Timestamp nowTs) {
-    return metadataReads.read(
-        () ->
-            repo.metaFor(
-                new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()), nowTs));
+    return repo.metaFor(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.metaForSafe(
-                new TableKey(tableResourceId.getAccountId(), tableResourceId.getId())));
+    return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.pointerMetaForSafe(
-                new TableKey(tableResourceId.getAccountId(), tableResourceId.getId())));
+    return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
@@ -233,7 +196,7 @@ public class TableRepository {
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
   public Optional<Table> getByBlobUriLive(String blobUri) {
-    return metadataReads.read(() -> repo.getByBlobUriLive(blobUri));
+    return repo.getByBlobUriLive(blobUri);
   }
 
   /**
@@ -241,6 +204,6 @@ public class TableRepository {
    * no blob is there. Used to validate a pinned table blob is both present and the pinned version.
    */
   public String blobEtag(String blobUri) {
-    return metadataReads.read(() -> repo.blobEtag(blobUri));
+    return repo.blobEtag(blobUri);
   }
 }

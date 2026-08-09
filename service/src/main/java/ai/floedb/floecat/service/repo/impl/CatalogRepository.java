@@ -19,13 +19,11 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.MetadataReadPolicy;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -38,40 +36,27 @@ import java.util.Optional;
 public class CatalogRepository {
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
-  private final MetadataReadPolicy metadataReads;
 
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, MetadataReadPolicy.DIRECT);
-  }
-
-  @Inject
-  public CatalogRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      ImmutableBlobCache blobCache,
-      MetadataResourceReader metadataReads) {
-    this(pointerStore, blobStore, blobCache, (MetadataReadPolicy) metadataReads);
-  }
-
-  /**
-   * Build a repository with the selected policy for pointer reads and immutable-blob cache misses.
-   */
-  public CatalogRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      ImmutableBlobCache blobCache,
-      MetadataReadPolicy metadataReads) {
-    this.metadataReads = metadataReads;
-    this.repo =
+    this(
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.CATALOG,
             Catalog::parseFrom,
             Catalog::toByteArray,
-            "application/x-protobuf",
-            blobCache,
-            metadataReads);
+            "application/x-protobuf"));
+  }
+
+  @Inject
+  public CatalogRepository(MetadataRepositoryFactory repositories) {
+    this(
+        repositories.create(
+            Schemas.CATALOG, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf"));
+  }
+
+  private CatalogRepository(GenericResourceRepository<Catalog, CatalogKey> repo) {
+    this.repo = repo;
   }
 
   public void create(Catalog catalog) {
@@ -93,55 +78,41 @@ public class CatalogRepository {
   }
 
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.getByKey(
-                new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId())));
+    return repo.getByKey(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public Optional<Catalog> getByName(String accountId, String displayName) {
-    return metadataReads.read(() -> repo.get(Keys.catalogPointerByName(accountId, displayName)));
+    return repo.get(Keys.catalogPointerByName(accountId, displayName));
   }
 
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return metadataReads.read(
-        () ->
-            repo.listByPrefix(
-                Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut));
+    return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
   public int count(String accountId) {
-    return metadataReads.read(() -> repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId)));
+    return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.metaFor(
-                new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId())));
+    return repo.metaFor(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId, Timestamp nowTs) {
-    return metadataReads.read(
-        () ->
-            repo.metaFor(
-                new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()),
-                nowTs));
+    return repo.metaFor(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()), nowTs);
   }
 
   public MutationMeta metaForSafe(ResourceId catalogResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.metaForSafe(
-                new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId())));
+    return repo.metaForSafe(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId catalogResourceId) {
-    return metadataReads.read(
-        () ->
-            repo.pointerMetaForSafe(
-                new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId())));
+    return repo.pointerMetaForSafe(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
@@ -151,20 +122,16 @@ public class CatalogRepository {
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
   public Optional<Catalog> getByBlobUriLive(String blobUri) {
-    return metadataReads.read(() -> repo.getByBlobUriLive(blobUri));
+    return repo.getByBlobUriLive(blobUri);
   }
 
   public List<ResourceId> listIds(String accountId) {
-    return metadataReads.read(
-        () -> {
-          String prefix = Keys.catalogPointerByNamePrefix(accountId);
-          List<Catalog> catalogs =
-              repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
-          List<ResourceId> ids = new java.util.ArrayList<>(catalogs.size());
-          for (Catalog c : catalogs) {
-            ids.add(c.getResourceId());
-          }
-          return ids;
-        });
+    String prefix = Keys.catalogPointerByNamePrefix(accountId);
+    List<Catalog> catalogs = repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
+    List<ResourceId> ids = new java.util.ArrayList<>(catalogs.size());
+    for (Catalog c : catalogs) {
+      ids.add(c.getResourceId());
+    }
+    return ids;
   }
 }

@@ -15,131 +15,115 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
-import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.context.PropagatedContext;
-import java.time.Duration;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
-/** Verifies explicit repository reads run under admission and propagated cancellation. */
+/** Verifies leaf storage adapters apply admission and propagated cancellation. */
 class MetadataResourceReaderTest {
 
   @Test
-  void readRunsUnderAdmission() throws Exception {
-    withReader(
-        1,
-        reads -> {
-          AtomicBoolean admittedDuringCall = new AtomicBoolean();
-          assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
-          String result =
-              reads.read(
-                  () -> {
-                    admittedDuringCall.set(MetadataIoRunner.isRunningAdmittedOperation());
-                    return "value";
-                  });
-          assertEquals("value", result);
-          assertTrue(admittedDuringCall.get(), "the read must run inside an admitted operation");
-          assertFalse(MetadataIoRunner.isRunningAdmittedOperation());
-        });
+  void backendReadRunsOnAnAdmittedVirtualThread() {
+    MetadataIoRunner runner = new MetadataIoRunner(1);
+    BlobStore blobs = mock(BlobStore.class);
+    when(blobs.get("blob"))
+        .thenAnswer(
+            ignored -> {
+              assertThat(runner.permitsInUse()).isEqualTo(1);
+              assertThat(Thread.currentThread().isVirtual()).isTrue();
+              return new byte[] {1, 2, 3};
+            });
+    RepositoryReads reads =
+        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+
+    assertThat(reads.blobs().get("blob")).containsExactly(1, 2, 3);
+    assertThat(runner.permitsInUse()).isZero();
   }
 
   @Test
-  void nestedReadsReuseTheOnePermit() throws Exception {
-    withReader(
-        1,
-        reads -> {
-          String result =
-              assertTimeoutPreemptively(
-                  Duration.ofSeconds(5),
-                  () -> reads.read(() -> reads.read(() -> "inner")),
-                  "nested admission deadlocked instead of reusing the held permit");
-          assertEquals("inner", result);
-        });
+  void alreadyCancelledRequestDoesNotReachTheBackend() {
+    MetadataIoRunner runner = new MetadataIoRunner(1);
+    BlobStore blobs = mock(BlobStore.class);
+    RepositoryReads reads =
+        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+
+    try (PropagatedContext.CancellationScope ignored =
+        PropagatedContext.bindCancellation(() -> true)) {
+      assertThatThrownBy(() -> reads.blobs().get("blob")).isInstanceOf(CancellationException.class);
+    }
+    verify(blobs, never()).get("blob");
   }
 
   @Test
-  void readHonorsThePropagatedCancellationSignal() throws Exception {
-    withReader(
-        1,
-        reads -> {
-          AtomicBoolean readRan = new AtomicBoolean(false);
-          try (PropagatedContext.CancellationScope ignored =
-              PropagatedContext.bindCancellation(() -> true)) {
-            assertThrows(
-                CancellationException.class,
-                () ->
-                    reads.read(
-                        () -> {
-                          readRan.set(true);
-                          return "unreachable";
-                        }));
-            assertFalse(readRan.get(), "an already-cancelled request must not run the store read");
-          }
-        });
+  void liveCancellationAbandonsTheAdapterCall() throws Exception {
+    MetadataIoRunner runner = new MetadataIoRunner(1);
+    BlobStore blobs = mock(BlobStore.class);
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    when(blobs.get("blob"))
+        .thenAnswer(
+            ignored -> {
+              entered.countDown();
+              awaitUninterruptibly(release);
+              return new byte[] {1};
+            });
+    RepositoryReads reads =
+        new MetadataResourceReader(runner).bind(mock(PointerStore.class), blobs);
+    AtomicBoolean cancelled = new AtomicBoolean();
+    CompletableFuture<byte[]> call =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try (PropagatedContext.CancellationScope ignored =
+                  PropagatedContext.bindCancellation(cancelled::get)) {
+                return reads.blobs().get("blob");
+              }
+            });
+    assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+    cancelled.set(true);
+    assertThatThrownBy(() -> call.get(2, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(CancellationException.class);
+    assertThat(runner.permitsInUse()).isEqualTo(1);
+
+    release.countDown();
+    awaitPermitRelease(runner);
+    verify(blobs).get("blob");
   }
 
-  @Test
-  void blockedReadIsAbandonedWhenTheRequestCancels() throws Exception {
-    withReader(
-        2,
-        reads -> {
-          AtomicBoolean cancelled = new AtomicBoolean(false);
-          CountDownLatch started = new CountDownLatch(1);
-          CountDownLatch release = new CountDownLatch(1);
-          ExecutorService caller = Executors.newSingleThreadExecutor();
-          try {
-            Future<Throwable> call =
-                caller.submit(
-                    () -> {
-                      try (PropagatedContext.CancellationScope ignored =
-                          PropagatedContext.bindCancellation(cancelled::get)) {
-                        reads.read(
-                            () -> {
-                              started.countDown();
-                              awaitUninterruptibly(release);
-                              return "unreachable";
-                            });
-                        return null;
-                      } catch (Throwable failure) {
-                        return failure;
-                      }
-                    });
-            assertTrue(started.await(1, TimeUnit.SECONDS));
-            cancelled.set(true);
-            assertInstanceOf(CancellationException.class, call.get(1, TimeUnit.SECONDS));
-          } finally {
-            release.countDown();
-            caller.shutdownNow();
-          }
-        });
-  }
-
-  /** Run a test with one isolated metadata reader and always close its worker pool. */
-  private static void withReader(int capacity, ReaderTest test) throws Exception {
-    MetadataIoRunner runner = new MetadataIoRunner(capacity);
-    try {
-      test.run(new MetadataResourceReader(runner));
-    } finally {
-      runner.close();
+  private static void awaitUninterruptibly(CountDownLatch latch) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        latch.await();
+        break;
+      } catch (InterruptedException ignored) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
     }
   }
 
-  /** Test body allowed to use blocking assertions that throw checked exceptions. */
-  @FunctionalInterface
-  private interface ReaderTest {
-    void run(MetadataResourceReader reads) throws Exception;
+  private static void awaitPermitRelease(MetadataIoRunner runner) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+    while (runner.permitsInUse() != 0 && System.nanoTime() < deadline) {
+      Thread.sleep(5);
+    }
+    assertThat(runner.permitsInUse()).isZero();
   }
 }

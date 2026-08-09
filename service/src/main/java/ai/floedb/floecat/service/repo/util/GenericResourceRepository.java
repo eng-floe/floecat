@@ -48,9 +48,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
 
   private final ResourceSchema<T, K> schema;
-  private final BlobLoadPolicy blobLoadPolicy;
 
-  /** Build a repository without an immutable-blob cache or admitted cache-miss policy. */
+  /** Build a repository without an immutable-blob cache. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -58,18 +57,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(
-        pointerStore,
-        blobStore,
-        schema,
-        parser,
-        toBytes,
-        contentType,
-        null,
-        MetadataReadPolicy.DIRECT);
+    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null);
   }
 
-  /** Build a cached repository whose cold immutable-blob loads run directly. */
+  /** Build a cached repository that reads directly from the supplied stores. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -78,21 +69,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
-    this(
-        pointerStore,
-        blobStore,
-        schema,
-        parser,
-        toBytes,
-        contentType,
-        blobCache,
-        MetadataReadPolicy.DIRECT);
+    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
+    this.schema = Objects.requireNonNull(schema, "schema");
   }
 
-  /**
-   * Build a repository with the selected policy for cold immutable-blob cache loads. The policy is
-   * invoked only by the cache's single-flight loader, so cache hits and followers bypass it.
-   */
+  /** Build a repository with separate raw mutation stores and read-only storage adapters. */
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -101,10 +82,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache,
-      BlobLoadPolicy blobLoadPolicy) {
-    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
+      RepositoryReads reads) {
+    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache, reads);
     this.schema = Objects.requireNonNull(schema, "schema");
-    this.blobLoadPolicy = Objects.requireNonNull(blobLoadPolicy, "blobLoadPolicy");
   }
 
   @Override
@@ -135,8 +115,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }
-    Function<String, Optional<T>> cacheMissLoader =
-        uri -> blobLoadPolicy.load(() -> loadAndParseBlob(uri));
+    Function<String, Optional<T>> cacheMissLoader = this::loadAndParseBlob;
     if (blobCacheable()) {
       // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
       // means absent but a present result does NOT prove the blob still exists. Callers whose
@@ -172,7 +151,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       return null;
     }
     return observeRepository(
-        "blob_etag", () -> blobStore.head(blobUri).map(BlobHeader::getEtag).orElse(null));
+        "blob_etag", () -> blobReads.head(blobUri).map(BlobHeader::getEtag).orElse(null));
   }
 
   private Optional<T> getByKeyUnobserved(K key) {
@@ -180,7 +159,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private boolean existsByKeyUnobserved(K key) {
-    return pointerStore.get(schema.canonicalPointerForKey.apply(key)).isPresent();
+    return pointerReads.get(schema.canonicalPointerForKey.apply(key)).isPresent();
   }
 
   /**
@@ -744,7 +723,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           var pointer =
-              pointerStore
+              pointerReads
                   .get(canonicalPointer)
                   .orElseThrow(
                       () ->
@@ -767,7 +746,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "meta_for_safe",
         () -> {
           String canonical = schema.canonicalPointerForKey.apply(key);
-          var ptrOpt = pointerStore.get(canonical);
+          var ptrOpt = pointerReads.get(canonical);
           if (schema.casBlobs && ptrOpt.isEmpty()) {
             return MutationMeta.newBuilder()
                 .setPointerKey(canonical)
@@ -794,7 +773,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           Timestamp nowTs = Timestamps.fromMillis(clock.millis());
           String canonical = schema.canonicalPointerForKey.apply(key);
-          var ptrOpt = pointerStore.get(canonical);
+          var ptrOpt = pointerReads.get(canonical);
           String blobUri = blobUriFor(key, ptrOpt);
           return MutationMeta.newBuilder()
               .setPointerKey(canonical)

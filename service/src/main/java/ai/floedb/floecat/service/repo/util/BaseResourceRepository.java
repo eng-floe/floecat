@@ -54,6 +54,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   protected PointerStore pointerStore;
   protected BlobStore blobStore;
+  protected RepositoryReads.Pointers pointerReads;
+  protected RepositoryReads.Blobs blobReads;
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
@@ -140,8 +142,28 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
+    this(
+        pointerStore,
+        blobStore,
+        parser,
+        toBytes,
+        contentType,
+        blobCache,
+        RepositoryReads.direct(pointerStore, blobStore));
+  }
+
+  protected BaseResourceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache,
+      RepositoryReads reads) {
     this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
     this.blobStore = Objects.requireNonNull(blobStore, "blobs");
+    this.pointerReads = Objects.requireNonNull(reads, "reads").pointers();
+    this.blobReads = reads.blobs();
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
@@ -167,7 +189,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected Optional<T> read(String key) {
-    var pointerStoreOpt = pointerStore.get(key);
+    var pointerStoreOpt = pointerReads.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -199,7 +221,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected final Optional<T> loadAndParseBlob(String blobUri) {
     try {
-      byte[] bytes = blobStore.get(blobUri);
+      byte[] bytes = blobReads.get(blobUri);
       if (bytes == null) {
         return Optional.empty();
       }
@@ -218,7 +240,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   /** Decodes a pointer-resolved blob. Subclasses may select one record from a shared bundle. */
   protected Optional<T> loadAndParseReferencedBlob(String pointerKey, String blobUri) {
     try {
-      byte[] bytes = blobStore.get(blobUri);
+      byte[] bytes = blobReads.get(blobUri);
       if (bytes == null) {
         return Optional.empty();
       }
@@ -240,7 +262,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   private boolean pointerChangedOrDeleted(String key, Pointer before) {
-    var after = pointerStore.get(key).orElse(null);
+    var after = pointerReads.get(key).orElse(null);
     return after == null || !Objects.equals(after.getBlobUri(), before.getBlobUri());
   }
 
@@ -417,7 +439,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           String token = "";
           do {
             var next = new StringBuilder();
-            out.addAll(pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next));
+            out.addAll(pointerReads.list(prefix, REFS_PAGE_SIZE, token, next));
             token = next.toString();
           } while (!token.isBlank());
           return out;
@@ -425,7 +447,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   public Optional<Pointer> refByPointer(String key) {
-    return observeRepository("ref_by_pointer", () -> pointerStore.get(key));
+    return observeRepository("ref_by_pointer", () -> pointerReads.get(key));
   }
 
   public record KeyedValue<T>(String key, T value) {}
@@ -442,7 +464,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository(
         "list_by_prefix",
         () -> {
-          var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
+          var rows = pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           var ordinaryUris = new ArrayList<String>(rows.size());
           var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
           for (var row : rows) {
@@ -477,7 +499,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           var blobsMap =
               missUris.isEmpty()
                   ? Map.<String, byte[]>of()
-                  : blobStore.getBatch(new ArrayList<>(missUris));
+                  : blobReads.getBatch(new ArrayList<>(missUris));
           var blobs = new ArrayList<KeyedValue<T>>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
@@ -493,7 +515,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             }
             byte[] bytes = blobsMap.get(blobUri);
             if (bytes == null) {
-              var after = pointerStore.get(row.getKey()).orElse(null);
+              var after = pointerReads.get(row.getKey()).orElse(null);
               if (after == null || !Objects.equals(after.getBlobUri(), row.getBlobUri())) {
                 continue;
               }
@@ -520,7 +542,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public int countByPrefix(String prefix) {
-    return observeRepository("count_by_prefix", () -> pointerStore.countByPrefix(prefix));
+    return observeRepository("count_by_prefix", () -> pointerReads.count(prefix));
   }
 
   protected static String sha256B64(byte[] data) {
@@ -537,7 +559,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta readMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
-    return readMetaOrDefault(pointerStore.get(pointerKey), pointerKey, blobUri, nowTs);
+    return readMetaOrDefault(pointerReads.get(pointerKey), pointerKey, blobUri, nowTs);
   }
 
   /**
@@ -546,7 +568,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    var header = blobStore.head(blobUri);
+    var header = blobReads.head(blobUri);
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
     String etag = header.map(BlobHeader::getEtag).orElse("");
 
@@ -622,12 +644,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           int rowNumber = 0;
           do {
             var next = new StringBuilder();
-            var rows = pointerStore.listPointersByPrefix(prefix, limit, token, next);
+            var rows = pointerReads.list(prefix, limit, token, next);
 
             for (var r : rows) {
               rowNumber++;
               String blobUri = requireBlobReference(r, r.getKey());
-              var blobHeaderOpt = blobStore.head(blobUri);
+              var blobHeaderOpt = blobReads.head(blobUri);
               String etag = blobHeaderOpt.map(BlobHeader::getEtag).orElse("-");
               String created =
                   blobHeaderOpt
@@ -655,14 +677,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository(
         "dump_pointer",
         () -> {
-          var pointer = pointerStore.get(key).orElse(null);
+          var pointer = pointerReads.get(key).orElse(null);
 
           if (pointer == null) {
             return "pointer not found: " + key;
           }
 
           String blobUri = requireBlobReference(pointer, key);
-          var blobHeader = blobStore.head(blobUri);
+          var blobHeader = blobReads.head(blobUri);
           String etag = blobHeader.map(BlobHeader::getEtag).orElse("-");
           String created = blobHeader.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
           String modified =

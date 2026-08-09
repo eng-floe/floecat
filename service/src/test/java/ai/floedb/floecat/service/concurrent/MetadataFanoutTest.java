@@ -15,231 +15,129 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
-import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
-/**
- * The parallel stage delivers in input order and cancels while repository reads apply admission at
- * the store boundary. These tests cover ordering, serial mode, cancellation, and the guard against
- * starting a fan-out from within an admitted store operation.
- */
+/** Verifies the configured public fan-out interface. */
 class MetadataFanoutTest {
 
-  private static final CancellableCallRunner.FailureMessages MSGS =
-      new CancellableCallRunner.FailureMessages("op cancelled", "op interrupted");
-
   @Test
-  void concurrentModeReturnsResultsInInputOrder() {
-    List<Integer> inputs = IntStream.range(0, 40).boxed().toList();
-    // Reverse completion order (later items sleep less) to prove ordering is by input.
-    List<Integer> out =
-        MetadataFanout.mapOrdered(
-            inputs,
-            4,
-            true,
-            item -> {
-              try {
-                Thread.sleep((40 - item) % 5);
-              } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-              }
-              return item * 10;
-            });
-    assertThat(out).isEqualTo(inputs.stream().map(i -> i * 10).toList());
+  void concurrentModeBoundsWorkAndReturnsInputOrder() {
+    AtomicInteger active = new AtomicInteger();
+    AtomicInteger peak = new AtomicInteger();
+
+    List<Integer> results =
+        MetadataFanout.concurrent(3)
+            .mapOrdered(
+                IntStream.range(0, 20).boxed().toList(),
+                value -> {
+                  int now = active.incrementAndGet();
+                  peak.accumulateAndGet(now, Math::max);
+                  try {
+                    Thread.sleep((20 - value) % 4L);
+                    return value * 10;
+                  } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new CancellationException("interrupted");
+                  } finally {
+                    active.decrementAndGet();
+                  }
+                });
+
+    assertThat(results)
+        .containsExactlyElementsOf(IntStream.range(0, 20).map(i -> i * 10).boxed().toList());
+    assertThat(peak).hasValueBetween(2, 3);
   }
 
   @Test
-  void serialModeRunsUnitsInOrderOnTheCallerThread() {
+  void serialModeUsesTheCallerThreadAndTheSameOrderedScheduler() {
     Thread caller = Thread.currentThread();
-    AtomicBoolean ranOffThread = new AtomicBoolean(false);
-    List<Integer> out =
-        MetadataFanout.mapOrdered(
-            List.of(1, 2, 3),
-            0,
-            false,
-            item -> {
-              if (Thread.currentThread() != caller) {
-                ranOffThread.set(true);
-              }
-              return item * 10;
-            });
-    assertThat(out).containsExactly(10, 20, 30);
-    assertThat(ranOffThread).isFalse();
+    AtomicReference<Thread> observed = new AtomicReference<>();
+
+    List<Integer> results =
+        MetadataFanout.serial()
+            .mapOrdered(
+                List.of(3, 1, 2),
+                value -> {
+                  observed.compareAndSet(null, Thread.currentThread());
+                  assertThat(Thread.currentThread()).isSameAs(caller);
+                  return value * 10;
+                });
+
+    assertThat(results).containsExactly(30, 10, 20);
+    assertThat(observed.get()).isSameAs(caller);
   }
 
   @Test
-  void uncancellableForEachOverloadDeliversResultsInOrder() {
-    List<Integer> published = new ArrayList<>();
-    MetadataFanout.forEachOrdered(List.of(3, 1, 2), 2, true, item -> item * 10, published::add);
-    assertThat(published).containsExactly(30, 10, 20);
-  }
-
-  @Test
-  void concurrentModeRejectsPermitsBelowOne() {
-    assertThatThrownBy(() -> MetadataFanout.mapOrdered(List.of(1, 2), 0, true, item -> item))
-        .isInstanceOf(IllegalArgumentException.class);
-  }
-
-  @Test
-  void cancellationBeforeAUnitStopsTheSerialStage() {
-    AtomicBoolean cancelled = new AtomicBoolean(false);
-    assertThatThrownBy(
-            () ->
-                MetadataFanout.forEachOrdered(
-                    List.of(1, 2, 3),
-                    0,
-                    false,
-                    item -> {
-                      cancelled.set(true); // cancel after the first unit starts
-                      return item;
-                    },
-                    result -> {},
-                    cancelled::get))
-        .isInstanceOf(CancellationException.class);
-  }
-
-  @Test
-  void serialResultIsNotPublishedWhenCancellationFlipsAfterTheUnit() {
+  void concurrentCancellationAbandonsActiveSiblings() throws Exception {
     AtomicBoolean cancelled = new AtomicBoolean();
-    List<Integer> published = new ArrayList<>();
-    assertThatThrownBy(
-            () ->
-                MetadataFanout.forEachOrdered(
-                    List.of(1),
-                    0,
-                    false,
-                    item -> {
-                      int resolved = item * 10;
-                      cancelled.set(true); // flips after the unit, before publish
-                      return resolved;
-                    },
-                    published::add,
-                    cancelled::get))
-        .isInstanceOf(CancellationException.class);
-    assertThat(published).isEmpty();
+    CountDownLatch started = new CountDownLatch(2);
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    Thread caller =
+        Thread.ofPlatform()
+            .start(
+                () -> {
+                  try {
+                    MetadataFanout.concurrent(2)
+                        .mapOrdered(
+                            List.of(1, 2, 3),
+                            ignored -> {
+                              started.countDown();
+                              try {
+                                new CountDownLatch(1).await();
+                                return ignored;
+                              } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new CancellationException("interrupted");
+                              }
+                            },
+                            cancelled::get);
+                  } catch (Throwable thrown) {
+                    failure.set(thrown);
+                  }
+                });
+    assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+
+    cancelled.set(true);
+    caller.join(TimeUnit.SECONDS.toMillis(2));
+    assertThat(caller.isAlive()).isFalse();
+    assertThat(failure.get()).isInstanceOf(CancellationException.class);
   }
 
   @Test
-  void concurrentResultIsNotPublishedWhenCancellationFlipsAfterTheUnit() {
+  void serialCancellationStopsBeforeTheNextUnit() {
+    AtomicInteger calls = new AtomicInteger();
     AtomicBoolean cancelled = new AtomicBoolean();
-    List<Integer> published = new ArrayList<>();
+
     assertThatThrownBy(
             () ->
-                MetadataFanout.forEachOrdered(
-                    List.of(1),
-                    4,
-                    true,
-                    item -> {
-                      int resolved = item * 10;
-                      cancelled.set(true); // flips after the unit, before publish
-                      return resolved;
-                    },
-                    published::add,
-                    cancelled::get))
+                MetadataFanout.serial()
+                    .mapOrdered(
+                        List.of(1, 2, 3),
+                        value -> {
+                          calls.incrementAndGet();
+                          cancelled.set(true);
+                          return value;
+                        },
+                        cancelled::get))
         .isInstanceOf(CancellationException.class);
-    assertThat(published).isEmpty();
+    assertThat(calls).hasValue(1);
   }
 
   @Test
-  void unitFailureSurfacesUnwrapped() {
-    assertThatThrownBy(
-            () ->
-                MetadataFanout.mapOrdered(
-                    List.of(1, 2, 3),
-                    4,
-                    true,
-                    item -> {
-                      if (item == 1) {
-                        throw new IllegalStateException("boom on input 1");
-                      }
-                      return item;
-                    }))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessage("boom on input 1");
-  }
-
-  @Test
-  void serialUnitIsNotPreemptedMidFlightThenCancelsOnceItReturns() throws Exception {
-    // A thread-confined unit runs on the request thread and cannot be preempted mid-flight;
-    // cancelling while it is stalled must not return early. Only after it returns is cancellation
-    // observed (the post-unit check throws).
-    CountDownLatch unitStarted = new CountDownLatch(1);
-    CountDownLatch releaseUnit = new CountDownLatch(1);
-    AtomicBoolean cancelled = new AtomicBoolean(false);
-    AtomicBoolean unitReturned = new AtomicBoolean(false);
-    ExecutorService driver = Executors.newSingleThreadExecutor();
-    try {
-      Future<?> running =
-          driver.submit(
-              () ->
-                  MetadataFanout.forEachOrdered(
-                      List.of(1),
-                      0,
-                      false,
-                      item -> {
-                        unitStarted.countDown();
-                        awaitUninterruptibly(releaseUnit);
-                        unitReturned.set(true);
-                        return item;
-                      },
-                      result -> {},
-                      cancelled::get));
-
-      assertThat(unitStarted.await(1, TimeUnit.SECONDS)).isTrue();
-      cancelled.set(true); // cancel while the unit is stalled
-      assertThatThrownBy(() -> running.get(200, TimeUnit.MILLISECONDS))
-          .isInstanceOf(TimeoutException.class);
-      assertThat(unitReturned).isFalse();
-
-      releaseUnit.countDown();
-      assertThatThrownBy(running::get).hasCauseInstanceOf(CancellationException.class);
-      assertThat(unitReturned).isTrue();
-    } finally {
-      releaseUnit.countDown();
-      driver.shutdownNow();
-    }
-  }
-
-  @Test
-  void aConcurrentFanOutStartedFromWithinAnAdmittedOperationIsRejected() {
-    // Admitted store operations hold a permit on their thread. Dispatching units off-thread from
-    // within one holds that permit while each unit waits for its own — a saturation deadlock.
-    // BoundedFanout owns the dispatch-boundary check, so the invariant has one failure message.
-    assertThatThrownBy(() -> admitted(() -> MetadataFanout.mapOrdered(List.of(1), 4, true, i -> i)))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("ran inside an admitted metadata-I/O operation");
-  }
-
-  @Test
-  void aSerialFanOutIsAllowedFromWithinAnAdmittedOperation() {
-    // Serial units run inline on the admitted thread, so they reuse its permit instead of taking a
-    // second one — the re-entrant case admission supports without risking pool saturation.
-    assertThat(admitted(() -> MetadataFanout.mapOrdered(List.of(1, 2), 4, false, i -> i * 10)))
-        .containsExactly(10, 20);
-  }
-
-  /** Run one fan-out body inside isolated metadata admission and always close its worker pool. */
-  private static <T> T admitted(Supplier<T> body) {
-    MetadataIoRunner admission = new MetadataIoRunner(4);
-    try {
-      return admission.call(() -> false, body, MSGS);
-    } finally {
-      admission.close();
-    }
+  void concurrentModeRejectsAnInvalidBoundAtConfigurationTime() {
+    assertThatThrownBy(() -> MetadataFanout.concurrent(0))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("positive");
   }
 }
