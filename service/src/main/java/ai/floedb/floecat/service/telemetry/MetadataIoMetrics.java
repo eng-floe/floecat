@@ -42,15 +42,19 @@ public class MetadataIoMetrics {
 
   /**
    * Uses a {@link StartupEvent} observer as Arc's retention root and eager-instantiation trigger
-   * for the gauge publisher.
+   * for the gauge publisher. The observer invokes the runner before registering lazy gauges so an
+   * invalid admission capacity aborts application startup.
    */
   void registerAdmissionGauges(@Observes @Priority(100) StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
     Tag operation = Tag.of(TagKey.OPERATION, "metadata_io");
+    // Arc injects an application-scoped client proxy. Invoke it now so invalid admission
+    // configuration fails startup instead of being deferred until the first gauge scrape.
+    int capacity = admission.capacity();
 
     observability.gauge(
         ServiceMetrics.MetadataIo.PERMITS_CAPACITY,
-        admission::capacity,
+        () -> capacity,
         ServiceMetrics.MetadataIo.CAPACITY_DESC,
         component,
         operation);

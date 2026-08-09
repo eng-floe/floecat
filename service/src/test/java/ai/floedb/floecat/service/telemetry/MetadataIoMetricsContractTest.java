@@ -19,14 +19,18 @@ package ai.floedb.floecat.service.telemetry;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.service.concurrent.MetadataIoRunner;
 import ai.floedb.floecat.telemetry.MetricDef;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.MetricType;
+import ai.floedb.floecat.telemetry.NoopObservability;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TelemetryRegistry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -45,6 +49,32 @@ class MetadataIoMetricsContractTest {
           ServiceMetrics.MetadataIo.PERMITS_IN_USE,
           ServiceMetrics.MetadataIo.ADMISSION_WAITERS,
           ServiceMetrics.MetadataIo.ADMISSION_SATURATED_WAITS);
+
+  @Test
+  void startupRegistrationConstructsTheRunnerBeforePublishingLazyGauges() {
+    AtomicInteger capacityReads = new AtomicInteger();
+    MetadataIoRunner runner =
+        new MetadataIoRunner(new NoopObservability()) {
+          @Override
+          public int capacity() {
+            capacityReads.incrementAndGet();
+            return super.capacity();
+          }
+        };
+    int expectedCapacity = runner.capacity();
+    capacityReads.set(0);
+    TestObservability observability = new TestObservability();
+    MetadataIoMetrics metrics = new MetadataIoMetrics();
+    metrics.admission = runner;
+    metrics.observability = observability;
+
+    metrics.registerAdmissionGauges(null);
+
+    assertEquals(1, capacityReads.get());
+    assertEquals(
+        expectedCapacity,
+        observability.gauge(ServiceMetrics.MetadataIo.PERMITS_CAPACITY).get().intValue());
+  }
 
   @Test
   void everyAdmissionMetricIsRegisteredByTheServiceContributor() {

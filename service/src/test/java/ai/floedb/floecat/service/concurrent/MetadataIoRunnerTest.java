@@ -68,7 +68,7 @@ class MetadataIoRunnerTest {
     assertThat(first.get(2, TimeUnit.SECONDS)).isEqualTo("first");
     assertThat(second.get(2, TimeUnit.SECONDS)).isEqualTo("second");
     assertThat(third.get(2, TimeUnit.SECONDS)).isEqualTo("third");
-    assertThat(runner.permitsInUse()).isZero();
+    await(() -> runner.permitsInUse() == 0);
   }
 
   @Test
@@ -135,7 +135,7 @@ class MetadataIoRunnerTest {
 
     blocker.release.countDown();
     assertThat(contender.get(2, TimeUnit.SECONDS)).isEqualTo("contender");
-    assertThat(runner.permitsInUse()).isZero();
+    await(() -> runner.permitsInUse() == 0);
   }
 
   @Test
@@ -200,7 +200,7 @@ class MetadataIoRunnerTest {
   }
 
   @Test
-  void operationFailuresPropagateUnwrappedAndReleaseAdmission() {
+  void operationFailuresPropagateUnwrappedAndReleaseAdmission() throws Exception {
     MetadataIoRunner runner = new MetadataIoRunner(1);
     IllegalStateException expected = new IllegalStateException("store failed");
 
@@ -212,7 +212,7 @@ class MetadataIoRunnerTest {
                     },
                     FAILURES))
         .isSameAs(expected);
-    assertThat(runner.permitsInUse()).isZero();
+    await(() -> runner.permitsInUse() == 0);
   }
 
   @Test

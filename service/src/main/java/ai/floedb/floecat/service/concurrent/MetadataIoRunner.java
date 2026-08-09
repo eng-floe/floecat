@@ -94,7 +94,11 @@ public class MetadataIoRunner {
     return permits.getQueueLength();
   }
 
-  /** Run one cancellable leaf store read. */
+  /**
+   * Run one leaf store read. Request cancellation or caller interruption abandons the wait with
+   * {@link java.util.concurrent.CancellationException}; the task keeps its permit until the store
+   * call exits, and operation failures propagate unchanged.
+   */
   <T> T call(
       BooleanSupplier cancelled,
       Supplier<T> operation,
@@ -103,7 +107,11 @@ public class MetadataIoRunner {
         permits, cancelled, operation, failureMessages, saturationSink);
   }
 
-  /** Run one leaf store read without cooperative request cancellation. */
+  /**
+   * Run one leaf store read without polling request cancellation. Caller interruption abandons the
+   * wait with {@link java.util.concurrent.CancellationException}; the task keeps its permit until
+   * the store call exits, and operation failures propagate unchanged.
+   */
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     return CancellableCallRunner.callWithoutCancellation(

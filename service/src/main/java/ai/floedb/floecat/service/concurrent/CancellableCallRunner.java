@@ -42,7 +42,11 @@ final class CancellableCallRunner {
 
   private CancellableCallRunner() {}
 
-  /** Run a cancellable operation after acquiring one permit. */
+  /**
+   * Run an operation after acquiring one permit. Request cancellation or caller interruption
+   * abandons the wait with {@link CancellationException} and interrupts the worker, but the task
+   * retains its permit until the operation exits. Operation failures propagate unchanged.
+   */
   static <T> T call(
       Semaphore permits,
       BooleanSupplier cancelled,
@@ -50,41 +54,20 @@ final class CancellableCallRunner {
       FailureMessages messages,
       Runnable onSaturation) {
     Objects.requireNonNull(cancelled, "cancelled");
-    return call(permits, cancelled, operation, messages, onSaturation, PropagatedContext::capture);
-  }
-
-  /** Cancellable call with injectable context capture for focused tests. */
-  static <T> T call(
-      Semaphore permits,
-      BooleanSupplier cancelled,
-      Supplier<T> operation,
-      FailureMessages messages,
-      Runnable onSaturation,
-      Supplier<PropagatedContext> captureContext) {
     AdmittedTask<T> task =
-        admitAndStart(permits, cancelled, operation, messages, onSaturation, captureContext, true);
+        admitAndStart(permits, cancelled, operation, messages, onSaturation, true);
     return awaitCancellable(task, cancelled, messages);
   }
 
   /**
-   * Run an operation without cooperative cancellation; caller interruption still aborts waiting.
+   * Run an operation without polling request cancellation. Caller interruption abandons the wait
+   * with {@link CancellationException} and interrupts the worker, but the task retains its permit
+   * until the operation exits. Operation failures propagate unchanged.
    */
   static <T> T callWithoutCancellation(
       Semaphore permits, Supplier<T> operation, FailureMessages messages, Runnable onSaturation) {
-    return callWithoutCancellation(
-        permits, operation, messages, onSaturation, PropagatedContext::capture);
-  }
-
-  /** Uncancellable call with injectable context capture for focused tests. */
-  static <T> T callWithoutCancellation(
-      Semaphore permits,
-      Supplier<T> operation,
-      FailureMessages messages,
-      Runnable onSaturation,
-      Supplier<PropagatedContext> captureContext) {
     AdmittedTask<T> task =
-        admitAndStart(
-            permits, () -> false, operation, messages, onSaturation, captureContext, false);
+        admitAndStart(permits, () -> false, operation, messages, onSaturation, false);
     return awaitUncancellable(task, messages);
   }
 
@@ -99,25 +82,20 @@ final class CancellableCallRunner {
       Supplier<T> operation,
       FailureMessages messages,
       Runnable onSaturation,
-      Supplier<PropagatedContext> captureContext,
       boolean pollCancellation) {
     acquire(permits, cancelled, messages, onSaturation, pollCancellation);
-    return startTask(
-        permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
+    return startTask(permits, operation, Thread.currentThread().getContextClassLoader());
   }
 
   /** Construct and start the sole owner of execution, outcome, interruption, and permit release. */
   private static <T> AdmittedTask<T> startTask(
-      Semaphore permits,
-      Supplier<T> operation,
-      Supplier<PropagatedContext> captureContext,
-      ClassLoader applicationClassLoader) {
+      Semaphore permits, Supplier<T> operation, ClassLoader applicationClassLoader) {
     AdmittedTask<T> task = null;
     try {
       task =
           new AdmittedTask<>(
               permits,
-              Objects.requireNonNull(captureContext, "captureContext").get(),
+              PropagatedContext.capture(),
               Objects.requireNonNull(operation, "operation"),
               applicationClassLoader);
       Thread worker = THREADS.newThread(task);
