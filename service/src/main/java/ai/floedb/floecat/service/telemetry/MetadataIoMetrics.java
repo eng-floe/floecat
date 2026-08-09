@@ -44,9 +44,6 @@ public class MetadataIoMetrics {
    * Observes {@link StartupEvent} so Arc retains this bean and instantiates it eagerly; nothing
    * injects it, and an unobserved {@code @PostConstruct} bean is a removal candidate.
    */
-  // After MetadataIoLifecycle's observer, which clears any controlled-shutdown latch. Injection is
-  // harmless — `admission` is a client proxy and constructing the runner touches no runtime — but
-  // a registry may sample the gauges immediately and therefore resolve the shared runtime.
   void registerAdmissionGauges(@Observes @Priority(100) StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
     Tag operation = Tag.of(TagKey.OPERATION, "metadata_io");
@@ -69,7 +66,6 @@ public class MetadataIoMetrics {
         ServiceMetrics.MetadataIo.WAITERS_DESC,
         component,
         operation);
-    // Saturated arrivals are counted directly by MetadataIoRunner through the same Observability
-    // instance; this bean owns only gauges sampled from the process gate.
+    // MetadataIoRunner records saturated arrivals through this same Observability instance.
   }
 }

@@ -55,6 +55,7 @@ class ProcessWideAdmissionTest {
       super(new URL[] {classes}, parent);
     }
 
+    /** Reload only the caller shim while delegating the process gate to its parent classloader. */
     @Override
     protected synchronized Class<?> loadClass(String name, boolean resolve)
         throws ClassNotFoundException {

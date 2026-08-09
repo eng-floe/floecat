@@ -44,8 +44,8 @@ import org.jboss.logging.Logger;
  * available. Once that prefix exposes a failure, active siblings are cancelled or abandoned and the
  * original failure returns without waiting for unrelated work.
  *
- * <p>This is orchestration only. Resource-specific admission belongs at the leaf operation each
- * task invokes; the scheduler neither acquires nor inspects those resources.
+ * <p>Each task invokes a resource-specific leaf operation, which owns any admission required by
+ * that resource. The scheduler owns ordering, concurrency, cancellation, and result delivery.
  *
  * <p>{@code permits} bounds concurrency, not buffered results. The window refills past a
  * still-running input-order head, so a completed later result is retained until the head lets the

@@ -34,8 +34,9 @@ import org.jboss.logging.Logger;
  * Runs blocking metadata-store reads behind the process-wide concurrency ceiling.
  *
  * <p>Each call gets one virtual thread. The call's task retains its permit until the downstream
- * operation actually returns, even when the waiting request cancels and abandons its result. No
- * reusable worker runtime exists: application generations share only the admission semaphore.
+ * operation actually returns, even when the waiting request cancels and abandons its result.
+ * Application generations meet at one JVM-lifetime admission semaphore while each task owns its
+ * execution thread and application context.
  *
  * <p>Every downstream client routed here must enforce its own request or socket timeout. A client
  * that never returns pins one permit and its application generation; Java cannot safely reclaim a
@@ -109,6 +110,7 @@ public class MetadataIoRunner {
         permits, operation, failureMessages, saturationSink);
   }
 
+  /** Resolve the JVM gate and retain its first-generation capacity across application reloads. */
   private static ProcessWideAdmission.State resolveProcessAdmission() {
     int configured = configuredCapacity();
     ProcessWideAdmission.State admission = ProcessWideAdmission.resolve(configured);
@@ -120,6 +122,7 @@ public class MetadataIoRunner {
     return admission;
   }
 
+  /** Build the non-blocking callback that records one arrival to a fully occupied gate. */
   private static Runnable saturationSink(Observability observability) {
     Objects.requireNonNull(observability, "observability");
     Tag component = Tag.of(TagKey.COMPONENT, "service");
@@ -160,6 +163,7 @@ public class MetadataIoRunner {
     }
   }
 
+  /** Require a capacity in the deployment-supported range and return it unchanged. */
   private static int requireCapacity(int capacity) {
     if (capacity < 1 || capacity > MAX_CAPACITY) {
       throw new IllegalArgumentException(

@@ -23,6 +23,7 @@ public final class ProcessWideAdmission {
 
   /** Immutable identity of the process gate; the semaphore itself carries its live usage. */
   public record State(int capacity, Semaphore permits) {
+    /** Require a positive capacity and a live semaphore for the process gate. */
     public State {
       if (capacity < 1) {
         throw new IllegalArgumentException("process-wide metadata-I/O capacity must be positive");

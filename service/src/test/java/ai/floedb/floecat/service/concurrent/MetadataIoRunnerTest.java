@@ -250,6 +250,7 @@ class MetadataIoRunnerTest {
         .hasMessageContaining("must be an integer");
   }
 
+  /** Start an uncancellable admitted call that holds its permit until {@code release} opens. */
   private static CompletableFuture<String> blockingCall(
       MetadataIoRunner runner, CountDownLatch entered, CountDownLatch release, String result) {
     return CompletableFuture.supplyAsync(
@@ -268,6 +269,7 @@ class MetadataIoRunnerTest {
     return result;
   }
 
+  /** Poll a concurrent condition for at most two seconds and fail if it never becomes true. */
   private static void await(BooleanSupplier condition) throws Exception {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
     while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
@@ -276,6 +278,7 @@ class MetadataIoRunnerTest {
     assertThat(condition.getAsBoolean()).isTrue();
   }
 
+  /** Await a latch through interrupts and restore the worker's interrupted status on return. */
   private static void awaitUninterruptibly(CountDownLatch latch) {
     boolean interrupted = false;
     while (true) {
@@ -291,6 +294,7 @@ class MetadataIoRunnerTest {
     }
   }
 
+  /** Build the minimal resolved/raw configuration view used by capacity parser tests. */
   private static ConfigValue config(String raw, String value) {
     return new ConfigValue() {
       @Override

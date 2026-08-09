@@ -61,10 +61,8 @@ final class CancellableCallRunner {
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
-    acquire(permits, cancelled, messages, onSaturation, true);
     AdmittedTask<T> task =
-        startTask(
-            permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
+        admitAndStart(permits, cancelled, operation, messages, onSaturation, captureContext, true);
     return awaitCancellable(task, cancelled, messages);
   }
 
@@ -84,11 +82,28 @@ final class CancellableCallRunner {
       FailureMessages messages,
       Runnable onSaturation,
       Supplier<PropagatedContext> captureContext) {
-    acquire(permits, () -> false, messages, onSaturation, false);
     AdmittedTask<T> task =
-        startTask(
-            permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
+        admitAndStart(
+            permits, () -> false, operation, messages, onSaturation, captureContext, false);
     return awaitUncancellable(task, messages);
+  }
+
+  /**
+   * Acquire one permit and transfer it to a started task, releasing it if task construction or
+   * thread start fails. {@code pollCancellation} selects whether admission polls the live request
+   * signal while queued.
+   */
+  private static <T> AdmittedTask<T> admitAndStart(
+      Semaphore permits,
+      BooleanSupplier cancelled,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation,
+      Supplier<PropagatedContext> captureContext,
+      boolean pollCancellation) {
+    acquire(permits, cancelled, messages, onSaturation, pollCancellation);
+    return startTask(
+        permits, operation, captureContext, Thread.currentThread().getContextClassLoader());
   }
 
   /** Construct and start the sole owner of execution, outcome, interruption, and permit release. */
@@ -208,6 +223,7 @@ final class CancellableCallRunner {
     }
   }
 
+  /** Report one saturated arrival without letting telemetry failure change admission behavior. */
   private static void recordSaturation(Runnable onSaturation) {
     try {
       onSaturation.run();
@@ -234,6 +250,10 @@ final class CancellableCallRunner {
     private final Semaphore permits;
     private boolean released;
 
+    /**
+     * Capture the request context and application classloader for one operation; this task assumes
+     * ownership of the already-acquired permit before its worker starts.
+     */
     AdmittedTask(
         Semaphore permits,
         PropagatedContext context,
@@ -252,6 +272,7 @@ final class CancellableCallRunner {
       this.permits = permits;
     }
 
+    /** Run the operation and release its permit after the downstream callable actually returns. */
     @Override
     public void run() {
       try {
@@ -261,11 +282,13 @@ final class CancellableCallRunner {
       }
     }
 
+    /** Cancel an unstarted task and return the permit transferred to it by its caller. */
     synchronized void releaseBeforeStart() {
       cancel(false);
       release();
     }
 
+    /** Return the task-owned permit exactly once across start-failure and worker completion. */
     private synchronized void release() {
       if (!released) {
         released = true;
