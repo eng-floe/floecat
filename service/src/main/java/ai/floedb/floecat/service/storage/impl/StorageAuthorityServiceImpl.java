@@ -317,15 +317,16 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                     correlationId(), null, Map.of("field", "account_id"));
               }
               boolean serverSide = usage(request) == StorageCredentialUsage.SCU_SERVER;
-              CredentialScope credentialScope =
+              AuthorizedScope authorized =
                   authorizeAndResolveLocation(principal, request, accountId);
+              CredentialScope credentialScope = authorized.scope();
               List<StorageAuthority> authorities =
                   repo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =
                   StorageAuthorityResolver.resolveBest(
                           authorities, credentialScope.authorityLookupLocationPrefix())
                       .orElse(null);
-              if (authority == null && request.hasTableId()) {
+              if (authority == null) {
                 // No authority covers this location. Before failing, ask the source catalog: an
                 // Iceberg REST catalog with access delegation issues its own short-lived
                 // credentials, which makes a separately configured authority unnecessary.
@@ -333,11 +334,15 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                 // Deliberately a fallback rather than the first choice -- an existing authority
                 // stays authoritative, so this cannot change behaviour for any catalog that
                 // already works.
-                ResolveStorageAuthorityResponse vended =
-                    vendFromSourceCatalog(
-                        accountId, request.getTableId(), credentialScope.responseLocationPrefix());
-                if (vended != null) {
-                  return vended;
+                ResourceId sourceTableId =
+                    sourceCatalogTableId(request, accountId, authorized.job());
+                if (sourceTableId != null) {
+                  ResolveStorageAuthorityResponse vended =
+                      vendFromSourceCatalog(
+                          accountId, sourceTableId, credentialScope.responseLocationPrefix());
+                  if (vended != null) {
+                    return vended;
+                  }
                 }
               }
               validateAuthorityCoversSessionScope(
@@ -458,11 +463,21 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     return TableStorageLocationResolver.resolveTableLocation(table, snapshotRepo);
   }
 
-  private CredentialScope authorizeAndResolveLocation(
+  /**
+   * The authorized scope, plus the reconcile job whose lease produced it when the request was
+   * execution-bound.
+   *
+   * <p>The job is carried out of authorization because source-catalog vending needs a table
+   * identity and the reconcile worker never sends one -- it vends by location under a job lease.
+   */
+  private record AuthorizedScope(CredentialScope scope, ReconcileJobStore.ReconcileJob job) {}
+
+  private AuthorizedScope authorizeAndResolveLocation(
       PrincipalContext principal, VendStorageCredentialsRequest request, String accountId) {
     if (request.hasExecutionBinding() && request.getExecutionBinding().hasReconcileLease()) {
       authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
-      return resolveExecutionBoundLocation(request, validateExecutionLease(request, accountId));
+      ReconcileJobStore.ReconcileJob job = validateExecutionLease(request, accountId);
+      return new AuthorizedScope(resolveExecutionBoundLocation(request, job), job);
     }
     if (request.hasTableId()) {
       authz.require(principal, List.of("connector.read", "table.read", "catalog.read"));
@@ -472,10 +487,11 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "account_id"));
       }
       String locationPrefix = resolveTableScopedLocation(request, tableId);
-      return CredentialScope.forSingleLocation(locationPrefix);
+      return new AuthorizedScope(CredentialScope.forSingleLocation(locationPrefix), null);
     }
     authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
-    return CredentialScope.forSingleLocation(validateExplicitLocation(request));
+    return new AuthorizedScope(
+        CredentialScope.forSingleLocation(validateExplicitLocation(request)), null);
   }
 
   private String resolveTableScopedLocation(
@@ -630,6 +646,31 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   }
 
   /**
+   * The table whose source catalog should be asked to vend, or null when the request identifies no
+   * table at all.
+   *
+   * <p>Prefers an explicit {@code table_id}, then the table the reconcile lease is bound to. The
+   * lease is what makes this reachable in practice: the reconcile worker vends by location and
+   * sends no {@code table_id}, so without the leased job there is no table identity to resolve a
+   * connector from.
+   */
+  private ResourceId sourceCatalogTableId(
+      VendStorageCredentialsRequest request, String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (request.hasTableId()) {
+      return request.getTableId();
+    }
+    String leasedTableId = leasedTableId(job);
+    if (leasedTableId == null) {
+      return null;
+    }
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setKind(ResourceKind.RK_TABLE)
+        .setId(leasedTableId)
+        .build();
+  }
+
+  /**
    * Asks the table's source catalog to vend storage credentials, or returns null when it will not.
    *
    * <p>Reached only when no storage authority covers the location. Returning null means "the
@@ -647,14 +688,23 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     try {
       table = loadVisibleTable(scopedTableId(accountId, requestedTableId, correlationId()));
     } catch (RuntimeException e) {
+      LOG.infof(
+          "source-catalog vending skipped: table %s is not visible (%s)",
+          requestedTableId.getId(), e);
       return null;
     }
     UpstreamRef upstream = table.getUpstream();
     if (!upstream.hasConnectorId() || upstream.getTableDisplayName().isBlank()) {
+      LOG.infof(
+          "source-catalog vending skipped: table %s has no upstream connector reference",
+          requestedTableId.getId());
       return null;
     }
     Connector connector = connectorRepo.getById(upstream.getConnectorId()).orElse(null);
     if (connector == null) {
+      LOG.infof(
+          "source-catalog vending skipped: upstream connector %s of table %s not found",
+          upstream.getConnectorId().getId(), requestedTableId.getId());
       return null;
     }
 
@@ -665,6 +715,10 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
     }
     if (vended.isEmpty() || vended.get().isEmpty()) {
+      LOG.infof(
+          "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
+              + " (catalog does not delegate)",
+          connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
       return null;
     }
 

@@ -435,6 +435,77 @@ class StorageAuthorityServiceImplTest {
     assertTrue(ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error));
   }
 
+  /**
+   * The reconcile worker vends by location and sends no {@code table_id}, so the leased job is the
+   * only table identity available. Before this resolution existed the source-catalog fallback was
+   * unreachable from the worker -- the one caller that needs it -- and every delegating catalog
+   * failed with "no storage credential authority is configured".
+   *
+   * <p>Vending is driven to the missing-connector bail-out on purpose: it proves the leased table
+   * was resolved and the fallback entered without needing a live catalog in a unit test.
+   */
+  @Test
+  void executionBoundVendWithoutTableIdResolvesTheLeasedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(connectorRepo).getById(CONNECTOR_ID);
+  }
+
+  /**
+   * A lease with no table bound to it (a discovery planner job, before any table exists) must not
+   * attempt source-catalog vending. Loading no table is the observable proof: the bootstrap scope
+   * path never touches the table repository.
+   */
+  @Test
+  void executionBoundVendWithoutALeasedTableSkipsSourceCatalog() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .vendStorageCredentials(
+                    VendStorageCredentialsRequest.newBuilder()
+                        .setAccountId("acct")
+                        .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                        .setUsage(StorageCredentialUsage.SCU_SERVER)
+                        .setExecutionBinding(
+                            ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                .setReconcileLease(
+                                    ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                        .setJobId("job-1")
+                                        .setLeaseEpoch("lease-1")))
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+  }
+
   @Test
   void resolveForDiscoveryPlannerUsesConnectorBootstrapScopeBeforeTableExists() {
     when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
