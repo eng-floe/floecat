@@ -33,6 +33,10 @@ public class MetadataRepositoryFactory {
   private final ImmutableBlobCache cache;
   private final RepositoryReads reads;
 
+  /**
+   * Compose the process stores once: mutation transactions retain the raw stores, while repository
+   * query reads use adapters governed by {@code admittedReads}.
+   */
   @Inject
   public MetadataRepositoryFactory(
       PointerStore pointers,

@@ -33,53 +33,94 @@ import org.junit.jupiter.api.Test;
 /** Verifies repository reads invoke the backend seam only when storage is actually consulted. */
 class RepositoryReadsTest {
 
+  private static final CatalogKey KEY = new CatalogKey("account", "catalog");
+
   @Test
   void immutableBlobCacheHitsStayOutsideTheBackendRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     GenericResourceRepository<Catalog, CatalogKey> writer =
-        new GenericResourceRepository<>(
+        repository(pointers, blobs, null, RepositoryReads.direct(pointers, blobs));
+    Catalog catalog = catalog("sales");
+    writer.create(catalog);
+    String blobUri = writer.metaFor(KEY).getBlobUri();
+
+    AtomicInteger backendGets = new AtomicInteger();
+    GenericResourceRepository<Catalog, CatalogKey> reader =
+        repository(
             pointers,
             blobs,
-            Schemas.CATALOG,
-            Catalog::parseFrom,
-            Catalog::toByteArray,
-            "application/x-protobuf");
+            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)),
+            countedReads(pointers, blobs, backendGets));
+
+    assertThat(reader.getByBlobUri(blobUri)).contains(catalog);
+    assertThat(reader.getByBlobUri(blobUri)).contains(catalog);
+    assertThat(backendGets).hasValue(1);
+  }
+
+  @Test
+  void mutationProtocolsKeepPrerequisiteReadsOnRawStores() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    AtomicInteger admittedReads = new AtomicInteger();
+    GenericResourceRepository<Catalog, CatalogKey> repository =
+        repository(pointers, blobs, null, countedReads(pointers, blobs, admittedReads));
+    repository.create(catalog("sales"));
+    long version = repository.metaFor(KEY).getPointerVersion();
+    admittedReads.set(0);
+
+    assertThat(repository.update(catalog("marketing"), version)).isTrue();
+    assertThat(admittedReads).hasValue(0);
+    assertThat(repository.delete(KEY)).isTrue();
+    assertThat(admittedReads).hasValue(0);
+
+    repository.create(catalog("sales"));
+    version = repository.metaFor(KEY).getPointerVersion();
+    admittedReads.set(0);
+    assertThat(repository.deleteWithPrecondition(KEY, version)).isTrue();
+    assertThat(admittedReads).hasValue(0);
+  }
+
+  /** Build a catalog repository with explicit read policy and optional immutable cache. */
+  private static GenericResourceRepository<Catalog, CatalogKey> repository(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      ImmutableBlobCache cache,
+      RepositoryReads reads) {
+    return new GenericResourceRepository<>(
+        pointers,
+        blobs,
+        Schemas.CATALOG,
+        Catalog::parseFrom,
+        Catalog::toByteArray,
+        "application/x-protobuf",
+        cache,
+        reads);
+  }
+
+  /** Build one catalog value with the fixture's stable resource identity. */
+  private static Catalog catalog(String displayName) {
     ResourceId id =
         ResourceId.newBuilder()
             .setAccountId("account")
             .setId("catalog")
             .setKind(ResourceKind.RK_CATALOG)
             .build();
-    Catalog catalog = Catalog.newBuilder().setResourceId(id).setDisplayName("sales").build();
-    writer.create(catalog);
-    String blobUri = writer.metaFor(new CatalogKey("account", "catalog")).getBlobUri();
+    return Catalog.newBuilder().setResourceId(id).setDisplayName(displayName).build();
+  }
 
-    AtomicInteger backendGets = new AtomicInteger();
-    RepositoryReads counted =
-        RepositoryReads.bind(
-            pointers,
-            blobs,
-            new RepositoryReads.ReadPolicy() {
-              @Override
-              public <T> T read(Supplier<T> operation) {
-                backendGets.incrementAndGet();
-                return operation.get();
-              }
-            });
-    GenericResourceRepository<Catalog, CatalogKey> reader =
-        new GenericResourceRepository<>(
-            pointers,
-            blobs,
-            Schemas.CATALOG,
-            Catalog::parseFrom,
-            Catalog::toByteArray,
-            "application/x-protobuf",
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)),
-            counted);
-
-    assertThat(reader.getByBlobUri(blobUri)).contains(catalog);
-    assertThat(reader.getByBlobUri(blobUri)).contains(catalog);
-    assertThat(backendGets).hasValue(1);
+  /** Count every read-policy invocation while delegating to the in-memory stores. */
+  private static RepositoryReads countedReads(
+      InMemoryPointerStore pointers, InMemoryBlobStore blobs, AtomicInteger readCount) {
+    return RepositoryReads.bind(
+        pointers,
+        blobs,
+        new RepositoryReads.ReadPolicy() {
+          @Override
+          public <T> T read(Supplier<T> operation) {
+            readCount.incrementAndGet();
+            return operation.get();
+          }
+        });
   }
 }

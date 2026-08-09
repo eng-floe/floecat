@@ -39,58 +39,50 @@ class MetadataResourceReaderTest {
 
   @Test
   void backendReadRunsOnAnAdmittedVirtualThread() {
-    MetadataIoRunner runner = new MetadataIoRunner(1);
-    BlobStore blobs = mock(BlobStore.class);
-    when(blobs.get("blob"))
+    ReaderFixture fixture = readerFixture();
+    when(fixture.blobs().get("blob"))
         .thenAnswer(
             ignored -> {
-              assertThat(runner.permitsInUse()).isEqualTo(1);
+              assertThat(fixture.runner().permitsInUse()).isEqualTo(1);
               assertThat(Thread.currentThread().isVirtual()).isTrue();
               return new byte[] {1, 2, 3};
             });
-    RepositoryReads reads =
-        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
 
-    assertThat(reads.blobs().get("blob")).containsExactly(1, 2, 3);
-    assertThat(runner.permitsInUse()).isZero();
+    assertThat(fixture.reads().blobs().get("blob")).containsExactly(1, 2, 3);
+    assertThat(fixture.runner().permitsInUse()).isZero();
   }
 
   @Test
   void alreadyCancelledRequestDoesNotReachTheBackend() {
-    MetadataIoRunner runner = new MetadataIoRunner(1);
-    BlobStore blobs = mock(BlobStore.class);
-    RepositoryReads reads =
-        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
+    ReaderFixture fixture = readerFixture();
 
     try (PropagatedContext.CancellationScope ignored =
         PropagatedContext.bindCancellation(() -> true)) {
-      assertThatThrownBy(() -> reads.blobs().get("blob")).isInstanceOf(CancellationException.class);
+      assertThatThrownBy(() -> fixture.reads().blobs().get("blob"))
+          .isInstanceOf(CancellationException.class);
     }
-    verify(blobs, never()).get("blob");
+    verify(fixture.blobs(), never()).get("blob");
   }
 
   @Test
   void liveCancellationAbandonsTheAdapterCall() throws Exception {
-    MetadataIoRunner runner = new MetadataIoRunner(1);
-    BlobStore blobs = mock(BlobStore.class);
+    ReaderFixture fixture = readerFixture();
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
-    when(blobs.get("blob"))
+    when(fixture.blobs().get("blob"))
         .thenAnswer(
             ignored -> {
               entered.countDown();
               awaitUninterruptibly(release);
               return new byte[] {1};
             });
-    RepositoryReads reads =
-        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
     AtomicBoolean cancelled = new AtomicBoolean();
     CompletableFuture<byte[]> call =
         CompletableFuture.supplyAsync(
             () -> {
               try (PropagatedContext.CancellationScope ignored =
                   PropagatedContext.bindCancellation(cancelled::get)) {
-                return reads.blobs().get("blob");
+                return fixture.reads().blobs().get("blob");
               }
             });
     assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
@@ -98,11 +90,20 @@ class MetadataResourceReaderTest {
     cancelled.set(true);
     assertThatThrownBy(() -> call.get(2, TimeUnit.SECONDS))
         .hasCauseInstanceOf(CancellationException.class);
-    assertThat(runner.permitsInUse()).isEqualTo(1);
+    assertThat(fixture.runner().permitsInUse()).isEqualTo(1);
 
     release.countDown();
-    awaitPermitRelease(runner);
-    verify(blobs).get("blob");
+    awaitPermitRelease(fixture.runner());
+    verify(fixture.blobs()).get("blob");
+  }
+
+  /** Build the isolated runner, mocked blob store, and admitted adapters shared by each test. */
+  private static ReaderFixture readerFixture() {
+    MetadataIoRunner runner = new MetadataIoRunner(1);
+    BlobStore blobs = mock(BlobStore.class);
+    RepositoryReads reads =
+        RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
+    return new ReaderFixture(runner, blobs, reads);
   }
 
   /** Wait for the abandoned backend task to return its admission permit. */
@@ -113,4 +114,7 @@ class MetadataResourceReaderTest {
     }
     assertThat(runner.permitsInUse()).isZero();
   }
+
+  /** Collaborators composing one isolated admitted-reader test fixture. */
+  private record ReaderFixture(MetadataIoRunner runner, BlobStore blobs, RepositoryReads reads) {}
 }

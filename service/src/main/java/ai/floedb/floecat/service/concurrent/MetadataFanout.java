@@ -60,7 +60,10 @@ public final class MetadataFanout {
     return new MetadataFanout(permits, VIRTUAL_THREADS);
   }
 
-  /** Apply uncancellable units and deliver their results in input order. */
+  /**
+   * Apply uncancellable units and deliver results in input order. The first reachable unit or
+   * consumer failure propagates immediately; caller interruption abandons active siblings.
+   */
   public <I, O> void forEachOrdered(
       List<I> units, Function<? super I, ? extends O> unit, Consumer<? super O> consumer) {
     forEachOrdered(units, unit, consumer, BoundedFanout.NEVER_CANCELLED);
@@ -81,12 +84,19 @@ public final class MetadataFanout {
         units, permits, executor, item -> unit.apply(item), consumer, cancelled);
   }
 
-  /** Run uncancellable units and collect results in input order. */
+  /**
+   * Run uncancellable units and collect results in input order. The first failure reachable in
+   * input order propagates immediately; caller interruption abandons active siblings.
+   */
   public <I, O> List<O> mapOrdered(List<I> units, Function<? super I, ? extends O> unit) {
     return mapOrdered(units, unit, BoundedFanout.NEVER_CANCELLED);
   }
 
-  /** Run cancellable units and collect results in input order. */
+  /**
+   * Run cancellable units and collect results in input order. The first reachable unit failure
+   * propagates immediately; observed cancellation throws {@link CancellationException} and abandons
+   * active siblings.
+   */
   public <I, O> List<O> mapOrdered(
       List<I> units, Function<? super I, ? extends O> unit, BooleanSupplier cancelled) {
     return BoundedFanout.mapOrdered(units, permits, executor, item -> unit.apply(item), cancelled);

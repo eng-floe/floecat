@@ -130,6 +130,7 @@ public final class PropagatedContext {
     return REQUEST_CANCELLATION.get();
   }
 
+  /** Restore the calling thread's exact prior cancellation binding, including the unbound state. */
   private static void restoreCancellation(BooleanSupplier prior) {
     if (prior == null) {
       REQUEST_CANCELLATION.remove();

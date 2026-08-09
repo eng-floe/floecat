@@ -51,39 +51,39 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   /** Build a direct-loading repository over the supplied stores. */
   public GenericResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
       ResourceSchema<T, K> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null);
+    this(mutationPointerStore, mutationBlobStore, schema, parser, toBytes, contentType, null);
   }
 
   /** Build a cached repository that reads directly from the supplied stores. */
   public GenericResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
       ResourceSchema<T, K> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
-    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
+    super(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
   }
 
   /** Build a repository with separate raw mutation stores and read-only storage adapters. */
   public GenericResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
       ResourceSchema<T, K> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache,
       RepositoryReads reads) {
-    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache, reads);
+    super(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, blobCache, reads);
     this.schema = Objects.requireNonNull(schema, "schema");
   }
 
@@ -156,6 +156,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private Optional<T> getByKeyUnobserved(K key) {
     return read(schema.canonicalPointerForKey.apply(key));
+  }
+
+  /** Load the current value through the raw stores that participate in a mutation transaction. */
+  private Optional<T> getByKeyForMutation(K key) {
+    return readForMutation(schema.canonicalPointerForKey.apply(key));
   }
 
   private boolean existsByKeyUnobserved(K key) {
@@ -231,7 +236,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                     pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
           }
 
-          if (pointerStore.compareAndSetBatch(ops)) {
+          if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, value);
             return;
           }
@@ -248,7 +253,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     int present = 0;
     int absent = 0;
     for (String pointerKey : pointerKeys) {
-      Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+      Pointer pointer = mutationPointerStore.get(pointerKey).orElse(null);
       if (pointer == null) {
         absent++;
         continue;
@@ -313,7 +318,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
-          boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+          boolean blobExistedBefore = mutationBlobStore.head(blobUri).isPresent();
 
           int blobBytes = writeBlobAndGetSize(blobUri, value);
 
@@ -333,7 +338,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                     pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
           }
 
-          if (pointerStore.compareAndSetBatch(ops)) {
+          if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, value);
             return true;
           }
@@ -351,7 +356,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // optimistically wrote (best-effort, content-addressed) before classifying the outcome.
     cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
 
-    Pointer canonical = pointerStore.get(canonicalPointer).orElse(null);
+    Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical != null) {
       // Canonical already taken — another writer owns the create; report a lost race regardless of
       // which blob it points to.
@@ -364,7 +369,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (pointerKey.equals(canonicalPointer)) {
         continue;
       }
-      Pointer secondary = pointerStore.get(pointerKey).orElse(null);
+      Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
       if (secondary == null) {
         continue;
       }
@@ -432,11 +437,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     if (blobExistedBefore || !schema.casBlobs || blobUri.isBlank()) {
       return;
     }
-    Pointer pointer = pointerStore.get(canonicalPointer).orElse(null);
+    Pointer pointer = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
       return;
     }
-    deleteQuietly(() -> blobStore.delete(blobUri));
+    deleteQuietly(() -> mutationBlobStore.delete(blobUri));
   }
 
   /**
@@ -462,7 +467,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String blobUri = schema.blobUriForKey.apply(key);
 
           T currentValue =
-              getByKeyUnobserved(key)
+              getByKeyForMutation(key)
                   .orElseThrow(
                       () ->
                           new NotFoundException(
@@ -509,7 +514,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             if (!batchedKeys.add(p)) {
               continue;
             }
-            Pointer existing = pointerStore.get(p).orElse(null);
+            Pointer existing = mutationPointerStore.get(p).orElse(null);
             if (existing == null) {
               ops.add(
                   new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
@@ -530,7 +535,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
               if (!batchedKeys.add(p)) {
                 continue;
               }
-              Pointer existing = pointerStore.get(p).orElse(null);
+              Pointer existing = mutationPointerStore.get(p).orElse(null);
               if (existing == null) {
                 ops.add(
                     new PointerStore.CasUpsert(
@@ -548,13 +553,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             if (!batchedKeys.add(p)) {
               continue;
             }
-            Pointer existing = pointerStore.get(p).orElse(null);
+            Pointer existing = mutationPointerStore.get(p).orElse(null);
             if (existing != null) {
               ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
             }
           }
 
-          if (pointerStore.compareAndSetBatch(ops)) {
+          if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, updatedValue);
             return true;
           }
@@ -572,7 +577,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    */
   private void healCanonicalBlobIfMissing(String blobUri, T value) {
     try {
-      if (blobStore.head(blobUri).isPresent()) {
+      if (mutationBlobStore.head(blobUri).isPresent()) {
         return;
       }
       log.warnf(
@@ -586,7 +591,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private boolean classifyUpdateConflict(
       String canonicalPointer, long expectedCanonicalVersion, String blobUri, Set<String> toAdd) {
-    Pointer canonical = pointerStore.get(canonicalPointer).orElse(null);
+    Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical == null || canonical.getVersion() != expectedCanonicalVersion) {
       // Optimistic-concurrency miss: the canonical pointer moved or vanished under us. Same
       // observable result as the previous advancePointer -> PreconditionFailed path — the caller
@@ -597,7 +602,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // by a different blob is a terminal collision; otherwise a concurrent writer shifted a
     // secondary's version between our read and the commit and a retry re-reads fresh versions.
     for (String p : toAdd) {
-      Pointer secondary = pointerStore.get(p).orElse(null);
+      Pointer secondary = mutationPointerStore.get(p).orElse(null);
       if (secondary != null && !blobUri.equals(secondary.getBlobUri())) {
         throw new NameConflictException("pointer bound to different blob: " + p);
       }
@@ -611,20 +616,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-          var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
+          var canonicalPtr = mutationPointerStore.get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
             return false;
           }
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
           Optional<T> current;
           try {
-            current = getByKeyUnobserved(key);
+            current = getByKeyForMutation(key);
           } catch (CorruptionException e) {
             if (!deleteCanonicalPointer(canonicalPointer, canonicalPtr.getVersion())) {
               return false;
             }
             if (!schema.casBlobs && !blobUri.isBlank()) {
-              deleteQuietly(() -> blobStore.delete(blobUri));
+              deleteQuietly(() -> mutationBlobStore.delete(blobUri));
             }
             return true;
           }
@@ -641,7 +646,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
-            deleteQuietly(() -> blobStore.delete(blobUri));
+            deleteQuietly(() -> mutationBlobStore.delete(blobUri));
           }
           return true;
         });
@@ -656,13 +661,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
           Optional<T> current;
           try {
-            current = getByKeyUnobserved(key);
+            current = getByKeyForMutation(key);
           } catch (CorruptionException e) {
             if (!deleteCanonicalPointer(canonicalPointer, expectedCanonicalVersion)) {
               return false;
             }
             if (!schema.casBlobs && !blobUri.isBlank()) {
-              deleteQuietly(() -> blobStore.delete(blobUri));
+              deleteQuietly(() -> mutationBlobStore.delete(blobUri));
             }
             return true;
           }
@@ -679,7 +684,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
-            deleteQuietly(() -> blobStore.delete(blobUri));
+            deleteQuietly(() -> mutationBlobStore.delete(blobUri));
           }
           return true;
         });
@@ -697,7 +702,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (!batchedKeys.add(pointerKey)) {
         continue;
       }
-      Pointer secondary = pointerStore.get(pointerKey).orElse(null);
+      Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
       if (secondary != null) {
         ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
       } else {
@@ -705,11 +710,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
     }
 
-    return pointerStore.compareAndSetBatch(ops);
+    return mutationPointerStore.compareAndSetBatch(ops);
   }
 
   private boolean deleteCanonicalPointer(String canonicalPointer, long expectedCanonicalVersion) {
-    return pointerStore.compareAndSetBatch(
+    return mutationPointerStore.compareAndSetBatch(
         List.of(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion)));
   }
 
@@ -796,7 +801,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private String resolveBlobUriForDelete(K key, String canonicalPointer) {
     if (schema.casBlobs) {
-      var ptrOpt = pointerStore.get(canonicalPointer);
+      var ptrOpt = mutationPointerStore.get(canonicalPointer);
       if (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) {
         return ptrOpt.get().getBlobUri();
       }
