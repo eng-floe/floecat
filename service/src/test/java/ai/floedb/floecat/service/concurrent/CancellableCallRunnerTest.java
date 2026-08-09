@@ -105,6 +105,47 @@ class CancellableCallRunnerTest {
   }
 
   @Test
+  void aCallCancelledBeforeItsOperationDoesNotLeaveTheWorkerApplicationClassloader()
+      throws Exception {
+    var permits = new Semaphore(1);
+    var bodyRan = new AtomicBoolean();
+    Thread caller = Thread.currentThread();
+    ClassLoader previousLoader = caller.getContextClassLoader();
+    ClassLoader applicationLoader = new ClassLoader(previousLoader) {};
+    ExecutorService executor = Executors.newFixedThreadPool(1);
+    try {
+      caller.setContextClassLoader(applicationLoader);
+      assertThrows(
+          CancellationException.class,
+          () ->
+              CancellableCallRunner.call(
+                  executor,
+                  permits,
+                  () -> Thread.currentThread() != caller,
+                  notClosed,
+                  () -> {
+                    bodyRan.set(true);
+                    return "unreachable";
+                  },
+                  CALL_FAILURES,
+                  saturations::incrementAndGet));
+      assertFalse(bodyRan.get(), "worker-side cancellation must skip the operation");
+
+      ClassLoader reusedWorkerLoader =
+          CompletableFuture.supplyAsync(
+                  () -> Thread.currentThread().getContextClassLoader(), executor)
+              .get(1, TimeUnit.SECONDS);
+      assertEquals(
+          ClassLoader.getPlatformClassLoader(),
+          reusedWorkerLoader,
+          "an idle worker must not retain the submitting application classloader");
+    } finally {
+      caller.setContextClassLoader(previousLoader);
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   void aWorkerOnlyCancellationPredicateFailureReleasesAdmission() {
     var permits = new Semaphore(1);
     Thread caller = Thread.currentThread();

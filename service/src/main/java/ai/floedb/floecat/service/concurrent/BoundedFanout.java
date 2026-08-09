@@ -192,6 +192,9 @@ final class BoundedFanout {
       IntConsumer completionBarrier) {
     // Before capture() or any allocation: an invalid bound should cost nothing and name itself.
     validatePermits(permits);
+    // Check even an empty batch so invalid wiring fails deterministically rather than only when
+    // production data happens to contain work.
+    MetadataIoRunner.rejectFanOutFromAdmittedOperation("BoundedFanout.forEachOrdered");
     List<TaskOutcome<O>> outcomes = emptyOutcomes(items.size());
     OrderedOutcomeConsumer<O> ordered = new OrderedOutcomeConsumer<>(outcomes, consumer, cancelled);
     completeAll(

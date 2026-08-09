@@ -29,6 +29,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -698,8 +699,10 @@ class MetadataIoRunnerTest {
     }
   }
 
-  @Test
-  void aCancelledNestedCallReturnsPromptlyWithoutReleasingItsHeldPermit() throws Exception {
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  void cancelledNestedCallCanBeRetriedBeforeTheOuterOperationReturns(boolean cancellableRetry)
+      throws Exception {
     var runner = new MetadataIoRunner(1);
     var blocker = new UninterruptibleBlocker();
     var cancelled = new AtomicBoolean();
@@ -709,28 +712,30 @@ class MetadataIoRunnerTest {
     try {
       CompletableFuture<String> outer =
           CompletableFuture.supplyAsync(
-              () -> {
-                try {
+              () ->
                   runner.callWithoutCancellation(
-                      () ->
+                      () -> {
+                        try {
                           runner.call(
                               cancelled::get,
                               () -> {
                                 blocker.await();
                                 return "nested";
                               },
-                              FAILURES),
-                      FAILURES);
-                } catch (CancellationException expected) {
-                  nestedCallerReturned.countDown();
-                }
-                return runner.callWithoutCancellation(
-                    () -> {
-                      laterOperationStarted.countDown();
-                      return "after-nested-cancellation";
-                    },
-                    FAILURES);
-              });
+                              FAILURES);
+                        } catch (CancellationException expected) {
+                          nestedCallerReturned.countDown();
+                        }
+                        Supplier<String> retry =
+                            () -> {
+                              laterOperationStarted.countDown();
+                              return "after-nested-cancellation";
+                            };
+                        return cancellableRetry
+                            ? runner.call(() -> false, retry, FAILURES)
+                            : runner.callWithoutCancellation(retry, FAILURES);
+                      },
+                      FAILURES));
       assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
 
       cancelled.set(true);

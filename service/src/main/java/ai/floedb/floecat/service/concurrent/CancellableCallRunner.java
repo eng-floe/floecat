@@ -130,6 +130,41 @@ final class CancellableCallRunner {
   }
 
   /**
+   * Run same-runtime replacement work after an inherited admission became non-reusable.
+   *
+   * <p>The invalidated caller drops its lease reference before waiting; abandoned descendants keep
+   * the old permit until they exit. The replacement acquires a new permit but runs on the nested
+   * executor because its caller may still occupy a worker in the admission executor.
+   */
+  static <T> T callWithFreshNestedAdmission(
+      AdmissionLease invalidatedAdmission,
+      Semaphore permits,
+      BooleanSupplier cancelled,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation) {
+    invalidatedAdmission.release();
+    return call(NESTED_EXECUTOR, permits, cancelled, closed, operation, messages, onSaturation);
+  }
+
+  /**
+   * Run uncancellable same-runtime replacement work under the same lease-transfer contract as
+   * {@link #callWithFreshNestedAdmission}.
+   */
+  static <T> T callWithoutCancellationWithFreshNestedAdmission(
+      AdmissionLease invalidatedAdmission,
+      Semaphore permits,
+      BooleanSupplier closed,
+      Supplier<T> operation,
+      FailureMessages messages,
+      Runnable onSaturation) {
+    invalidatedAdmission.release();
+    return callWithoutCancellation(
+        NESTED_EXECUTOR, permits, closed, operation, messages, onSaturation);
+  }
+
+  /**
    * Run nested work under a permit that its caller already owns.
    *
    * <p>The nested task gets another reference to the same admission lease rather than acquiring a
@@ -464,14 +499,15 @@ final class CancellableCallRunner {
 
     @Override
     public void run() {
-      if (Thread.currentThread() == submissionThread) {
+      Thread worker = Thread.currentThread();
+      if (worker == submissionThread) {
         setException(
             new IllegalArgumentException("blocking call executor must dispatch asynchronously"));
         releasePermit();
         return;
       }
       running.set(true);
-      runner = Thread.currentThread();
+      runner = worker;
       try {
         if (isCancelled()) {
           return;
@@ -502,7 +538,11 @@ final class CancellableCallRunner {
         setException(failure);
       } finally {
         runner = null;
-        releasePermit();
+        try {
+          worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+        } finally {
+          releasePermit();
+        }
       }
     }
 

@@ -212,10 +212,7 @@ public class MetadataIoRunner {
     saturationSink.run();
   }
 
-  /**
-   * Run application code with the submitting generation's loader, then leave the pooled worker
-   * neutral.
-   */
+  /** Run application code with the submitting generation's loader and current admission lease. */
   private static <T> Supplier<T> withApplicationClassLoader(
       RuntimeState runtime, Supplier<T> operation) {
     ClassLoader callerClassLoader = Thread.currentThread().getContextClassLoader();
@@ -233,7 +230,6 @@ public class MetadataIoRunner {
         } else {
           HELD_ADMISSION.set(previous);
         }
-        worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
       }
     };
   }
@@ -270,6 +266,33 @@ public class MetadataIoRunner {
     return other != null && runtime() == other.runtime();
   }
 
+  /**
+   * True when the calling thread is currently inside an admitted metadata-I/O operation.
+   *
+   * <p>The held lease is thread-local by design: nested calls on this thread may reuse it, while a
+   * dispatch to another thread must acquire separate admission.
+   */
+  public static boolean isRunningAdmittedOperation() {
+    return HELD_ADMISSION.get() != null;
+  }
+
+  /**
+   * Refuse to dispatch fan-out units while the scheduler holds metadata-I/O admission.
+   *
+   * <p>The held lease does not follow the units to their executor. Each unit would therefore wait
+   * for its own permit while the scheduler keeps one, deadlocking when every permit is held by a
+   * waiting scheduler.
+   */
+  public static void rejectFanOutFromAdmittedOperation(String dispatchSite) {
+    if (isRunningAdmittedOperation()) {
+      throw new IllegalStateException(
+          dispatchSite
+              + " ran inside an admitted metadata-I/O operation. Its units would each acquire their"
+              + " own permit while this thread holds one, deadlocking the process-wide ceiling."
+              + " Fan out first, then admit each unit.");
+    }
+  }
+
   private static void rejectNestedIfUnusable(
       RuntimeState runtime,
       BooleanSupplier cancelled,
@@ -292,14 +315,21 @@ public class MetadataIoRunner {
       CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
     HeldAdmission held = HELD_ADMISSION.get();
-    if (held != null && held.runtime() == current && held.admission().isReusable()) {
+    if (held != null && held.runtime() == current) {
       rejectNestedIfUnusable(current, cancelled, failureMessages);
-      return CancellableCallRunner.callAlreadyAdmitted(
+      Supplier<T> nestedOperation = withApplicationClassLoader(current, operation);
+      if (held.admission().isReusable()) {
+        return CancellableCallRunner.callAlreadyAdmitted(
+            held.admission(), cancelled, current::isClosed, nestedOperation, failureMessages);
+      }
+      return CancellableCallRunner.callWithFreshNestedAdmission(
           held.admission(),
+          current.permits,
           cancelled,
           current::isClosed,
-          withApplicationClassLoader(current, operation),
-          failureMessages);
+          nestedOperation,
+          failureMessages,
+          MetadataIoRunner::recordSaturatedWait);
     }
     return CancellableCallRunner.call(
         current.executor(),
@@ -316,9 +346,18 @@ public class MetadataIoRunner {
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     RuntimeState current = runtime();
     HeldAdmission held = HELD_ADMISSION.get();
-    if (held != null && held.runtime() == current && held.admission().isReusable()) {
+    if (held != null && held.runtime() == current) {
       rejectNestedIfUnusable(current, null, failureMessages);
-      return operation.get();
+      if (held.admission().isReusable()) {
+        return operation.get();
+      }
+      return CancellableCallRunner.callWithoutCancellationWithFreshNestedAdmission(
+          held.admission(),
+          current.permits,
+          current::isClosed,
+          withApplicationClassLoader(current, operation),
+          failureMessages,
+          MetadataIoRunner::recordSaturatedWait);
     }
     return CancellableCallRunner.callWithoutCancellation(
         current.executor(),
