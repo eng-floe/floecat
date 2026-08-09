@@ -25,8 +25,10 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.time.Duration;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -38,7 +40,7 @@ import org.junit.jupiter.api.Test;
 class MetadataResourceReaderTest {
 
   @Test
-  void backendReadRunsOnAnAdmittedVirtualThread() {
+  void backendReadRunsOnAnAdmittedVirtualThread() throws Exception {
     ReaderFixture fixture = readerFixture();
     when(fixture.blobs().get("blob"))
         .thenAnswer(
@@ -49,7 +51,7 @@ class MetadataResourceReaderTest {
             });
 
     assertThat(fixture.reads().blobs().get("blob")).containsExactly(1, 2, 3);
-    assertThat(fixture.runner().permitsInUse()).isZero();
+    ConcurrentTestSupport.await(() -> fixture.runner().permitsInUse() == 0, Duration.ofSeconds(2));
   }
 
   @Test
@@ -93,7 +95,7 @@ class MetadataResourceReaderTest {
     assertThat(fixture.runner().permitsInUse()).isEqualTo(1);
 
     release.countDown();
-    awaitPermitRelease(fixture.runner());
+    ConcurrentTestSupport.await(() -> fixture.runner().permitsInUse() == 0, Duration.ofSeconds(2));
     verify(fixture.blobs()).get("blob");
   }
 
@@ -104,15 +106,6 @@ class MetadataResourceReaderTest {
     RepositoryReads reads =
         RepositoryReads.bind(mock(PointerStore.class), blobs, new MetadataResourceReader(runner));
     return new ReaderFixture(runner, blobs, reads);
-  }
-
-  /** Wait for the abandoned backend task to return its admission permit. */
-  private static void awaitPermitRelease(MetadataIoRunner runner) throws InterruptedException {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-    while (runner.permitsInUse() != 0 && System.nanoTime() < deadline) {
-      Thread.sleep(5);
-    }
-    assertThat(runner.permitsInUse()).isZero();
   }
 
   /** Collaborators composing one isolated admitted-reader test fixture. */

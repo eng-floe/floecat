@@ -18,13 +18,19 @@ package ai.floedb.floecat.service.concurrent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
+import io.smallrye.common.vertx.VertxContext;
+import io.vertx.core.Vertx;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
@@ -60,7 +66,7 @@ class MetadataFanoutTest {
   }
 
   @Test
-  void serialModeUsesTheCallerThreadAndTheSameOrderedScheduler() {
+  void serialModeUsesTheCallerThreadAndPreservesInputOrder() {
     Thread caller = Thread.currentThread();
     AtomicReference<Thread> observed = new AtomicReference<>();
 
@@ -76,6 +82,21 @@ class MetadataFanoutTest {
 
     assertThat(results).containsExactly(30, 10, 20);
     assertThat(observed.get()).isSameAs(caller);
+  }
+
+  @Test
+  void serialModeRunsInlineOnADuplicatedVertxContext() throws Exception {
+    Vertx vertx = Vertx.vertx();
+    try {
+      List<Integer> results =
+          onDuplicatedContext(
+              vertx,
+              () -> MetadataFanout.serial().mapOrdered(List.of(1, 2, 3), value -> value * 2));
+
+      assertThat(results).containsExactly(2, 4, 6);
+    } finally {
+      vertx.close();
+    }
   }
 
   @Test
@@ -135,9 +156,83 @@ class MetadataFanoutTest {
   }
 
   @Test
+  void serialCancellationAbandonsAUnitWaitingForMetadataAdmission() throws Exception {
+    MetadataIoRunner runner = new MetadataIoRunner(1);
+    MetadataResourceReader reader = new MetadataResourceReader(runner);
+    CountDownLatch holderEntered = new CountDownLatch(1);
+    CountDownLatch releaseHolder = new CountDownLatch(1);
+    var failures =
+        new CancellableCallRunner.FailureMessages("cancelled", "interrupted while waiting");
+    CompletableFuture<String> holder =
+        CompletableFuture.supplyAsync(
+            () ->
+                runner.callWithoutCancellation(
+                    () -> {
+                      holderEntered.countDown();
+                      ConcurrentTestSupport.awaitUninterruptibly(releaseHolder);
+                      return "holder";
+                    },
+                    failures));
+    assertThat(holderEntered.await(2, TimeUnit.SECONDS)).isTrue();
+
+    AtomicBoolean cancelled = new AtomicBoolean();
+    AtomicBoolean backendStarted = new AtomicBoolean();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    Thread caller =
+        Thread.ofPlatform()
+            .start(
+                () -> {
+                  try {
+                    MetadataFanout.serial()
+                        .mapOrdered(
+                            List.of(1),
+                            ignored ->
+                                reader.read(
+                                    () -> {
+                                      backendStarted.set(true);
+                                      return ignored;
+                                    }),
+                            cancelled::get);
+                  } catch (Throwable thrown) {
+                    failure.set(thrown);
+                  }
+                });
+    try {
+      ConcurrentTestSupport.await(() -> runner.admissionWaiters() == 1, Duration.ofSeconds(2));
+      cancelled.set(true);
+      caller.join(TimeUnit.SECONDS.toMillis(2));
+
+      assertThat(caller.isAlive()).isFalse();
+      assertThat(failure.get()).isInstanceOf(CancellationException.class);
+      assertThat(backendStarted).isFalse();
+    } finally {
+      cancelled.set(true);
+      releaseHolder.countDown();
+      caller.join(TimeUnit.SECONDS.toMillis(2));
+      assertThat(holder.get(2, TimeUnit.SECONDS)).isEqualTo("holder");
+      ConcurrentTestSupport.await(() -> runner.permitsInUse() == 0, Duration.ofSeconds(2));
+    }
+  }
+
+  @Test
   void concurrentModeRejectsAnInvalidBoundAtConfigurationTime() {
     assertThatThrownBy(() -> MetadataFanout.concurrent(0))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("positive");
+  }
+
+  private static <T> T onDuplicatedContext(Vertx vertx, Supplier<T> body) throws Exception {
+    CompletableFuture<T> result = new CompletableFuture<>();
+    io.vertx.core.Context duplicated =
+        VertxContext.createNewDuplicatedContext(vertx.getOrCreateContext());
+    duplicated.runOnContext(
+        ignored -> {
+          try {
+            result.complete(body.get());
+          } catch (Throwable failure) {
+            result.completeExceptionally(failure);
+          }
+        });
+    return result.get(10, TimeUnit.SECONDS);
   }
 }

@@ -249,18 +249,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * semantics live here, once, for both pointer-resolved and blob-direct reads.
    */
   protected final Optional<T> loadAndParseBlob(String blobUri) {
-    try {
-      byte[] bytes = blobReads.get(blobUri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
-      return Optional.of(parser.parse(bytes));
-    } catch (StorageNotFoundException snf) {
+    byte[] bytes = loadBlob(blobReads, blobUri);
+    if (bytes == null) {
       return Optional.empty();
+    }
+    try {
+      return Optional.of(parser.parse(bytes));
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
-    } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + blobUri, e);
     }
@@ -278,20 +274,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   private Optional<T> loadAndParseReferencedBlob(
       String pointerKey, String blobUri, RepositoryReads.Blobs blobs) {
-    try {
-      byte[] bytes = blobs.get(blobUri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
-      return Optional.of(parseReferencedBlob(pointerKey, blobUri, bytes));
-    } catch (StorageNotFoundException snf) {
+    byte[] bytes = loadBlob(blobs, blobUri);
+    if (bytes == null) {
       return Optional.empty();
+    }
+    try {
+      return Optional.of(parseReferencedBlob(pointerKey, blobUri, bytes));
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
-    } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + blobUri, e);
+    }
+  }
+
+  /** Read one blob while preserving policy failures and normalizing the storage API's outcomes. */
+  private static byte[] loadBlob(RepositoryReads.Blobs blobs, String blobUri) {
+    try {
+      return blobs.get(blobUri);
+    } catch (StorageNotFoundException notFound) {
+      return null;
+    } catch (StorageAbortRetryableException retryable) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
     }
   }
 

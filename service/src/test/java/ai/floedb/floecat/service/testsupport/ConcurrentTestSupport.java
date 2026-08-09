@@ -15,10 +15,14 @@
  */
 package ai.floedb.floecat.service.testsupport;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.BooleanSupplier;
 
 /** Shared synchronization helpers for deterministic concurrency tests. */
 public final class ConcurrentTestSupport {
+
+  private static final Duration DEFAULT_AWAIT_TIMEOUT = Duration.ofSeconds(2);
 
   private ConcurrentTestSupport() {}
 
@@ -36,5 +40,22 @@ public final class ConcurrentTestSupport {
     if (interrupted) {
       Thread.currentThread().interrupt();
     }
+  }
+
+  /** Wait up to {@code timeout} for a concurrent condition to become observable. */
+  public static void await(BooleanSupplier condition, Duration timeout)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() >= deadline) {
+        throw new AssertionError("condition did not become true before " + timeout);
+      }
+      Thread.sleep(10);
+    }
+  }
+
+  /** Wait for a concurrent condition using the shared focused-test timeout. */
+  public static void await(BooleanSupplier condition) throws InterruptedException {
+    await(condition, DEFAULT_AWAIT_TIMEOUT);
   }
 }

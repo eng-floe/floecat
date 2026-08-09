@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.await;
 import static ai.floedb.floecat.service.testsupport.ConcurrentTestSupport.awaitUninterruptibly;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,7 +30,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.ConfigValue;
 import org.junit.jupiter.api.Test;
 
@@ -268,15 +268,6 @@ class MetadataIoRunnerTest {
   private static String block(UninterruptibleBlocker blocker, String result) {
     blocker.await();
     return result;
-  }
-
-  /** Poll a concurrent condition for at most two seconds and fail if it never becomes true. */
-  private static void await(BooleanSupplier condition) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
-      Thread.sleep(5);
-    }
-    assertThat(condition.getAsBoolean()).isTrue();
   }
 
   /** Build the minimal resolved/raw configuration view used by capacity parser tests. */

@@ -15,6 +15,8 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import ai.floedb.floecat.service.context.PropagatedContext;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executor;
@@ -25,9 +27,10 @@ import java.util.function.Function;
 /**
  * Ordered metadata fan-out configured as either caller-thread serial work or bounded concurrency.
  *
- * <p>Both modes use the same scheduler and therefore share ordering, first-failure, cancellation,
- * and context-propagation behavior. This module owns orchestration; storage adapters own metadata
- * admission for each backend read invoked by a unit.
+ * <p>Serial mode runs inline without capturing or reinstalling context; concurrent mode propagates
+ * caller context to isolated workers. Both preserve input order and check cancellation before and
+ * after every unit. Storage adapters own metadata admission for each backend read invoked by a
+ * unit.
  */
 public final class MetadataFanout {
 
@@ -41,15 +44,17 @@ public final class MetadataFanout {
 
   private final int permits;
   private final Executor executor;
+  private final boolean callerThread;
 
-  private MetadataFanout(int permits, Executor executor) {
+  private MetadataFanout(int permits, Executor executor, boolean callerThread) {
     this.permits = permits;
     this.executor = executor;
+    this.callerThread = callerThread;
   }
 
   /** Run every unit synchronously on the caller thread. */
   public static MetadataFanout serial() {
-    return new MetadataFanout(1, DIRECT);
+    return new MetadataFanout(1, DIRECT, true);
   }
 
   /** Run at most {@code permits} units concurrently on isolated virtual threads. */
@@ -57,7 +62,7 @@ public final class MetadataFanout {
     if (permits < 1) {
       throw new IllegalArgumentException("metadata fan-out permits must be positive");
     }
-    return new MetadataFanout(permits, VIRTUAL_THREADS);
+    return new MetadataFanout(permits, VIRTUAL_THREADS, false);
   }
 
   /**
@@ -80,6 +85,12 @@ public final class MetadataFanout {
       Function<? super I, ? extends O> unit,
       Consumer<? super O> consumer,
       BooleanSupplier cancelled) {
+    if (callerThread) {
+      try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
+        forEachInline(units, unit, consumer, cancelled);
+      }
+      return;
+    }
     BoundedFanout.forEachOrdered(
         units, permits, executor, item -> unit.apply(item), consumer, cancelled);
   }
@@ -99,6 +110,34 @@ public final class MetadataFanout {
    */
   public <I, O> List<O> mapOrdered(
       List<I> units, Function<? super I, ? extends O> unit, BooleanSupplier cancelled) {
+    if (callerThread) {
+      ArrayList<O> results = new ArrayList<>(units.size());
+      try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
+        forEachInline(units, unit, results::add, cancelled);
+      }
+      return results;
+    }
     return BoundedFanout.mapOrdered(units, permits, executor, item -> unit.apply(item), cancelled);
+  }
+
+  /** Run serial units directly without mutating context owned by the caller's Vert.x dispatcher. */
+  private static <I, O> void forEachInline(
+      List<I> units,
+      Function<? super I, ? extends O> unit,
+      Consumer<? super O> consumer,
+      BooleanSupplier cancelled) {
+    for (I item : units) {
+      throwIfCancelled(cancelled);
+      O result = unit.apply(item);
+      throwIfCancelled(cancelled);
+      consumer.accept(result);
+    }
+    throwIfCancelled(cancelled);
+  }
+
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted()) {
+      throw new CancellationException("fan-out cancelled");
+    }
   }
 }
