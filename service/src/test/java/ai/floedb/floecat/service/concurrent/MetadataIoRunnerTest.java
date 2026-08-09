@@ -286,9 +286,7 @@ class MetadataIoRunnerTest {
 
   @Test
   void theSharedRuntimeIsUsableAgainAfterAnApplicationRestart() {
-    // Quarkus reuses the runtime classloader across dev-mode reloads and @QuarkusTest restarts, and
-    // `closed` is sticky. A static-final holder therefore handed every call in the restarted
-    // application a closed runtime, so the whole tier failed until the JVM exited.
+    // `closed` is sticky, so each restarted application lifecycle must resolve a fresh runtime.
     MetadataIoRunner before = new MetadataIoRunner();
     assertEquals("ok", before.callWithoutCancellation(() -> "ok", FAILURES));
 
@@ -300,9 +298,7 @@ class MetadataIoRunnerTest {
         "ok",
         afterRestart.callWithoutCancellation(() -> "ok", FAILURES),
         "a restarted application must get a fresh runtime, not the closed one");
-    // shared() is the sibling entry point: it used to cache a facade whose RuntimeState was
-    // captured once, so it kept serving the closed runtime after a restart while the constructor
-    // recovered.
+    // The shared() entry point must resolve the same fresh runtime as direct construction.
     assertEquals("ok", MetadataIoRunner.shared().callWithoutCancellation(() -> "ok", FAILURES));
     MetadataIoRunner.closeSharedRuntimeIfStarted();
     MetadataIoRunner.reopenSharedRuntime();
@@ -336,8 +332,8 @@ class MetadataIoRunnerTest {
 
   @Test
   void noRuntimeIsBuiltAfterShutdownHasBegun() {
-    // A call arriving inside a controlled close used to install a replacement runtime after the
-    // latch went up, leaving platform threads that no owner would reclaim.
+    // A call arriving during controlled close must not install a replacement runtime after the
+    // latch goes up.
     new MetadataIoRunner().callWithoutCancellation(() -> "warm", FAILURES);
     MetadataIoRunner.closeSharedRuntimeIfStarted();
     try {

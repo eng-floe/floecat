@@ -90,8 +90,7 @@ final class MetadataIoExecutors {
       // The wait was aborted, not completed, so the pool's own state is the only honest answer.
       // This happens when close() runs on one of the pool's workers and shutdownNow interrupts the
       // closer -- and that worker is by definition still inside this method, so the pool has not
-      // terminated. Returning true suppressed the caller's warning in exactly the case it exists
-      // for: a store call that ignores interruption holding the pool open.
+      // terminated. The caller needs false so it can report a store call holding the pool open.
       LOG.debug("interrupted while awaiting metadata I/O executor termination");
       return executor.isTerminated();
     }

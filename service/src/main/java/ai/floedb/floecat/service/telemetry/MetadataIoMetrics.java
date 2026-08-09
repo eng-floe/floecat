@@ -29,10 +29,6 @@ import jakarta.inject.Inject;
 /**
  * Publishes the process-wide metadata-I/O admission ceiling as metrics.
  *
- * <p>Staging note: no caller routes store I/O through the admission tier yet, so these read zero
- * against a configured ceiling until the wiring lands. Kept out of the metric descriptions, which
- * are a versioned contract.
- *
  * <p>A permit is held until the downstream call exits, so a stalled store keeps the ceiling full
  * after its callers have given up. {@code in_use} against {@code capacity} shows whether the
  * ceiling is the constraint, {@code waiters} the queue behind it, and {@code saturated_waits} how
@@ -48,10 +44,9 @@ public class MetadataIoMetrics {
    * Observes {@link StartupEvent} so Arc retains this bean and instantiates it eagerly; nothing
    * injects it, and an unobserved {@code @PostConstruct} bean is a removal candidate.
    */
-  // After MetadataIoLifecycle's observer, which clears the previous lifecycle's shutdown sentinel.
-  // Injection alone is harmless — `admission` is a client proxy and constructing the runner touches
-  // no runtime — but the gauges registered below read through it, and a registry that samples at
-  // registration would resolve the shared runtime while the sentinel is still installed.
+  // After MetadataIoLifecycle's observer, which clears any controlled-shutdown latch. Injection is
+  // harmless — `admission` is a client proxy and constructing the runner touches no runtime — but
+  // a registry may sample the gauges immediately and therefore resolve the shared runtime.
   void registerAdmissionGauges(@Observes @Priority(100) StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
     Tag operation = Tag.of(TagKey.OPERATION, "metadata_io");

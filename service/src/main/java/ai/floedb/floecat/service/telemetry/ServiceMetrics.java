@@ -393,9 +393,8 @@ public final class ServiceMetrics {
   public static final class MetadataIo {
     private MetadataIo() {}
 
-    // Single source of truth: MetadataIoMetrics passes these to Observability.gauge (which exports
-    // them verbatim as Prometheus HELP) and ServiceTelemetryContributor registers the same strings
-    // in the published contract. Two copies drifted once; one constant cannot.
+    // MetadataIoMetrics exports these strings as Prometheus HELP, and
+    // ServiceTelemetryContributor registers the same constants in the published contract.
     public static final String CAPACITY_DESC =
         "Configured process-wide metadata-I/O concurrency ceiling.";
     public static final String IN_USE_DESC =

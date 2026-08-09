@@ -33,9 +33,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins the pool's construction contract. Every claim here was previously carried by the class
- * javadoc alone: daemon threads, a bounded queue, abort-on-full rather than silent discard, and
- * core threads that time out so a burst does not pin its peak worker count forever.
+ * Pins the pool's construction contract: daemon threads, a bounded queue, abort-on-full submission,
+ * and core threads that time out so a burst does not pin its peak worker count forever.
  */
 class MetadataIoExecutorsTest {
 

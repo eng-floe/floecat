@@ -45,8 +45,7 @@ class MetadataIoLifecycleQuarkusTest {
 
   @Test
   void aTeardownConsumerCanUseMetadataIoAfterShutdownEvent() {
-    // Quarkus sends ShutdownEvent before Arc invokes @PreDestroy; this mirrors the production
-    // ordering that used to close the shared runtime too early. Destroying a dependent bean gives
+    // Quarkus sends ShutdownEvent before Arc invokes @PreDestroy. Destroying a dependent bean gives
     // the test a container-managed teardown boundary without stopping the test application itself.
     InstanceHandle<MetadataIoTeardownConsumer> consumer =
         Arc.container().instance(MetadataIoTeardownConsumer.class);
@@ -58,6 +57,7 @@ class MetadataIoLifecycleQuarkusTest {
     assertNull(MetadataIoTeardownConsumer.failure.get());
   }
 
+  /** Records whether a container-managed teardown callback can complete admitted metadata I/O. */
   @Dependent
   static class MetadataIoTeardownConsumer {
     private static final AtomicReference<String> result = new AtomicReference<>();

@@ -48,10 +48,8 @@ class MetadataIoLifecycleTest {
   }
 
   @Test
-  void startupClearsTheShutdownSentinel() {
-    // The sentinel is sticky and nothing else clears it, so without the re-arm in this observer a
-    // restarted plain-JUnit fork refuses every call. Statement order inside the method is not the
-    // point — validation touches no runtime — reaching the re-arm at all is.
+  void startupClearsTheShutdownLatch() {
+    // The latch is sticky until startup re-arms the shared runtime for the next lifecycle.
     MetadataIoRunner.closeSharedRuntimeIfStarted();
     assertThrows(
         RejectedExecutionException.class,

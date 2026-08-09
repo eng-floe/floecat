@@ -30,6 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+/** Verifies that admission state remains stable across reloadable caller classloaders. */
 class ProcessWideAdmissionTest {
 
   @BeforeEach
@@ -74,6 +75,7 @@ class ProcessWideAdmissionTest {
         .getLocation();
   }
 
+  /** Reloads only the test caller while delegating the admission holder to its parent. */
   private static final class ReloadingCallerClassLoader extends URLClassLoader {
     ReloadingCallerClassLoader(URL classes, ClassLoader parent) {
       super(new URL[] {classes}, parent);

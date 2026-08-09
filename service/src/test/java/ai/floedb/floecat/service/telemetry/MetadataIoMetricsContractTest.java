@@ -65,8 +65,7 @@ class MetadataIoMetricsContractTest {
   @Test
   void theRegisteredDescriptionIsTheOneTheContractPublishes() {
     // Observability.gauge exports its description argument verbatim as Prometheus HELP, unlike
-    // counter/timer which read it from the registry. Two hand-written copies drifted by a trailing
-    // period; both sides now read these constants, and this pins them to the contract.
+    // counter/timer which read it from the registry. Both paths must share the same constants.
     TelemetryRegistry registry = Telemetry.newRegistryWithCore();
     for (var pair :
         List.of(

@@ -158,7 +158,7 @@ public class MetadataIoRunner {
    * Resolve the runtime per call rather than at construction. A shared-runtime facade outlives the
    * runtime it was built against — a CDI bean is built once and held for the container's life — and
    * {@code closed} is sticky, so a captured RuntimeState would keep serving the one a shutdown
-   * closed. Resolving here also lets construction succeed while the shutdown sentinel is installed.
+   * closed. Resolving here also lets construction succeed while shutdown is latched.
    */
   private RuntimeState runtime() {
     return ownsRuntime ? ownedRuntime : sharedRuntime();
@@ -293,6 +293,7 @@ public class MetadataIoRunner {
     }
   }
 
+  /** Reject nested work when runtime, thread, or request state cannot safely start it. */
   private static void rejectNestedIfUnusable(
       RuntimeState runtime,
       BooleanSupplier cancelled,
@@ -308,6 +309,7 @@ public class MetadataIoRunner {
     }
   }
 
+  /** Describe the required unwind when abandoned nested work makes a held lease unsafe to reuse. */
   private static IllegalStateException nonReusableAdmissionReentry() {
     return new IllegalStateException(
         "cannot re-enter metadata I/O after abandoning a nested call; return from the outer"
@@ -361,6 +363,7 @@ public class MetadataIoRunner {
         MetadataIoRunner::recordSaturatedWait);
   }
 
+  /** Runtime and branch lease currently owned by this operation thread. */
   private record HeldAdmission(
       RuntimeState runtime, CancellableCallRunner.AdmissionLease admission) {}
 
@@ -401,12 +404,10 @@ public class MetadataIoRunner {
    * teardown consumers. This hook instead supports isolated tests and embedding code that has
    * already stopped every metadata-I/O consumer.
    */
-  static void closeSharedRuntimeIfStarted() {
-    // Gated on the reference alone: a separate "started" flag is a second fact that can disagree
-    // with it, and did — a runtime installed during the shutdown window outlived it with the flag
-    // already cleared, so no later shutdown reclaimed its pool. getAndSet on a never-started
-    // runtime returns null and touches nothing, so an unused runner still never starts a pool just
-    // to close it.
+  public static void closeSharedRuntimeIfStarted() {
+    // Gated on the reference alone so runtime existence remains the single source of truth.
+    // Closing a never-started runtime touches no pool, so an unused runner still never creates
+    // workers merely to close them.
     //
     // Latch before reading, so a creator that has not yet checked cannot get past it. One that
     // already did still loses: it re-checks after winning the CAS and closes what it built.
@@ -436,10 +437,11 @@ public class MetadataIoRunner {
    * timed-out predecessor. This hook exists for the explicit, non-CDI lifecycle used by embedding
    * code and tests; CDI deliberately leaves the shared runtime available through bean teardown.
    */
-  static void reopenSharedRuntime() {
+  public static void reopenSharedRuntime() {
     SHUTDOWN_LATCHED.set(false);
   }
 
+  /** Build one generation's worker runtime over the JVM-lifetime admission gate. */
   private static RuntimeState createSharedRuntime() {
     int configuredCapacity = configuredCapacity();
     ProcessWideAdmission.State admission = ProcessWideAdmission.resolve(configuredCapacity);
@@ -462,6 +464,7 @@ public class MetadataIoRunner {
   private static final java.util.concurrent.atomic.AtomicReference<RuntimeState> SHARED =
       new java.util.concurrent.atomic.AtomicReference<>();
 
+  /** Resolve the live shared runtime without overlapping a predecessor that is still draining. */
   private static RuntimeState sharedRuntime() {
     while (true) {
       RuntimeState current = SHARED.get();
@@ -511,10 +514,12 @@ public class MetadataIoRunner {
     // promptly. One-way: there is no reopen path.
     private volatile boolean closed;
 
+    /** Create an isolated runtime with its own admission gate. */
     private RuntimeState(int capacity) {
       this(capacity, null);
     }
 
+    /** Create a runtime over either a supplied JVM-wide gate or a new isolated gate. */
     private RuntimeState(int capacity, Semaphore sharedPermits) {
       if (capacity < 1) {
         throw new IllegalArgumentException("metadata I/O capacity must be positive");
@@ -545,6 +550,7 @@ public class MetadataIoRunner {
       return executor;
     }
 
+    /** Return the lazily started executor, preserving rejection semantics across a close race. */
     private ThreadPoolExecutor executor() {
       ThreadPoolExecutor current = executor;
       if (current != null) {
@@ -558,15 +564,18 @@ public class MetadataIoRunner {
       return start();
     }
 
+    /** Whether this runtime permanently stopped accepting work. */
     private boolean isClosed() {
       return closed;
     }
 
+    /** Whether an interruption-insensitive worker still prevents runtime replacement. */
     private boolean isTerminationPending() {
       ThreadPoolExecutor closing = closingExecutor;
       return closing != null && !closing.isTerminated();
     }
 
+    /** Stop acceptance, discard queued tasks, and boundedly await active worker termination. */
     private boolean close() {
       ThreadPoolExecutor closing;
       // Latch and detach under the monitor, then release it before waiting. start() contends on
