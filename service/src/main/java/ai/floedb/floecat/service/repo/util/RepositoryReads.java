@@ -36,15 +36,17 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
 
   /** Build read capabilities that invoke each supplied store on the calling thread. */
   public static RepositoryReads direct(PointerStore pointers, BlobStore blobs) {
-    return bind(
-        pointers,
-        blobs,
-        new ReadPolicy() {
-          @Override
-          public <T> T read(Supplier<T> operation) {
-            return operation.get();
-          }
-        });
+    return bind(pointers, blobs, directPolicy());
+  }
+
+  /** Build an execution policy that invokes a metadata operation on the calling thread. */
+  public static ReadPolicy directPolicy() {
+    return new ReadPolicy() {
+      @Override
+      public <T> T read(Supplier<T> operation) {
+        return operation.get();
+      }
+    };
   }
 
   /**
@@ -92,7 +94,7 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
         });
   }
 
-  /** Defines how one leaf store read is executed and how its failure reaches the repository. */
+  /** Defines how one metadata read operation is executed and how its failure reaches the caller. */
   public interface ReadPolicy {
     /** Execute one backend operation, preserving its result type and runtime failure. */
     <T> T read(Supplier<T> operation);

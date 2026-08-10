@@ -25,6 +25,8 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -32,19 +34,14 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.Semaphore;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
  * Repository-backed name resolution helpers.
@@ -70,7 +67,7 @@ public final class NameResolver {
   // Dependencies
   // ----------------------------------------------------------------------
 
-  /** Max concurrent DynamoDB namespace scans per top-level listing call. */
+  /** Max concurrent DynamoDB namespace scans per top-level listing call (tier-1 fan-out width). */
   static final int MAX_PARALLEL_NS_SCANS = 8;
 
   private final CatalogRepository catalogRepository;
@@ -78,7 +75,6 @@ public final class NameResolver {
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
   @Inject Observability observability;
-  private volatile Executor blockingExecutor = ForkJoinPool.commonPool();
 
   @Inject
   public NameResolver(
@@ -86,18 +82,10 @@ public final class NameResolver {
       NamespaceRepository namespaceRepository,
       TableRepository tableRepository,
       ViewRepository viewRepository) {
-
     this.catalogRepository = catalogRepository;
     this.namespaceRepository = namespaceRepository;
     this.tableRepository = tableRepository;
     this.viewRepository = viewRepository;
-  }
-
-  @Inject
-  void init(Instance<ManagedExecutor> managedExecutors) {
-    if (managedExecutors != null) {
-      managedExecutors.stream().findFirst().ifPresent(e -> blockingExecutor = e);
-    }
   }
 
   // ----------------------------------------------------------------------
@@ -400,41 +388,22 @@ public final class NameResolver {
   }
 
   /**
-   * Fans out per-namespace work across up to {@value #MAX_PARALLEL_NS_SCANS} concurrent tasks on
-   * the injected blocking executor. Each namespace is an independent DynamoDB scan; parallel
-   * execution reduces wall-clock time from O(N) to O(1) for warm DynamoDB connections.
+   * Fans out per-namespace work across up to {@value #MAX_PARALLEL_NS_SCANS} concurrent tasks and
+   * flattens the per-namespace results. Each namespace is an independent DynamoDB scan; warm
+   * connections complete in bounded waves instead of one serial scan per namespace. The scans run
+   * through {@link MetadataFanout} as the per-caller (tier-1) bound; each scan's repository read is
+   * held under the process-wide (tier-2) ceiling automatically at the store, so aggregate load
+   * stays bounded without this fan-out wiring any admission itself.
    */
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
-    Semaphore gate = new Semaphore(MAX_PARALLEL_NS_SCANS);
-    io.opentelemetry.context.Context otelContext = io.opentelemetry.context.Context.current();
-    List<CompletableFuture<List<T>>> futures =
-        nsIds.stream()
-            .<CompletableFuture<List<T>>>map(
-                ns ->
-                    CompletableFuture.<List<T>>supplyAsync(
-                        () -> {
-                          gate.acquireUninterruptibly();
-                          try (io.opentelemetry.context.Scope ignored = otelContext.makeCurrent()) {
-                            return task.apply(ns);
-                          } finally {
-                            gate.release();
-                          }
-                        },
-                        blockingExecutor))
-            .toList();
-    List<T> out = new ArrayList<>();
-    for (CompletableFuture<List<T>> f : futures) {
-      try {
-        out.addAll(f.join());
-      } catch (java.util.concurrent.CompletionException ce) {
-        Throwable cause = ce.getCause();
-        if (cause instanceof RuntimeException re) throw re;
-        if (cause instanceof Error e) throw e;
-        throw new IllegalStateException("unexpected checked exception from async task", cause);
-      }
-    }
-    return out;
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    MetadataFanout fanout = MetadataFanout.concurrent(MAX_PARALLEL_NS_SCANS);
+    List<List<T>> results =
+        cancelled == null
+            ? fanout.mapOrdered(nsIds, task)
+            : fanout.mapOrdered(nsIds, task, cancelled);
+    return results.stream().flatMap(List::stream).toList();
   }
 
   private ResourceId requireCanonicalTableId(ResourceId tableId) {

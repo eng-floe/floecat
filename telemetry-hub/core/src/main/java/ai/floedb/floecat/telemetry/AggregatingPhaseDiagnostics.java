@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.LongAdder;
  * count}/{@code add} sum, {@code timer}/{@code nanos} sum the elapsed time, and each summed key is
  * flushed once as a single {@code add} / {@code nanos}. The per-key values (e.g. total snapshot
  * lookups and the total time spent in them) are the per-request aggregate; per-item ordering and
- * one-shot fields ({@code put}, {@code emit}) are not represented and are dropped — a caller that
+ * one-shot fields ({@code put}, {@code emit}) are not representable and are omitted — a caller that
  * needs them should record on the request thread.
  */
 public final class AggregatingPhaseDiagnostics implements PhaseDiagnostics {
@@ -58,8 +58,8 @@ public final class AggregatingPhaseDiagnostics implements PhaseDiagnostics {
     counts.computeIfAbsent(key, k -> new LongAdder()).add(amount);
   }
 
-  // One-shot values do not aggregate across items; callers that need them report on the request
-  // thread, not through this accumulator.
+  // One-shot values do not aggregate across items. Unsupported telemetry must not turn concurrent
+  // request work into a failure.
   @Override
   public void put(String key, String value) {}
 

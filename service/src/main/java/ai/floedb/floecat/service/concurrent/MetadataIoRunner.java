@@ -96,9 +96,9 @@ public class MetadataIoRunner {
   }
 
   /**
-   * Run one leaf store read. Request cancellation or caller interruption abandons the wait with
-   * {@link java.util.concurrent.CancellationException}; the task keeps its permit until the store
-   * call exits, and operation failures propagate unchanged.
+   * Run one metadata-store operation. Request cancellation or caller interruption abandons the wait
+   * with {@link java.util.concurrent.CancellationException}; the task keeps its permit until the
+   * store call exits, and operation failures propagate unchanged.
    */
   <T> T call(
       BooleanSupplier cancelled,
@@ -108,7 +108,7 @@ public class MetadataIoRunner {
         permits, cancelled, operation, failureMessages, saturationSink);
   }
 
-  /** Run one leaf read using the current request's cancellation signal when one is bound. */
+  /** Run one operation using the current request's cancellation signal when one is bound. */
   <T> T callWithCurrentCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
     BooleanSupplier cancelled = PropagatedContext.currentCancellation();
@@ -118,9 +118,9 @@ public class MetadataIoRunner {
   }
 
   /**
-   * Run one leaf store read without polling request cancellation. Caller interruption abandons the
-   * wait with {@link java.util.concurrent.CancellationException}; the task keeps its permit until
-   * the store call exits, and operation failures propagate unchanged.
+   * Run one metadata-store operation without polling request cancellation. Caller interruption
+   * abandons the wait with {@link java.util.concurrent.CancellationException}; the task keeps its
+   * permit until the store call exits, and operation failures propagate unchanged.
    */
   <T> T callWithoutCancellation(
       Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {

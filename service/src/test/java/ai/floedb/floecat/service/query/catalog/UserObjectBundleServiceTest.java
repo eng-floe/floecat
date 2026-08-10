@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CollectingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
@@ -78,6 +80,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow.Subscriber;
+import java.util.concurrent.Flow.Subscription;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -250,6 +259,29 @@ class UserObjectBundleServiceTest {
     assertThat(relation.hasStats()).isTrue();
     assertThat(relation.getStats().getRowCount()).isEqualTo(stats.getRowCount());
     assertThat(relation.getStats().getTotalSizeBytes()).isEqualTo(0L);
+  }
+
+  @Test
+  void treatsANullOverlaySchemaAsAnEmptySchema() {
+    FakeCatalogOverlay nullSchemaOverlay =
+        new FakeCatalogOverlay() {
+          @Override
+          public List<SchemaColumn> tableSchema(ResourceId tableId) {
+            return null;
+          }
+        };
+    service = serviceWith(nullSchemaOverlay);
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
+    assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolution.getRelation().getColumnsCount()).isZero();
   }
 
   @Test
@@ -804,6 +836,23 @@ class UserObjectBundleServiceTest {
               Optional<ResourceId> defaultCatalogId,
               Map<ResourceId, TablePin> currentSnapshotPinCache,
               PhaseDiagnostics diagnostics) {
+            return emptyPinResolution(inputs);
+          }
+
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics,
+              java.util.function.BooleanSupplier cancelled) {
+            return emptyPinResolution(inputs);
+          }
+
+          private ResolutionResult emptyPinResolution(List<QueryInput> inputs) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), RelationPinSet.getDefaultInstance(), null);
           }
@@ -1208,6 +1257,118 @@ class UserObjectBundleServiceTest {
     UserObjectsBundleChunk resolutionChunk = subscriber.items().get(1);
     assertThat(resolutionChunk.hasResolutions()).isTrue();
     assertThat(queryStore.updateCount()).isEqualTo(1);
+  }
+
+  @Test
+  void terminalFailureClaimWinsBeforeProducerBecomesIdle() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE);
+  }
+
+  @Test
+  void cancellationClaimWinsWhenItRacesFinalCompletion() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(cancelled).isTrue();
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.CANCELLATION);
+  }
+
+  @Test
+  void completionClaimWinsWhenTheProducerFinishesBeforeCancellation() {
+    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    AtomicBoolean cancelled = new AtomicBoolean();
+    gate.begin(() -> false);
+
+    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION);
+    assertThat(gate.cancel(cancelled))
+        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+  }
+
+  @Test
+  void threadConfinedOverlayLookupsStayOnTheStreamProducer() {
+    Thread producer = Thread.currentThread();
+    CallerThreadOnlyOverlay threadConfinedOverlay = new CallerThreadOnlyOverlay(producer);
+    service = serviceWith(threadConfinedOverlay);
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setName(NameRef.newBuilder().setName("a")))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    assertThat(chunks).anyMatch(UserObjectsBundleChunk::hasResolutions);
+    assertThat(threadConfinedOverlay.callbackCount.get()).isGreaterThanOrEqualTo(3);
+  }
+
+  @Test
+  void cancellationAfterPinResolutionReleasesTransientRoots() {
+    /** Subscriber that exposes cancellation at the resolver-return ownership boundary. */
+    class CancelAfterResolutionSubscriber extends CollectingSubscriber {
+      void cancelNow() {
+        subscription.cancel();
+        completeSuccessfully();
+      }
+    }
+
+    AtomicReference<CancelAfterResolutionSubscriber> subscriberRef = new AtomicReference<>();
+    QueryInputResolver cancellingResolver =
+        new QueryInputResolver(null) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics,
+              java.util.function.BooleanSupplier cancelled) {
+            RelationPinSet pins =
+                SnapshotTestSupport.relationPins(
+                    SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
+            queryStore.registerResolvingPinBlobs(queryId, QueryPins.gcRootUris(pins));
+            subscriberRef.get().cancelNow();
+            return new ResolutionResult(List.of(TABLE_A), pins, null);
+          }
+        };
+    service =
+        new UserObjectBundleService(
+            overlay,
+            cancellingResolver,
+            queryStore,
+            statsFactory,
+            decoratorProvider,
+            engineContextProvider,
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    CancelAfterResolutionSubscriber subscriber = new CancelAfterResolutionSubscriber();
+    subscriberRef.set(subscriber);
+
+    service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
+    subscriber.await();
+
+    assertThat(queryStore.resolvingPinBlobUris()).isEmpty();
+    assertThat(queryStore.updateCount()).isZero();
   }
 
   @Test
@@ -2382,5 +2543,99 @@ class UserObjectBundleServiceTest {
                 .count())
         .isEqualTo(1);
     assertThat(allResolutions.stream().filter(r -> r.getInputIndex() == -1).count()).isEqualTo(30);
+  }
+
+  private UserObjectBundleService serviceWith(FakeCatalogOverlay testOverlay) {
+    testOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    testOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    return new UserObjectBundleService(
+        testOverlay,
+        resolver,
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContextProvider,
+        false,
+        "localhost",
+        47470,
+        false,
+        "test");
+  }
+
+  /** Fails when an overlay that opts out of concurrency is called away from its producer thread. */
+  private static final class CallerThreadOnlyOverlay extends FakeCatalogOverlay {
+    private final Thread producer;
+    private final AtomicInteger callbackCount = new AtomicInteger();
+
+    private CallerThreadOnlyOverlay(Thread producer) {
+      this.producer = producer;
+    }
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return false;
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+      assertProducerThread();
+      return super.catalog(id);
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      assertProducerThread();
+      return super.resolveName(correlationId, ref, engineContext);
+    }
+
+    @Override
+    public Optional<GraphNode> resolve(ResourceId id) {
+      assertProducerThread();
+      return super.resolve(id);
+    }
+
+    private void assertProducerThread() {
+      if (Thread.currentThread() != producer) {
+        throw new AssertionError("thread-confined overlay callback left the stream producer");
+      }
+      callbackCount.incrementAndGet();
+    }
+  }
+
+  /** Requests stream items explicitly so cancellation can race one active iterator step. */
+  private static final class DemandSubscriber implements Subscriber<UserObjectsBundleChunk> {
+    private final CountDownLatch subscribed = new CountDownLatch(1);
+    private volatile Subscription subscription;
+
+    @Override
+    public void onSubscribe(Subscription subscription) {
+      this.subscription = subscription;
+      subscribed.countDown();
+    }
+
+    @Override
+    public void onNext(UserObjectsBundleChunk ignored) {}
+
+    @Override
+    public void onError(Throwable ignored) {}
+
+    @Override
+    public void onComplete() {}
+
+    boolean awaitSubscription() throws InterruptedException {
+      return subscribed.await(1, TimeUnit.SECONDS);
+    }
+
+    void request(long count) {
+      subscription.request(count);
+    }
+
+    void cancel() {
+      subscription.cancel();
+    }
   }
 }
