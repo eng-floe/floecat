@@ -31,7 +31,6 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
-import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -68,83 +67,6 @@ public class QueryInputResolverTest {
   void init() {
     metadataGraph = new FakeGraph();
     resolver = new QueryInputResolver(metadataGraph);
-  }
-
-  @Test
-  void cancellableOverloadPreservesLegacyMapOverrideDispatch() {
-    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
-    QueryInputResolver legacySubclass =
-        new QueryInputResolver(metadataGraph) {
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, TablePin> currentSnapshotPinCache,
-              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
-            legacyOverrideCalled.set(true);
-            ResourceId tableId = inputs.getFirst().getTableId();
-            TablePin pin =
-                metadataGraph.tablePinFor(
-                    correlationId, tableId, SnapshotRef.getDefaultInstance(), Optional.empty());
-            currentSnapshotPinCache.put(tableId, pin);
-            return new ResolutionResult(
-                List.of(tableId),
-                ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
-                    .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(pin))
-                    .build(),
-                null);
-          }
-        };
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
-    ResourceId tableId = rid("LEGACY");
-
-    legacySubclass.resolveInputs(
-        "query",
-        "cid",
-        List.of(QueryInput.newBuilder().setTableId(tableId).build()),
-        Optional.empty(),
-        Optional.empty(),
-        cache,
-        null,
-        () -> false);
-
-    assertTrue(legacyOverrideCalled.get());
-    assertEquals(tableId, cache.get(tableId).join().getTableId());
-  }
-
-  @Test
-  void cancellableOverloadPreservesConcurrentMapOverrideDispatch() {
-    AtomicBoolean concurrentOverrideCalled = new AtomicBoolean();
-    QueryInputResolver concurrentSubclass =
-        new QueryInputResolver(metadataGraph) {
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
-            concurrentOverrideCalled.set(true);
-            return new ResolutionResult(List.of(), RelationPinSet.getDefaultInstance(), null);
-          }
-        };
-
-    concurrentSubclass.resolveInputs(
-        "query",
-        "cid",
-        List.of(),
-        Optional.empty(),
-        Optional.empty(),
-        new ConcurrentHashMap<>(),
-        null,
-        () -> false);
-
-    assertTrue(concurrentOverrideCalled.get());
   }
 
   @Test

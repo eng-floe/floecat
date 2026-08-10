@@ -46,7 +46,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +60,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -116,9 +114,6 @@ public class QueryInputResolver {
   // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
-
-  // Carries cancellable single-flight state through the overridable completed-pin Map seam.
-  private final ThreadLocal<ResolutionInvocation> resolutionInvocation = new ThreadLocal<>();
 
   @Inject
   public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
@@ -233,152 +228,6 @@ public class QueryInputResolver {
     }
   }
 
-  /**
-   * Tracks single-flight holders inserted by one resolution attempt. A failed attempt evicts only
-   * its own holders, leaving entries supplied by earlier or concurrent owners untouched. Closing is
-   * terminal: a late task that records after cancellation removes and fails its holder instead of
-   * publishing an unrooted pin after cleanup has completed.
-   */
-  private static final class CurrentSnapshotCacheOwnership {
-    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache;
-    private final Map<ResourceId, CompletableFuture<TablePin>> owned = new LinkedHashMap<>();
-    private boolean terminal;
-
-    CurrentSnapshotCacheOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache) {
-      this.cache = cache;
-    }
-
-    /** Claim a newly inserted holder, or discard it when failure cleanup already won. */
-    synchronized boolean claim(ResourceId tableId, CompletableFuture<TablePin> holder) {
-      if (terminal) {
-        synchronized (holder) {
-          cache.remove(tableId, holder);
-          holder.completeExceptionally(
-              new CancellationException("input resolution no longer active"));
-        }
-        return false;
-      }
-      owned.put(tableId, holder);
-      return true;
-    }
-
-    /** Forget a holder that its lookup failure already evicted from the caller cache. */
-    synchronized void forget(ResourceId tableId, CompletableFuture<TablePin> holder) {
-      owned.remove(tableId, holder);
-    }
-
-    /**
-     * Replace a compatible losing CURRENT holder with the pin retained by ordered first-touch. A
-     * waiter that already observed the old holder fails its run-if-current check and retries
-     * against this replacement before using the losing pin.
-     */
-    synchronized void replaceCompatiblePin(TablePin losingPin, TablePin retainedPin) {
-      if (terminal) {
-        return;
-      }
-      ResourceId tableId = losingPin.getTableId();
-      CompletableFuture<TablePin> holder = cache.get(tableId);
-      if (holder == null
-          || !holder.isDone()
-          || holder.isCompletedExceptionally()
-          || holder.isCancelled()) {
-        return;
-      }
-      synchronized (holder) {
-        if (cache.get(tableId) != holder || holder.getNow(null) != losingPin) {
-          return;
-        }
-        CompletableFuture<TablePin> replacement = CompletableFuture.completedFuture(retainedPin);
-        if (cache.replace(tableId, holder, replacement)) {
-          owned.remove(tableId, holder);
-          // This attempt changed shared cache state. Failure cleanup must evict the replacement
-          // before releasing the retained pin's transient roots.
-          owned.put(tableId, replacement);
-        }
-      }
-    }
-
-    /** Evict and fail every holder still owned by this failed resolution attempt. */
-    synchronized void closeAndEvict() {
-      terminal = true;
-      owned.forEach(
-          (tableId, holder) -> {
-            synchronized (holder) {
-              cache.remove(tableId, holder);
-              holder.completeExceptionally(new CancellationException("input resolution failed"));
-            }
-          });
-      owned.clear();
-    }
-  }
-
-  /**
-   * Owns the transient registrations made while one {@link #resolveInputs} call constructs pins. A
-   * retained pin stays registered until its context commit makes it durable; a discarded pin or
-   * failed resolution releases only the registration this attempt created.
-   */
-  private static final class ResolvingPinRoots {
-    private final QueryContextStore queryStore;
-    private final String queryId;
-    private final Map<TablePin, List<String>> rootsByPin = new IdentityHashMap<>();
-    private boolean terminal;
-
-    ResolvingPinRoots(QueryContextStore queryStore, String queryId) {
-      this.queryStore = queryStore;
-      this.queryId = queryId;
-    }
-
-    /**
-     * Register a pin's roots once for this attempt. A store failure leaves the pin untracked so
-     * callers propagate the failure without attempting a compensating release.
-     */
-    synchronized void register(TablePin pin) {
-      if (terminal || queryStore == null || queryId == null || queryId.isEmpty() || pin == null) {
-        return;
-      }
-      if (rootsByPin.containsKey(pin)) {
-        return;
-      }
-      List<String> roots = QueryPins.gcRootUris(pin);
-      if (roots.isEmpty()) {
-        return;
-      }
-      queryStore.registerResolvingPinBlobs(queryId, roots);
-      rootsByPin.put(pin, roots);
-    }
-
-    /**
-     * Release this attempt's registration for a compatible pin that lost ordered first-touch. A
-     * store failure retains ownership so a later failure cleanup can retry the release.
-     */
-    synchronized void discard(TablePin pin) {
-      if (terminal) {
-        return;
-      }
-      List<String> roots = rootsByPin.get(pin);
-      if (roots != null) {
-        queryStore.releaseResolvingPinBlobs(queryId, roots);
-        rootsByPin.remove(pin);
-      }
-    }
-
-    /**
-     * Release every registration still owned by this failed attempt. A store failure stops release
-     * and propagates to the caller, which retains the original resolution failure.
-     */
-    synchronized void releaseAll() {
-      // Cancellation can return from the fan-out before an uninterruptible task reaches register.
-      // Close ownership first so such a late task cannot add roots after this cleanup sweep.
-      terminal = true;
-      var iterator = rootsByPin.entrySet().iterator();
-      while (iterator.hasNext()) {
-        Map.Entry<TablePin, List<String>> entry = iterator.next();
-        queryStore.releaseResolvingPinBlobs(queryId, entry.getValue());
-        iterator.remove();
-      }
-    }
-  }
-
   // =============================================================================
   // Main resolution entrypoint
   // =============================================================================
@@ -428,29 +277,15 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ResolutionInvocation invocation = resolutionInvocation.get();
-    if (invocation != null) {
-      return resolveViaLegacyOverride(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          invocation.currentSnapshotPinCache(),
-          diagnostics);
-    }
-    return withResolutionInvocation(
+    return resolveInputsCore(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
         currentSnapshotPinCache,
-        Context.current()::isCancelled,
-        () ->
-            resolveViaLegacyOverride(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics));
+        diagnostics,
+        Context.current()::isCancelled);
   }
 
   /**
@@ -466,19 +301,6 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ResolutionInvocation invocation = resolutionInvocation.get();
-    if (invocation != null) {
-      return resolveInputsCore(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          invocation.currentSnapshotPinCache(),
-          diagnostics,
-          invocation.cancelled());
-    }
-
     Map<ResourceId, TablePin> initialCache = new LinkedHashMap<>(currentSnapshotPinCache);
     ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
         toSingleFlightCache(initialCache);
@@ -541,62 +363,15 @@ public class QueryInputResolver {
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
-    throwIfCancelled(cancelled);
-    return withResolutionInvocation(
+    return resolveInputsCore(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
         currentSnapshotPinCache,
-        cancelled,
-        () ->
-            resolveInputs(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics));
-  }
-
-  /** Invoke the completed-pin compatibility seam and publish its successful cache entries. */
-  private ResolutionResult resolveViaLegacyOverride(
-      String queryId,
-      String correlationId,
-      List<QueryInput> inputs,
-      Optional<Timestamp> asOfDefault,
-      Optional<ResourceId> defaultCatalogId,
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
-    Map<ResourceId, TablePin> completedPinCache = completedPins(currentSnapshotPinCache);
-    ResolutionResult result =
-        resolveInputs(
-            queryId,
-            correlationId,
-            inputs,
-            asOfDefault,
-            defaultCatalogId,
-            completedPinCache,
-            diagnostics);
-    completedPinCache.forEach(
-        (tableId, pin) ->
-            currentSnapshotPinCache.putIfAbsent(tableId, CompletableFuture.completedFuture(pin)));
-    return result;
-  }
-
-  /** Install one invocation while retaining any outer invocation on the same request thread. */
-  private <T> T withResolutionInvocation(
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      BooleanSupplier cancelled,
-      Supplier<T> operation) {
-    ResolutionInvocation previous = resolutionInvocation.get();
-    resolutionInvocation.set(new ResolutionInvocation(currentSnapshotPinCache, cancelled));
-    try {
-      return operation.get();
-    } finally {
-      if (previous == null) {
-        resolutionInvocation.remove();
-      } else {
-        resolutionInvocation.set(previous);
-      }
-    }
+        diagnostics,
+        cancelled);
   }
 
   /** Convert completed pins to the concurrent placeholder representation used during fan-out. */
@@ -623,11 +398,6 @@ public class QueryInputResolver {
         });
     return completed;
   }
-
-  /** Per-thread state carried through the completed-pin override seam. */
-  private record ResolutionInvocation(
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      BooleanSupplier cancelled) {}
 
   /** Run the shared resolution implementation for cancellable and non-cancellable callers. */
   private ResolutionResult resolveInputsCore(
