@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
@@ -35,6 +36,16 @@ class BundleChunkStreamTest {
       out.add(RelationResolution.newBuilder().setInputIndex(from + i).build());
     }
     return out;
+  }
+
+  @Test
+  void rejectsNonPositiveResolutionChunkLimits() {
+    assertThatThrownBy(() -> new BundleChunkStream("q-1", 0))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("maxResolutionsPerChunk must be positive");
+    assertThatThrownBy(() -> new BundleChunkStream("q-1", -1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("maxResolutionsPerChunk must be positive");
   }
 
   @Test

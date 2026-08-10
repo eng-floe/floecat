@@ -50,6 +50,9 @@ final class BundleChunkStream {
   private boolean endEmitted = false;
 
   BundleChunkStream(String queryId, int maxResolutionsPerChunk) {
+    if (maxResolutionsPerChunk < 1) {
+      throw new IllegalArgumentException("maxResolutionsPerChunk must be positive");
+    }
     this.queryId = queryId;
     this.maxResolutionsPerChunk = maxResolutionsPerChunk;
   }
