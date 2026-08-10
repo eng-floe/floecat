@@ -187,7 +187,8 @@ class CasBlobGcTest {
               long minAgeMs,
               int maxBlobDeleteAttempts,
               long deadlineMs,
-              GenerationGcContinuation continuation) {
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
             observedDeadline.set(deadlineMs);
             return new GenerationGcResult(0, 0, 0, false);
           }
@@ -288,6 +289,105 @@ class CasBlobGcTest {
     assertTrue(gc.continuationAccountId().isEmpty());
     assertFalse(deadlineBlobs.head(first).isPresent());
     assertFalse(deadlineBlobs.head(second).isPresent());
+  }
+
+  @Test
+  void blobSweepCountersSurviveADeadlineAfterACompletedPage() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first = Keys.accountBlobUri(ACCOUNT_ID, "sha-a");
+    String second = Keys.accountBlobUri(ACCOUNT_ID, "sha-b");
+    long deadline = System.currentTimeMillis() + 200L;
+    var delayedDelete = new java.util.concurrent.atomic.AtomicBoolean();
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean delete(String key, String versionId) {
+            boolean deleted = super.delete(key, versionId);
+            if ((first.equals(key) || first.equals("/" + key))
+                && delayedDelete.compareAndSet(false, true)) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return deleted;
+          }
+        };
+    deadlineBlobs.put(first, new byte[] {1}, "application/x-protobuf");
+    deadlineBlobs.put(second, new byte[] {2}, "application/x-protobuf");
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    var completed = gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(delayedDelete.get());
+    assertEquals(2, completed.blobsScanned());
+    assertEquals(2, completed.blobsDeleted());
+  }
+
+  @Test
+  void generationGcDoesNotHoldThePublicationGuardAcrossBlobIo() {
+    var insideGuard = new java.util.concurrent.atomic.AtomicBoolean();
+    var guardedBlobIo = new java.util.concurrent.atomic.AtomicBoolean();
+    var checkingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            if (insideGuard.get() && key.contains("/generations/")) {
+              guardedBlobIo.set(true);
+            }
+            return super.head(key);
+          }
+
+          @Override
+          public boolean delete(String key, String versionId) {
+            if (insideGuard.get() && key.contains("/generations/")) {
+              guardedBlobIo.set(true);
+            }
+            return super.delete(key, versionId);
+          }
+        };
+    blobs = checkingBlobs;
+    gc.blobStore = checkingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, checkingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, checkingBlobs);
+    gc.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> T exclusive(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Supplier<T> action) {
+            return super.exclusive(
+                tableId,
+                () -> {
+                  insideGuard.set(true);
+                  try {
+                    return action.get();
+                  } finally {
+                    insideGuard.set(false);
+                  }
+                });
+          }
+        };
+    seedCurrentTable();
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            tableRid(),
+            7L,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    gc.statsRepository.replaceAllStatsForSnapshot(tableRid(), 7L, java.util.List.of(record));
+    gc.statsRepository.replaceAllStatsForSnapshot(tableRid(), 7L, java.util.List.of(record));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.blobsDeleted() > 0, "the superseded generation was reclaimed");
+    assertFalse(guardedBlobIo.get(), "remote generation blob I/O must run outside the guard");
   }
 
   @Test
@@ -634,7 +734,8 @@ class CasBlobGcTest {
               long minAgeMs,
               int maxBlobDeleteAttempts,
               long deadlineMs,
-              GenerationGcContinuation continuation) {
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
             visited.add(tableId.getId());
             if ("tbl-b".equals(tableId.getId()) && delayFirstTableB.getAndSet(false)) {
               while (System.currentTimeMillis() <= deadlineMs) {
@@ -796,7 +897,8 @@ class CasBlobGcTest {
               long minAgeMs,
               int maxBlobDeleteAttempts,
               long deadlineMs,
-              GenerationGcContinuation continuation) {
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
             return new GenerationGcResult(0, 0, 0, false);
           }
         };

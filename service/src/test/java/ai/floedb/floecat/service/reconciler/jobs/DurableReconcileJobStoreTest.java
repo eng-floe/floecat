@@ -6189,7 +6189,7 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void finalizerTerminalFailuresRetryWithBackoffThenFailParentWithoutReplacement() {
-    configureRetryPolicy(2, 100L, 100L);
+    configureRetryPolicy(2, 10_000L, 10_000L);
     ReconcileSnapshotTask emptyPlan =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true)
             .withContentState("revision-1", "metadata-1", List.of());
@@ -6229,6 +6229,7 @@ class DurableReconcileJobStoreTest {
 
     var firstLease = leaseJob(finalizerJobId);
     store.markRunning(finalizerJobId, firstLease.leaseEpoch, 100L, "finalizer-1");
+    long failureStartedAtMs = System.currentTimeMillis();
     store.markFailedTerminal(
         finalizerJobId,
         firstLease.leaseEpoch,
@@ -6245,7 +6246,7 @@ class DurableReconcileJobStoreTest {
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
     assertEquals("JS_QUEUED", retrying.state);
     assertEquals(1, retrying.attempt);
-    assertTrue(retrying.nextAttemptAtMs > System.currentTimeMillis());
+    assertTrue(retrying.nextAttemptAtMs >= failureStartedAtMs + 10_000L);
     assertFalse(retrying.readyPointerKey.isBlank());
     assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
 

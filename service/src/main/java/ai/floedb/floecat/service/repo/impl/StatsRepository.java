@@ -57,6 +57,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import org.eclipse.microprofile.config.ConfigProvider;
 
@@ -79,6 +80,16 @@ public class StatsRepository implements StatsStore {
 
   public record GenerationGcResult(
       int generationsReclaimed, int blobDeleteAttempts, int blobsDeleted, boolean pending) {}
+
+  /**
+   * Serializes only the final liveness recheck and lifecycle claim with table publishers. Once the
+   * claim changes the generation to {@code DELETING}, publication and new query pins fail closed,
+   * so the caller can release the guard before performing remote blob and pointer I/O.
+   */
+  @FunctionalInterface
+  public interface GenerationGcClaimGuard {
+    boolean claim(BooleanSupplier isProtected, BooleanSupplier claim, Runnable restore);
+  }
 
   /**
    * Maximum number of concurrent DynamoDB+S3 reads in a single batch fetch.
@@ -1758,6 +1769,26 @@ public class StatsRepository implements StatsStore {
       int maxBlobDeleteAttempts,
       long deadlineMs,
       GenerationGcContinuation continuation) {
+    return deleteUnreferencedGenerations(
+        tableId,
+        isProtectedManifestUri,
+        nowMs,
+        minAgeMs,
+        maxBlobDeleteAttempts,
+        deadlineMs,
+        continuation,
+        null);
+  }
+
+  public GenerationGcResult deleteUnreferencedGenerations(
+      ResourceId tableId,
+      java.util.function.Predicate<String> isProtectedManifestUri,
+      long nowMs,
+      long minAgeMs,
+      int maxBlobDeleteAttempts,
+      long deadlineMs,
+      GenerationGcContinuation continuation,
+      GenerationGcClaimGuard claimGuard) {
     java.util.Objects.requireNonNull(continuation, "continuation");
     if (!blobStore.supportsVersionedDeletes()) {
       return new GenerationGcResult(0, 0, 0, true);
@@ -1864,15 +1895,20 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
-      boolean claimed = claimPublishedGenerationForGc(tableId, snapshotId, generationId);
+      BooleanSupplier stillProtected =
+          () ->
+              manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+                  || isProtectedManifestUri.test(manifestUri)
+                  || isActiveIndexGeneration(tableId, snapshotId, generationId);
+      BooleanSupplier claim =
+          () -> claimPublishedGenerationForGc(tableId, snapshotId, generationId);
+      Runnable restore =
+          () -> restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+      boolean claimed =
+          claimGuard == null
+              ? claimGenerationIfStillUnprotected(stillProtected, claim, restore)
+              : claimGuard.claim(stillProtected, claim, restore);
       if (!claimed) {
-        continuation.candidateIndex++;
-        continue;
-      }
-      if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
-          || isProtectedManifestUri.test(manifestUri)
-          || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
-        restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
         continuation.candidateIndex++;
         continue;
       }
@@ -1903,6 +1939,18 @@ public class StatsRepository implements StatsStore {
     pending |=
         !continuation.scanComplete || continuation.candidateIndex < continuation.candidates.size();
     return new GenerationGcResult(reclaimed, deleteAttempts, blobsDeleted, pending);
+  }
+
+  private static boolean claimGenerationIfStillUnprotected(
+      BooleanSupplier isProtected, BooleanSupplier claim, Runnable restore) {
+    if (isProtected.getAsBoolean() || !claim.getAsBoolean()) {
+      return false;
+    }
+    if (isProtected.getAsBoolean()) {
+      restore.run();
+      return false;
+    }
+    return true;
   }
 
   private boolean isActiveIndexGeneration(
