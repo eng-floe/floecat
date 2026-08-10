@@ -2167,7 +2167,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.query.metadata-io.max-concurrency</code></td>
-<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Defaults to <code>64</code>; missing, malformed, blank, or out-of-range values fail startup.</td>
+<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use <code>64</code>; present malformed, blank, or out-of-range values fail startup.</td>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
@@ -2175,7 +2175,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_stats_warms</code></td>
-<td>Per-chunk stats-warm fan-out. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
+<td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.idempotency.*</code></td>
