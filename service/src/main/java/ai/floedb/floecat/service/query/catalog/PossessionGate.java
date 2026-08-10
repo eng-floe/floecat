@@ -35,21 +35,29 @@ import java.util.Set;
 /**
  * Mints the possession identity a resolved relation advertises and decides whether the client has
  * already proved possession of the served payload (identity-only fast path). Stateless per call and
- * used on the driver thread: it holds a {@link RelationBundleBuilder} (for the execution/decoration
- * inputs the token folds in and for the slim assembly) plus the decoration epoch. The
- * possession-token cacheable/blank stamp for a FULL payload stays in the builder; this gate owns
- * the minting and the identity-only DECISION.
+ * used on the driver thread: it holds a {@link RelationBundleBuilder} for slim assembly, the system
+ * execution resolver whose routing the token covers, and the decoration epoch. The possession-token
+ * cacheable/blank stamp for a FULL payload stays in the builder; this gate owns the minting and the
+ * identity-only DECISION.
  */
 final class PossessionGate {
 
   private final RelationBundleBuilder relationBuilder;
+  private final SystemExecutionResolver systemExecutionResolver;
+  private final EngineRelationDecorator engineRelationDecorator;
 
   // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
   // into the identity-only possession token so a decorator change invalidates cached decoration.
   private final String decorationEpoch;
 
-  PossessionGate(RelationBundleBuilder relationBuilder, String decorationEpoch) {
+  PossessionGate(
+      RelationBundleBuilder relationBuilder,
+      SystemExecutionResolver systemExecutionResolver,
+      EngineRelationDecorator engineRelationDecorator,
+      String decorationEpoch) {
     this.relationBuilder = relationBuilder;
+    this.systemExecutionResolver = systemExecutionResolver;
+    this.engineRelationDecorator = engineRelationDecorator;
     this.decorationEpoch = safe(decorationEpoch);
   }
 
@@ -92,8 +100,8 @@ final class PossessionGate {
     // cacheIdentity. A floecat redeploy does NOT reset an external caching client, so without this
     // the client would match the token, get no endpoint, and route to the stale one. The endpoint
     // is
-    // resolved through the builder's systemExecution — the same helper buildRelation uses to stamp
-    // it — so the token cannot drift from the served routing.
+    // resolved through the shared SystemExecutionResolver used by payload assembly, so the token
+    // cannot drift from the served routing.
     ResourceId relId = relation.relationId();
     StringBuilder keyMaterial =
         new StringBuilder()
@@ -107,7 +115,7 @@ final class PossessionGate {
     if (relation.node() instanceof SystemTableNode systemTableNode) {
       keyMaterial
           .append('\0')
-          .append(relationBuilder.systemExecution(systemTableNode).tokenMaterial());
+          .append(systemExecutionResolver.resolve(systemTableNode).tokenMaterial());
     }
     // A CONTENT-derived identity: only table_blob_version is meaningful. A view or system relation
     // has no query snapshot pin, so snapshot_id, pin_kind, pin_fingerprint, and constraints_ref
@@ -200,7 +208,7 @@ final class PossessionGate {
       return contentVersion;
     }
     String scope = safe(schemaScope);
-    boolean decorate = relationBuilder.decorationRequired(ctx);
+    boolean decorate = engineRelationDecorator.isRequired(ctx);
     if (scope.isBlank() && !decorate) {
       return contentVersion;
     }
@@ -230,7 +238,7 @@ final class PossessionGate {
   RelationInfo identityOnly(
       ResolvedRelation relation,
       Optional<RelationPinIdentity> scopedIdentity,
-      StatsProvider statsProvider,
+      Optional<StatsProvider.TableStatsView> tableStats,
       Set<String> knownBlobVersions,
       TimingAccumulator timings) {
     // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
@@ -248,7 +256,7 @@ final class PossessionGate {
     // The slim payload assembly (baseRelationInfo + attachTableStats + setPinIdentity, no columns)
     // lives in the builder; the gate keeps only the possession DECISION above. Its stats lookup
     // is timed into the passed accumulator there, exactly as the full build path times it.
-    return relationBuilder.buildIdentityOnly(relation, scopedIdentity, statsProvider, timings);
+    return relationBuilder.buildIdentityOnly(relation, scopedIdentity, tableStats, timings);
   }
 
   private static String safe(String value) {

@@ -45,6 +45,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
@@ -73,6 +74,8 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProv
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1424,6 +1427,137 @@ class UserObjectBundleServiceTest {
     }
 
     assertThat(callbackThread.get()).isSameAs(producer);
+  }
+
+  @Test
+  void workerCapableDecoratorIsSelectedOnceOnTheProducerThread() {
+    Thread producer = Thread.currentThread();
+    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
+    concurrentOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    AtomicInteger selections = new AtomicInteger();
+    AtomicReference<Thread> callbackThread = new AtomicReference<>();
+    EngineMetadataDecorator workerCapable =
+        new EngineMetadataDecorator() {
+          @Override
+          public boolean supportsWorkerThreadCallbacks() {
+            return true;
+          }
+
+          @Override
+          public void decorateRelation(
+              EngineContext context,
+              ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
+            callbackThread.set(Thread.currentThread());
+          }
+        };
+    EngineMetadataDecoratorProvider provider =
+        ignored -> {
+          assertThat(Thread.currentThread()).isSameAs(producer);
+          selections.incrementAndGet();
+          return Optional.of(workerCapable);
+        };
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            concurrentOverlay,
+            new TestQueryInputResolver(),
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    Context context =
+        Context.current()
+            .withValue(
+                InboundContextInterceptor.ENGINE_CONTEXT_KEY, EngineContext.of("pg", "16.0"));
+    Context previous = context.attach();
+    try {
+      decoratedService.stream("cid", ctx, List.of(candidate))
+          .collect()
+          .asList()
+          .await()
+          .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(selections.get()).isEqualTo(1);
+    assertThat(callbackThread.get()).isNotNull().isNotSameAs(producer);
+  }
+
+  @Test
+  void concurrentOverlayDoesNotReenterStatsProviderFromBuildWorkers() {
+    Thread producer = Thread.currentThread();
+    AtomicReference<Thread> batchThread = new AtomicReference<>();
+    AtomicInteger directCalls = new AtomicInteger();
+    StatsProvider threadConfinedStats =
+        new StatsProvider() {
+          @Override
+          public Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
+              Collection<ResourceId> tableIds, java.util.function.BooleanSupplier cancelled) {
+            batchThread.set(Thread.currentThread());
+            Map<ResourceId, Optional<TableStatsView>> resolved = new LinkedHashMap<>();
+            tableIds.forEach(tableId -> resolved.put(tableId, Optional.empty()));
+            return resolved;
+          }
+
+          @Override
+          public Optional<TableStatsView> tableStats(ResourceId tableId) {
+            directCalls.incrementAndGet();
+            return Optional.empty();
+          }
+        };
+    StatsProviderFactory threadConfinedFactory = Mockito.mock(StatsProviderFactory.class);
+    Mockito.when(threadConfinedFactory.forQuery(Mockito.any(), Mockito.anyString()))
+        .thenReturn(threadConfinedStats);
+    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
+    concurrentOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    concurrentOverlay.registerTable(
+        TABLE_B,
+        UserObjectBundleTestSupport.schemaFor("id_b"),
+        NameRef.newBuilder().setCatalog("cat").setName("b").build());
+    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    UserObjectBundleService concurrentService =
+        new UserObjectBundleService(
+            concurrentOverlay,
+            new TestQueryInputResolver(),
+            queryStore,
+            threadConfinedFactory,
+            decoratorProvider,
+            engineContextProvider,
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
+    List<TableReferenceCandidate> candidates =
+        List.of(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build(),
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+                .build());
+
+    concurrentService.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    assertThat(batchThread.get()).isSameAs(producer);
+    assertThat(directCalls).hasValue(0);
   }
 
   @Test

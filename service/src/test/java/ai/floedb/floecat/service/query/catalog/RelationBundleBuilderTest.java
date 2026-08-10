@@ -126,14 +126,46 @@ class RelationBundleBuilderTest {
     overlay.registerCatalog(CATALOG, "cat");
   }
 
-  private RelationBundleBuilder builder(
+  private record TestBuilder(
+      RelationBundleBuilder delegate, EngineRelationDecorator engineRelationDecorator) {
+    RelationBundleBuilder.BuildResult build(
+        String correlationId,
+        UserObjectBundleService.ResolvedRelation relation,
+        QueryContext queryContext,
+        MetadataResolutionContext resolutionContext,
+        Optional<StatsProvider.TableStatsView> tableStats,
+        Optional<RelationPinIdentity> scopedIdentity) {
+      return delegate.build(
+          correlationId,
+          relation,
+          queryContext,
+          resolutionContext,
+          engineRelationDecorator.select(resolutionContext.engineContext()),
+          tableStats,
+          scopedIdentity);
+    }
+
+    RelationInfo buildIdentityOnly(
+        UserObjectBundleService.ResolvedRelation relation,
+        Optional<RelationPinIdentity> scopedIdentity,
+        Optional<StatsProvider.TableStatsView> tableStats,
+        UserObjectBundleService.TimingAccumulator timings) {
+      return delegate.buildIdentityOnly(relation, scopedIdentity, tableStats, timings);
+    }
+  }
+
+  private TestBuilder builder(
       EngineMetadataDecoratorProvider provider, boolean engineSpecificEnabled) {
-    return new RelationBundleBuilder(
-        overlay,
-        provider,
-        engineSpecificEnabled,
-        FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build(),
-        throwingPinValidator);
+    EngineRelationDecorator engineRelationDecorator =
+        new EngineRelationDecorator(provider, engineSpecificEnabled);
+    return new TestBuilder(
+        new RelationBundleBuilder(
+            overlay,
+            engineRelationDecorator,
+            new SystemExecutionResolver(
+                FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build()),
+            throwingPinValidator),
+        engineRelationDecorator);
   }
 
   private MetadataResolutionContext resolutionContext(StatsProvider stats) {
@@ -158,22 +190,18 @@ class RelationBundleBuilderTest {
   }
 
   private RelationBundleBuilder.BuildResult buildAfterStart(
-      RelationBundleBuilder builder,
-      ResourceId tableId,
-      CountDownLatch tasksReady,
-      CountDownLatch start) {
+      TestBuilder builder, ResourceId tableId, CountDownLatch tasksReady, CountDownLatch start) {
     tasksReady.countDown();
     awaitUninterruptibly(start);
     return build(builder, tableId);
   }
 
-  private RelationBundleBuilder.BuildResult build(
-      RelationBundleBuilder builder, ResourceId tableId) {
+  private RelationBundleBuilder.BuildResult build(TestBuilder builder, ResourceId tableId) {
     return build(builder, tableId, StatsProvider.NONE);
   }
 
   private RelationBundleBuilder.BuildResult build(
-      RelationBundleBuilder builder, ResourceId tableId, StatsProvider stats) {
+      TestBuilder builder, ResourceId tableId, StatsProvider stats) {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(tableId))
@@ -183,7 +211,7 @@ class RelationBundleBuilderTest {
         resolved(tableId, candidate),
         ctx,
         resolutionContext(stats),
-        stats,
+        stats.tableStats(tableId),
         Optional.empty());
   }
 
@@ -237,14 +265,14 @@ class RelationBundleBuilderTest {
           }
         };
 
-    RelationBundleBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
+    TestBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder.BuildResult result =
         builder.build(
             "cid",
             resolved(TABLE, fullCandidate()),
             ctx,
             resolutionContext(stats),
-            stats,
+            stats.tableStats(TABLE),
             Optional.empty());
 
     assertThat(result.isSuccess()).isTrue();
@@ -294,14 +322,14 @@ class RelationBundleBuilderTest {
             .addCandidates(QueryInput.newBuilder().setTableId(sysId))
             .build();
 
-    RelationBundleBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
+    TestBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder.BuildResult result =
         builder.build(
             "cid",
             resolved(sysId, candidate),
             ctx,
             resolutionContext(StatsProvider.NONE),
-            StatsProvider.NONE,
+            Optional.empty(),
             Optional.empty());
 
     assertThat(result.isSuccess()).isTrue();
@@ -365,7 +393,7 @@ class RelationBundleBuilderTest {
                 resolved(viewId, candidate),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty())
             .info();
 
@@ -411,7 +439,7 @@ class RelationBundleBuilderTest {
             activeCallbacks.decrementAndGet();
           }
         };
-    RelationBundleBuilder builder = builder(ignored -> Optional.of(decorator), true);
+    TestBuilder builder = builder(ignored -> Optional.of(decorator), true);
 
     try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
       var first = workers.submit(() -> buildAfterStart(builder, TABLE, tasksReady, start));
@@ -459,7 +487,7 @@ class RelationBundleBuilderTest {
           }
         };
     EngineMetadataDecorator sharedDecorator = new EngineMetadataDecorator() {};
-    RelationBundleBuilder builder = builder(ignored -> Optional.of(sharedDecorator), true);
+    TestBuilder builder = builder(ignored -> Optional.of(sharedDecorator), true);
 
     boolean preparationsOverlapped;
     try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -512,7 +540,7 @@ class RelationBundleBuilderTest {
             }
           }
         };
-    RelationBundleBuilder builder = builder(ignored -> Optional.of(decorator), true);
+    TestBuilder builder = builder(ignored -> Optional.of(decorator), true);
 
     try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
       var build = workers.submit(() -> build(builder, TABLE));
@@ -525,7 +553,8 @@ class RelationBundleBuilderTest {
   @Test
   void decorateColumnsMarksSchemaMismatchColumnsFailed() {
     // pruned smaller than the served columns ⇒ every column is failed as a schema mismatch.
-    RelationBundleBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
+    EngineRelationDecorator decorator =
+        new EngineRelationDecorator(ctxIgnored -> Optional.empty(), false);
     List<ColumnInfo> columns =
         List.of(
             ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
@@ -534,7 +563,7 @@ class RelationBundleBuilderTest {
         List.of(SchemaColumn.newBuilder().setId(11).setName("c1").setOrdinal(1).build());
 
     List<ColumnResult> results =
-        builder.decorateColumns(
+        decorator.decorateColumns(
             columns, pruned, null, Optional.empty(), EngineContext.of("pg", "16.0"), true, TABLE);
 
     assertThat(results).hasSize(2);
@@ -557,8 +586,7 @@ class RelationBundleBuilderTest {
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
 
     // Decorates without emitting the required engine payload → PAYLOAD_REQUIRED_MISSING.
-    RelationBundleBuilder builder =
-        builder(ctxIgnored -> Optional.of(new NoPayloadDecorator()), true);
+    TestBuilder builder = builder(ctxIgnored -> Optional.of(new NoPayloadDecorator()), true);
     RelationInfo info =
         builder
             .build(
@@ -566,7 +594,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty())
             .info();
 
@@ -603,7 +631,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty())
             .info();
 
@@ -641,7 +669,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty())
             .info();
 
@@ -670,7 +698,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty());
 
     assertThat(result.isSuccess()).isFalse();
@@ -698,7 +726,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.empty());
 
     assertThat(result.isSuccess()).isTrue();
@@ -724,7 +752,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.of(identity))
             .info();
 
@@ -761,7 +789,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, projected),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.of(identity))
             .info();
 
@@ -794,7 +822,7 @@ class RelationBundleBuilderTest {
                 resolved(TABLE, fullCandidate()),
                 ctx,
                 resolutionContext(StatsProvider.NONE),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Optional.of(identity))
             .info();
 
@@ -818,10 +846,7 @@ class RelationBundleBuilderTest {
     RelationInfo info =
         builder(ctxIgnored -> Optional.empty(), false)
             .buildIdentityOnly(
-                resolved(TABLE, fullCandidate()),
-                Optional.of(identity),
-                StatsProvider.NONE,
-                timings);
+                resolved(TABLE, fullCandidate()), Optional.of(identity), Optional.empty(), timings);
 
     assertThat(info.getRelationId()).isEqualTo(TABLE);
     assertThat(info.getName().getName()).isEqualTo("x");

@@ -29,7 +29,6 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
-import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.query.PinValidator;
@@ -88,14 +87,15 @@ class PossessionGateTest {
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
+    SystemExecutionResolver systemExecutionResolver =
+        new SystemExecutionResolver(
+            FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build());
+    EngineRelationDecorator engineRelationDecorator =
+        new EngineRelationDecorator(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder builder =
         new RelationBundleBuilder(
-            overlay,
-            ctxIgnored -> Optional.empty(),
-            false,
-            FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build(),
-            throwingPinValidator);
-    gate = new PossessionGate(builder, "1");
+            overlay, engineRelationDecorator, systemExecutionResolver, throwingPinValidator);
+    gate = new PossessionGate(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }
 
   private UserObjectBundleService.ResolvedRelation resolved() {
@@ -172,7 +172,7 @@ class PossessionGateTest {
 
     RelationInfo slim =
         gate.identityOnly(
-            resolved(), Optional.of(identity), StatsProvider.NONE, Set.of("v-token"), timings);
+            resolved(), Optional.of(identity), Optional.empty(), Set.of("v-token"), timings);
 
     assertThat(slim).isNotNull();
     assertThat(slim.getRelationId()).isEqualTo(TABLE);
@@ -190,7 +190,7 @@ class PossessionGateTest {
             gate.identityOnly(
                 resolved(),
                 Optional.of(identity),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Set.of(),
                 new UserObjectBundleService.TimingAccumulator()))
         .isNull();
@@ -205,7 +205,7 @@ class PossessionGateTest {
             gate.identityOnly(
                 resolved(),
                 Optional.of(blank),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Set.of(""),
                 new UserObjectBundleService.TimingAccumulator()))
         .isNull();
@@ -220,7 +220,7 @@ class PossessionGateTest {
             gate.identityOnly(
                 resolved(),
                 Optional.of(identity),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Set.of("some-other-token"),
                 new UserObjectBundleService.TimingAccumulator()))
         .isNull();
@@ -232,7 +232,7 @@ class PossessionGateTest {
             gate.identityOnly(
                 resolved(),
                 Optional.empty(),
-                StatsProvider.NONE,
+                Optional.empty(),
                 Set.of("v-token"),
                 new UserObjectBundleService.TimingAccumulator()))
         .isNull();

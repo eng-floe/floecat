@@ -1471,7 +1471,7 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void discardedCurrentPinRemainsCachedAfterItsProvisionalRootsAreReleased() {
+  void compatibleCurrentLoserRebindsCacheBeforeItsRootsAreReleased() {
     ResourceId tableId = rid("DISCARDED_CURRENT_CACHE");
     var graph =
         new FakeGraph() {
@@ -1520,13 +1520,14 @@ public class QueryInputResolverTest {
         null);
 
     assertTrue(cache.containsKey(tableId));
+    assertEquals(10L, cache.get(tableId).join().getSnapshotId());
     org.mockito.Mockito.verify(store)
         .releaseResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-discarded-current"),
             org.mockito.ArgumentMatchers.argThat(
                 roots -> roots.contains("s3://DISCARDED_CURRENT_CACHE/snap-20.pb")));
     graph.setCurrentSnapshot(tableId, 30L);
-    TablePin refreshed =
+    TablePin retained =
         withStore
             .resolveInputs(
                 "q-discarded-current",
@@ -1540,7 +1541,7 @@ public class QueryInputResolverTest {
             .getPins(0)
             .getTablePin();
 
-    assertEquals(10L, refreshed.getSnapshotId());
+    assertEquals(10L, retained.getSnapshotId());
     assertEquals(
         1L,
         graph.pinCalls().stream()
@@ -1554,7 +1555,7 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void concurrentPlanningKeepsCurrentHolderPublishedAcrossWaiters() throws Exception {
+  void concurrentPlanningDefersCurrentRebindUntilEveryWaiterHasJoined() throws Exception {
     ResourceId shared = rid("DEFERRED_CURRENT_RETIREMENT");
     ResourceId blocked = rid("DEFERRED_CURRENT_BLOCKER");
     metadataGraph.setCurrentSnapshot(shared, 20L);
@@ -1575,16 +1576,19 @@ public class QueryInputResolverTest {
           }
         });
 
-    AtomicInteger removals = new AtomicInteger();
+    CountDownLatch rebound = new CountDownLatch(1);
     ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache =
         new ConcurrentHashMap<>() {
           @Override
-          public boolean remove(Object key, Object value) {
-            boolean removed = super.remove(key, value);
-            if (removed && shared.equals(key)) {
-              removals.incrementAndGet();
+          public boolean replace(
+              ResourceId key,
+              CompletableFuture<TablePin> oldValue,
+              CompletableFuture<TablePin> newValue) {
+            boolean replaced = super.replace(key, oldValue, newValue);
+            if (replaced && shared.equals(key)) {
+              rebound.countDown();
             }
-            return removed;
+            return replaced;
           }
         };
     QueryInput explicit =
@@ -1609,14 +1613,16 @@ public class QueryInputResolverTest {
 
     try {
       assertTrue(blockerEntered.await(2, TimeUnit.SECONDS));
-      assertEquals(0, removals.get());
+      assertFalse(
+          rebound.await(200, TimeUnit.MILLISECONDS),
+          "a compatible CURRENT holder must remain published until every planner has joined");
     } finally {
       releaseBlocker.countDown();
     }
     QueryInputResolver.ResolutionResult result = resolution.get(2, TimeUnit.SECONDS);
 
-    assertEquals(0, removals.get());
-    assertTrue(cache.containsKey(shared));
+    assertTrue(rebound.await(2, TimeUnit.SECONDS));
+    assertEquals(10L, cache.get(shared).join().getSnapshotId());
     assertEquals(List.of(shared, shared, shared, blocked), result.resolved());
     assertEquals(2, result.relationPinSet().getPinsCount());
   }

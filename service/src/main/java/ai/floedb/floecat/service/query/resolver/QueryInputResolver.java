@@ -572,9 +572,12 @@ public class QueryInputResolver {
    */
   private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
 
+  /** A compatible losing pin and the first-touch pin retained by ordered merge. */
+  private record CompatibleDiscard(TablePin losingPin, TablePin retainedPin) {}
+
   /** Merge one completed plan on the request thread, preserving request-order semantics. */
   private void mergePlan(
-      ResolutionState state, InputPlan plan, Consumer<TablePin> discardCompatiblePin) {
+      ResolutionState state, InputPlan plan, Consumer<CompatibleDiscard> discardCompatiblePin) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
       mergePin(state, pin, discardCompatiblePin);
@@ -613,7 +616,7 @@ public class QueryInputResolver {
             ? MetadataFanout.concurrent(maxParallelInputResolutions)
             : MetadataFanout.serial();
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
-    List<TablePin> deferredDiscards = new ArrayList<>();
+    List<CompatibleDiscard> deferredDiscards = new ArrayList<>();
     try {
       fanout.forEachOrdered(
           inputs,
@@ -621,9 +624,9 @@ public class QueryInputResolver {
           plan -> mergePlan(state, plan, deferredDiscards::add),
           cancelled);
       // Ordered merging can finish a compatible CURRENT holder while a later parallel planner is
-      // still registering its own use of that holder. Retire losing holders only after every
-      // planner has joined, so a waiter cannot observe retirement as a spurious cancellation.
-      deferredDiscards.forEach(pin -> discardCompatiblePin(state, pin));
+      // still registering its own use of that holder. Rebind losing holders only after every
+      // planner has joined, so every waiter observes one stable first-touch pin.
+      deferredDiscards.forEach(discard -> discardCompatiblePin(state, discard));
     } finally {
       // A failed or cancelled sibling can still leave completed tasks' pin work in this
       // accumulator. Preserve those counters for the request's failure telemetry too.
@@ -947,7 +950,7 @@ public class QueryInputResolver {
   }
 
   private void mergePin(
-      ResolutionState state, TablePin pin, Consumer<TablePin> discardCompatiblePin) {
+      ResolutionState state, TablePin pin, Consumer<CompatibleDiscard> discardCompatiblePin) {
     if (pin == null) {
       return;
     }
@@ -959,13 +962,16 @@ public class QueryInputResolver {
     // First-touch wins: compatible later pins relinquish only their own provisional roots.
     QueryPins.reconcile(existing, pin, state.work.correlationId());
     if (existing != pin) {
-      discardCompatiblePin.accept(pin);
+      discardCompatiblePin.accept(new CompatibleDiscard(pin, existing));
     }
   }
 
-  /** Retire a compatible losing pin's cache entry before releasing its provisional roots. */
-  private void discardCompatiblePin(ResolutionState state, TablePin pin) {
-    state.work.currentSnapshotCacheOwnership().retire(pin.getTableId(), pin);
-    state.work.resolvingPinRoots().discard(pin);
+  /** Rebind a compatible losing pin's cache entry before releasing its provisional roots. */
+  private void discardCompatiblePin(ResolutionState state, CompatibleDiscard discard) {
+    state
+        .work
+        .currentSnapshotCacheOwnership()
+        .replaceCompatiblePin(discard.losingPin(), discard.retainedPin());
+    state.work.resolvingPinRoots().discard(discard.losingPin());
   }
 }

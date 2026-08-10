@@ -26,7 +26,14 @@ import java.util.OptionalLong;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
-/** Shared provider that surfaces table/column stats to metadata consumers. */
+/**
+ * Shared provider that surfaces table/column stats to metadata consumers.
+ *
+ * <p>GetUserObjects invokes these callbacks synchronously on its bundle-producer thread so provider
+ * implementations may retain caller-thread state. Implementations that perform blocking I/O must
+ * enforce their own downstream deadlines; stream cancellation is observed cooperatively through the
+ * batch callback's signal but does not interrupt an active provider callback.
+ */
 public interface StatsProvider {
 
   default Optional<TableStatsView> tableStats(ResourceId tableId) {

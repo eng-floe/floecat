@@ -57,10 +57,12 @@ final class CurrentSnapshotCacheOwnership {
   }
 
   /**
-   * Retire a completed CURRENT entry before its pin relinquishes transient-root ownership. The
-   * holder lock makes cache removal atomic with a waiter's published-entry check.
+   * Replace a compatible losing CURRENT entry with the retained first-touch pin before the losing
+   * pin relinquishes transient-root ownership. The holder lock makes replacement atomic with a
+   * waiter's published-entry check.
    */
-  synchronized void retire(ResourceId tableId, TablePin pin) {
+  synchronized void replaceCompatiblePin(TablePin losingPin, TablePin retainedPin) {
+    ResourceId tableId = losingPin.getTableId();
     CompletableFuture<TablePin> holder = cache.get(tableId);
     if (holder == null
         || !holder.isDone()
@@ -69,10 +71,12 @@ final class CurrentSnapshotCacheOwnership {
       return;
     }
     synchronized (holder) {
-      if (cache.get(tableId) == holder
-          && holder.getNow(null) == pin
-          && cache.remove(tableId, holder)) {
-        owned.remove(tableId, holder);
+      if (cache.get(tableId) == holder && holder.getNow(null) == losingPin) {
+        CompletableFuture<TablePin> replacement = CompletableFuture.completedFuture(retainedPin);
+        if (cache.replace(tableId, holder, replacement)) {
+          owned.remove(tableId, holder);
+          owned.put(tableId, replacement);
+        }
       }
     }
   }

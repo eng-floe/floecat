@@ -50,7 +50,6 @@ import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -106,6 +105,7 @@ public class UserObjectBundleService {
   private final StatsProviderFactory statsFactory;
   private final long slowRpcMs;
   private final RelationBundleBuilder relationBuilder;
+  private final EngineRelationDecorator engineRelationDecorator;
   private final CancellationRootReleaser cancellationRootReleaser;
 
   // Mints the pin identity/possession token and serves the identity-only decision. Stateless per
@@ -201,14 +201,19 @@ public class UserObjectBundleService {
             .setPort(flightPort)
             .setTls(!grpcPlainText)
             .build();
+    SystemExecutionResolver systemExecutionResolver =
+        new SystemExecutionResolver(advertisedFlightEndpoint);
+    this.engineRelationDecorator =
+        new EngineRelationDecorator(decoratorProvider, engineSpecificEnabled);
     this.relationBuilder =
         new RelationBundleBuilder(
-            overlay,
-            decoratorProvider,
-            engineSpecificEnabled,
-            advertisedFlightEndpoint,
-            pinValidator);
-    this.possessionGate = new PossessionGate(relationBuilder, this.decorationEpoch);
+            overlay, engineRelationDecorator, systemExecutionResolver, pinValidator);
+    this.possessionGate =
+        new PossessionGate(
+            relationBuilder,
+            systemExecutionResolver,
+            engineRelationDecorator,
+            this.decorationEpoch);
     warnFlightHost(flightHost, quarkusProfile);
   }
 
@@ -703,15 +708,11 @@ public class UserObjectBundleService {
   }
 
   /** Select a build scheduler without letting overlay capability change decorator affinity. */
-  private MetadataFanout buildFanout(EngineContext requestEngine) {
+  private MetadataFanout buildFanout(EngineRelationDecorator.Selection decorationSelection) {
     if (!overlay.supportsConcurrentResolution()) {
       return MetadataFanout.serial();
     }
-    if (!relationBuilder.decorationRequired(requestEngine)) {
-      return MetadataFanout.concurrent(maxParallelRelations);
-    }
-    Optional<EngineMetadataDecorator> decorator = relationBuilder.currentDecorator(requestEngine);
-    return decorator.isEmpty() || decorator.get().supportsWorkerThreadCallbacks()
+    return decorationSelection.supportsWorkerThreadCallbacks()
         ? MetadataFanout.concurrent(maxParallelRelations)
         : MetadataFanout.serial();
   }
@@ -770,6 +771,7 @@ public class UserObjectBundleService {
     private final ResourceId defaultCatalogId;
     private final StatsProvider statsProvider;
     private final MetadataResolutionContext resolutionContext;
+    private final EngineRelationDecorator.Selection decorationSelection;
     private final MetadataFanout buildFanout;
     private final String engineKind;
     private final String engineVersion;
@@ -833,7 +835,8 @@ public class UserObjectBundleService {
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
-      this.buildFanout = buildFanout(requestEngine);
+      this.decorationSelection = engineRelationDecorator.select(requestEngine);
+      this.buildFanout = buildFanout(decorationSelection);
       this.resolutionCache =
           new RelationResolutionCache(overlay, correlationId, requestEngine, timings);
       this.pinBarrier = new ChunkPinBarrier(inputResolver, queryStore, ctx, correlationId, timings);
@@ -1235,12 +1238,12 @@ public class UserObjectBundleService {
 
     /**
      * Warm the pinned table stats for this chunk's FOUND tables in one batched, parallel read after
-     * the pin barrier, so each relation's build reads its stats from the provider cache instead of
-     * a serial store round-trip (which can block on the sync-capture budget). Views carry no table
-     * stats and are skipped. Best-effort: a failure here is swallowed and the per-relation lookup
-     * during build resolves stats as before.
+     * the pin barrier. The returned immutable lookup is carried into relation assembly so worker
+     * tasks never re-enter the request-affine stats provider. Views carry no table stats and are
+     * skipped. A batch failure is best-effort and leaves stats absent for this chunk.
      */
-    private void warmChunkStats(List<PendingItem> chunkItems) {
+    private Map<ResourceId, Optional<StatsProvider.TableStatsView>> warmChunkStats(
+        List<PendingItem> chunkItems) {
       if (isCancelled()) {
         throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
       }
@@ -1254,27 +1257,29 @@ public class UserObjectBundleService {
         }
       }
       if (tableIds.isEmpty()) {
-        return;
+        return Map.of();
       }
       long startNs = System.nanoTime();
+      Map<ResourceId, Optional<StatsProvider.TableStatsView>> statsByTable = Map.of();
       try {
-        statsProvider.tableStatsBatch(tableIds, this::isCancelled);
+        statsByTable = Map.copyOf(statsProvider.tableStatsBatch(tableIds, this::isCancelled));
       } catch (java.util.concurrent.CancellationException e) {
         throw e;
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
-            "stats batch warm failed query_id=%s; build will resolve stats per relation",
+            "stats batch warm failed query_id=%s; this chunk will omit table stats",
             ctx.getQueryId());
       } finally {
-        // The batch fetch happens here; the per-relation tableStats during build then hits the
-        // cache. Record under stats_warm, NOT stats_lookup: charging both this warm fetch and the
-        // build-time cache-hit reads to stats_lookup would double-count the same logical fetch.
+        // The batch fetch happens here and its values are carried into assembly. Record under
+        // stats_warm, not stats_lookup: charging both the fetch and value attachment as lookup work
+        // would double-count the same logical operation.
         timings.addStatsWarmNanos(System.nanoTime() - startNs);
       }
       if (isCancelled()) {
         throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
       }
+      return statsByTable;
     }
 
     /** A built relation's outcome: exactly one of {@code info} / {@code error} is non-null. */
@@ -1292,7 +1297,10 @@ public class UserObjectBundleService {
      * resolution — one relation's decoration/schema/stats fault must not sink the whole bundle.
      */
     private BuildOutcome buildOne(
-        PendingFound found, QueryContext liveCtx, Optional<RelationPinIdentity> scopedIdentity) {
+        PendingFound found,
+        QueryContext liveCtx,
+        Optional<RelationPinIdentity> scopedIdentity,
+        Optional<StatsProvider.TableStatsView> tableStats) {
       long buildStartNs = System.nanoTime();
       RelationBundleBuilder.BuildResult result =
           relationBuilder.build(
@@ -1300,7 +1308,8 @@ public class UserObjectBundleService {
               found.relation(),
               liveCtx,
               resolutionContext,
-              statsProvider,
+              decorationSelection,
+              tableStats,
               scopedIdentity);
       long buildNanos = System.nanoTime() - buildStartNs;
       TimingAccumulator taskTimings = result.timings();
@@ -1360,7 +1369,8 @@ public class UserObjectBundleService {
       pinBarrier.commit(this::isCancelled);
       throwIfCancelled(this::isCancelled);
 
-      warmChunkStats(chunkItems);
+      Map<ResourceId, Optional<StatsProvider.TableStatsView>> statsByTable =
+          warmChunkStats(chunkItems);
       throwIfCancelled(this::isCancelled);
 
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
@@ -1412,7 +1422,11 @@ public class UserObjectBundleService {
         // or a later request that did NOT prove possession would be served a payload-less relation.
         RelationInfo slim =
             possessionGate.identityOnly(
-                found.relation(), scopedIdentity, statsProvider, knownBlobVersions, timings);
+                found.relation(),
+                scopedIdentity,
+                statsByTable.getOrDefault(found.relation().relationId(), Optional.empty()),
+                knownBlobVersions,
+                timings);
         throwIfCancelled(this::isCancelled);
 
         if (slim != null) {
@@ -1438,7 +1452,13 @@ public class UserObjectBundleService {
       List<BuildOutcome> outcomes =
           buildFanout.mapOrdered(
               indices,
-              j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)),
+              j ->
+                  buildOne(
+                      toBuild.get(j),
+                      liveCtx,
+                      buildIdentities.get(j),
+                      statsByTable.getOrDefault(
+                          toBuild.get(j).relation().relationId(), Optional.empty())),
               this::isCancelled);
       timings.addBuildFanoutNanos(System.nanoTime() - buildFanoutStartNs);
 

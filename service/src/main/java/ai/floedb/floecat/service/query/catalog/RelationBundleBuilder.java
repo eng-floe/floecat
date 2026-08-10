@@ -23,13 +23,9 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.ColumnFailure;
-import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
-import ai.floedb.floecat.query.rpc.EngineSpecific;
-import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
@@ -41,28 +37,14 @@ import ai.floedb.floecat.query.rpc.ViewDefinition;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
-import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
-import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
-import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
-import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
-import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.grpc.StatusRuntimeException;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import org.eclipse.microprofile.config.Config;
-import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 /**
@@ -73,9 +55,7 @@ import org.jboss.logging.Logger;
  *
  * <p>The driver ({@link UserObjectBundleService}) keeps the pin-identity orchestration and the
  * {@code knownBlobVersions} slim-payload DECISION; this builder only assembles payloads. It exposes
- * {@link #build} (full payload), {@link #buildIdentityOnly} (slim payload), and a few package-
- * visible helpers the driver's pin-identity code needs ({@link #systemExecution}, {@link
- * #decorationRequired}, {@link #currentDecorator}).
+ * {@link #build} (full payload) and {@link #buildIdentityOnly} (slim payload).
  */
 final class RelationBundleBuilder {
 
@@ -83,29 +63,20 @@ final class RelationBundleBuilder {
 
   static final String BUILD_FAILED_CODE = "catalog_bundle.build_failed";
 
-  private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
-  private static final String RELATION_HINT_PERSIST_NANOS_KEY =
-      "decorator.relation_hint_persist_nanos";
-  private static final String COLUMN_HINT_PERSIST_NANOS_KEY = "decorator.column_hint_persist_nanos";
-  private static final String COLUMN_WARM_HIT_COUNT_KEY = "decorator.column_warm_hits";
-
   private final CatalogOverlay overlay;
-  private final EngineMetadataDecoratorProvider decoratorProvider;
-  private final boolean engineSpecificEnabled;
-  private final FlightEndpointRef floecatFlightEndpoint;
+  private final EngineRelationDecorator engineRelationDecorator;
+  private final SystemExecutionResolver systemExecutionResolver;
   private final PinValidator pinValidator;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
 
   RelationBundleBuilder(
       CatalogOverlay overlay,
-      EngineMetadataDecoratorProvider decoratorProvider,
-      boolean engineSpecificEnabled,
-      FlightEndpointRef floecatFlightEndpoint,
+      EngineRelationDecorator engineRelationDecorator,
+      SystemExecutionResolver systemExecutionResolver,
       PinValidator pinValidator) {
     this.overlay = overlay;
-    this.decoratorProvider = decoratorProvider;
-    this.engineSpecificEnabled = engineSpecificEnabled;
-    this.floecatFlightEndpoint = floecatFlightEndpoint;
+    this.engineRelationDecorator = engineRelationDecorator;
+    this.systemExecutionResolver = systemExecutionResolver;
     this.pinValidator = pinValidator;
   }
 
@@ -166,23 +137,22 @@ final class RelationBundleBuilder {
       UserObjectBundleService.ResolvedRelation relation,
       QueryContext liveCtx,
       MetadataResolutionContext resolutionContext,
-      StatsProvider stats,
+      EngineRelationDecorator.Selection decorationSelection,
+      Optional<StatsProvider.TableStatsView> tableStats,
       Optional<RelationPinIdentity> scopedIdentity) {
     UserObjectBundleService.TimingAccumulator timings =
         new UserObjectBundleService.TimingAccumulator();
     try {
-      EngineContext engine = resolutionContext.engineContext();
-      Optional<EngineMetadataDecorator> decorator = currentDecorator(engine);
       RelationInfo info =
           buildRelation(
               correlationId,
               relation,
               liveCtx,
               resolutionContext,
-              stats,
+              decorationSelection,
+              tableStats,
               timings,
-              scopedIdentity,
-              decorator);
+              scopedIdentity);
       return BuildResult.success(info, timings);
     } catch (java.util.concurrent.CancellationException e) {
       throw e;
@@ -212,19 +182,18 @@ final class RelationBundleBuilder {
 
   /**
    * The slim identity-only payload: identity fields, table stats, and the pin identity, with no
-   * columns. The driver keeps the {@code knownBlobVersions} DECISION and calls this only when
-   * serving slim. Times the stats lookup exactly as the full path does — the slim path still hits
-   * the stats provider, which can block on its latency budget.
+   * columns. The driver keeps the {@code knownBlobVersions} decision and calls this only when
+   * serving slim. Stats were resolved on the producer thread before assembly.
    */
   RelationInfo buildIdentityOnly(
       UserObjectBundleService.ResolvedRelation relation,
       Optional<RelationPinIdentity> scopedIdentity,
-      StatsProvider statsProvider,
+      Optional<StatsProvider.TableStatsView> tableStats,
       UserObjectBundleService.TimingAccumulator timings) {
     RelationInfo.Builder slim = baseRelationInfo(relation);
     scopedIdentity.ifPresent(slim::setPinIdentity);
     long statsLookupStartNs = System.nanoTime();
-    attachTableStats(slim, relation.relationId(), statsProvider);
+    attachTableStats(slim, tableStats);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
     return slim.build();
   }
@@ -234,10 +203,10 @@ final class RelationBundleBuilder {
       UserObjectBundleService.ResolvedRelation relation,
       QueryContext queryContext,
       MetadataResolutionContext resolutionContext,
-      StatsProvider statsProvider,
+      EngineRelationDecorator.Selection decorationSelection,
+      Optional<StatsProvider.TableStatsView> tableStats,
       UserObjectBundleService.TimingAccumulator timings,
-      Optional<RelationPinIdentity> scopedIdentity,
-      Optional<EngineMetadataDecorator> decorator) {
+      Optional<RelationPinIdentity> scopedIdentity) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -285,7 +254,8 @@ final class RelationBundleBuilder {
       // routing into the token — so the served routing and the token that covers it cannot drift.
       // It is invoked independently at each site (a cheap in-memory config lookup), not memoized
       // across them; both resolve deterministically from the same node, so they always agree.
-      SystemExecution exec = systemExecution(systemTableNode);
+      SystemExecutionResolver.SystemExecution exec =
+          systemExecutionResolver.resolve(systemTableNode);
       builder.setBackendKind(systemTableNode.backendKind());
       if (exec.flightEndpoint() != null) {
         builder.setFlightEndpoint(exec.flightEndpoint());
@@ -295,7 +265,7 @@ final class RelationBundleBuilder {
     }
 
     long statsLookupStartNs = System.nanoTime();
-    attachTableStats(builder, relation.relationId(), statsProvider);
+    attachTableStats(builder, tableStats);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
     // If this is a view, keep a mutable builder around for decoration.
@@ -304,65 +274,18 @@ final class RelationBundleBuilder {
       viewBuilder = viewDefinitionBuilder(view);
     }
 
-    // The engine captured at iterator construction, not a live provider re-read: this runs on
-    // executor threads where the request context is unreliable, and a silently empty engine would
-    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
-    EngineContext ctx = resolutionContext.engineContext();
-    boolean decorationRequired = decorationRequired(ctx);
-    RelationDecoration relationDecoration = null;
-    ViewDecoration viewDecoration = null;
-    if (decorationRequired && decorator.isPresent()) {
-      relationDecoration =
-          new RelationDecoration(
-              builder,
-              relation.relationId(),
-              relation.node(),
-              requireSchema(schemaColumns),
-              requireSchema(pruned),
-              resolutionContext);
-      if (viewBuilder != null) {
-        viewDecoration =
-            new ViewDecoration(
-                builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
-      }
-    }
-
     long relationDecorationBeforeNanos = timings.decorationTotalNanos();
-    DecorationOutcome decoration;
-    if (relationDecoration != null) {
-      // Decorators are application-scoped and their per-relation lifecycle is not thread-safe.
-      // All schema, pin, stats, and endpoint preparation above remains parallel; only callbacks
-      // from decorateRelation through completeRelation share the decorator monitor.
-      synchronized (decorator.orElseThrow()) {
-        decoration =
-            runDecoratorLifecycle(
-                relation,
-                builder,
-                viewBuilder,
-                columns,
-                pruned,
-                relationDecoration,
-                viewDecoration,
-                decorator,
-                ctx,
-                decorationRequired,
-                timings);
-      }
-    } else {
-      decoration =
-          runDecoratorLifecycle(
-              relation,
-              builder,
-              viewBuilder,
-              columns,
-              pruned,
-              null,
-              null,
-              decorator,
-              ctx,
-              decorationRequired,
-              timings);
-    }
+    EngineRelationDecorator.Outcome decoration =
+        engineRelationDecorator.decorate(
+            relation,
+            builder,
+            viewBuilder,
+            columns,
+            pruned,
+            schemaColumns,
+            resolutionContext,
+            decorationSelection,
+            timings);
     List<ColumnResult> columnResults = decoration.columnResults();
     long relationWarmHitCount = decoration.relationWarmHitCount();
     boolean relationDecorationSucceeded = decoration.relationDecorationSucceeded();
@@ -424,141 +347,6 @@ final class RelationBundleBuilder {
     return builder.build();
   }
 
-  /** Result of one decorator lifecycle, including the payload-cacheability gates it establishes. */
-  private record DecorationOutcome(
-      List<ColumnResult> columnResults,
-      long relationWarmHitCount,
-      boolean relationDecorationSucceeded,
-      boolean viewDecorationSucceeded,
-      boolean completeRelationSucceeded) {}
-
-  /**
-   * Run one decorator's complete per-relation callback lifecycle. When a decorator is present the
-   * caller holds that decorator's monitor from entry through {@code completeRelation}; expensive
-   * schema, pin, stats, and endpoint preparation has already completed.
-   */
-  private DecorationOutcome runDecoratorLifecycle(
-      UserObjectBundleService.ResolvedRelation relation,
-      RelationInfo.Builder builder,
-      ViewDefinition.Builder viewBuilder,
-      List<ColumnInfo> columns,
-      List<SchemaColumn> pruned,
-      RelationDecoration relationDecoration,
-      ViewDecoration viewDecoration,
-      Optional<EngineMetadataDecorator> decorator,
-      EngineContext ctx,
-      boolean decorationRequired,
-      UserObjectBundleService.TimingAccumulator timings) {
-    boolean relationDecorationSucceeded = true;
-    boolean viewDecorationSucceeded = true;
-    boolean completeRelationSucceeded = true;
-
-    if (relationDecoration != null) {
-      try {
-        long decorateRelationStartNs = System.nanoTime();
-        try {
-          decorator.orElseThrow().decorateRelation(ctx, relationDecoration);
-        } finally {
-          timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
-        }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        relationDecorationSucceeded = false;
-        LOG.debugf(
-            e,
-            "Decorator threw while decorating relation %s (engine=%s)",
-            relation.relationId(),
-            ctx.normalizedKind());
-      }
-
-      if (viewDecoration != null) {
-        try {
-          long decorateViewStartNs = System.nanoTime();
-          try {
-            decorator.orElseThrow().decorateView(ctx, viewDecoration);
-          } finally {
-            timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
-          }
-        } catch (java.util.concurrent.CancellationException e) {
-          throw e;
-        } catch (RuntimeException e) {
-          viewDecorationSucceeded = false;
-          LOG.debugf(
-              e,
-              "Decorator threw while decorating view %s (engine=%s)",
-              relation.relationId(),
-              ctx.normalizedKind());
-        }
-      }
-    }
-
-    if (viewBuilder != null) {
-      builder.setViewDefinition(viewBuilder);
-    }
-
-    List<ColumnResult> columnResults =
-        decorateColumns(
-            columns,
-            pruned,
-            relationDecoration,
-            decorator,
-            ctx,
-            decorationRequired,
-            relation.relationId(),
-            timings);
-    long relationWarmHitCount = decorationCounter(relationDecoration, COLUMN_WARM_HIT_COUNT_KEY);
-    timings.addDecorateColumnWarmHits(relationWarmHitCount);
-
-    if (relationDecoration != null) {
-      boolean commitRelationHints = relationDecorationSucceeded;
-      boolean commitColumnHints =
-          relationDecorationSucceeded && shouldCommitColumnDecorations(columnResults);
-      Set<Long> readyColumnIds = commitColumnHints ? readyColumnIds(columnResults) : Set.of();
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Decorator completion decisions relation=%s relation_succeeded=%s"
-                + " commit_relation_hints=%s commit_column_hints=%s ready_column_ids=%d",
-            relation.relationId(),
-            relationDecorationSucceeded,
-            commitRelationHints,
-            commitColumnHints,
-            readyColumnIds.size());
-      }
-      try {
-        long decorateCompleteStartNs = System.nanoTime();
-        try {
-          decorator
-              .orElseThrow()
-              .completeRelation(
-                  ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
-        } finally {
-          timings.addDecorateCompleteNanos(System.nanoTime() - decorateCompleteStartNs);
-          timings.addDecoratePersistRelationNanos(
-              decorationTimingNanos(relationDecoration, RELATION_HINT_PERSIST_NANOS_KEY));
-          timings.addDecoratePersistColumnsNanos(
-              decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
-        }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        completeRelationSucceeded = false;
-        LOG.debugf(
-            e,
-            "Decorator threw while completing relation %s (engine=%s)",
-            relation.relationId(),
-            ctx == null ? "" : ctx.normalizedKind());
-      }
-    }
-
-    return new DecorationOutcome(
-        columnResults,
-        relationWarmHitCount,
-        relationDecorationSucceeded,
-        viewDecorationSucceeded,
-        completeRelationSucceeded);
-  }
-
   /**
    * True when the payload built for this candidate carries the relation's complete column set (no
    * projection). Mirrors {@link UserObjectBundleUtils#pruneSchema} exactly: a candidate that wants
@@ -584,422 +372,13 @@ final class RelationBundleBuilder {
   }
 
   /**
-   * Attach the relation's live snapshot-scoped estimates (row count, size) when the stats provider
-   * has them. Both response paths keep these on the wire: they move with every ingest, so a caching
-   * client relies on the reply to refresh them even when the schema payload is omitted.
+   * Attach the relation's pre-resolved snapshot-scoped estimates (row count, size) when available.
+   * Both response paths keep these on the wire: they move with every ingest, so a caching client
+   * relies on the reply to refresh them even when the schema payload is omitted.
    */
   private static void attachTableStats(
-      RelationInfo.Builder builder, ResourceId relationId, StatsProvider statsProvider) {
-    statsProvider
-        .tableStats(relationId)
-        .map(StatsProviderFactory::toRelationStats)
-        .ifPresent(builder::setStats);
-  }
-
-  /**
-   * A non-negative {@code long} decoration attribute ({@code 0} when absent, non-numeric, or
-   * negative). The extraction/clamping lives here once; {@link #decorationTimingNanos} and {@link
-   * #decorationCounter} are named wrappers that keep the intent (a nanos timing vs. a warm-hit
-   * count) legible at their call sites.
-   */
-  private static long nonNegativeLongAttribute(
-      RelationDecoration relationDecoration, String attributeKey) {
-    if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
-      return 0L;
-    }
-    Object value = relationDecoration.attribute(attributeKey);
-    if (!(value instanceof Number number)) {
-      return 0L;
-    }
-    return Math.max(0L, number.longValue());
-  }
-
-  private static long decorationTimingNanos(
-      RelationDecoration relationDecoration, String attributeKey) {
-    return nonNegativeLongAttribute(relationDecoration, attributeKey);
-  }
-
-  private static long decorationCounter(
-      RelationDecoration relationDecoration, String attributeKey) {
-    return nonNegativeLongAttribute(relationDecoration, attributeKey);
-  }
-
-  private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
-    if (endpointKey == null || endpointKey.isBlank()) {
-      return Optional.empty();
-    }
-
-    String normalizedKey = endpointKey.trim();
-    String prefix = SYSTEM_FLIGHT_ENDPOINTS_PREFIX + normalizedKey + ".";
-    Config config = ConfigProvider.getConfig();
-    Optional<String> host =
-        config
-            .getOptionalValue(prefix + "host", String.class)
-            .map(String::trim)
-            .filter(value -> !value.isBlank());
-    Optional<Integer> port =
-        config.getOptionalValue(prefix + "port", Integer.class).filter(value -> value > 0);
-    if (host.isEmpty() || port.isEmpty()) {
-      LOG.debugf(
-          "Storage endpoint key '%s' has no config at %shost/%sport; falling back to storage path",
-          normalizedKey, prefix, prefix);
-      return Optional.empty();
-    }
-
-    boolean tls = config.getOptionalValue(prefix + "tls", Boolean.class).orElse(false);
-    return Optional.of(
-        FlightEndpointRef.newBuilder().setHost(host.get()).setPort(port.get()).setTls(tls).build());
-  }
-
-  /**
-   * A system table's resolved execution metadata: the backend kind plus the concrete endpoint the
-   * bundle serves (a Flight endpoint, whether built-in, node-declared, or config-resolved, or a
-   * storage-path fallback). Resolved in ONE place so buildRelation (which stamps these fields) and
-   * the driver's pinIdentityFor (which folds them into the possession token) can never disagree —
-   * the token must cover exactly the routing an identity-only reply omits.
-   */
-  record SystemExecution(String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
-    String tokenMaterial() {
-      // Build from the endpoint's explicit, contractual fields (host/port/tls) rather than
-      // FlightEndpointRef.toString(): protobuf documents Message.toString() as non-contractual and
-      // subject to change, and this token is persisted by clients and matched across queries. The
-      // reserved `ticket` field is deliberately excluded — workers must not inspect it, and it is
-      // not routing identity. The token then moves exactly when the routing it covers moves.
-      String endpoint =
-          flightEndpoint != null
-              ? flightEndpoint.getHost()
-                  + ':'
-                  + flightEndpoint.getPort()
-                  + ':'
-                  + flightEndpoint.getTls()
-              : "";
-      return backendKind + '\0' + endpoint + '\0' + storagePath;
-    }
-  }
-
-  SystemExecution systemExecution(SystemTableNode node) {
-    String backendKind = String.valueOf(node.backendKind());
-    if (node instanceof SystemTableNode.FloeCatSystemTableNode) {
-      return new SystemExecution(backendKind, floecatFlightEndpoint, "");
-    }
-    if (node instanceof SystemTableNode.StorageSystemTableNode storage) {
-      if (storage.flightEndpoint() != null) {
-        return new SystemExecution(backendKind, storage.flightEndpoint(), "");
-      }
-      Optional<FlightEndpointRef> configured =
-          configuredEndpointForKey(storage.storageEndpointKey());
-      if (configured.isPresent()) {
-        return new SystemExecution(backendKind, configured.get(), "");
-      }
-      if (!storage.storagePath().isBlank()) {
-        return new SystemExecution(backendKind, null, storage.storagePath());
-      }
-    }
-    return new SystemExecution(backendKind, null, "");
-  }
-
-  /**
-   * Decorate columns with engine-specific metadata, always emitting a READY/FAILED status per
-   * column. Convenience overload timing into a throwaway accumulator; the build path passes its
-   * per-task accumulator.
-   */
-  List<ColumnResult> decorateColumns(
-      List<ColumnInfo> columns,
-      List<SchemaColumn> pruned,
-      RelationDecoration relationDecoration,
-      Optional<EngineMetadataDecorator> decorator,
-      EngineContext ctx,
-      boolean decorationRequired,
-      ResourceId relationId) {
-    return decorateColumns(
-        columns,
-        pruned,
-        relationDecoration,
-        decorator,
-        ctx,
-        decorationRequired,
-        relationId,
-        new UserObjectBundleService.TimingAccumulator());
-  }
-
-  private List<ColumnResult> decorateColumns(
-      List<ColumnInfo> columns,
-      List<SchemaColumn> pruned,
-      RelationDecoration relationDecoration,
-      Optional<EngineMetadataDecorator> decorator,
-      EngineContext ctx,
-      boolean decorationRequired,
-      ResourceId relationId,
-      UserObjectBundleService.TimingAccumulator timings) {
-
-    if (pruned == null || pruned.size() != columns.size()) {
-      String msg =
-          String.format(
-              "Column/schema mismatch columns=%d pruned=%s",
-              columns.size(), pruned == null ? "null" : Integer.toString(pruned.size()));
-      LOG.debugf("Column decoration mismatch relation=%s %s", relationId, msg);
-      if (!decorationRequired) {
-        return columns.stream().map(RelationBundleBuilder::readyColumn).toList();
-      }
-      List<ColumnResult> failed = new ArrayList<>(columns.size());
-      for (ColumnInfo column : columns) {
-        failed.add(
-            failedColumn(
-                column,
-                ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH,
-                msg,
-                Map.of("relation_id", relationId.getId())));
-      }
-      return failed;
-    }
-
-    if (!decorationRequired) {
-      return columns.stream().map(RelationBundleBuilder::readyColumn).toList();
-    }
-
-    if (decorator.isEmpty() || relationDecoration == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Column decoration unavailable relation=%s engine_kind=%s engine_version=%s",
-            relationId,
-            safe(ctx == null ? null : ctx.normalizedKind()),
-            safe(ctx == null ? null : ctx.normalizedVersion()));
-      }
-      List<ColumnResult> failed = new ArrayList<>(columns.size());
-      for (ColumnInfo column : columns) {
-        failed.add(
-            failedColumn(
-                column,
-                ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE,
-                "Engine-specific column decorator is unavailable",
-                Map.of(
-                    "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
-                    "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
-      }
-      return failed;
-    }
-
-    List<ColumnResult> decorated = new ArrayList<>(columns.size());
-    for (int i = 0; i < columns.size(); i++) {
-      long decorateColumnTotalStartNs = System.nanoTime();
-      ColumnInfo column = columns.get(i);
-      SchemaColumn schema = pruned.get(i);
-      ColumnInfo.Builder builder = column.toBuilder();
-      LogicalType logicalType = parseLogicalType(schema);
-      ColumnDecoration columnDecoration =
-          new ColumnDecoration(
-              builder, schema, logicalType, column.getOrdinal(), relationDecoration);
-      try {
-        long decorateColumnInvokeStartNs = System.nanoTime();
-        try {
-          decorator.get().decorateColumn(ctx, columnDecoration);
-        } finally {
-          timings.addDecorateColumnInvokeNanos(System.nanoTime() - decorateColumnInvokeStartNs);
-        }
-        ColumnInfo decoratedColumn = columnDecoration.builder().build();
-        if (hasRequiredEnginePayload(decoratedColumn, ctx)) {
-          decorated.add(readyColumn(decoratedColumn));
-        } else {
-          if (LOG.isDebugEnabled()) {
-            LOG.debugf(
-                "Column decoration missing required payload relation=%s column=%s ordinal=%d"
-                    + " engine_kind=%s",
-                relationId,
-                column.getName(),
-                column.getOrdinal(),
-                safe(ctx == null ? null : ctx.normalizedKind()));
-          }
-          decorated.add(
-              failedColumn(
-                  decoratedColumn,
-                  ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING,
-                  "Engine-specific payload is required but missing",
-                  Map.of(
-                      "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
-                      "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
-        }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        ColumnFailure failure = mapFailure(e, ctx);
-        LOG.debugf(
-            e,
-            "Decorator threw while decorating column %s.%s (engine=%s mapped_code=%s"
-                + " extension_code=%d)",
-            relationId,
-            column.getName(),
-            ctx == null ? "" : ctx.normalizedKind(),
-            failure.getCode(),
-            failure.hasExtensionCodeValue() ? failure.getExtensionCodeValue() : 0);
-        decorated.add(failedColumn(column, failure));
-      } finally {
-        timings.addDecorateColumnsNanos(System.nanoTime() - decorateColumnTotalStartNs);
-      }
-    }
-    return decorated;
-  }
-
-  private static ColumnResult readyColumn(ColumnInfo column) {
-    return ColumnResult.newBuilder()
-        .setColumnId(column.getId())
-        .setColumnName(column.getName())
-        .setOrdinal(column.getOrdinal())
-        .setStatus(ColumnStatus.COLUMN_STATUS_OK)
-        .setColumn(column)
-        .build();
-  }
-
-  private static ColumnResult failedColumn(
-      ColumnInfo column, ColumnFailureCode code, String message, Map<String, String> details) {
-    ColumnFailure.Builder failure = ColumnFailure.newBuilder().setCode(code).setMessage(message);
-    if (details != null && !details.isEmpty()) {
-      failure.putAllDetails(details);
-    }
-    return ColumnResult.newBuilder()
-        .setColumnId(column.getId())
-        .setColumnName(column.getName())
-        .setOrdinal(column.getOrdinal())
-        .setStatus(ColumnStatus.COLUMN_STATUS_FAILED)
-        .setFailure(failure)
-        .build();
-  }
-
-  private static ColumnResult failedColumn(ColumnInfo column, ColumnFailure failure) {
-    return ColumnResult.newBuilder()
-        .setColumnId(column.getId())
-        .setColumnName(column.getName())
-        .setOrdinal(column.getOrdinal())
-        .setStatus(ColumnStatus.COLUMN_STATUS_FAILED)
-        .setFailure(failure)
-        .build();
-  }
-
-  private ColumnFailure mapFailure(RuntimeException e, EngineContext ctx) {
-    if (e instanceof DecorationException de) {
-      ColumnFailureCode code =
-          de.hasExtensionCodeValue()
-              ? ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION
-              : de.code();
-      String message = userFacingFailureMessage(code);
-      if (de.hasExtensionCodeValue()) {
-        String extensionMessage = safe(de.getMessage()).trim();
-        if (!extensionMessage.isBlank()) {
-          message = extensionMessage;
-        }
-      }
-      ColumnFailure.Builder builder = ColumnFailure.newBuilder().setCode(code).setMessage(message);
-      if (!de.details().isEmpty()) {
-        builder.putAllDetails(de.details());
-      }
-      if (de.hasExtensionCodeValue()) {
-        builder.setExtensionCodeValue(de.extensionCodeValue());
-      }
-      addEngineDetails(builder, ctx);
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Mapped DecorationException to column failure code=%s extension_code=%d engine_kind=%s",
-            code,
-            de.hasExtensionCodeValue() ? de.extensionCodeValue() : 0,
-            safe(ctx == null ? null : ctx.normalizedKind()));
-      }
-      return builder.build();
-    }
-
-    ColumnFailureCode code = ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR;
-    if (e instanceof SecurityException) {
-      code = ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED;
-    } else if (e instanceof UnsupportedOperationException) {
-      code = ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED;
-    } else if (e instanceof java.util.NoSuchElementException) {
-      code = ColumnFailureCode.COLUMN_FAILURE_CODE_NOT_FOUND;
-    }
-
-    ColumnFailure.Builder builder =
-        ColumnFailure.newBuilder().setCode(code).setMessage(userFacingFailureMessage(code));
-    addEngineDetails(builder, ctx);
-    if (LOG.isDebugEnabled()) {
-      LOG.debugf(
-          "Mapped RuntimeException to column failure exception=%s code=%s engine_kind=%s",
-          e.getClass().getSimpleName(), code, safe(ctx == null ? null : ctx.normalizedKind()));
-    }
-    return builder.build();
-  }
-
-  private static boolean hasRequiredEnginePayload(ColumnInfo column, EngineContext ctx) {
-    String normalizedKind = ctx == null ? "" : safe(ctx.normalizedKind());
-    for (EngineSpecific spec : column.getEngineSpecificList()) {
-      String specKind = safe(spec.getEngineKind());
-      boolean kindMatches =
-          specKind.isBlank() || normalizedKind.isBlank() || specKind.equals(normalizedKind);
-      if (!kindMatches) {
-        continue;
-      }
-      if (!safe(spec.getPayloadType()).isBlank() && !spec.getPayload().isEmpty()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private static String userFacingFailureMessage(ColumnFailureCode code) {
-    if (code == null) {
-      return "Column resolution failed.";
-    }
-    return switch (code) {
-      case COLUMN_FAILURE_CODE_SCHEMA_MISMATCH ->
-          "Column metadata does not match the relation schema.";
-      case COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE ->
-          "Engine-specific column metadata is unavailable.";
-      case COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING ->
-          "Required engine-specific metadata is missing for this column.";
-      case COLUMN_FAILURE_CODE_PERMISSION_DENIED ->
-          "Permission denied while decorating this column.";
-      case COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED ->
-          "This column type is not supported by the engine metadata decorator.";
-      case COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID ->
-          "The column logical type is invalid for engine metadata decoration.";
-      case COLUMN_FAILURE_CODE_NOT_FOUND -> "Column metadata was not found during decoration.";
-      case COLUMN_FAILURE_CODE_ENGINE_EXTENSION ->
-          "Engine extension failed to provide column metadata.";
-      default -> "Column resolution failed.";
-    };
-  }
-
-  private static String safe(String value) {
-    return value == null ? "" : value;
-  }
-
-  private static void addEngineDetails(ColumnFailure.Builder failure, EngineContext ctx) {
-    if (ctx == null) {
-      return;
-    }
-    failure.putDetails("engine_kind", safe(ctx.normalizedKind()));
-    failure.putDetails("engine_version", safe(ctx.normalizedVersion()));
-  }
-
-  private static boolean shouldCommitColumnDecorations(List<ColumnResult> columnResults) {
-    if (columnResults == null || columnResults.isEmpty()) {
-      return true;
-    }
-    for (ColumnResult result : columnResults) {
-      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_OK) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private static Set<Long> readyColumnIds(List<ColumnResult> columnResults) {
-    if (columnResults == null || columnResults.isEmpty()) {
-      return Set.of();
-    }
-    Set<Long> ids = new java.util.HashSet<>();
-    for (ColumnResult result : columnResults) {
-      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_OK && result.getColumnId() > 0) {
-        ids.add(result.getColumnId());
-      }
-    }
-    return ids;
+      RelationInfo.Builder builder, Optional<StatsProvider.TableStatsView> tableStats) {
+    tableStats.map(StatsProviderFactory::toRelationStats).ifPresent(builder::setStats);
   }
 
   private static int countColumnsWithStatus(List<ColumnResult> columnResults, ColumnStatus status) {
@@ -1013,36 +392,6 @@ final class RelationBundleBuilder {
       }
     }
     return count;
-  }
-
-  private LogicalType parseLogicalType(SchemaColumn column) {
-    if (column == null || !column.hasType()) {
-      return null;
-    }
-    try {
-      return LogicalTypeProtoAdapter.columnType(column);
-    } catch (IllegalArgumentException e) {
-      LOG.debugf(e, "Failed to decode logical type for column '%s'", column.getName());
-      return null;
-    }
-  }
-
-  Optional<EngineMetadataDecorator> currentDecorator(EngineContext ctx) {
-    if (!decorationRequired(ctx)) {
-      return Optional.empty();
-    }
-    return decoratorProvider.decorator(ctx);
-  }
-
-  boolean decorationRequired(EngineContext ctx) {
-    return engineSpecificEnabled && ctx != null && ctx.enginePluginOverlaysEnabled();
-  }
-
-  private static List<SchemaColumn> requireSchema(List<SchemaColumn> schema) {
-    if (schema == null) {
-      return List.of();
-    }
-    return List.copyOf(schema);
   }
 
   private ai.floedb.floecat.query.rpc.SchemaDescriptor logicalSchemaForRelation(
