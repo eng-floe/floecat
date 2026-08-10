@@ -839,6 +839,19 @@ class UserObjectBundleServiceTest {
             return emptyPinResolution(inputs);
           }
 
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics,
+              java.util.function.BooleanSupplier cancelled) {
+            return emptyPinResolution(inputs);
+          }
+
           private ResolutionResult emptyPinResolution(List<QueryInput> inputs) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), RelationPinSet.getDefaultInstance(), null);

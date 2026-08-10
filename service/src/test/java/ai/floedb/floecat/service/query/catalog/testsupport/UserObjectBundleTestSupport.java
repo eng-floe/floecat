@@ -54,8 +54,10 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 
 public final class UserObjectBundleTestSupport {
@@ -412,6 +414,20 @@ public final class UserObjectBundleTestSupport {
         Map<ResourceId, TablePin> currentSnapshotPinCache,
         PhaseDiagnostics diagnostics) {
       return resolveInputs(inputs);
+    }
+
+    @Override
+    public ResolutionResult resolveInputs(
+        String queryId,
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId,
+        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics,
+        BooleanSupplier cancelled) {
+      return resolveInputs(
+          queryId, correlationId, inputs, asOfDefault, defaultCatalogId, Map.of(), diagnostics);
     }
 
     private ResolutionResult resolveInputs(List<QueryInput> inputs) {

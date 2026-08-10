@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.test.junit.QuarkusTest;
@@ -67,6 +69,13 @@ class MetadataIoAdmissionWiringTest {
                   assertThat(constructor.getParameterTypes())
                       .contains(MetadataRepositoryFactory.class));
     }
+
+    assertThat(injectedConstructors(QueryInputResolver.class))
+        .singleElement()
+        .satisfies(
+            constructor ->
+                assertThat(constructor.getParameterTypes())
+                    .contains(RepositoryReads.ReadPolicy.class));
   }
 
   @Test

@@ -21,7 +21,7 @@ import jakarta.inject.Inject;
 import java.util.function.Supplier;
 
 /**
- * Admission policy for one leaf metadata-store read.
+ * Admission policy for one metadata-store operation.
  *
  * <p>The current {@link ai.floedb.floecat.service.context.PropagatedContext} supplies cooperative
  * request cancellation when available. Cancellation may abandon the waiting caller, while the
@@ -42,7 +42,7 @@ public class MetadataResourceReader implements RepositoryReads.ReadPolicy {
     this.admission = admission;
   }
 
-  /** Execute one leaf read under process-wide admission and propagated request cancellation. */
+  /** Execute one operation under process-wide admission and propagated request cancellation. */
   @Override
   public <T> T read(Supplier<T> operation) {
     return admission.callWithCurrentCancellation(operation, FAILURES);
