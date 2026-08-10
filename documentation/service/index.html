@@ -2162,6 +2162,14 @@ rows upserted after all batches have been consumed.</p>
 <td>Default TTL, grace period, max cache size, safety expiry for query contexts.</td>
 </tr>
 <tr>
+<td><code>floecat.query.resolver.max_parallel_inputs</code></td>
+<td>Per-request query-input pin-resolution fan-out. Defaults to <code>8</code>; values are clamped to <code>1</code>–<code>16</code>.</td>
+</tr>
+<tr>
+<td><code>floecat.query.metadata-io.max-concurrency</code></td>
+<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use <code>64</code>; present malformed, blank, or out-of-range values fail startup.</td>
+</tr>
+<tr>
 <td><code>floecat.gc.idempotency.*</code></td>
 <td>Cadence, page size, batch limit, slice duration for idempotency GC.</td>
 </tr>
