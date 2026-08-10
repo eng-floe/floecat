@@ -339,7 +339,7 @@ class TableRepositoryTest {
     assertEquals(
         SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED,
         snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, snap));
-    var cur = snapshotRepo.getCurrentSnapshot(tableId).orElseThrow();
+    var cur = snapshotRepo.latestRegisteredSnapshot(tableId).orElseThrow();
     assertEquals(42, cur.getSnapshotId());
   }
 

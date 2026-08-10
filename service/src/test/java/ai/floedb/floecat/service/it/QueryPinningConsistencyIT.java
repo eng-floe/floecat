@@ -64,6 +64,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -131,7 +132,7 @@ class QueryPinningConsistencyIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject ai.floedb.floecat.storage.spi.PointerStore pointerStore;
+  @Inject TableRootRepository tableRoots;
 
   private final String prefix = getClass().getSimpleName() + "_";
 
@@ -542,9 +543,7 @@ class QueryPinningConsistencyIT {
   @Test
   void currentReadRejectsAMissingTableRoot() {
     Fixture f = createTableWithSnapshot("missing-root");
-    pointerStore.delete(
-        ai.floedb.floecat.service.repo.model.Keys.tableRootByTable(
-            f.tableId().getAccountId(), f.tableId().getId()));
+    tableRoots.purgeRoot(f.tableId());
 
     String queryId = beginQuery(f);
     io.grpc.StatusRuntimeException failure =

@@ -36,11 +36,15 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -445,9 +449,9 @@ class StatsProviderFactoryTest {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
-    SnapshotRepository snapshots =
-        new SnapshotRepository(
-            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long snapshotId = 777L;
@@ -461,6 +465,7 @@ class StatsProviderFactoryTest {
             .build());
     snapshots.maybeAdvanceCurrentSnapshotPointer(
         TABLE, snapshots.getById(TABLE, snapshotId).orElseThrow());
+    publishSnapshotToRoot(pointers, blobs, snapshotTableRepository, snapshots, TABLE, snapshotId);
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,
@@ -485,9 +490,9 @@ class StatsProviderFactoryTest {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
-    SnapshotRepository snapshots =
-        new SnapshotRepository(
-            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long olderSnapshotId = 700L;
@@ -508,6 +513,8 @@ class StatsProviderFactoryTest {
             .build());
     snapshots.maybeAdvanceCurrentSnapshotPointer(
         TABLE, snapshots.getById(TABLE, latestSnapshotId).orElseThrow());
+    publishSnapshotToRoot(
+        pointers, blobs, snapshotTableRepository, snapshots, TABLE, latestSnapshotId);
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,
@@ -530,6 +537,19 @@ class StatsProviderFactoryTest {
     assertEquals(20L, view.rowCountValue().orElseThrow());
     assertEquals(200L, view.totalSizeBytesValue().orElseThrow());
     assertEquals(1, repository.tableStatsCalls());
+  }
+
+  private static void publishSnapshotToRoot(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      ResourceId tableId,
+      long snapshotId) {
+    TableRootRepository roots = new TableRootRepository(pointers, blobs);
+    TableRootCommitter committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
+    new TableRootWriter(roots, committer, tables, snapshots, null, null)
+        .commitSnapshotEntry(tableId, snapshotId);
   }
 
   private static QueryContext queryContextWithPin(long snapshotId) {
