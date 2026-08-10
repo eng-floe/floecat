@@ -1794,6 +1794,10 @@ specializing discovery and catalog wiring.</p>
   When invoked with incremental <code>SnapshotEnumerationOptions</code>, the connector walks back from the
   current snapshot through the parent chain and stops once it reaches a snapshot already known to
   Floecat, returning only the newly discovered lineage.
+- <code>planSnapshotFiles(...)</code> – Produces immutable data-file membership, attached position/equality
+  delete files, execution schema, and physical content identities from Iceberg manifest metadata.
+- <code>capturePlannedFileGroup(...)</code> – Captures the missing stats and page-index outputs for an
+  immutable planned subset of the snapshot's data files.
 - <code>captureSnapshotTargetStats(...)</code> – Captures table/column/file stats for one snapshot (optionally
   selector-scoped), using the configured <code>StatsEngine</code> and NDV providers.</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
@@ -1812,6 +1816,11 @@ specializing discovery and catalog wiring.</p>
 <li><strong>Metadata capture</strong> – <code>IcebergConnector</code> carries only canonical snapshot fields, including the
   snapshot metadata location as first-class state. It does not embed serialized Iceberg metadata
   protobuf payloads in snapshot state.</li>
+<li><strong>Reuse identity</strong> – Iceberg data-file and delete-file content identities are derived from file
+  sequence number and record count. They are computed from manifest metadata without reading data
+  files, delete files, stored stats, or page-index sidecars. File paths, sizes, formats, partition
+  context, and delete-file relationships are incorporated separately into the reconciler's source
+  fingerprints.</li>
 <li><strong>Constraint mapping</strong> – Snapshot constraints currently emit only metadata that is reliably
   exposed by core Iceberg tables:</li>
 <li><code>CT_PRIMARY_KEY</code> from Iceberg <code>identifier-field-ids</code> (advisory, emitted as not-enforced).</li>
@@ -1840,10 +1849,12 @@ specializing discovery and catalog wiring.</p>
   → listNamespaces/listTables/describe
   → enumerateSnapshots
       → For each snapshot load Table metadata lineage
+  → planSnapshotFiles
+      → Build TableScan → immutable data/delete-file plan and content identities
+  → capturePlannedFileGroup
+      → read only the planned data/delete files needed for missing stats/index outputs
   → captureSnapshotTargetStats
       → StatsEngine pulls Parquet stats (table/column + per-file), NDV provider merges sketches
-      → plan
-      → Build TableScan, collect FileScanTask -&gt; ScanBundle
 </code></pre></div>
 Resources (RESTCatalog, GlueClient) are closed when the connector is closed.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
