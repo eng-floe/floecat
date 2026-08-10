@@ -2435,10 +2435,18 @@ hash delete-file content.</p>
 <p>The finalizer's <code>SnapshotCaptureManifest</code> must carry each durable file-group descriptor, including
 its <code>artifact_references_sha256</code>, and one normalized <code>reusable_artifact_bundles</code> entry per current
 file group. These bundles are a publication delta. When the leased plan has an <code>append_only_base</code>,
-the finalizer must return it unchanged, including its opaque format-1 <code>reusable_artifact_index</code>,
-but must leave <code>SnapshotCaptureManifest.reusable_artifact_index</code> unset. That output field is service-owned;
-the service rejects a worker-supplied value, authenticates the prior index, applies the delta, and
-publishes the complete immutable run set.
+the trusted finalizer authenticates its format-1 <code>reusable_artifact_index</code>, applies the delta, and
+writes the complete immutable run set to <code>SnapshotCaptureManifest.reusable_artifact_index</code>.
+Unchanged runs are structurally shared with the predecessor; bounded level compaction replaces only
+the runs it merges. The current delta is sorted and emitted through bounded 8 MiB L0 chunks rather
+than materialized as one in-memory run. Roughly 512 KiB logical data blocks are concatenated into
+content-addressed packs of up to 64 MiB. Point lookup range-reads one block; sequential merge reads
+coalesce adjacent blocks into windows of up to 8 MiB, targeting a 64 MiB operation-wide read budget
+while always allowing one indivisible block per run.
+Small run objects are embedded in the capture manifest, while larger immutable
+objects are stored by content digest. The service binds the inactive stats generation directly to
+the capture manifest and performs fenced activation, so it neither copies inherited references nor
+reopens inherited bundle payloads.
 The manifest also carries snapshot-wide aggregate descriptors and counts. Data-file source/success
 counts do not include auxiliary delete artifacts; file-stats record counts include their
 group-level target mappings.</p>
@@ -2446,9 +2454,12 @@ group-level target mappings.</p>
 the control plane: authenticate every fetched index object by length and SHA-256, batch-fetch run
 filters and manifests, and read only candidate data blocks. It must not issue an object-store
 request per planned source file, and it never needs to read source Parquet, bundle payloads, or
-page-index sidecars to decide compatibility. A missing run object makes the base unavailable for
-reuse; corrupt authenticated metadata is a terminal invalid-base error. The run filter encoding
-and compaction layout are internal, so an external implementation should use a shared compatible
+page-index sidecars to decide compatibility. A missing run object makes the base temporarily
+unavailable for reuse. The run filter encoding and compaction layout are internal. An index that is
+invalid under the current contract, including corrupt authenticated index metadata, is
+discarded and causes a full capture rather than a failed reconcile; it is not read using legacy
+semantics. Malformed capture-manifest metadata remains a terminal invalid-base error. An external
+implementation should use a shared compatible
 index library rather than manufacture or compact run objects itself.</p>
 <p>These requirements do not change the standalone Rust <code>EXEC_FILE_GROUP</code> contract. A deployment
 that externalizes only file-group execution can treat the run index as opaque and needs no new

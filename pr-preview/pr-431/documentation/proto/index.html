@@ -2070,9 +2070,16 @@ engine release.</p>
   regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.
   <code>AppendOnlySnapshotBase.reusable_artifact_index</code> is an opaque inherited input that must be
-  preserved when present. External finalizers submit the current <code>reusable_artifact_bundles</code> delta
-  but leave <code>SnapshotCaptureManifest.reusable_artifact_index</code> unset; the service constructs that
-  field and rejects a submitted value. File-group-only executors are unaffected because their
+  authenticated when present. External finalizers submit the current
+  <code>reusable_artifact_bundles</code> delta and construct the complete structurally shared
+  <code>SnapshotCaptureManifest.reusable_artifact_index</code>; unchanged immutable runs remain referenced and
+  bounded level compaction replaces merged runs. Roughly 512 KiB logical data blocks are packed
+  into content-addressed objects of up to 64 MiB; block references carry byte ranges and hashes so
+  point lookup can use object-store range reads. Run objects up to 64 KiB may be carried in
+  <code>inline_payload</code>; larger objects use their content-addressed URI. The service binds the inactive
+  generation directly to that capture manifest and performs fenced activation without copying
+  inherited mappings or reopening inherited bundles. File-group-only executors are unaffected
+  because their
   leased payload still contains resolved bundle selections rather than index runs.</li>
 <li><strong>File-level stats</strong> – <code>FileTargetStats</code> anchors counts and sketches to
   a file path. File stats are written as <code>TargetStatsRecord</code> values with <code>target.file</code> identity via
