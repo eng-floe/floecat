@@ -578,7 +578,7 @@ public class ServerSideStorageConfigResolver {
     if (config == null) {
       return false;
     }
-    if (isNonBlank(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
+    if (declaresVendedCredentials(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
       return true;
     }
     if (config.auth() == null) {
@@ -589,7 +589,29 @@ public class ServerSideStorageConfigResolver {
         .anyMatch(
             e ->
                 ICEBERG_ACCESS_DELEGATION_PROP.equalsIgnoreCase("header." + e.getKey())
-                    && isNonBlank(e.getValue()));
+                    && declaresVendedCredentials(e.getValue()));
+  }
+
+  /**
+   * Whether the header asks specifically for <em>vended credentials</em>.
+   *
+   * <p>The value is not a boolean. {@code remote-signing} is equally valid and means the catalog
+   * signs requests rather than returning credentials, so treating any non-blank value as
+   * "credentials are coming" would swallow a genuine missing-authority failure and leave the
+   * client's FileIO with nothing -- surfacing later as a far less diagnostic read error. The spec
+   * also permits a comma-separated list, so each token is examined.
+   */
+  private static boolean declaresVendedCredentials(String headerValue) {
+    if (!isNonBlank(headerValue)) {
+      return false;
+    }
+    for (String token : headerValue.split(",")) {
+      String normalized = token.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+      if ("vended-credentials".equals(normalized)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static boolean isNonBlank(String value) {

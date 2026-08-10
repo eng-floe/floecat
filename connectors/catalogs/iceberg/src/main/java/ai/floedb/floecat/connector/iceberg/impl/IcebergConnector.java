@@ -1484,7 +1484,18 @@ public abstract class IcebergConnector implements FloecatConnector {
    * whatever reads data files.
    */
   private static final List<String> VENDED_STORAGE_KEYS =
-      List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token");
+      List.of(
+          "s3.access-key-id",
+          "s3.secret-access-key",
+          "s3.session-token",
+          // Non-secret routing properties. Excluding these was over-correction: the security
+          // rationale above only requires keeping the catalog's own token out, and dropping region
+          // and endpoint leaves the worker to guess. That guess happens to hold for a
+          // default-region AWS bucket, which is why the validated Polaris run worked, and silently
+          // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
+          "s3.region",
+          "s3.endpoint",
+          "s3.path-style-access");
 
   /** Iceberg's key for when vended session credentials stop working. */
   private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";

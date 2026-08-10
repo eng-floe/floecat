@@ -499,6 +499,39 @@ class ServerSideStorageConfigResolverTest {
     verify(resolver.storageAuthorities, times(1)).vendStorageCredentials(any());
   }
 
+  /**
+   * remote-signing is a valid delegation value that returns no credentials, so it must not buy the
+   * missing-authority bypass. Treating any non-blank header as "credentials are coming" swaps a
+   * clear configuration error for an opaque read failure later.
+   */
+  @Test
+  void remoteSigningDelegationDoesNotBypassMissingAuthority() {
+    var options =
+        new java.util.LinkedHashMap<>(
+            java.util.Map.of(
+                "iceberg.source", "rest",
+                "warehouse", "arn:aws:s3tables:us-east-1:000000000000:bucket/bench",
+                "header.X-Iceberg-Access-Delegation", "remote-signing"));
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "s3tables",
+            "https://s3tables.us-east-1.amazonaws.com/iceberg",
+            java.util.Map.copyOf(options),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
+
+    assertThrows(
+        io.grpc.StatusRuntimeException.class, () -> resolveWithStorageLocation(resolver, config));
+  }
+
   private static ResolveStorageAuthorityResponse authorityResponseWithCredentials() {
     return ResolveStorageAuthorityResponse.newBuilder()
         .addStorageCredentials(

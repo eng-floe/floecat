@@ -507,6 +507,47 @@ class StorageAuthorityServiceImplTest {
   }
 
   /**
+   * A valid lease for one table must not vend through another table's catalog.
+   *
+   * <p>The lease authorizes the location; preferring an explicit table_id let a caller keep that
+   * location while naming a different table, so the fallback asked the wrong upstream connector and
+   * returned credentials scoped to data the lease never covered.
+   */
+  @Test
+  void explicitTableIdMayNotOverrideTheLeasedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            // lease binds tbl-1; ask for a different table
+                            .setTableId(
+                                ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setKind(ResourceKind.RK_TABLE)
+                                    .setId("tbl-somebody-elses"))
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+  }
+
+  /**
    * Credentials with no expiry are refused rather than installed.
    *
    * <p>The reconcile worker only registers a refresh provider when it can see an expiry; without

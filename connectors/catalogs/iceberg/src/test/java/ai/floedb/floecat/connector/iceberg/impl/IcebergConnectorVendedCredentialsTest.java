@@ -91,13 +91,20 @@ class IcebergConnectorVendedCredentialsTest {
     };
   }
 
-  /** The property shape Polaris actually returns for a delegated load. */
+  /**
+   * The property shape Polaris actually returns for a delegated load, plus the routing properties a
+   * non-default-region or custom-endpoint bucket carries. The validated Polaris run had no region
+   * in its map and happened to match the worker's default, so those keys only show up once the
+   * catalog is somewhere other than us-east-1 -- which is exactly when dropping them breaks.
+   */
   private static Map<String, String> polarisDelegatedProperties() {
     return Map.of(
         "s3.access-key-id", "ASIAVENDED",
         "s3.secret-access-key", "vended-secret",
         "s3.session-token", "vended-session",
         "s3.session-token-expires-at-ms", "1786000000000",
+        "s3.region", "eu-west-1",
+        "s3.endpoint", "https://s3.eu-west-1.example",
         "expiration-time", "whatever",
         "token", "CATALOG-OAUTH-TOKEN",
         "uri", "https://polaris.example/api/catalog");
@@ -133,7 +140,25 @@ class IcebergConnectorVendedCredentialsTest {
         props.containsKey("token"), "catalog auth token must not reach storage credentials");
     assertFalse(props.containsValue("CATALOG-OAUTH-TOKEN"));
     assertFalse(props.containsKey("uri"));
-    assertEquals(3, props.size(), "only the three s3 credential keys should be copied");
+    assertFalse(props.containsKey("expiration-time"));
+  }
+
+  /**
+   * Routing properties travel with the credentials. Without them the worker falls back to its own
+   * defaults, which silently misconfigures FileIO for any bucket that is not in the default region
+   * or is behind a custom endpoint -- a wrong-region read fails in a way that looks like a
+   * credential problem.
+   */
+  @Test
+  void copiesNonSecretRoutingProperties() {
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connectorReturning(polarisDelegatedProperties())
+            .vendStorageCredentials("tpch_10", "customer");
+
+    assertTrue(vended.isPresent());
+    Map<String, String> props = vended.get().properties();
+    assertEquals("eu-west-1", props.get("s3.region"));
+    assertEquals("https://s3.eu-west-1.example", props.get("s3.endpoint"));
   }
 
   /** A catalog that does not delegate returns a fine table with no credentials on its FileIO. */

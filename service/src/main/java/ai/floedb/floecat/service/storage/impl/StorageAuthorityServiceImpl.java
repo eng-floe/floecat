@@ -668,18 +668,35 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
    */
   private ResourceId sourceCatalogTableId(
       VendStorageCredentialsRequest request, String accountId, ReconcileJobStore.ReconcileJob job) {
+    String leasedTableId = leasedTableId(job);
+
+    // The lease is authoritative when it binds a table. Preferring request.table_id here let a
+    // caller holding a valid lease for table A name table B: the location stayed A's, but the
+    // vending went to B's upstream connector, so credentials scoped to B's data came back under
+    // A's lease -- a confused deputy, and it can route to an entirely different catalog.
+    if (leasedTableId != null) {
+      if (request.hasTableId()
+          && !request.getTableId().getId().isBlank()
+          && !leasedTableId.equals(request.getTableId().getId())) {
+        throw io.grpc.Status.PERMISSION_DENIED
+            .withDescription("requested table does not match the leased reconcile table")
+            .asRuntimeException();
+      }
+      return ResourceId.newBuilder()
+          .setAccountId(accountId)
+          .setKind(ResourceKind.RK_TABLE)
+          .setId(leasedTableId)
+          .build();
+    }
+
+    // No table on the lease. Either the request is not execution-bound at all -- authorized by
+    // table.read on the requested id -- or it is a discovery planner job, where
+    // resolveDiscoveryTableLocation has already checked the requested table against the leased
+    // source and connector before we get here.
     if (request.hasTableId()) {
       return request.getTableId();
     }
-    String leasedTableId = leasedTableId(job);
-    if (leasedTableId == null) {
-      return null;
-    }
-    return ResourceId.newBuilder()
-        .setAccountId(accountId)
-        .setKind(ResourceKind.RK_TABLE)
-        .setId(leasedTableId)
-        .build();
+    return null;
   }
 
   /**
@@ -807,42 +824,32 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
             "source catalog %s refused credentials for %s.%s: %s",
             connector.getResourceId().getId(), namespaceFq, tableName, cause);
 
-    String message = rootMessage(cause).toLowerCase(java.util.Locale.ROOT);
-    boolean unauthenticated =
-        message.contains("401")
-            || message.contains("unauthorized")
-            || message.contains("invalid_client");
-    boolean forbidden =
-        message.contains("403")
-            || message.contains("forbidden")
-            || message.contains("access denied");
-
-    if (unauthenticated) {
-      return io.grpc.Status.UNAUTHENTICATED
-          .withDescription(detail)
-          .withCause(cause)
-          .asRuntimeException();
-    }
-    if (forbidden) {
-      return io.grpc.Status.PERMISSION_DENIED
-          .withDescription(detail)
-          .withCause(cause)
-          .asRuntimeException();
-    }
-    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
-  }
-
-  private static String rootMessage(Throwable t) {
-    StringBuilder all = new StringBuilder();
-    for (Throwable c = t; c != null && all.length() < 2000; c = c.getCause()) {
-      if (c.getMessage() != null) {
-        all.append(c.getMessage()).append(' ');
+    // Typed exceptions only. Substring-matching the cause chain for 401/403/"access denied" gets
+    // the risk backwards: a transient failure whose text merely contains one of those tokens -- a
+    // gateway page echoing "Access Denied", an S3 denial during IAM propagation lag, a URL with 403
+    // in it -- would be classified terminal and stop the reconciler retrying a job that would have
+    // recovered. Iceberg's REST client raises NotAuthorizedException for 401 and ForbiddenException
+    // for 403, so classification uses those and nothing else.
+    for (Throwable c = cause; c != null; c = c.getCause()) {
+      if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
+        return io.grpc.Status.UNAUTHENTICATED
+            .withDescription(detail)
+            .withCause(cause)
+            .asRuntimeException();
+      }
+      if (c instanceof org.apache.iceberg.exceptions.ForbiddenException) {
+        return io.grpc.Status.PERMISSION_DENIED
+            .withDescription(detail)
+            .withCause(cause)
+            .asRuntimeException();
       }
       if (c.getCause() == c) {
         break;
       }
     }
-    return all.toString();
+    // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager
+    // retry only costs time.
+    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
   }
 
   /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */
