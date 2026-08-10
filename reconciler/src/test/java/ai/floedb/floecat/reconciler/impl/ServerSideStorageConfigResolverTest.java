@@ -407,13 +407,36 @@ class ServerSideStorageConfigResolverTest {
         .thenReturn(resolver.storageAuthorities);
     // "no storage credential authority is configured for this table"
     when(resolver.storageAuthorities.vendStorageCredentials(any()))
-        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
+        .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
 
     ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
 
     // The authority was consulted first; only its absence hands over to the catalog.
     verify(resolver.storageAuthorities).vendStorageCredentials(any());
     assertEquals(config.options(), resolved.options());
+  }
+
+  /**
+   * INVALID_ARGUMENT alone must not trigger the fallback. vendStorageCredentials returns it for
+   * account_id, execution_binding and location_prefix validation failures too, and turning those
+   * into a silent "use the catalog instead" hides the real cause behind a later FileIO error.
+   */
+  @Test
+  void unrelatedInvalidArgumentIsNotSwallowedByDelegation() {
+    ConnectorConfig config = delegationTestConfig(true);
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(
+            io.grpc.Status.INVALID_ARGUMENT
+                .withDescription("field: location_prefix")
+                .asRuntimeException());
+
+    assertThrows(
+        io.grpc.StatusRuntimeException.class, () -> resolveWithStorageLocation(resolver, config));
   }
 
   /**
@@ -464,7 +487,7 @@ class ServerSideStorageConfigResolverTest {
     when(resolver.storageAuthorities.withInterceptors(any()))
         .thenReturn(resolver.storageAuthorities);
     when(resolver.storageAuthorities.vendStorageCredentials(any()))
-        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
+        .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
 
     ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
 
@@ -526,7 +549,7 @@ class ServerSideStorageConfigResolverTest {
     when(resolver.storageAuthorities.withInterceptors(any()))
         .thenReturn(resolver.storageAuthorities);
     when(resolver.storageAuthorities.vendStorageCredentials(any()))
-        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
+        .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
 
     assertThrows(
         io.grpc.StatusRuntimeException.class, () -> resolveWithStorageLocation(resolver, config));

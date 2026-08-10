@@ -555,32 +555,62 @@ class StorageAuthorityServiceImplTest {
    * recovery. Accepting them here would trade a clear failure at vend time for an opaque 403
    * partway through a file group.
    */
+  private static ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials
+      vendedTuple(String accessKey, String secret, String sessionToken, java.time.Instant expiry) {
+    var props = new java.util.LinkedHashMap<String, String>();
+    if (accessKey != null) {
+      props.put("s3.access-key-id", accessKey);
+    }
+    if (secret != null) {
+      props.put("s3.secret-access-key", secret);
+    }
+    if (sessionToken != null) {
+      props.put("s3.session-token", sessionToken);
+    }
+    return new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+        props, expiry);
+  }
+
+  private static final java.time.Instant EXPIRY = java.time.Instant.ofEpochMilli(1786000000000L);
+
+  /**
+   * Every field of the session tuple is required, not just the expiry. Access key plus secret plus
+   * expiry but no session token satisfies isExecutionBoundStorageCredential yet fails
+   * isRefreshableExecutionCredential, so the reconciler embeds it statically and never renews --
+   * recreating the defect the expiry check exists to close.
+   */
   @Test
-  void vendedCredentialsWithoutExpiryAreRefused() {
-    var noExpiry =
-        new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
-            java.util.Map.of(
-                "s3.access-key-id", "ASIA",
-                "s3.secret-access-key", "secret",
-                "s3.session-token", "token"),
-            null);
+  void incompleteVendedCredentialsAreRefused() {
+    record Case(String name, String ak, String sk, String token, java.time.Instant expiry) {}
+    var cases =
+        java.util.List.of(
+            new Case("no session token", "ASIA", "secret", null, EXPIRY),
+            new Case("no secret", "ASIA", null, "token", EXPIRY),
+            new Case("no access key", null, "secret", "token", EXPIRY),
+            new Case("no expiry", "ASIA", "secret", "token", null),
+            new Case("blank session token", "ASIA", "secret", "  ", EXPIRY));
 
-    StatusRuntimeException error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> StorageAuthorityServiceImpl.requireUsableExpiry(noExpiry, "tpch_10", "customer"));
-
-    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    for (Case c : cases) {
+      StatusRuntimeException error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  StorageAuthorityServiceImpl.requireRefreshableCredentials(
+                      vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()), "tpch_10", "customer"),
+              c.name());
+      assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode(), c.name());
+      // Terminal by structured reason, so the reconciler stops instead of retrying forever.
+      assertTrue(
+          ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+              .isVendedCredentialsNotRefreshable(error),
+          c.name());
+    }
   }
 
   @Test
-  void vendedCredentialsWithExpiryAreAccepted() {
-    var withExpiry =
-        new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
-            java.util.Map.of("s3.access-key-id", "ASIA"),
-            java.time.Instant.ofEpochMilli(1786000000000L));
-
-    StorageAuthorityServiceImpl.requireUsableExpiry(withExpiry, "tpch_10", "customer");
+  void completeVendedCredentialsAreAccepted() {
+    StorageAuthorityServiceImpl.requireRefreshableCredentials(
+        vendedTuple("ASIA", "secret", "token", EXPIRY), "tpch_10", "customer");
   }
 
   /**

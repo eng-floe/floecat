@@ -121,30 +121,41 @@ class StorageAuthorityResolverTest {
     assertFalse(response.getStorageCredentials(0).hasExpiresAt());
   }
 
+  /**
+   * Now a structured status rather than a bare IllegalArgumentException: delegating connectors must
+   * distinguish "no authority covers this location" from the other INVALID_ARGUMENT failures
+   * vendStorageCredentials returns, and fall back only for this one.
+   */
   @Test
   void buildResponseForClientWithoutAuthorityFails() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                null,
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                false));
+    var error =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                resolver.buildResponse(
+                    null,
+                    "s3://warehouse/orders",
+                    java.util.List.of("s3://warehouse/orders"),
+                    "acct",
+                    false));
+    assertTrue(
+        ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+            .isNoMatchingStorageAuthority(error),
+        "must carry the structured no-matching-authority reason, not a bare INVALID_ARGUMENT");
   }
 
   @Test
   void buildResponseForServerSideNoAuthorityFails() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                null,
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                true));
+    var error =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                resolver.buildResponse(
+                    null,
+                    "s3://warehouse/orders",
+                    java.util.List.of("s3://warehouse/orders"),
+                    "acct",
+                    true));
   }
 
   @Test

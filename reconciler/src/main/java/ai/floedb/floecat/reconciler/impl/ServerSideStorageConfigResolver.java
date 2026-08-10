@@ -291,11 +291,15 @@ public class ServerSideStorageConfigResolver {
                       executionJobId,
                       executionLeaseEpoch));
     } catch (StatusRuntimeException e) {
-      // INVALID_ARGUMENT here is "no storage credential authority is configured for this table".
-      // With delegation declared that is not fatal: the catalog client holds vended credentials of
-      // its own, so hand back the untouched config and let it use them. Any other status is a real
-      // failure and must not be masked.
-      if (e.getStatus().getCode() == Status.Code.INVALID_ARGUMENT && declaresDelegation(config)) {
+      // Match the structured reason, not the status code. INVALID_ARGUMENT is also what
+      // vendStorageCredentials returns for account_id, execution_binding and location_prefix
+      // validation failures, so matching the code alone turned a real configuration error into a
+      // silent fallback whose cause only resurfaced as an opaque FileIO failure much later.
+      //
+      // Only "no authority covers this location" is recoverable by delegation: the catalog client
+      // holds vended credentials of its own, so the untouched config is what it needs.
+      if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
+          && declaresDelegation(config)) {
         return config;
       }
       throw e;

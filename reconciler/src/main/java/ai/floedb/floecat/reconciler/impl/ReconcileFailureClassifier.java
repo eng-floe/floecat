@@ -47,6 +47,12 @@ final class ReconcileFailureClassifier {
         if (code == Status.Code.UNAUTHENTICATED || code == Status.Code.PERMISSION_DENIED) {
           return terminalInternal(sre.getMessage(), sre);
         }
+        // Matched by structured reason, not by status code: FAILED_PRECONDITION is shared with
+        // lease-precondition failures, which are retryable by design. A catalog that vends an
+        // incomplete session tuple or no expiry will keep doing so, so retrying only loops.
+        if (SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(sre)) {
+          return terminalInternal(sre.getMessage(), sre);
+        }
       }
       if (cur instanceof ForbiddenException || cur instanceof NotAuthorizedException) {
         return terminalInternal(cur.getMessage(), cur);

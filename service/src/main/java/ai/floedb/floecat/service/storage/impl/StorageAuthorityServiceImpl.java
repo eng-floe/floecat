@@ -766,7 +766,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return null;
     }
 
-    requireUsableExpiry(vended.get(), namespaceFq, upstream.getTableDisplayName());
+    requireRefreshableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName());
 
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", "s3");
@@ -794,19 +794,38 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
    * usage carries the same invariant. Failing at vend time makes that visible here instead of as an
    * opaque 403 partway through a file group.
    */
-  static void requireUsableExpiry(
+  static void requireRefreshableCredentials(
       FloecatConnector.VendedStorageCredentials vended, String namespaceFq, String tableName) {
-    if (vended.expiresAt() != null) {
+    Map<String, String> props = vended.properties();
+    List<String> missing = new java.util.ArrayList<>();
+    for (String key : List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token")) {
+      String value = props.get(key);
+      if (value == null || value.isBlank()) {
+        missing.add(key);
+      }
+    }
+    if (vended.expiresAt() == null) {
+      missing.add("s3.session-token-expires-at-ms");
+    }
+    if (missing.isEmpty()) {
       return;
     }
-    throw io.grpc.Status.FAILED_PRECONDITION
-        .withDescription(
-            "source catalog vended storage credentials without a usable expiry for "
+    // The whole tuple, not just the expiry. An access key and secret with an expiry but no session
+    // token satisfies isExecutionBoundStorageCredential yet fails isRefreshableExecutionCredential,
+    // so the reconciler embeds it statically and never renews -- recreating exactly the defect the
+    // expiry check was added to close.
+    //
+    // Structured and terminal: a catalog that omits a field will keep omitting it, and a bare
+    // FAILED_PRECONDITION is classified retryable, so the job would loop forever rather than fail
+    // mid-read.
+    throw ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+        .vendedCredentialsNotRefreshable(
+            "source catalog vended unusable storage credentials for "
                 + namespaceFq
                 + "."
                 + tableName
-                + "; refreshable usage requires s3.session-token-expires-at-ms")
-        .asRuntimeException();
+                + "; missing "
+                + String.join(", ", missing));
   }
 
   /**

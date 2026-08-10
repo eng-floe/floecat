@@ -56,8 +56,14 @@ public class StorageAuthorityResolver {
       String accountId,
       boolean serverSide) {
     if (authority == null) {
-      throw new IllegalArgumentException(
-          "Credential vending was requested but no storage credential authority is configured for this table");
+      // Carries a structured reason rather than a bare IllegalArgumentException. Both map to
+      // INVALID_ARGUMENT, but so do account_id, execution_binding and location_prefix validation
+      // failures -- and a delegating connector must fall back to its catalog for *this* condition
+      // only, not for every request error.
+      throw ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+          .noMatchingStorageAuthority(
+              "Credential vending was requested but no storage credential authority is configured"
+                  + " for this table");
     }
 
     ResolveStorageAuthorityResponse.Builder response =
