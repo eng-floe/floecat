@@ -365,30 +365,74 @@ public class CasBlobGc {
     }
     activeDeadlineMs = deadlineMs;
     try {
-      Result result = runPass(accountId, deadlineMs);
-      clearContinuation();
-      return result;
-    } catch (DeadlineReached ignored) {
-      return incompleteResult(continuation);
-    } catch (ReferenceIndex.CapacityExceededException
-        | StatsRepository.GenerationGcCapacityExceededException e) {
-      PassContinuation failed = continuation;
-      LOG.errorf(
-          e,
-          "cas gc mark epoch for account %s exceeded its bounded reference index; deleting is"
-              + " stopped and the epoch will restart",
-          accountId);
-      Result result = poisonedResult(failed);
-      clearContinuation();
-      return result;
-    } catch (RuntimeException e) {
-      // Losing local continuation state is safe only by abandoning the epoch. The next invocation
-      // starts a new mark and cannot resume deletion against an incomplete old mark.
-      clearContinuation();
-      throw e;
+      while (true) {
+        try {
+          Result result = runPass(accountId, deadlineMs);
+          clearContinuation();
+          return result;
+        } catch (DeadlineReached ignored) {
+          return incompleteResult(continuation);
+        } catch (StatsRepository.GenerationGcCapacityExceededException e) {
+          if (skipOversizedGenerationTable(accountId, e)) {
+            continue;
+          }
+          Result result = poisonedResult(continuation);
+          clearContinuation();
+          return result;
+        } catch (ReferenceIndex.CapacityExceededException e) {
+          PassContinuation failed = continuation;
+          LOG.errorf(
+              e,
+              "cas gc mark epoch for account %s exceeded its bounded reference index; deleting is"
+                  + " stopped and the epoch will restart",
+              accountId);
+          Result result = poisonedResult(failed);
+          clearContinuation();
+          return result;
+        } catch (RuntimeException e) {
+          // Losing local continuation state is safe only by abandoning the epoch. The next
+          // invocation starts a new mark and cannot resume deletion against an incomplete old mark.
+          clearContinuation();
+          throw e;
+        }
+      }
     } finally {
       activeDeadlineMs = Long.MAX_VALUE;
     }
+  }
+
+  private boolean skipOversizedGenerationTable(
+      String accountId, StatsRepository.GenerationGcCapacityExceededException failure) {
+    PassContinuation pass = continuation;
+    if (pass == null
+        || pass.phase != Phase.TABLES
+        || pass.currentTableId.isBlank()
+        || pass.tableIndex >= pass.tableIds.size()) {
+      LOG.errorf(
+          failure,
+          "cas gc generation discovery for account %s exceeded its per-table capacity before a"
+              + " table could be isolated; the epoch will restart",
+          accountId);
+      return false;
+    }
+    int skippedIndex = pass.tableIndex;
+    String tableId = pass.currentTableId;
+    LOG.errorf(
+        failure,
+        "cas gc generation discovery for account %s table %s exceeded its per-table capacity;"
+            + " skipping that table and continuing the account",
+        accountId,
+        tableId);
+    pass.poisoned = true;
+    pass.generationCleanupPending = true;
+    pass.tablesScanned++;
+    clearCompletedTableState(accountId, tableId, pass);
+    pass.tableIndex = skippedIndex + 1;
+    if (!pass.tableIds.isEmpty()) {
+      advanceGenerationCursor(
+          accountId, pass.tableIds.get((skippedIndex + 1) % pass.tableIds.size()));
+    }
+    return true;
   }
 
   Optional<String> continuationAccountId() {

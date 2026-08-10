@@ -578,6 +578,42 @@ class CasBlobGcTest {
   }
 
   @Test
+  void oversizedGenerationTableDoesNotStopLaterTablesInTheAccount() {
+    String firstTable = "tbl-a";
+    String secondTable = "tbl-b";
+    for (String tableId : List.of(firstTable, secondTable)) {
+      String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, tableId, "sha-table");
+      blobs.put(tableBlob, tableId.getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+      putPointer(Keys.tablePointerById(ACCOUNT_ID, tableId), tableBlob);
+    }
+    List<String> discoveredTables = new java.util.ArrayList<>();
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public boolean discoverGenerationKeys(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              long deadlineMs,
+              GenerationGcContinuation continuation) {
+            discoveredTables.add(tableId.getId());
+            if (firstTable.equals(tableId.getId())) {
+              throw new GenerationGcCapacityExceededException("simulated oversized table");
+            }
+            return super.discoverGenerationKeys(tableId, deadlineMs, continuation);
+          }
+        };
+
+    CasBlobGc.Result result = gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(firstTable, discoveredTables.get(0));
+    assertTrue(
+        discoveredTables.contains(secondTable),
+        "generation discovery continues with the table after the oversized one");
+    assertTrue(result.poisoned(), "the skipped table keeps the account backlog visible");
+    assertEquals(2, result.tablesScanned());
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  @Test
   void generationCleanupCursorSurvivesGcRecreation() {
     putPointer(
         Keys.tablePointerById(ACCOUNT_ID, "tbl-a"),

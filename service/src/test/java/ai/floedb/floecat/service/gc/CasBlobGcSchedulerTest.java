@@ -37,6 +37,7 @@ import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class CasBlobGcSchedulerTest {
@@ -116,6 +117,10 @@ class CasBlobGcSchedulerTest {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation ->
+                Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     CompletingContinuationGc gc = new CompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
@@ -142,6 +147,10 @@ class CasBlobGcSchedulerTest {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation ->
+                Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
@@ -164,6 +173,44 @@ class CasBlobGcSchedulerTest {
 
     assertTrue(gc.accountIds.contains("acct-b"));
     assertEquals(1, gc.abandons);
+  }
+
+  @Test
+  void accountPageFetchedAtDeadlineIsRetainedForTheNextTick() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    AtomicInteger listCalls = new AtomicInteger();
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenAnswer(
+            invocation -> {
+              listCalls.incrementAndGet();
+              long releaseAt = System.currentTimeMillis() + 1_100L;
+              while (System.currentTimeMillis() < releaseAt) {
+                Thread.onSpinWait();
+              }
+              return List.of(account("acct-a"), account("acct-b"));
+            });
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    System.setProperty("floecat.gc.cas.max-tick-millis", "1000");
+    try {
+      scheduler.tick();
+      assertTrue(gc.accountIds.isEmpty(), "an expired tick does not start an account sweep");
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+      System.clearProperty("floecat.gc.cas.max-tick-millis");
+    }
+
+    assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
+    assertEquals(1, listCalls.get(), "the retained page is not fetched again on resume");
   }
 
   private static Account account(String accountId) {
