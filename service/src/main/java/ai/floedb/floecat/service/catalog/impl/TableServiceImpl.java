@@ -297,8 +297,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   // Parity with the non-idempotent path: record the definition on the root at
                   // create time. Idempotent (the committer no-ops when the ref already matches), so
-                  // it is safe on both a genuine create and an idempotent replay, and it saves the
-                  // first reader a lazy root synthesis.
+                  // it is safe on both a genuine create and an idempotent replay, and ensures every
+                  // supported table has a root before it becomes queryable.
                   commitDefinitionToRoot(result.body.getResourceId(), result.meta);
                   return CreateTableResponse.newBuilder()
                       .setTable(result.body)

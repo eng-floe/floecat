@@ -29,7 +29,6 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
-import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
 import ai.floedb.floecat.service.query.PinValidator;
@@ -54,26 +53,22 @@ public class SnapshotHelper {
 
   private final SnapshotRepository snapshots;
   private final TableRootRepository roots;
-  private final TableRootCommitter rootCommitter;
   private final StatsStore statsStore;
   private final PinValidator pins;
 
   /**
-   * {@code rootCommitter} materializes a legacy table's root at first touch ({@code ensureRoot}),
-   * so a pre-existing deployment migrates lazily as its tables are queried. Pins are built from a
-   * just-read root blob and validated by every consumption through the {@link PinValidator}
-   * contract, so construction performs no extra validation round-trip — {@code pins} here serves
-   * the pinned schema read and reports broken roots observed during pin construction for repair.
+   * Pins are built from a just-read root blob and validated by every consumption through the {@link
+   * PinValidator} contract, so construction performs no extra validation round-trip — {@code pins}
+   * here serves the pinned schema read and reports broken roots observed during pin construction
+   * for repair.
    */
   public SnapshotHelper(
       SnapshotRepository snapshots,
       TableRootRepository roots,
-      TableRootCommitter rootCommitter,
       StatsStore statsStore,
       PinValidator pins) {
     this.snapshots = snapshots;
     this.roots = roots;
-    this.rootCommitter = rootCommitter;
     this.statsStore = statsStore;
     this.pins = pins;
   }
@@ -110,8 +105,7 @@ public class SnapshotHelper {
    *
    * <p>Because every leg of the pin is a ref out of one immutable root, the pinned (definition,
    * snapshot, stats, constraints) state is coherent by construction — there is no cross-pointer
-   * pair to keep in step. A legacy table's root is synthesized at first touch ({@code ensureRoot}),
-   * so pre-existing data needs no migration step.
+   * pair to keep in step. Tables without a published root are unsupported and fail closed.
    */
   public TablePin tablePinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
@@ -128,13 +122,9 @@ public class SnapshotHelper {
     }
 
     // Steady state is one pointer read + one blob read: the root pointer names the blob, and the
-    // blob at that URI is immutable. Only a table with no root yet (legacy, un-migrated) pays the
-    // lazy synthesis, once.
+    // blob at that URI is immutable. Rootless tables are unsupported and fail through the normal
+    // per-pin-kind NOT_FOUND handling below.
     MutationMeta rootMeta = roots.metaForSafe(tableId);
-    if (rootMeta == null || rootMeta.getBlobUri().isEmpty()) {
-      rootCommitter.ensureRoot(tableId);
-      rootMeta = roots.metaForSafe(tableId);
-    }
     TableRoot root = loadRoot(rootMeta);
     if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
       // The root was superseded and its blob swept between the pointer read and the blob read —

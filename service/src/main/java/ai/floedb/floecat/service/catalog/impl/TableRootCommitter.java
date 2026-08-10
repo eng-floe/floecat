@@ -78,11 +78,6 @@ public class TableRootCommitter {
     TableRoot apply(Optional<TableRoot> current);
   }
 
-  /** Returns the stored root without mutating it, or empty when the table has no root. */
-  public Optional<TableRoot> ensureRoot(ResourceId tableId) {
-    return commit(tableId, current -> current.orElse(null));
-  }
-
   /**
    * Applies {@code mutator} to the table's root under CAS, retrying with fresh reads on contention.
    * Returns the committed root (or the untouched current root on a mutator no-op; empty only when

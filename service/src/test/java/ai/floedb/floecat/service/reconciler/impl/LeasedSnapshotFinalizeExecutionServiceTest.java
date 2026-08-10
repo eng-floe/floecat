@@ -64,6 +64,7 @@ import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -404,14 +405,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(service.snapshotRepo.recordReuseManifest(
             any(), anyLong(), any(SnapshotReuseManifestRef.class)))
         .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(
-                        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-                            .setAccountId(ACCOUNT_ID)
-                            .setId(TABLE_ID))
-                    .setSnapshotId(SNAPSHOT_ID)
-                    .build()));
+            Snapshot.newBuilder()
+                .setTableId(
+                    ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                        .setAccountId(ACCOUNT_ID)
+                        .setId(TABLE_ID))
+                .setSnapshotId(SNAPSHOT_ID)
+                .build());
     when(persistence.prepareStatsGenerationForPublication(
             any(), anyLong(), anyString(), anyBoolean()))
         .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
@@ -478,18 +478,22 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void deletedSnapshotCompletesWithoutAdvancingCurrent() {
+  void deletedSnapshotFailsFinalizeWithoutAdvancingCurrent() {
     SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
     when(blobs.get(manifestUri())).thenReturn(manifestBytes());
     when(service.snapshotRepo.recordReuseManifest(
             any(), anyLong(), any(SnapshotReuseManifestRef.class)))
-        .thenReturn(Optional.empty());
+        .thenThrow(new BaseResourceRepository.NotFoundException("snapshot deleted"));
 
-    service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
+    assertThrows(
+        BaseResourceRepository.NotFoundException.class,
+        () ->
+            service.persistSuccess(
+                principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
 
     verify(currentSnapshotPointerService, never())
         .maybeAdvance(any(), any(Snapshot.class), anyString());
-    verify(jobs)
+    verify(jobs, never())
         .completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
             eq(LEASE_EPOCH),

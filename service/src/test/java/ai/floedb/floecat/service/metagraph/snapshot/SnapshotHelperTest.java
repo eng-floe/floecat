@@ -78,7 +78,7 @@ class SnapshotHelperTest {
     repairPointers = new InMemoryPointerStore();
     validator =
         new PinValidator(roots, new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    helper = new SnapshotHelper(repository, roots, committer, null, validator);
+    helper = new SnapshotHelper(repository, roots, null, validator);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -542,7 +542,7 @@ class SnapshotHelperTest {
     // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -574,7 +574,7 @@ class SnapshotHelperTest {
     // among finalized entries only; CURRENT never points at it (currency advances at finalize).
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -674,7 +674,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var flakyHelper = new SnapshotHelper(repository, flakyRoots, flakyCommitter, null, validator);
+    var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, validator);
 
     TablePin pin = flakyHelper.tablePinFor("corr", table, null, Optional.empty());
 
@@ -713,7 +713,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var deadHelper = new SnapshotHelper(repository, deadRoots, deadCommitter, null, validator);
+    var deadHelper = new SnapshotHelper(repository, deadRoots, null, validator);
 
     assertThatThrownBy(() -> deadHelper.tablePinFor("corr", table, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class);
@@ -739,7 +739,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var localHelper = new SnapshotHelper(repository, roots, localCommitter, null, validator);
+    var localHelper = new SnapshotHelper(repository, roots, null, validator);
 
     assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
@@ -754,7 +754,7 @@ class SnapshotHelperTest {
     // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
@@ -777,7 +777,7 @@ class SnapshotHelperTest {
     // not be rejected. The gate keys on presence, not on the generation being non-empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
     // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just

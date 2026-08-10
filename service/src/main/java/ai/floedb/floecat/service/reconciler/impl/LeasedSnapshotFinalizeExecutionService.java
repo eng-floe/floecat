@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -189,7 +190,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           blobStore.put(
               durableManifestUri, validatedManifest.serializedBytes(), "application/x-protobuf");
           publishCaptureArtifacts(lease, tableId, snapshotTask, manifest);
-          var finalizedSnapshot =
+          Snapshot finalizedSnapshot =
               snapshotRepo.recordReuseManifest(
                   tableId,
                   snapshotTask.snapshotId(),
@@ -204,9 +205,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                               snapshotTask.snapshotId(),
                               "full-rescan-" + lease.parentJobId))
                       .build());
-          finalizedSnapshot.ifPresent(
-              snapshot ->
-                  currentSnapshotPointerService.maybeAdvance(tableId, snapshot, lease.jobId));
+          currentSnapshotPointerService.maybeAdvance(tableId, finalizedSnapshot, lease.jobId);
         } finally {
           publishNanos[0] = System.nanoTime() - publishStartNanos;
         }

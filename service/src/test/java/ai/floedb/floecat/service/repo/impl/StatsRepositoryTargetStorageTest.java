@@ -467,6 +467,26 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void queryPinRejectsPreLifecycleGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 7082L;
+    String generationId = "pre-lifecycle";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    blobStore.put(
+        manifestUri,
+        com.google.protobuf.StringValue.of(generationId).toByteArray(),
+        "application/x-protobuf");
+
+    assertThatThrownBy(() -> repository.requirePublishedGenerationLive(TABLE_ID, manifestUri))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("generation is unavailable");
+  }
+
+  @Test
   void draftGenerationIsInvisibleUntilPublished() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1961,11 +1981,11 @@ class StatsRepositoryTargetStorageTest {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     for (int i = 0; i < 2; i++) {
       String key =
-          Keys.snapshotTargetStatsGenerationPointer(
-              TABLE_ID.getAccountId(), TABLE_ID.getId(), 1L, "generation-" + i, "target");
+          Keys.snapshotTargetStatsGenerationLifecyclePointer(
+              TABLE_ID.getAccountId(), TABLE_ID.getId(), 1L, "generation-" + i);
       assertThat(
               pointerStore.compareAndSet(
-                  key, 0L, PointerReferences.blobPointer(key, "blob-" + i, 1L)))
+                  key, 0L, PointerReferences.opaqueMarkerPointer(key, "PUBLISHED", 1L)))
           .isTrue();
     }
     StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
@@ -1984,7 +2004,7 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
-  void generationGcDiscoversAndReclaimsObjectOnlyOrphan() {
+  void generationGcIgnoresObjectOnlyPreLifecycleOrphan() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
     StatsRepository repository = new StatsRepository(pointerStore, blobStore);
@@ -2000,13 +2020,13 @@ class StatsRepositoryTargetStorageTest {
         repository.deleteUnreferencedGenerations(
             TABLE_ID, ignored -> false, Long.MAX_VALUE, 0L, 100, Long.MAX_VALUE);
 
-    assertThat(result.generationsReclaimed()).isEqualTo(1);
-    assertThat(blobStore.head(orphan)).isEmpty();
+    assertThat(result.generationsReclaimed()).isZero();
+    assertThat(blobStore.head(orphan)).isPresent();
     assertThat(
             pointerStore.get(
                 Keys.snapshotTargetStatsDeletedGenerationFencePointer(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
-        .isPresent();
+        .isEmpty();
   }
 
   @Test
@@ -2049,6 +2069,13 @@ class StatsRepositoryTargetStorageTest {
     InMemoryPointerStore rawPointers = new InMemoryPointerStore();
     String generationId = "generation";
     long snapshotId = 780L;
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(
+            rawPointers.compareAndSet(
+                lifecycle, 0L, PointerReferences.opaqueMarkerPointer(lifecycle, "PUBLISHED", 1L)))
+        .isTrue();
     for (int i = 0; i < 501; i++) {
       String key =
           Keys.snapshotTargetStatsGenerationPointer(

@@ -123,6 +123,7 @@ public class CasBlobGc {
     private TableBlobReachabilityGuard.Proof remarkProof;
     private StatsRepository.GenerationGcContinuation generationRefresh;
     private boolean remarkComplete;
+    private boolean publicationAfterDelete;
     private boolean verificationRemarkComplete;
 
     private DeferredPageState(
@@ -1148,46 +1149,58 @@ public class CasBlobGc {
         }
         state.remarkComplete = true;
       }
-      var guarded =
-          reachabilityGuard.deleteIfUnchanged(
-              state.remarkProof,
-              () -> {
-                while (state.deleteIndex < state.candidates.size()) {
-                  checkDeadline();
-                  DeferredCandidate candidate = state.candidates.get(state.deleteIndex);
-                  String normalized = normalizeKey(candidate.key());
-                  if (!referenced.mightContain(normalized)
-                      && !state.fresh.mightContain(normalized)) {
-                    if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
-                      if (walkFailures[0] > 0) {
-                        return false;
-                      }
-                    } else if (blobStore.delete(candidate.key(), candidate.versionId())) {
-                      state.deleted++;
-                      state.deletedKeys.add(normalized);
-                    }
-                  }
-                  state.deleteIndex++;
-                }
-                return true;
-              });
-      if (guarded.changed()) {
-        resetDeferredRemark(tableId, state);
+      boolean restartRemark = false;
+      while (state.deleteIndex < state.candidates.size()) {
         checkDeadline();
-        continue;
+        DeferredCandidate candidate = state.candidates.get(state.deleteIndex);
+        String normalized = normalizeKey(candidate.key());
+        if (referenced.mightContain(normalized) || state.fresh.mightContain(normalized)) {
+          state.deleteIndex++;
+          continue;
+        }
+        // Keep remote reachability reads outside the publication lock. The proof epoch below
+        // invalidates this decision if a publisher or resolving pin overlaps the reads.
+        if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
+          if (walkFailures[0] > 0) {
+            return new DeleteResult(0, state.deleted, 0, true);
+          }
+          state.deleteIndex++;
+          continue;
+        }
+        // Serialize only the irreversible version-targeted delete. Holding the table lock for the
+        // whole candidate page can otherwise stall commits and query-pin registration for nearly
+        // the entire GC tick.
+        var guarded =
+            reachabilityGuard.deleteIfUnchanged(
+                state.remarkProof, () -> blobStore.delete(candidate.key(), candidate.versionId()));
+        if (guarded.changed()) {
+          state.publicationAfterDelete |= !state.deletedKeys.isEmpty();
+          resetDeferredRemark(tableId, state);
+          checkDeadline();
+          restartRemark = true;
+          break;
+        }
+        if (Boolean.TRUE.equals(guarded.value())) {
+          state.deleted++;
+          state.deletedKeys.add(normalized);
+        }
+        state.deleteIndex++;
       }
-      if (!Boolean.TRUE.equals(guarded.value())) {
-        return new DeleteResult(0, state.deleted, 0, true);
+      if (restartRemark) {
+        continue;
       }
       break;
     }
-    // The delete ran under the exact publication epoch retained by remarkProof. If that epoch is
-    // still unchanged, no publisher could have re-referenced a deleted ownerless blob and a second
-    // whole-table mark is unnecessary. Only an overlapping publication pays for the exact,
-    // page-bounded verification re-mark.
-    boolean publicationAfterDelete =
-        !state.deletedKeys.isEmpty()
-            && reachabilityGuard.deleteIfUnchanged(state.remarkProof, () -> true).changed();
+    // Each delete ran under the exact publication epoch retained by remarkProof. If that epoch is
+    // still unchanged across the page, no publisher could have re-referenced a deleted ownerless
+    // blob and a second whole-table mark is unnecessary. Only an overlapping publication pays for
+    // the exact, page-bounded verification re-mark.
+    boolean publicationAfterDelete = state.publicationAfterDelete;
+    if (!state.deletedKeys.isEmpty()
+        && reachabilityGuard.deleteIfUnchanged(state.remarkProof, () -> true).changed()) {
+      publicationAfterDelete = true;
+      state.publicationAfterDelete = true;
+    }
     if (publicationAfterDelete
         && !state.deletedKeys.isEmpty()
         && !state.verificationRemarkComplete) {
@@ -1929,6 +1942,13 @@ public class CasBlobGc {
       if (resumable) {
         continuation.blobTokens.put(
             scanKey, token == null || token.isBlank() ? SCAN_COMPLETE : token);
+      }
+      if (deferNoOwnerTo != null) {
+        // Transfer exactly one listing page to DeferredPageState before observing another
+        // deadline. Advancing across multiple pages here both loses already-collected candidates
+        // when DeadlineReached unwinds this local list and lets the list grow with total garbage
+        // instead of pageSize.
+        return new DeleteResult(scanned, deleted, rescued, token != null && !token.isBlank());
       }
       if (token == null || token.isBlank()) {
         break;

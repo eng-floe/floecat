@@ -137,7 +137,7 @@ class CasBlobGcTest {
   }
 
   @Test
-  void generationCleanupReclaimsUnregisteredWorkerUpload() {
+  void generationCleanupIgnoresUnregisteredPreLifecycleWorkerUpload() {
     String workerObject =
         Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
             + "worker-uploads/child/lease/target/stats.pb";
@@ -148,13 +148,13 @@ class CasBlobGcTest {
 
     gc.runForAccount(ACCOUNT_ID);
 
-    assertFalse(
+    assertTrue(
         blobs.head(workerObject).isPresent(),
-        "object-only worker uploads are reclaimed by stats-generation cleanup");
+        "lifecycle-less worker uploads are outside the supported generation protocol");
   }
 
   @Test
-  void generationCleanupReclaimsUnregisteredFinalizerOutput() {
+  void generationCleanupIgnoresUnregisteredPreLifecycleFinalizerOutput() {
     String finalizerObject =
         Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
             + "finalizer-outputs/finalize-job/lease/target/stats.pb";
@@ -165,9 +165,9 @@ class CasBlobGcTest {
 
     gc.runForAccount(ACCOUNT_ID);
 
-    assertFalse(
+    assertTrue(
         blobs.head(finalizerObject).isPresent(),
-        "object-only finalizer outputs are reclaimed by stats-generation cleanup");
+        "lifecycle-less finalizer outputs are outside the supported generation protocol");
   }
 
   @Test
@@ -288,6 +288,102 @@ class CasBlobGcTest {
     assertTrue(gc.continuationAccountId().isEmpty());
     assertFalse(deadlineBlobs.head(first).isPresent());
     assertFalse(deadlineBlobs.head(second).isPresent());
+  }
+
+  @Test
+  void deferredPageIsRetainedBeforeDeadlineAdvancesPastIt() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
+    String second =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    long deadline = System.currentTimeMillis() + 200L;
+    var delayedFirstHead = new java.util.concurrent.atomic.AtomicBoolean();
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            var header = super.head(key);
+            if ((first.equals(key) || first.equals("/" + key))
+                && delayedFirstHead.compareAndSet(false, true)) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return header;
+          }
+        };
+    blobs = deadlineBlobs;
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+    seedCurrentTable();
+    blobs.put(first, new byte[] {1}, "application/x-protobuf");
+    blobs.put(second, new byte[] {2}, "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+
+    assertTrue(delayedFirstHead.get(), "the first deferred listing page reached the deadline");
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    assertTrue(blobs.head(first).isPresent(), "the retained page has not been flushed yet");
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(gc.continuationAccountId().isEmpty());
+    assertFalse(blobs.head(first).isPresent(), "the pre-deadline deferred page is resumed");
+    assertFalse(blobs.head(second).isPresent(), "the following deferred page is also swept");
+  }
+
+  @Test
+  void deferredFlushLocksAroundOnlyOneVersionDeleteAtATime() {
+    var deleteCalls = new java.util.concurrent.atomic.AtomicInteger();
+    var maxDeletesInCriticalSection = new java.util.concurrent.atomic.AtomicInteger();
+    var countingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean delete(String key, String versionId) {
+            deleteCalls.incrementAndGet();
+            return super.delete(key, versionId);
+          }
+        };
+    var granularGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            return super.deleteIfUnchanged(
+                proof,
+                () -> {
+                  int before = deleteCalls.get();
+                  T result = deletion.get();
+                  maxDeletesInCriticalSection.accumulateAndGet(
+                      deleteCalls.get() - before, Math::max);
+                  return result;
+                });
+          }
+        };
+    blobs = countingBlobs;
+    gc.blobStore = countingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, countingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, countingBlobs);
+    gc.reachabilityGuard = granularGuard;
+    seedCurrentTable();
+    String first =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
+    String second =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    blobs.put(first, new byte[] {1}, "application/x-protobuf");
+    blobs.put(second, new byte[] {2}, "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(first).isPresent());
+    assertFalse(blobs.head(second).isPresent());
+    assertEquals(1, maxDeletesInCriticalSection.get());
   }
 
   @Test
@@ -831,6 +927,12 @@ class CasBlobGcTest {
     blobs.put(wrapper, wrapperRecord.toByteArray(), "application/x-protobuf");
     blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
     putPointer(pointerKey, wrapper);
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    assertTrue(
+        pointers.compareAndSet(
+            lifecycle, 0L, PointerReferences.opaqueMarkerPointer(lifecycle, "PUBLISHED", 1L)));
 
     gc.runForAccount(ACCOUNT_ID);
     assertTrue(blobs.head(wrapper).isPresent(), "a live generation pointer roots its wrapper");

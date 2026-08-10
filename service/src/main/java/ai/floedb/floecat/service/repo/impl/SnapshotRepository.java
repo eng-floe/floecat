@@ -217,7 +217,7 @@ public class SnapshotRepository {
    * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
    * the exact snapshot revision written so callers do not need a racy follow-up read.
    */
-  public Optional<Snapshot> recordReuseManifest(
+  public Snapshot recordReuseManifest(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
     if (reuseManifestRef == null
         || reuseManifestRef.getUri().isBlank()
@@ -231,11 +231,12 @@ public class SnapshotRepository {
       MutationMeta meta = repo.pointerMetaForSafe(key);
       Snapshot current = repo.getByKey(key).orElse(null);
       if (current == null) {
-        return Optional.empty();
+        throw new BaseResourceRepository.NotFoundException(
+            "snapshot disappeared before reuse manifest publication: " + snapshotId);
       }
       Snapshot next = current.toBuilder().setReuseManifestRef(reuseManifestRef).build();
       if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
-        return Optional.of(next);
+        return next;
       }
       if (attempt < 7) {
         backoffCurrentPointerAdvance(attempt);
@@ -481,7 +482,7 @@ public class SnapshotRepository {
       return snapshotFromRootEntry(
           tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady);
     }
-    return latestRegisteredSnapshot(tableId);
+    return Optional.empty();
   }
 
   /**
@@ -522,11 +523,8 @@ public class SnapshotRepository {
   }
 
   /**
-   * The table's root, distinguishing "no root pointer" (a legacy, un-migrated table — the legacy
-   * fallback is legitimate) from "root pointer present but blob unreadable" (a superseded root
-   * swept between the two reads, or corruption). The latter retries once — the pointer has
-   * necessarily moved on a sweep race — and then resolves to a present-but-unreadable lookup so
-   * callers stay GATED instead of walking to the legacy pointer.
+   * Loads the table's root. A missing root is unsupported; an unreadable published root retries
+   * once because its pointer may have moved after a supersede-and-sweep race.
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -605,7 +603,7 @@ public class SnapshotRepository {
     }
     RootLookup lookup = lookupRoot(tableId);
     if (!lookup.pointerExists()) {
-      return currentPointerRepo.get(tableId);
+      return Optional.empty();
     }
     if (lookup.root() == null || !lookup.root().hasCurrentSnapshotId()) {
       return Optional.empty(); // gated or unreadable root: never the ungated legacy pointer
@@ -693,10 +691,7 @@ public class SnapshotRepository {
     return firstByTimeAtOrAfter(tableId, pointerStore.pageTokenAfterKey(boundary));
   }
 
-  /**
-   * Resolves AS_OF through the immutable table root and applies the same finalize gate as query
-   * pinning. A rootless legacy table falls back to the by-time index.
-   */
+  /** Resolves AS_OF through the immutable table root and applies the query finalize gate. */
   public Optional<Snapshot> getQueryableAsOf(ResourceId tableId, Timestamp asOf) {
     long asOfMs = Timestamps.toMillis(asOf);
     if (asOfMs < 0) {
@@ -704,7 +699,7 @@ public class SnapshotRepository {
     }
     RootLookup lookup = lookupRoot(tableId);
     if (!lookup.pointerExists()) {
-      return getAsOf(tableId, asOf);
+      return Optional.empty();
     }
     if (lookup.root() == null) {
       return Optional.empty();

@@ -1628,6 +1628,13 @@ public class StatsRepository implements StatsStore {
         .generationsReclaimed();
   }
 
+  /**
+   * Deletes bounded slices of lifecycle-registered generations.
+   *
+   * <p>The caller must hold the table reachability guard for the duration of this call. Liveness is
+   * checked once before each bounded slice; the lifecycle claim prevents writers from reviving the
+   * generation while its blobs and pointers are removed.
+   */
   public GenerationGcResult deleteUnreferencedGenerations(
       ResourceId tableId,
       java.util.function.Predicate<String> isProtectedManifestUri,
@@ -1649,22 +1656,11 @@ public class StatsRepository implements StatsStore {
   public static final class GenerationGcContinuation {
     private java.util.LinkedHashSet<Keys.GenerationKey> discovered =
         new java.util.LinkedHashSet<>();
-    private final java.util.Set<Keys.GenerationKey> pointerBacked = new java.util.HashSet<>();
     private final int maxCandidates;
     private List<Keys.GenerationKey> candidates = List.of();
     private String pointerToken = "";
     private int candidateIndex;
     private boolean pointerScanComplete;
-    private String snapshotPrefixToken = "";
-    private String snapshotPrefixNextToken = "";
-    private List<String> snapshotPrefixPage = List.of();
-    private int snapshotPrefixIndex;
-    private boolean snapshotPrefixPageLoaded;
-    private String generationPrefixToken = "";
-    private String manifestBlobToken = "";
-    private boolean generationPrefixScanComplete;
-    private boolean manifestBlobScanComplete;
-    private boolean blobScanComplete;
     private boolean scanComplete;
 
     public GenerationGcContinuation() {
@@ -1698,11 +1694,6 @@ public class StatsRepository implements StatsStore {
       }
       discovered.add(generation);
     }
-
-    private void discoverFromPointer(Keys.GenerationKey generation) {
-      discover(generation);
-      pointerBacked.add(generation);
-    }
   }
 
   public static final class GenerationGcCapacityExceededException extends RuntimeException {
@@ -1734,8 +1725,13 @@ public class StatsRepository implements StatsStore {
           break;
         }
         Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
-        if (generation != null) {
-          continuation.discoverFromPointer(generation);
+        if (generation != null
+            && pointer
+                .getKey()
+                .equals(
+                    generationLifecyclePointer(
+                        tableId, generation.snapshotId(), generation.generationId()))) {
+          continuation.discover(generation);
         }
       }
       if (!pageComplete) {
@@ -1746,89 +1742,10 @@ public class StatsRepository implements StatsStore {
         continuation.pointerScanComplete = true;
       }
     }
-    if (!discoverGenerationBlobKeys(tableId, deadlineMs, continuation)) {
-      return false;
-    }
     if (!continuation.scanComplete) {
       continuation.scanComplete = true;
       continuation.candidates = List.copyOf(continuation.discovered);
       continuation.discovered = null;
-    }
-    return true;
-  }
-
-  private boolean discoverGenerationBlobKeys(
-      ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
-    String tablePrefix = Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId());
-    while (!continuation.blobScanComplete) {
-      if (System.currentTimeMillis() >= deadlineMs) {
-        return false;
-      }
-      if (!continuation.snapshotPrefixPageLoaded) {
-        BlobStore.Page page =
-            blobStore.listPrefixes(tablePrefix, 500, continuation.snapshotPrefixToken);
-        continuation.snapshotPrefixPage = List.copyOf(page.keys());
-        continuation.snapshotPrefixIndex = 0;
-        continuation.snapshotPrefixNextToken = blankToEmpty(page.nextToken());
-        continuation.snapshotPrefixPageLoaded = true;
-      }
-      while (continuation.snapshotPrefixIndex < continuation.snapshotPrefixPage.size()) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          return false;
-        }
-        String snapshotPrefix =
-            continuation.snapshotPrefixPage.get(continuation.snapshotPrefixIndex);
-        if (!continuation.generationPrefixScanComplete) {
-          BlobStore.Page page =
-              blobStore.listPrefixes(
-                  snapshotPrefix + "generations/", 500, continuation.generationPrefixToken);
-          for (String generationPrefix : page.keys()) {
-            if (System.currentTimeMillis() >= deadlineMs) {
-              return false;
-            }
-            Keys.GenerationKey generation =
-                Keys.generationFromGenerationBlobPrefix(generationPrefix);
-            if (generation != null) {
-              continuation.discover(generation);
-            }
-          }
-          continuation.generationPrefixToken = blankToEmpty(page.nextToken());
-          if (!continuation.generationPrefixToken.isBlank()) {
-            continue;
-          }
-          continuation.generationPrefixScanComplete = true;
-        }
-        if (!continuation.manifestBlobScanComplete) {
-          BlobStore.Page page =
-              blobStore.list(snapshotPrefix + "manifests/", 500, continuation.manifestBlobToken);
-          for (String manifestUri : page.keys()) {
-            if (System.currentTimeMillis() >= deadlineMs) {
-              return false;
-            }
-            Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
-            if (generation != null) {
-              continuation.discover(generation);
-            }
-          }
-          continuation.manifestBlobToken = blankToEmpty(page.nextToken());
-          if (!continuation.manifestBlobToken.isBlank()) {
-            continue;
-          }
-          continuation.manifestBlobScanComplete = true;
-        }
-        continuation.snapshotPrefixIndex++;
-        continuation.generationPrefixToken = "";
-        continuation.manifestBlobToken = "";
-        continuation.generationPrefixScanComplete = false;
-        continuation.manifestBlobScanComplete = false;
-      }
-      if (continuation.snapshotPrefixNextToken.isBlank()) {
-        continuation.blobScanComplete = true;
-      } else {
-        continuation.snapshotPrefixToken = continuation.snapshotPrefixNextToken;
-        continuation.snapshotPrefixPage = List.of();
-        continuation.snapshotPrefixPageLoaded = false;
-      }
     }
     return true;
   }
@@ -1872,7 +1789,13 @@ public class StatsRepository implements StatsStore {
           pointerStore
               .get(generationLifecyclePointer(tableId, snapshotId, generationId))
               .orElse(null);
-      String lifecycleState = lifecycle == null ? "" : blankToEmpty(lifecycle.getBlobUri());
+      if (lifecycle == null) {
+        // Lifecycle markers are mandatory. Pre-lifecycle generations are unsupported and are not
+        // made eligible for deletion merely because an object or stale target pointer exists.
+        continuation.candidateIndex++;
+        continue;
+      }
+      String lifecycleState = blankToEmpty(lifecycle.getBlobUri());
       if (GENERATION_DELETING.equals(lifecycleState) || GENERATION_DELETED.equals(lifecycleState)) {
         if (isProtectedManifestUri.test(manifestUri)
             || manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
@@ -1894,27 +1817,14 @@ public class StatsRepository implements StatsStore {
                 nowMs,
                 minAgeMs,
                 maxBlobDeleteAttempts - deleteAttempts,
-                deadlineMs,
-                () ->
-                    !isProtectedManifestUri.test(manifestUri)
-                        && !manifestUri.equals(
-                            activeStatsGeneration(tableId, snapshotId).orElse(""))
-                        && !isActiveIndexGeneration(tableId, snapshotId, generationId));
+                deadlineMs);
         deleteAttempts += result.attempts();
         blobsDeleted += result.deleted();
         if (result.pending()) {
           pending = true;
           break;
         }
-        if (deleteGenerationPointerSlice(
-            tableId,
-            snapshotId,
-            generationId,
-            deadlineMs,
-            () ->
-                !isProtectedManifestUri.test(manifestUri)
-                    && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
-                    && !isActiveIndexGeneration(tableId, snapshotId, generationId))) {
+        if (deleteGenerationPointerSlice(tableId, snapshotId, generationId, deadlineMs)) {
           pending = true;
           break;
         }
@@ -1922,30 +1832,7 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue;
       }
-      boolean orphanWithoutLifecycle = lifecycle == null;
-      if (orphanWithoutLifecycle && continuation.pointerBacked.contains(candidate)) {
-        // Legacy/in-flight generations can have target pointers before a lifecycle marker. They
-        // are not object-only crash residue and remain owned by their explicit publisher cleanup.
-        continuation.candidateIndex++;
-        continue;
-      }
-      // Prefer the manifest as the age fence. Legacy/crashed remote work can have upload objects
-      // but no manifest or lifecycle marker, so use an upload object as the repair-scan anchor.
       var header = blobStore.head(manifestUri).orElse(null);
-      if (header == null && orphanWithoutLifecycle) {
-        String generationBlobPrefix =
-            Keys.snapshotTargetStatsGenerationBlobPrefix(
-                accountId, tableId.getId(), snapshotId, generationId);
-        List<String> abandonedUploadKeys =
-            blobStore.list(generationBlobPrefix + "worker-uploads/", 1, "").keys();
-        if (abandonedUploadKeys.isEmpty()) {
-          abandonedUploadKeys =
-              blobStore.list(generationBlobPrefix + "finalizer-outputs/", 1, "").keys();
-        }
-        if (!abandonedUploadKeys.isEmpty()) {
-          header = blobStore.head(abandonedUploadKeys.get(0)).orElse(null);
-        }
-      }
       if (header == null) {
         continuation.candidateIndex++;
         continue;
@@ -1977,10 +1864,7 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
-      boolean claimed =
-          orphanWithoutLifecycle
-              ? claimOrphanGenerationForGc(tableId, snapshotId, generationId)
-              : claimPublishedGenerationForGc(tableId, snapshotId, generationId);
+      boolean claimed = claimPublishedGenerationForGc(tableId, snapshotId, generationId);
       if (!claimed) {
         continuation.candidateIndex++;
         continue;
@@ -1988,9 +1872,7 @@ public class StatsRepository implements StatsStore {
       if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
           || isProtectedManifestUri.test(manifestUri)
           || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
-        if (!orphanWithoutLifecycle) {
-          restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
-        }
+        restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
         continuation.candidateIndex++;
         continue;
       }
@@ -2004,26 +1886,14 @@ public class StatsRepository implements StatsStore {
               nowMs,
               minAgeMs,
               maxBlobDeleteAttempts - deleteAttempts,
-              deadlineMs,
-              () ->
-                  !isProtectedManifestUri.test(manifestUri)
-                      && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
-                      && !isActiveIndexGeneration(tableId, snapshotId, generationId));
+              deadlineMs);
       deleteAttempts += result.attempts();
       blobsDeleted += result.deleted();
       if (result.pending()) {
         pending = true;
         break;
       }
-      if (deleteGenerationPointerSlice(
-          tableId,
-          snapshotId,
-          generationId,
-          deadlineMs,
-          () ->
-              !isProtectedManifestUri.test(manifestUri)
-                  && !manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
-                  && !isActiveIndexGeneration(tableId, snapshotId, generationId))) {
+      if (deleteGenerationPointerSlice(tableId, snapshotId, generationId, deadlineMs)) {
         pending = true;
         break;
       }
@@ -2064,11 +1934,8 @@ public class StatsRepository implements StatsStore {
       long nowMs,
       long minAgeMs,
       int maxAttempts,
-      long deadlineMs,
-      java.util.function.BooleanSupplier stillUnreferenced) {
-    if (maxAttempts <= 0
-        || System.currentTimeMillis() >= deadlineMs
-        || !stillUnreferenced.getAsBoolean()) {
+      long deadlineMs) {
+    if (maxAttempts <= 0 || System.currentTimeMillis() >= deadlineMs) {
       return new GenerationBlobDeleteResult(0, 0, true);
     }
     String blobPrefix =
@@ -2077,9 +1944,7 @@ public class StatsRepository implements StatsStore {
     int deleted = 0;
     BlobStore.Page page = blobStore.list(blobPrefix, Math.min(maxAttempts, 1000), "");
     for (String key : page.keys()) {
-      if (attempts >= maxAttempts
-          || System.currentTimeMillis() >= deadlineMs
-          || !stillUnreferenced.getAsBoolean()) {
+      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
         return new GenerationBlobDeleteResult(attempts, deleted, true);
       }
       var header = blobStore.head(key).orElse(null);
@@ -2098,9 +1963,7 @@ public class StatsRepository implements StatsStore {
       return new GenerationBlobDeleteResult(attempts, deleted, true);
     }
     if (blobStore.head(manifestUri).isPresent()) {
-      if (attempts >= maxAttempts
-          || System.currentTimeMillis() >= deadlineMs
-          || !stillUnreferenced.getAsBoolean()) {
+      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
         return new GenerationBlobDeleteResult(attempts, deleted, true);
       }
       var header = blobStore.head(manifestUri).orElse(null);
@@ -2132,11 +1995,7 @@ public class StatsRepository implements StatsStore {
    * continuation token whose exclusive-start row was itself deleted.
    */
   private boolean deleteGenerationPointerSlice(
-      ResourceId tableId,
-      long snapshotId,
-      String generationId,
-      long deadlineMs,
-      java.util.function.BooleanSupplier stillUnreferenced) {
+      ResourceId tableId, long snapshotId, String generationId, long deadlineMs) {
     String accountId = tableId.getAccountId();
     String rawTableId = tableId.getId();
     List<String> prefixes =
@@ -2152,17 +2011,13 @@ public class StatsRepository implements StatsStore {
                 + "prepared-file-groups/");
     int remaining = 500;
     for (String prefix : prefixes) {
-      if (remaining <= 0
-          || System.currentTimeMillis() >= deadlineMs
-          || !stillUnreferenced.getAsBoolean()) {
+      if (remaining <= 0 || System.currentTimeMillis() >= deadlineMs) {
         return true;
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> page = pointerStore.listPointersByPrefix(prefix, remaining, "", next);
       for (Pointer pointer : page) {
-        if (remaining <= 0
-            || System.currentTimeMillis() >= deadlineMs
-            || !stillUnreferenced.getAsBoolean()) {
+        if (remaining <= 0 || System.currentTimeMillis() >= deadlineMs) {
           return true;
         }
         remaining--;
@@ -2174,7 +2029,7 @@ public class StatsRepository implements StatsStore {
       }
     }
 
-    if (System.currentTimeMillis() >= deadlineMs || !stillUnreferenced.getAsBoolean()) {
+    if (System.currentTimeMillis() >= deadlineMs) {
       return true;
     }
     String publicationIntent =
@@ -2186,7 +2041,7 @@ public class StatsRepository implements StatsStore {
         && pointerStore.get(publicationIntent).isPresent()) {
       return true;
     }
-    if (System.currentTimeMillis() >= deadlineMs || !stillUnreferenced.getAsBoolean()) {
+    if (System.currentTimeMillis() >= deadlineMs) {
       return true;
     }
     markGenerationDeleted(tableId, snapshotId, generationId);
@@ -2260,19 +2115,6 @@ public class StatsRepository implements StatsStore {
     }
     throw new StorageAbortRetryableException(
         "stats generation GC claim conflicted repeatedly: " + generationId);
-  }
-
-  /**
-   * Claims a keyspace discovered only in object storage. CAS from absent is the publication fence:
-   * a current writer registers WRITING before receiving its upload prefix, while a legacy writer
-   * racing this repair either registers first or observes DELETING and cannot publish.
-   */
-  private boolean claimOrphanGenerationForGc(
-      ResourceId tableId, long snapshotId, String generationId) {
-    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
-    Pointer deleting =
-        PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_DELETING, 1L);
-    return pointerStore.compareAndSet(lifecyclePointer, 0L, deleting);
   }
 
   private void restoreGenerationPublishedAfterFailedGcClaim(
