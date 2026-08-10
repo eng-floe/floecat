@@ -39,6 +39,7 @@ public final class Keys {
   public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
   public static final String SEG_INDEX_SIDECARS = "/index-sidecars/";
+  public static final String INDEX_ARTIFACT_DIRECT_GENERATION = "direct";
   public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
   public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
   public static final String SEG_INDEX_CAPTURE_MANIFESTS =

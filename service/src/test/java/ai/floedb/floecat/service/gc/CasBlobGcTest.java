@@ -948,6 +948,57 @@ class CasBlobGcTest {
   }
 
   @Test
+  void directIndexGenerationWithoutStatsLifecycleProtectsItsSharedSidecar() {
+    long snapshotId = 8L;
+    String targetId = "file:s3://source/direct.parquet";
+    seedCurrentTable();
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, "sha-snapshot");
+    blobs.put(snapshotBlob, "snapshot".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, snapshotId), snapshotBlob);
+
+    String activeGeneration =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
+    assertTrue(
+        pointers.compareAndSet(
+            activeGeneration,
+            0L,
+            PointerReferences.opaqueMarkerPointer(
+                activeGeneration, Keys.INDEX_ARTIFACT_DIRECT_GENERATION, 1L)));
+    String wrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            Keys.INDEX_ARTIFACT_DIRECT_GENERATION,
+            targetId,
+            "sha-wrapper");
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+    var wrapperRecord =
+        ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    blobs.put(wrapper, wrapperRecord.toByteArray(), "application/x-protobuf");
+    blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    putPointer(
+        Keys.snapshotIndexArtifactGenerationPointer(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            Keys.INDEX_ARTIFACT_DIRECT_GENERATION,
+            targetId),
+        wrapper);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(wrapper).isPresent(), "the direct generation pointer roots its wrapper");
+    assertTrue(
+        blobs.head(sidecar).isPresent(),
+        "a direct generation with no stats lifecycle still protects its shared sidecar");
+  }
+
+  @Test
   void keepsBlobPinnedByActiveQuery() {
     // A blob no current pointer references, but that a live query has pinned, must survive GC.
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-pinned");

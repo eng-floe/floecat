@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
@@ -460,7 +461,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                           && candidate
                               .getArtifact()
                               .getPayloadUri()
-                              .startsWith(descriptor.getStatsObjectPrefix() + "reuse-bundles/"))
+                              .startsWith(
+                                  descriptor.getStatsObjectPrefix()
+                                      + ReusableArtifactBundleUris.BUNDLE_DIRECTORY))
               .findFirst()
               .orElseThrow(
                   () ->
@@ -786,7 +789,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     for (var bundle : manifest.getReusableArtifactBundlesList()) {
       String matchedPrefix = null;
       for (String statsPrefix : stagedArtifactPrefixes) {
-        if (bundle.getArtifact().getPayloadUri().startsWith(statsPrefix + "reuse-bundles/")) {
+        if (bundle
+            .getArtifact()
+            .getPayloadUri()
+            .startsWith(statsPrefix + ReusableArtifactBundleUris.BUNDLE_DIRECTORY)) {
           if (matchedPrefix != null) {
             throw new IllegalArgumentException(
                 "snapshot reusable bundle matches multiple staged file groups");

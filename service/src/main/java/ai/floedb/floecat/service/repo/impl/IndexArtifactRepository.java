@@ -56,7 +56,7 @@ import java.util.Set;
 @ApplicationScoped
 public class IndexArtifactRepository {
   private static final int MAX_POINTER_BATCH_SIZE = 100;
-  private static final String DIRECT_GENERATION = "direct";
+  private static final String DIRECT_GENERATION = Keys.INDEX_ARTIFACT_DIRECT_GENERATION;
   private static final String LIST_TOKEN_PREFIX = "v1.";
 
   public record PrewrittenIndexArtifactReference(

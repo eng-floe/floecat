@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -44,6 +45,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -715,7 +717,15 @@ public class CasBlobGc {
       rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
       pointersScanned +=
-          collectPointers(snapshotsById, tableReferenced, null, pageSize, null, storageEstimate);
+          collectPointers(
+              snapshotsById,
+              tableReferenced,
+              null,
+              pageSize,
+              null,
+              storageEstimate,
+              true,
+              pointer -> rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
 
       // The current table root and EVERYTHING it references are GC roots: the root blob, every
       // manifest page, and each entry's definition/snapshot/generation-manifest/constraints blobs.
@@ -1118,12 +1128,23 @@ public class CasBlobGc {
         return new DeleteResult(0, 0, 0, true);
       }
       if (state.fresh == null) {
-        state.remarkProof = reachabilityGuard.beginProof(accountId, tableId);
-        state.fresh =
+        ReferenceIndex fresh =
             newReferenceIndex(
                 referenceCapacity,
                 referenceFalsePositiveRate,
                 ThreadLocalRandom.current().nextLong());
+        TableBlobReachabilityGuard.Proof proof = null;
+        try {
+          proof = reachabilityGuard.beginProof(accountId, tableId);
+          state.fresh = fresh;
+          state.remarkProof = proof;
+        } catch (Throwable t) {
+          if (proof != null) {
+            proof.close();
+          }
+          fresh.close();
+          throw t;
+        }
       }
       if (state.generationRefresh != null) {
         var tableResourceId =
@@ -1562,6 +1583,26 @@ public class CasBlobGc {
       Predicate<Pointer> filter,
       StorageEstimate storageEstimate,
       boolean markBlobReferences) {
+    return collectPointers(
+        prefix,
+        referenced,
+        tableIds,
+        pageSize,
+        filter,
+        storageEstimate,
+        markBlobReferences,
+        null);
+  }
+
+  private int collectPointers(
+      String prefix,
+      ReferenceIndex referenced,
+      List<String> tableIds,
+      int pageSize,
+      Predicate<Pointer> filter,
+      StorageEstimate storageEstimate,
+      boolean markBlobReferences,
+      Consumer<Pointer> observer) {
     boolean resumable = isRetainedContinuationIndex(referenced);
     String scanKey = continuationIndexScope(referenced) + ":pointers:" + prefix;
     String token = resumable ? continuation.pointerTokens.getOrDefault(scanKey, "") : "";
@@ -1585,6 +1626,9 @@ public class CasBlobGc {
         }
         if (markBlobReferences && p.getBlobUri() != null && !p.getBlobUri().isBlank()) {
           referenced.add(normalizeKey(p.getBlobUri()));
+        }
+        if (observer != null) {
+          observer.accept(p);
         }
         if (tableIds != null) {
           String id = decodeSuffix(prefix, p.getKey());
@@ -1677,7 +1721,7 @@ public class CasBlobGc {
             throw new IllegalStateException(
                 "missing index artifact wrapper " + pointer.getBlobUri());
           }
-          if (pointer.getBlobUri().contains("/reuse-bundles/")) {
+          if (ReusableArtifactBundleUris.isBundleUri(pointer.getBlobUri())) {
             ReusableArtifactBundlePayload bundle = ReusableArtifactBundlePayload.parseFrom(bytes);
             for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
               addSharedArtifactReference(referenced, record);
@@ -1716,6 +1760,30 @@ public class CasBlobGc {
     if (generation != null) {
       continuation.addGenerationKey(generation);
     }
+  }
+
+  private void rememberDirectIndexArtifactGeneration(
+      String accountId, String tableId, String snapshotPointerPrefix, Pointer snapshotPointer) {
+    String encodedSnapshotId = decodeSuffix(snapshotPointerPrefix, snapshotPointer.getKey());
+    if (encodedSnapshotId == null || encodedSnapshotId.indexOf('/') >= 0) {
+      return;
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(encodedSnapshotId);
+    } catch (RuntimeException ignored) {
+      return;
+    }
+    pointerStore
+        .get(Keys.snapshotIndexArtifactActiveGenerationPointer(accountId, tableId, snapshotId))
+        .filter(
+            pointer ->
+                Keys.INDEX_ARTIFACT_DIRECT_GENERATION.equals(pointer.getBlobUri()))
+        .ifPresent(
+            ignored ->
+                continuation.addGenerationKey(
+                    new Keys.GenerationKey(
+                        snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
   }
 
   private static void addSharedArtifactReference(
@@ -2007,6 +2075,16 @@ public class CasBlobGc {
         return false;
       }
     }
+    String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
+    collectPointers(
+        snapshotsById,
+        fresh,
+        null,
+        pageSize,
+        null,
+        null,
+        true,
+        pointer -> rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
     collectSharedIndexArtifactReferences(accountId, tableId, fresh, pageSize, null);
     collectPointers(
         Keys.snapshotConstraintsPointerPrefix(accountId, tableId), fresh, null, pageSize);
