@@ -19,11 +19,11 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -38,21 +38,25 @@ public class CatalogRepository {
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
 
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
-  }
-
-  @Inject
-  public CatalogRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this.repo =
+    this(
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.CATALOG,
             Catalog::parseFrom,
             Catalog::toByteArray,
-            "application/x-protobuf",
-            blobCache);
+            "application/x-protobuf"));
+  }
+
+  @Inject
+  public CatalogRepository(MetadataRepositoryFactory repositories) {
+    this(
+        repositories.create(
+            Schemas.CATALOG, Catalog::parseFrom, Catalog::toByteArray, "application/x-protobuf"));
+  }
+
+  private CatalogRepository(GenericResourceRepository<Catalog, CatalogKey> repo) {
+    this.repo = repo;
   }
 
   public void create(Catalog catalog) {

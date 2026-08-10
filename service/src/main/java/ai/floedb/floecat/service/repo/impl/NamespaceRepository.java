@@ -21,11 +21,11 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -43,22 +43,32 @@ public class NamespaceRepository {
   private final PointerStore pointerStore;
 
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
-  }
-
-  @Inject
-  public NamespaceRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this.pointerStore = pointerStore;
-    this.repo =
+    this(
+        pointerStore,
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.NAMESPACE,
             Namespace::parseFrom,
             Namespace::toByteArray,
-            "application/x-protobuf",
-            blobCache);
+            "application/x-protobuf"));
+  }
+
+  @Inject
+  public NamespaceRepository(PointerStore pointerStore, MetadataRepositoryFactory repositories) {
+    this(
+        pointerStore,
+        repositories.create(
+            Schemas.NAMESPACE,
+            Namespace::parseFrom,
+            Namespace::toByteArray,
+            "application/x-protobuf"));
+  }
+
+  private NamespaceRepository(
+      PointerStore pointerStore, GenericResourceRepository<Namespace, NamespaceKey> repo) {
+    this.pointerStore = pointerStore;
+    this.repo = repo;
   }
 
   public void create(Namespace namespace) {

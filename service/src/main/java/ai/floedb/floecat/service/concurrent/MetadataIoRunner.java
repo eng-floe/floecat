@@ -16,6 +16,7 @@
 package ai.floedb.floecat.service.concurrent;
 
 import ai.floedb.floecat.runtime.concurrent.ProcessWideAdmission;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -105,6 +106,15 @@ public class MetadataIoRunner {
       CancellableCallRunner.FailureMessages failureMessages) {
     return CancellableCallRunner.call(
         permits, cancelled, operation, failureMessages, saturationSink);
+  }
+
+  /** Run one leaf read using the current request's cancellation signal when one is bound. */
+  <T> T callWithCurrentCancellation(
+      Supplier<T> operation, CancellableCallRunner.FailureMessages failureMessages) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    return cancelled == null
+        ? callWithoutCancellation(operation, failureMessages)
+        : call(cancelled, operation, failureMessages);
   }
 
   /**

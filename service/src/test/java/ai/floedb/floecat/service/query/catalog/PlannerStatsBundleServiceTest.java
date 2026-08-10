@@ -56,6 +56,8 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport {
@@ -446,6 +448,32 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(0L, end.getReturnedTargets());
     assertEquals(0L, end.getNotFoundTargets());
     assertEquals(1L, end.getErrorTargets());
+  }
+
+  @Test
+  void cancellationTerminatesTargetStream() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore()) {
+          @Override
+          public Optional<TargetStatsRecord> getTargetStats(
+              ResourceId tableId, long snapshotId, StatsTarget target) {
+            throw new CancellationException("request cancelled");
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-cancelled", 108L);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+
+    assertThrows(
+        CancellationException.class,
+        () ->
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
   }
 
   @Test

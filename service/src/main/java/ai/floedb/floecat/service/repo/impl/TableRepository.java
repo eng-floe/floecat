@@ -21,11 +21,11 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -42,21 +42,25 @@ public class TableRepository {
   private final GenericResourceRepository<Table, TableKey> repo;
 
   public TableRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
-  }
-
-  @Inject
-  public TableRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this.repo =
+    this(
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
             Schemas.TABLE,
             Table::parseFrom,
             Table::toByteArray,
-            "application/x-protobuf",
-            blobCache);
+            "application/x-protobuf"));
+  }
+
+  @Inject
+  public TableRepository(MetadataRepositoryFactory repositories) {
+    this(
+        repositories.create(
+            Schemas.TABLE, Table::parseFrom, Table::toByteArray, "application/x-protobuf"));
+  }
+
+  private TableRepository(GenericResourceRepository<Table, TableKey> repo) {
+    this.repo = repo;
   }
 
   public void create(Table table) {
