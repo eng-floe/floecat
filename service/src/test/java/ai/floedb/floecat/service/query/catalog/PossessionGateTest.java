@@ -98,9 +98,9 @@ class PossessionGateTest {
     gate = new PossessionGate(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }
 
-  private UserObjectBundleService.ResolvedRelation resolved() {
+  private ResolvedRelation resolved() {
     RelationNode node = (RelationNode) overlay.resolve(TABLE).orElseThrow();
-    return new UserObjectBundleService.ResolvedRelation(
+    return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE))
             .build(),
@@ -167,8 +167,7 @@ class PossessionGateTest {
   void identityOnlyServesSlimWhenClientHoldsTheToken() {
     RelationPinIdentity identity =
         RelationPinIdentity.newBuilder().setTableBlobVersion("v-token").build();
-    UserObjectBundleService.TimingAccumulator timings =
-        new UserObjectBundleService.TimingAccumulator();
+    TimingAccumulator timings = new TimingAccumulator();
 
     RelationInfo slim =
         gate.identityOnly(
@@ -192,7 +191,7 @@ class PossessionGateTest {
                 Optional.of(identity),
                 Optional.empty(),
                 Set.of(),
-                new UserObjectBundleService.TimingAccumulator()))
+                new TimingAccumulator()))
         .isNull();
   }
 
@@ -207,7 +206,7 @@ class PossessionGateTest {
                 Optional.of(blank),
                 Optional.empty(),
                 Set.of(""),
-                new UserObjectBundleService.TimingAccumulator()))
+                new TimingAccumulator()))
         .isNull();
   }
 
@@ -222,7 +221,7 @@ class PossessionGateTest {
                 Optional.of(identity),
                 Optional.empty(),
                 Set.of("some-other-token"),
-                new UserObjectBundleService.TimingAccumulator()))
+                new TimingAccumulator()))
         .isNull();
   }
 
@@ -234,7 +233,7 @@ class PossessionGateTest {
                 Optional.empty(),
                 Optional.empty(),
                 Set.of("v-token"),
-                new UserObjectBundleService.TimingAccumulator()))
+                new TimingAccumulator()))
         .isNull();
   }
 }

@@ -19,31 +19,56 @@ package ai.floedb.floecat.service.query.catalog;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import io.smallrye.context.api.ManagedExecutorConfig;
+import io.smallrye.context.api.NamedInstance;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
+import org.eclipse.microprofile.context.ManagedExecutor;
+import org.eclipse.microprofile.context.ThreadContext;
 import org.jboss.logging.Logger;
 
 /**
- * Releases cancelled streams' transient pin roots away from transport threads and owns the worker
- * lifecycle used for that teardown.
+ * Releases cancelled streams' transient pin roots away from transport threads. The container-owned
+ * executor bounds both concurrent releases and queued teardown work; request context is cleared
+ * because cleanup needs only the explicit query id and pin set.
  */
-final class CancellationRootReleaser implements AutoCloseable {
+@ApplicationScoped
+final class CancellationRootReleaser {
   private static final Logger LOG = Logger.getLogger(CancellationRootReleaser.class);
-  private static final long SHUTDOWN_TIMEOUT_SECONDS = 5;
+  private static final int MAX_CONCURRENT_RELEASES = 4;
+  private static final int MAX_QUEUED_RELEASES = 256;
 
   private final QueryContextStore queryStore;
-  private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+  private final Executor executor;
 
-  CancellationRootReleaser(QueryContextStore queryStore) {
+  @Inject
+  CancellationRootReleaser(
+      QueryContextStore queryStore,
+      @NamedInstance("bundle-cancellation-root-release")
+          @ManagedExecutorConfig(
+              maxAsync = MAX_CONCURRENT_RELEASES,
+              maxQueued = MAX_QUEUED_RELEASES,
+              propagated = {},
+              cleared = ThreadContext.ALL_REMAINING)
+          ManagedExecutor executor) {
     this.queryStore = queryStore;
+    this.executor = executor;
+  }
+
+  CancellationRootReleaser(QueryContextStore queryStore, Executor executor) {
+    this.queryStore = queryStore;
+    this.executor = executor;
   }
 
   /** Schedule release without making the transport termination callback perform store I/O. */
   void release(String queryId, RelationPinSet pins) {
+    if (pins.getPinsCount() == 0) {
+      return;
+    }
     try {
-      executor.submit(
+      executor.execute(
           () -> {
             try {
               queryStore.releaseResolvingPinBlobs(queryId, QueryPins.gcRootUris(pins));
@@ -54,27 +79,11 @@ final class CancellationRootReleaser implements AutoCloseable {
                   queryId);
             }
           });
-    } catch (RejectedExecutionException shutdown) {
+    } catch (RejectedExecutionException saturatedOrStopped) {
       LOG.warnf(
-          shutdown,
-          "Cancellation teardown executor stopped before pin-root release query_id=%s",
+          saturatedOrStopped,
+          "Cancellation teardown executor rejected pin-root release query_id=%s",
           queryId);
-    }
-  }
-
-  /** Bound shutdown even if a store call ignores interruption. */
-  @Override
-  public void close() {
-    executor.shutdownNow();
-    boolean terminated;
-    try {
-      terminated = executor.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      terminated = false;
-    }
-    if (!terminated) {
-      LOG.warn("bundle cancellation teardown executor did not terminate before shutdown timeout");
     }
   }
 }

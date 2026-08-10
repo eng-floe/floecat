@@ -130,7 +130,7 @@ class RelationBundleBuilderTest {
       RelationBundleBuilder delegate, EngineRelationDecorator engineRelationDecorator) {
     RelationBundleBuilder.BuildResult build(
         String correlationId,
-        UserObjectBundleService.ResolvedRelation relation,
+        ResolvedRelation relation,
         QueryContext queryContext,
         MetadataResolutionContext resolutionContext,
         Optional<StatsProvider.TableStatsView> tableStats,
@@ -146,10 +146,10 @@ class RelationBundleBuilderTest {
     }
 
     RelationInfo buildIdentityOnly(
-        UserObjectBundleService.ResolvedRelation relation,
+        ResolvedRelation relation,
         Optional<RelationPinIdentity> scopedIdentity,
         Optional<StatsProvider.TableStatsView> tableStats,
-        UserObjectBundleService.TimingAccumulator timings) {
+        TimingAccumulator timings) {
       return delegate.buildIdentityOnly(relation, scopedIdentity, tableStats, timings);
     }
   }
@@ -172,10 +172,9 @@ class RelationBundleBuilderTest {
     return MetadataResolutionContext.of(overlay, CATALOG, ENGINE, stats);
   }
 
-  private UserObjectBundleService.ResolvedRelation resolved(
-      ResourceId id, TableReferenceCandidate candidate) {
+  private ResolvedRelation resolved(ResourceId id, TableReferenceCandidate candidate) {
     RelationNode node = (RelationNode) overlay.resolve(id).orElseThrow();
-    return new UserObjectBundleService.ResolvedRelation(
+    return new ResolvedRelation(
         candidate,
         id,
         node,
@@ -840,8 +839,7 @@ class RelationBundleBuilderTest {
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
     RelationPinIdentity identity =
         RelationPinIdentity.newBuilder().setTableBlobVersion("v-token").build();
-    UserObjectBundleService.TimingAccumulator timings =
-        new UserObjectBundleService.TimingAccumulator();
+    TimingAccumulator timings = new TimingAccumulator();
 
     RelationInfo info =
         builder(ctxIgnored -> Optional.empty(), false)

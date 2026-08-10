@@ -85,27 +85,24 @@ final class RelationBundleBuilder {
 
   /**
    * The outcome of a full build: exactly one of {@code info} / {@code error} is non-null, together
-   * with the per-task {@link UserObjectBundleService.TimingAccumulator} the driver folds back in.
+   * with the per-task {@link TimingAccumulator} the driver folds back in.
    */
   static final class BuildResult {
     private final RelationInfo info;
     private final BuildError error;
-    private final UserObjectBundleService.TimingAccumulator timings;
+    private final TimingAccumulator timings;
 
-    private BuildResult(
-        RelationInfo info, BuildError error, UserObjectBundleService.TimingAccumulator timings) {
+    private BuildResult(RelationInfo info, BuildError error, TimingAccumulator timings) {
       this.info = info;
       this.error = error;
       this.timings = timings;
     }
 
-    static BuildResult success(
-        RelationInfo info, UserObjectBundleService.TimingAccumulator timings) {
+    static BuildResult success(RelationInfo info, TimingAccumulator timings) {
       return new BuildResult(info, null, timings);
     }
 
-    static BuildResult failure(
-        BuildError error, UserObjectBundleService.TimingAccumulator timings) {
+    static BuildResult failure(BuildError error, TimingAccumulator timings) {
       return new BuildResult(null, error, timings);
     }
 
@@ -121,27 +118,25 @@ final class RelationBundleBuilder {
       return error;
     }
 
-    UserObjectBundleService.TimingAccumulator timings() {
+    TimingAccumulator timings() {
       return timings;
     }
   }
 
   /**
    * Assemble one relation's full payload. Times the stats and decoration sub-phases into a fresh
-   * per-task {@link UserObjectBundleService.TimingAccumulator}, and isolates a build fault to this
-   * relation as a {@link BuildError} — one relation's decoration/schema/stats fault must not sink
-   * the whole bundle.
+   * per-task {@link TimingAccumulator}, and isolates a build fault to this relation as a {@link
+   * BuildError} — one relation's decoration/schema/stats fault must not sink the whole bundle.
    */
   BuildResult build(
       String correlationId,
-      UserObjectBundleService.ResolvedRelation relation,
+      ResolvedRelation relation,
       QueryContext liveCtx,
       MetadataResolutionContext resolutionContext,
       EngineRelationDecorator.Selection decorationSelection,
       Optional<StatsProvider.TableStatsView> tableStats,
       Optional<RelationPinIdentity> scopedIdentity) {
-    UserObjectBundleService.TimingAccumulator timings =
-        new UserObjectBundleService.TimingAccumulator();
+    TimingAccumulator timings = new TimingAccumulator();
     try {
       RelationInfo info =
           buildRelation(
@@ -186,10 +181,10 @@ final class RelationBundleBuilder {
    * serving slim. Stats were resolved on the producer thread before assembly.
    */
   RelationInfo buildIdentityOnly(
-      UserObjectBundleService.ResolvedRelation relation,
+      ResolvedRelation relation,
       Optional<RelationPinIdentity> scopedIdentity,
       Optional<StatsProvider.TableStatsView> tableStats,
-      UserObjectBundleService.TimingAccumulator timings) {
+      TimingAccumulator timings) {
     RelationInfo.Builder slim = baseRelationInfo(relation);
     scopedIdentity.ifPresent(slim::setPinIdentity);
     long statsLookupStartNs = System.nanoTime();
@@ -200,12 +195,12 @@ final class RelationBundleBuilder {
 
   private RelationInfo buildRelation(
       String correlationId,
-      UserObjectBundleService.ResolvedRelation relation,
+      ResolvedRelation relation,
       QueryContext queryContext,
       MetadataResolutionContext resolutionContext,
       EngineRelationDecorator.Selection decorationSelection,
       Optional<StatsProvider.TableStatsView> tableStats,
-      UserObjectBundleService.TimingAccumulator timings,
+      TimingAccumulator timings,
       Optional<RelationPinIdentity> scopedIdentity) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
@@ -363,7 +358,7 @@ final class RelationBundleBuilder {
    * name, kind, and origin. Both the slim identity-only reply and the full payload start here, so
    * the two can never disagree on a relation's identity.
    */
-  private RelationInfo.Builder baseRelationInfo(UserObjectBundleService.ResolvedRelation relation) {
+  private RelationInfo.Builder baseRelationInfo(ResolvedRelation relation) {
     return RelationInfo.newBuilder()
         .setRelationId(relation.relationId())
         .setName(relation.canonicalName())

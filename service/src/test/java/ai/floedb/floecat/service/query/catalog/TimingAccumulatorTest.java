@@ -18,8 +18,6 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.SummaryContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.LinkedHashMap;
 import java.util.Map;

@@ -55,7 +55,6 @@ import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
-import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
@@ -73,7 +72,6 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -118,12 +116,6 @@ public class UserObjectBundleService {
   private final MetadataFanout selectionFanout;
   private final int maxParallelRelations;
 
-  /** Stop cancellation teardown work without owning the resolver's metadata executors. */
-  @PreDestroy
-  void closeCancellationRootReleaser() {
-    cancellationRootReleaser.close();
-  }
-
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
       return;
@@ -157,6 +149,7 @@ public class UserObjectBundleService {
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
+      CancellationRootReleaser cancellationRootReleaser,
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
@@ -177,7 +170,7 @@ public class UserObjectBundleService {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
-    this.cancellationRootReleaser = new CancellationRootReleaser(queryStore);
+    this.cancellationRootReleaser = cancellationRootReleaser;
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
@@ -235,6 +228,7 @@ public class UserObjectBundleService {
         overlay,
         inputResolver,
         queryStore,
+        new CancellationRootReleaser(queryStore, Runnable::run),
         statsFactory,
         decoratorProvider,
         engineContext,
@@ -372,337 +366,6 @@ public class UserObjectBundleService {
     }
   }
 
-  /**
-   * The single in-flight telemetry tally for one GetUserObjects request: every phase timer plus
-   * every found/not-found and cache counter. The request-level instance lives on the driver; each
-   * parallel build task keeps its own instance (decoration/stats sub-phases) that the driver folds
-   * back in via {@link #mergeFrom} once the task has joined. Every slot is a {@link LongAdder} so
-   * the concurrent select-stage updates, the driver-stage updates, and the per-task merges are all
-   * lock-free and thread-safe. Cache-entry sizes are not held here; they are read live at emit.
-   */
-  static final class TimingAccumulator {
-    // Decoration / stats sub-phases, accumulated by each build task then merged on the driver.
-    private final LongAdder statsLookupNanos = new LongAdder();
-    private final LongAdder decorateRelationNanos = new LongAdder();
-    private final LongAdder decorateViewNanos = new LongAdder();
-    private final LongAdder decorateColumnsNanos = new LongAdder();
-    private final LongAdder decorateColumnInvokeNanos = new LongAdder();
-    private final LongAdder decorateCompleteNanos = new LongAdder();
-    private final LongAdder decoratePersistRelationNanos = new LongAdder();
-    private final LongAdder decoratePersistColumnsNanos = new LongAdder();
-    private final LongAdder decorateColumnWarmHits = new LongAdder();
-    // Driver-stage wall-clock phase timers (single-thread writers on the driver).
-    private final LongAdder resolveNanos = new LongAdder();
-    private final LongAdder normalizeNanos = new LongAdder();
-    private final LongAdder defaultCatalogNanos = new LongAdder();
-    private final LongAdder baseInjectNanos = new LongAdder();
-    private final LongAdder pinCollectNanos = new LongAdder();
-    private final LongAdder pinCommitNanos = new LongAdder();
-    // Wall-clock elapsed time of parallel relation builds; unlike per-task timings it is safe to
-    // subtract from request elapsed time when deriving the scheduling residual.
-    private final LongAdder buildFanoutNanos = new LongAdder();
-    private final LongAdder relationBuildNanos = new LongAdder();
-    private final LongAdder decorationNanos = new LongAdder();
-    // Driver-only: wall-clock of the chunk's batch stats WARM pass. Kept distinct from
-    // statsLookupNanos so the one-shot warm fetch is not double-counted against the per-relation
-    // stats reads it turns into cache hits during build.
-    private final LongAdder statsWarmNanos = new LongAdder();
-    // Aggregate sub-totals written from the parallel select tasks.
-    private final LongAdder selectRelationNanos = new LongAdder();
-    private final LongAdder nameResolveNanos = new LongAdder();
-    private final LongAdder nodeResolveNanos = new LongAdder();
-    // Found/not-found and per-request cache counters.
-    private final LongAdder foundCount = new LongAdder();
-    private final LongAdder notFoundCount = new LongAdder();
-    private final LongAdder defaultCatalogLookups = new LongAdder();
-    private final LongAdder nameResolutionCacheHits = new LongAdder();
-    private final LongAdder nameResolutionCacheMisses = new LongAdder();
-    private final LongAdder nodeResolutionCacheHits = new LongAdder();
-    private final LongAdder nodeResolutionCacheMisses = new LongAdder();
-
-    void addStatsLookupNanos(long nanos) {
-      statsLookupNanos.add(nanos);
-    }
-
-    void addStatsWarmNanos(long nanos) {
-      statsWarmNanos.add(nanos);
-    }
-
-    long statsLookupNanos() {
-      return statsLookupNanos.sum();
-    }
-
-    void addDecorateRelationNanos(long nanos) {
-      decorateRelationNanos.add(nanos);
-    }
-
-    void addDecorateViewNanos(long nanos) {
-      decorateViewNanos.add(nanos);
-    }
-
-    void addDecorateColumnsNanos(long nanos) {
-      decorateColumnsNanos.add(nanos);
-    }
-
-    void addDecorateColumnInvokeNanos(long nanos) {
-      decorateColumnInvokeNanos.add(nanos);
-    }
-
-    void addDecorateCompleteNanos(long nanos) {
-      decorateCompleteNanos.add(nanos);
-    }
-
-    void addDecoratePersistRelationNanos(long nanos) {
-      decoratePersistRelationNanos.add(nanos);
-    }
-
-    void addDecoratePersistColumnsNanos(long nanos) {
-      decoratePersistColumnsNanos.add(nanos);
-    }
-
-    void addDecorateColumnWarmHits(long warmHits) {
-      decorateColumnWarmHits.add(warmHits);
-    }
-
-    long decorationTotalNanos() {
-      return decorateRelationNanos.sum()
-          + decorateViewNanos.sum()
-          + decorateColumnsNanos.sum()
-          + decorateCompleteNanos.sum();
-    }
-
-    void addResolveNanos(long nanos) {
-      resolveNanos.add(nanos);
-    }
-
-    void addNormalizeNanos(long nanos) {
-      normalizeNanos.add(nanos);
-    }
-
-    void addDefaultCatalogNanos(long nanos) {
-      defaultCatalogNanos.add(nanos);
-    }
-
-    void addBaseInjectNanos(long nanos) {
-      baseInjectNanos.add(nanos);
-    }
-
-    void addPinCollectNanos(long nanos) {
-      pinCollectNanos.add(nanos);
-    }
-
-    void addBuildFanoutNanos(long nanos) {
-      buildFanoutNanos.add(nanos);
-    }
-
-    void addPinCommitNanos(long nanos) {
-      pinCommitNanos.add(nanos);
-    }
-
-    void addRelationBuildNanos(long nanos) {
-      relationBuildNanos.add(nanos);
-    }
-
-    void addDecorationNanos(long nanos) {
-      decorationNanos.add(nanos);
-    }
-
-    void addSelectRelationNanos(long nanos) {
-      selectRelationNanos.add(nanos);
-    }
-
-    void addNameResolveNanos(long nanos) {
-      nameResolveNanos.add(nanos);
-    }
-
-    void addNodeResolveNanos(long nanos) {
-      nodeResolveNanos.add(nanos);
-    }
-
-    void recordFound() {
-      foundCount.increment();
-    }
-
-    /** Undo a FOUND count: a relation counted FOUND at selection later built into an ERROR. */
-    void unrecordFound() {
-      foundCount.decrement();
-    }
-
-    int found() {
-      return (int) foundCount.sum();
-    }
-
-    void recordNotFound() {
-      notFoundCount.increment();
-    }
-
-    int notFound() {
-      return (int) notFoundCount.sum();
-    }
-
-    void recordDefaultCatalogLookup() {
-      defaultCatalogLookups.increment();
-    }
-
-    void recordNameCacheHit() {
-      nameResolutionCacheHits.increment();
-    }
-
-    void recordNameCacheMiss() {
-      nameResolutionCacheMisses.increment();
-    }
-
-    void recordNodeCacheHit() {
-      nodeResolutionCacheHits.increment();
-    }
-
-    void recordNodeCacheMiss() {
-      nodeResolutionCacheMisses.increment();
-    }
-
-    long resolveNanos() {
-      return resolveNanos.sum();
-    }
-
-    long baseInjectNanos() {
-      return baseInjectNanos.sum();
-    }
-
-    long relationBuildNanos() {
-      return relationBuildNanos.sum();
-    }
-
-    long decorationNanos() {
-      return decorationNanos.sum();
-    }
-
-    /** Sum of the two pin sub-phases; the {@code pin_ms} derived metric. */
-    long pinNanos() {
-      return pinCollectNanos.sum() + pinCommitNanos.sum();
-    }
-
-    /**
-     * Scheduling time: the request wall-clock left over once every measured phase is subtracted.
-     * Never negative. Keep this arithmetic in one place. stats_warm is subtracted alongside
-     * stats_lookup: the warm pass is its own wall-clock interval, so leaving it in would count it
-     * twice -- once as {@code stats_warm_ms} and again in the residual. (Pre-consolidation the warm
-     * time lived inside stats_lookup and was already excluded here; splitting it out must not put
-     * it back into the residual.)
-     */
-    long schedulingNanos(long totalNanos) {
-      return Math.max(
-          0L,
-          totalNanos
-              - resolveNanos.sum()
-              - baseInjectNanos.sum()
-              - pinCollectNanos.sum()
-              - pinCommitNanos.sum()
-              - buildFanoutNanos.sum()
-              - statsWarmNanos.sum());
-    }
-
-    /**
-     * Add every total from {@code other} into this accumulator. Used to fold a build task's own
-     * accumulator back into the request's on the driver thread once the task has joined.
-     */
-    void mergeFrom(TimingAccumulator other) {
-      statsLookupNanos.add(other.statsLookupNanos.sum());
-      decorateRelationNanos.add(other.decorateRelationNanos.sum());
-      decorateViewNanos.add(other.decorateViewNanos.sum());
-      decorateColumnsNanos.add(other.decorateColumnsNanos.sum());
-      decorateColumnInvokeNanos.add(other.decorateColumnInvokeNanos.sum());
-      decorateCompleteNanos.add(other.decorateCompleteNanos.sum());
-      decoratePersistRelationNanos.add(other.decoratePersistRelationNanos.sum());
-      decoratePersistColumnsNanos.add(other.decoratePersistColumnsNanos.sum());
-      decorateColumnWarmHits.add(other.decorateColumnWarmHits.sum());
-      resolveNanos.add(other.resolveNanos.sum());
-      normalizeNanos.add(other.normalizeNanos.sum());
-      defaultCatalogNanos.add(other.defaultCatalogNanos.sum());
-      baseInjectNanos.add(other.baseInjectNanos.sum());
-      pinCollectNanos.add(other.pinCollectNanos.sum());
-      pinCommitNanos.add(other.pinCommitNanos.sum());
-      relationBuildNanos.add(other.relationBuildNanos.sum());
-      decorationNanos.add(other.decorationNanos.sum());
-      statsWarmNanos.add(other.statsWarmNanos.sum());
-      selectRelationNanos.add(other.selectRelationNanos.sum());
-      nameResolveNanos.add(other.nameResolveNanos.sum());
-      nodeResolveNanos.add(other.nodeResolveNanos.sum());
-      foundCount.add(other.foundCount.sum());
-      notFoundCount.add(other.notFoundCount.sum());
-      defaultCatalogLookups.add(other.defaultCatalogLookups.sum());
-      nameResolutionCacheHits.add(other.nameResolutionCacheHits.sum());
-      nameResolutionCacheMisses.add(other.nameResolutionCacheMisses.sum());
-      nodeResolutionCacheHits.add(other.nodeResolutionCacheHits.sum());
-      nodeResolutionCacheMisses.add(other.nodeResolutionCacheMisses.sum());
-    }
-
-    /**
-     * Write every summary metric onto {@code diagnostics} and emit the summary event. The request
-     * context ({@link SummaryContext}) carries the non-tally values (ids, chunk/candidate counts,
-     * live cache sizes, outcome) and the three derived durations. Every key and its write verb
-     * ({@code nanos} vs {@code put}) matches the docs/telemetry/diagnostics.md contract.
-     */
-    void flushInto(PhaseDiagnostics diagnostics, SummaryContext ctx) {
-      diagnostics.put("query_id", ctx.queryId());
-      diagnostics.put("correlation_id", ctx.correlationId());
-      diagnostics.put("candidates", ctx.candidates());
-      diagnostics.put("chunks", ctx.chunks());
-      diagnostics.put("found", found());
-      diagnostics.put("not_found", notFound());
-      diagnostics.put("total_ms", ctx.totalMs());
-      diagnostics.nanos("resolve", resolveNanos.sum());
-      diagnostics.nanos("normalize", normalizeNanos.sum());
-      diagnostics.nanos("select_relation", selectRelationNanos.sum());
-      diagnostics.nanos("default_catalog", defaultCatalogNanos.sum());
-      diagnostics.nanos("name_resolve", nameResolveNanos.sum());
-      diagnostics.nanos("node_resolve", nodeResolveNanos.sum());
-      diagnostics.nanos("base_inject", baseInjectNanos.sum());
-      diagnostics.nanos("pin_collect", pinCollectNanos.sum());
-      diagnostics.nanos("pin_commit", pinCommitNanos.sum());
-      diagnostics.put("pin_ms", ctx.pinMs());
-      diagnostics.nanos("relation_build", relationBuildNanos.sum());
-      diagnostics.nanos("decoration", decorationNanos.sum());
-      diagnostics.nanos("stats_lookup", statsLookupNanos.sum());
-      diagnostics.nanos("stats_warm", statsWarmNanos.sum());
-      diagnostics.nanos("decorate_relation", decorateRelationNanos.sum());
-      diagnostics.nanos("decorate_view", decorateViewNanos.sum());
-      diagnostics.nanos("decorate_columns", decorateColumnsNanos.sum());
-      diagnostics.nanos("decorate_column_invoke", decorateColumnInvokeNanos.sum());
-      diagnostics.nanos("decorate_complete", decorateCompleteNanos.sum());
-      diagnostics.put("scheduling_ms", ctx.schedulingMs());
-      diagnostics.put("decorator_warm_hits", decorateColumnWarmHits.sum());
-      diagnostics.nanos(
-          "hint_persist", decoratePersistRelationNanos.sum() + decoratePersistColumnsNanos.sum());
-      diagnostics.put("default_catalog_lookups", defaultCatalogLookups.sum());
-      diagnostics.put("name_cache_hits", nameResolutionCacheHits.sum());
-      diagnostics.put("name_cache_misses", nameResolutionCacheMisses.sum());
-      diagnostics.put("node_cache_hits", nodeResolutionCacheHits.sum());
-      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses.sum());
-      diagnostics.put("name_cache_entries", ctx.nameCacheEntries());
-      diagnostics.put("node_cache_entries", ctx.nodeCacheEntries());
-      diagnostics.put("relation_cache_entries", ctx.relationCacheEntries());
-      diagnostics.put("outcome", ctx.outcome());
-      diagnostics.emit("floecat.get_user_objects.summary");
-    }
-  }
-
-  /**
-   * The non-tally context a {@link TimingAccumulator#flushInto} needs: request ids, candidate/chunk
-   * counts, the three derived durations, live cache-entry sizes, and the outcome label.
-   */
-  record SummaryContext(
-      String queryId,
-      String correlationId,
-      int candidates,
-      int chunks,
-      double totalMs,
-      double pinMs,
-      double schedulingMs,
-      int nameCacheEntries,
-      int nodeCacheEntries,
-      int relationCacheEntries,
-      String outcome) {}
-
   private static String safe(String value) {
     return value == null ? "" : value;
   }
@@ -715,30 +378,6 @@ public class UserObjectBundleService {
     return decorationSelection.supportsWorkerThreadCallbacks()
         ? MetadataFanout.concurrent(maxParallelRelations)
         : MetadataFanout.serial();
-  }
-
-  record ResolvedRelation(
-      TableReferenceCandidate candidate,
-      ResourceId relationId,
-      RelationNode node,
-      QueryInput selectedInput,
-      // Resolved once here (through the request node memo) so the concurrent build fan-out does not
-      // each re-walk the shared namespace/catalog; see RelationResolutionCache#canonicalName.
-      NameRef canonicalName) {}
-
-  /** A requested input paired with its normalized candidates, ready to select against. */
-  record PlannedInput(
-      int inputIndex,
-      TableReferenceCandidate candidate,
-      List<QueryInput> normalized,
-      RuntimeException planningFailure) {
-    static PlannedInput failed(int inputIndex, RuntimeException failure) {
-      return new PlannedInput(inputIndex, null, List.of(), failure);
-    }
-
-    boolean failed() {
-      return planningFailure != null;
-    }
   }
 
   private record RelationCacheKey(

@@ -82,7 +82,7 @@ final class EngineRelationDecorator {
       boolean completeRelationSucceeded) {}
 
   Outcome decorate(
-      UserObjectBundleService.ResolvedRelation relation,
+      ResolvedRelation relation,
       RelationInfo.Builder builder,
       ViewDefinition.Builder viewBuilder,
       List<ColumnInfo> columns,
@@ -90,7 +90,7 @@ final class EngineRelationDecorator {
       List<SchemaColumn> schemaColumns,
       MetadataResolutionContext resolutionContext,
       Selection selection,
-      UserObjectBundleService.TimingAccumulator timings) {
+      TimingAccumulator timings) {
     EngineContext context = selection.context();
     boolean required = selection.required();
     Optional<EngineMetadataDecorator> decorator = selection.decorator();
@@ -143,7 +143,7 @@ final class EngineRelationDecorator {
   }
 
   private Outcome runLifecycle(
-      UserObjectBundleService.ResolvedRelation relation,
+      ResolvedRelation relation,
       RelationInfo.Builder builder,
       ViewDefinition.Builder viewBuilder,
       List<ColumnInfo> columns,
@@ -153,7 +153,7 @@ final class EngineRelationDecorator {
       Optional<EngineMetadataDecorator> decorator,
       EngineContext context,
       boolean required,
-      UserObjectBundleService.TimingAccumulator timings) {
+      TimingAccumulator timings) {
     boolean relationSucceeded = true;
     boolean viewSucceeded = true;
     boolean completeSucceeded = true;
@@ -267,7 +267,7 @@ final class EngineRelationDecorator {
         context,
         required,
         relationId,
-        new UserObjectBundleService.TimingAccumulator());
+        new TimingAccumulator());
   }
 
   private List<ColumnResult> decorateColumns(
@@ -278,7 +278,7 @@ final class EngineRelationDecorator {
       EngineContext context,
       boolean required,
       ResourceId relationId,
-      UserObjectBundleService.TimingAccumulator timings) {
+      TimingAccumulator timings) {
     if (pruned == null || pruned.size() != columns.size()) {
       String message =
           String.format(

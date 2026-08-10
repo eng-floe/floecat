@@ -22,7 +22,6 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

@@ -23,8 +23,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.SummaryContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;

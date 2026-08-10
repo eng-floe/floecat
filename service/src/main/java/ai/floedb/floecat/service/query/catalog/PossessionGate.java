@@ -24,8 +24,6 @@ import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryPins;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.ResolvedRelation;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.types.Hashing;

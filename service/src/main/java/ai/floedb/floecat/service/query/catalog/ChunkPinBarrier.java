@@ -25,8 +25,6 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.ResolvedRelation;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.CurrentSnapshotPinCache;
