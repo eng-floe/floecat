@@ -38,6 +38,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.jboss.logging.MDC;
 import org.junit.jupiter.api.Test;
@@ -677,5 +679,56 @@ class PropagatedContextTest {
     PropagatedContext captured = PropagatedContext.capture();
     assertThat(captured.supply(() -> "ran")).isEqualTo("ran");
     assertThat(ResolvedCallContexts.currentOrNull()).isNull();
+  }
+
+  @Test
+  void propagatesTheRequestCancellationSignalToTheWorkerAndClearsItAfter() throws Exception {
+    // An auto-admitted store read on a fan-out worker must see the request's live cancellation
+    // signal
+    // so it can abort an admission wait; the worker carries none of its own, so supply() must
+    // re-establish it (still reflecting later flips of the same signal) and clear it afterward.
+    ExecutorService foreign = Executors.newSingleThreadExecutor();
+    AtomicBoolean cancelled = new AtomicBoolean(false);
+    try (PropagatedContext.CancellationScope ignored =
+        PropagatedContext.bindCancellation(cancelled::get)) {
+      PropagatedContext captured = PropagatedContext.capture();
+      Object cancellationAfterBody =
+          foreign
+              .submit(
+                  () -> {
+                    assertThat(PropagatedContext.currentCancellation()).isNull();
+                    captured.supply(
+                        () -> {
+                          BooleanSupplier seen = PropagatedContext.currentCancellation();
+                          assertThat(seen).isNotNull();
+                          assertThat(seen.getAsBoolean()).isFalse();
+                          cancelled.set(true);
+                          assertThat(seen.getAsBoolean()).isTrue();
+                          return null;
+                        });
+                    return PropagatedContext.currentCancellation();
+                  })
+              .get();
+      assertThat(cancellationAfterBody).isNull();
+    } finally {
+      foreign.shutdownNow();
+    }
+  }
+
+  @Test
+  void bindCancellationRestoresThePriorSignalWhenClosed() {
+    assertThat(PropagatedContext.currentCancellation()).isNull();
+    BooleanSupplier outer = () -> false;
+    try (PropagatedContext.CancellationScope outerScope =
+        PropagatedContext.bindCancellation(outer)) {
+      assertThat(PropagatedContext.currentCancellation()).isSameAs(outer);
+      BooleanSupplier inner = () -> true;
+      try (PropagatedContext.CancellationScope innerScope =
+          PropagatedContext.bindCancellation(inner)) {
+        assertThat(PropagatedContext.currentCancellation()).isSameAs(inner);
+      }
+      assertThat(PropagatedContext.currentCancellation()).isSameAs(outer);
+    }
+    assertThat(PropagatedContext.currentCancellation()).isNull();
   }
 }

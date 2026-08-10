@@ -54,17 +54,17 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
   @Override
   public Multi<TargetStatsBundleChunk> getTargetStats(FetchTargetStatsRequest request) {
     var L = LogHelper.start(LOG, "GetTargetStats");
-    // runStream reads the resolved call context at method entry — before the executor hop — and
-    // carries it by reference into the body; the bundle builder itself is context-free.
+    // The lazy bundle iterator runs after this body returns, so it receives the subscription's live
+    // cancellation signal explicitly and binds it only around its admitted metadata lookup.
     return this.<TargetStatsBundleChunk>runStream(
-            callCtx -> {
+            (callCtx, cancelled) -> {
               var principalContext = callCtx.principalContext();
               var correlationId = callCtx.effectiveCorrelationId();
               authz.require(principalContext, "catalog.read");
 
               String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
               QueryContext ctx = requireActiveQuery(correlationId, queryId);
-              return bundles.streamTargets(correlationId, ctx, request);
+              return bundles.streamTargets(correlationId, ctx, request, cancelled);
             })
         .onFailure()
         .invoke(L::fail)

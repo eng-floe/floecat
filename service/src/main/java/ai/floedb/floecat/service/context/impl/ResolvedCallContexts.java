@@ -52,10 +52,10 @@ import org.jboss.logging.MDC;
  *       io.grpc.Context} directly (unit tests, non-Vert.x threads).
  * </ol>
  *
- * <p>History: mirroring only the principal onto the duplicated context moved the context-loss
- * failure from a loud {@code PERMISSION_DENIED} into a silent engine-gated {@code NOT_FOUND}
- * (eng-floe/floecat#361). Carrying the whole {@link ResolvedCallContext} on one channel keeps the
- * principal, correlation id, and engine context from ever diverging again.
+ * <p>Mirroring only the principal onto the duplicated context turns context loss from a loud {@code
+ * PERMISSION_DENIED} into a silent engine-gated {@code NOT_FOUND} (eng-floe/floecat#361). Carrying
+ * the whole {@link ResolvedCallContext} on one channel keeps the principal, correlation id, and
+ * engine context from ever diverging.
  */
 public final class ResolvedCallContexts {
 

@@ -77,6 +77,10 @@ This lists all metrics currently available in the repository:
 | floecat.service.gc.reconcile_jobs.accounts.last_tick | GAUGE | count | v1 | Reconcile job GC accounts processed in the last completed tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.deleted.last_tick | GAUGE | count | v1 | Reconcile job GC pointer/blob deletes completed in the last completed tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.quarantined.last_tick | GAUGE | count | v1 | Unreadable reconcile job GC payloads retained in the last completed tick. | component, operation | component, operation |
+| floecat.service.metadata_io.admission.saturated_waits.total | COUNTER |  | v1 | Metadata-I/O admissions that found the concurrency ceiling saturated on arrival. | component, operation | component, operation |
+| floecat.service.metadata_io.admission.waiters | GAUGE | count | v1 | Threads waiting for metadata-I/O admission. | component, operation | component, operation |
+| floecat.service.metadata_io.permits.capacity | GAUGE | count | v1 | Configured process-wide metadata-I/O concurrency ceiling. | component, operation | component, operation |
+| floecat.service.metadata_io.permits.in_use | GAUGE | count | v1 | Metadata-I/O admission permits held by in-flight store calls. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

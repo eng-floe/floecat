@@ -24,7 +24,11 @@ import java.util.Set;
  * ai.floedb.floecat.service.query.catalog.UserObjectBundleService}.
  *
  * <p>Implementations are invoked during bundle construction and receive normalized engine kind +
- * version. Decoration remains optional and is not part of scanner implementations.
+ * version. GetUserObjects invokes relation/view/column decoration synchronously on its
+ * bundle-producer thread, preserving caller-thread state. Implementations that perform blocking I/O
+ * must enforce their own downstream deadlines; stream cancellation is observed between callbacks
+ * but does not interrupt an active callback. Decoration remains optional and is not part of scanner
+ * implementations.
  */
 public interface EngineMetadataDecorator {
 

@@ -15,10 +15,28 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+
 /** Unwrapping helpers for failures surfaced from async tasks. */
 public final class Futures {
 
   private Futures() {}
+
+  /**
+   * Join {@code future}, unwrapping the {@link CompletionException} so the caller sees the task's
+   * original {@link RuntimeException} or {@link Error} rather than a wrapper — what {@code
+   * QueryInputResolver} needs when it collects a shared pin future, so a pin failure surfaces as
+   * the store error that caused it. A checked-exception cause is a should-never-happen (these tasks
+   * throw only unchecked) and surfaces as an {@link IllegalStateException}.
+   */
+  public static <T> T join(CompletableFuture<T> future) {
+    try {
+      return future.join();
+    } catch (CompletionException ce) {
+      throw propagate(ce.getCause(), "unexpected checked exception from async task");
+    }
+  }
 
   /**
    * The {@link RuntimeException} to {@code throw} for an unwrapped async failure: the original

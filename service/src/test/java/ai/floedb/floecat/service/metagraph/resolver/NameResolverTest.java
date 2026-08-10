@@ -26,12 +26,22 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.context.PropagatedContext;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeViewRepository;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -157,6 +167,84 @@ class NameResolverTest {
   }
 
   @Test
+  void listTableIdsPassesTheRequestCancellationToTheNamespaceFanout() {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId ns2Id = rid("account", "ns2", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(ns2Id)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns2")
+            .build());
+    AtomicBoolean cancelled = new AtomicBoolean(true);
+
+    try (var ignored = PropagatedContext.bindCancellation(cancelled::get)) {
+      assertThatThrownBy(() -> resolver.listTableIds("account", "cat"))
+          .isInstanceOf(CancellationException.class);
+    }
+  }
+
+  @Test
+  void listTableIdsCancellationStopsQueuedNamespaceScans() throws Exception {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    for (int i = 2; i <= 9; i++) {
+      ResourceId namespaceId = rid("account", "ns" + i, ResourceKind.RK_NAMESPACE);
+      namespaceRepository.put(
+          Namespace.newBuilder()
+              .setResourceId(namespaceId)
+              .setCatalogId(catalogId)
+              .setDisplayName("ns" + i)
+              .build());
+    }
+    CountDownLatch started = new CountDownLatch(8);
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch stopped = new CountDownLatch(8);
+    AtomicInteger scans = new AtomicInteger();
+    TableRepository blockingTableRepository =
+        new TableRepository(new InMemoryPointerStore(), new InMemoryBlobStore()) {
+          @Override
+          public List<Table> list(
+              String accountId,
+              String catalogId,
+              String namespaceId,
+              int limit,
+              String pageToken,
+              StringBuilder nextOut) {
+            scans.incrementAndGet();
+            started.countDown();
+            try {
+              awaitUninterruptibly(release);
+              return List.of();
+            } finally {
+              stopped.countDown();
+            }
+          }
+        };
+    NameResolver blockingResolver =
+        new NameResolver(
+            catalogRepository, namespaceRepository, blockingTableRepository, viewRepository);
+    AtomicBoolean cancelled = new AtomicBoolean();
+    CompletableFuture<List<ResourceId>> result =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try (var ignored = PropagatedContext.bindCancellation(cancelled::get)) {
+                return blockingResolver.listTableIds("account", "cat");
+              }
+            });
+
+    assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+    cancelled.set(true);
+    try {
+      assertThatThrownBy(() -> result.get(5, TimeUnit.SECONDS))
+          .hasCauseInstanceOf(CancellationException.class);
+      assertThat(scans.get()).isEqualTo(8);
+    } finally {
+      release.countDown();
+    }
+    assertThat(stopped.await(5, TimeUnit.SECONDS)).isTrue();
+  }
+
+  @Test
   void listViewIdsCollectsAcrossNamespaces() {
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
 
@@ -235,5 +323,20 @@ class NameResolverTest {
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId(account).setId(id).setKind(kind).build();
+  }
+
+  private static void awaitUninterruptibly(CountDownLatch latch) {
+    boolean interrupted = false;
+    while (true) {
+      try {
+        latch.await();
+        break;
+      } catch (InterruptedException ignored) {
+        interrupted = true;
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
   }
 }
