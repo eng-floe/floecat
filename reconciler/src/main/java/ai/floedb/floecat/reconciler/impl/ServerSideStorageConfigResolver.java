@@ -263,32 +263,43 @@ public class ServerSideStorageConfigResolver {
       Connector connector,
       ConnectorConfig config,
       boolean refreshableExecutionCredentials) {
-    // A catalog that vends its own credentials needs no storage authority: loadTable returns
-    // storage-credentials and the catalog client's FileIO uses them. Returning the config untouched
-    // is the same thing the null-locationPrefix branch below already does for non-S3 URIs, which is
-    // how GCS- and Azure-backed connectors run today without an authority -- this makes that
-    // existing path reachable for s3:// when the caller has explicitly asked for delegation.
-    //
-    // Deliberately not a fallback on vending failure: if delegation is declared we never call the
-    // authority service at all, so a missing authority cannot mask a catalog that silently ignored
-    // the header. The failure then surfaces from the catalog or the read itself.
-    if (isNonBlank(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
-      return config;
-    }
-
     String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
     if (locationPrefix == null) {
       return config;
     }
-    ResolveStorageAuthorityResponse response =
-        withHeaders(storageAuthorities, correlationId, authorizationToken)
-            .vendStorageCredentials(
-                resolveRequest(
-                    connector.getResourceId().getAccountId(),
-                    locationPrefix,
-                    tableId,
-                    executionJobId,
-                    executionLeaseEpoch));
+
+    // A catalog that vends its own credentials needs no storage authority: loadTable returns
+    // storage-credentials and the catalog client's FileIO uses them. Returning the config untouched
+    // is the same thing the null-locationPrefix branch above already does for non-S3 URIs, which is
+    // how GCS- and Azure-backed connectors run today without an authority -- this makes that
+    // existing path reachable for s3:// when the caller has explicitly asked for delegation.
+    //
+    // Deliberately a fallback rather than a short-circuit. An earlier revision returned here before
+    // the lookup, which meant adding a delegation header to a connector that already had a working
+    // storage authority silently stopped using that authority. Authority now wins, matching
+    // StorageAuthorityServiceImpl, where source-catalog vending is likewise reached only when no
+    // authority covers the location -- the two layers agree on precedence.
+    ResolveStorageAuthorityResponse response;
+    try {
+      response =
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
+              .vendStorageCredentials(
+                  resolveRequest(
+                      connector.getResourceId().getAccountId(),
+                      locationPrefix,
+                      tableId,
+                      executionJobId,
+                      executionLeaseEpoch));
+    } catch (StatusRuntimeException e) {
+      // INVALID_ARGUMENT here is "no storage credential authority is configured for this table".
+      // With delegation declared that is not fatal: the catalog client holds vended credentials of
+      // its own, so hand back the untouched config and let it use them. Any other status is a real
+      // failure and must not be masked.
+      if (e.getStatus().getCode() == Status.Code.INVALID_ARGUMENT && declaresDelegation(config)) {
+        return config;
+      }
+      throw e;
+    }
     if (response == null) {
       return config;
     }
@@ -552,6 +563,33 @@ public class ServerSideStorageConfigResolver {
 
   private static String normalize(String value) {
     return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Whether the connector asks the catalog to vend credentials.
+   *
+   * <p>Both configuration routes count. Options carry {@code header.X-Iceberg-Access-Delegation}
+   * directly, while {@code auth().headerHints()} is turned into the same {@code header.<name>}
+   * catalog property by IcebergConnectorFactory -- so reading options alone misses a connector
+   * configured through header hints, which then falls through to storage-authority vending despite
+   * having asked for delegation.
+   */
+  private static boolean declaresDelegation(ConnectorConfig config) {
+    if (config == null) {
+      return false;
+    }
+    if (isNonBlank(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
+      return true;
+    }
+    if (config.auth() == null) {
+      return false;
+    }
+    // Header hints are keyed by bare header name; the factory prefixes them with "header.".
+    return config.auth().headerHints().entrySet().stream()
+        .anyMatch(
+            e ->
+                ICEBERG_ACCESS_DELEGATION_PROP.equalsIgnoreCase("header." + e.getKey())
+                    && isNonBlank(e.getValue()));
   }
 
   private static boolean isNonBlank(String value) {

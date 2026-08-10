@@ -71,6 +71,7 @@ import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -698,10 +699,17 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     Table table;
     try {
       table = loadVisibleTable(scopedTableId(accountId, requestedTableId, correlationId()));
-    } catch (RuntimeException e) {
+    } catch (StatusRuntimeException e) {
+      // Only "the table isn't there" means the fallback does not apply. Catching every
+      // RuntimeException would swallow repository timeouts, connection failures and corruption,
+      // reporting them as the generic missing-authority INVALID_ARGUMENT and hiding an outage
+      // behind a configuration-shaped error.
+      if (e.getStatus().getCode() != io.grpc.Status.Code.NOT_FOUND) {
+        throw e;
+      }
       LOG.infof(
           "source-catalog vending skipped: table %s is not visible (%s)",
-          requestedTableId.getId(), e);
+          requestedTableId.getId(), e.getStatus());
       return null;
     }
     UpstreamRef upstream = table.getUpstream();
@@ -724,6 +732,14 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     try (FloecatConnector source =
         ConnectorFactory.create(resolveConnectorCredentials(connector))) {
       vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
+    } catch (StatusRuntimeException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      // A catalog that refuses us is a permanent condition: bad credentials, a revoked grant, a
+      // principal without TABLE_READ_DATA. Letting it escape as INTERNAL makes the reconciler treat
+      // it as transient and retry the job forever, so classify it terminally. Anything that is not
+      // recognisably an authorization refusal stays retryable.
+      throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName());
     }
     if (vended.isEmpty() || vended.get().isEmpty()) {
       LOG.infof(
@@ -732,6 +748,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
       return null;
     }
+
+    requireUsableExpiry(vended.get(), namespaceFq, upstream.getTableDisplayName());
 
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", "s3");
@@ -748,6 +766,83 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         "vended storage credentials from source catalog connector=%s table=%s.%s expiresAt=%s",
         connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName(), expiresAt);
     return ResolveStorageAuthorityResponse.newBuilder().addStorageCredentials(credential).build();
+  }
+
+  /**
+   * Refuses vended credentials that carry no usable expiry.
+   *
+   * <p>The reconcile worker registers a refresh provider only when it can see one -- its {@code
+   * is_refreshable()} is exactly {@code expires_at.is_some()} -- and without it embeds the
+   * credentials statically and never re-vends, so they expire mid-read with no recovery. Client
+   * usage carries the same invariant. Failing at vend time makes that visible here instead of as an
+   * opaque 403 partway through a file group.
+   */
+  static void requireUsableExpiry(
+      FloecatConnector.VendedStorageCredentials vended, String namespaceFq, String tableName) {
+    if (vended.expiresAt() != null) {
+      return;
+    }
+    throw io.grpc.Status.FAILED_PRECONDITION
+        .withDescription(
+            "source catalog vended storage credentials without a usable expiry for "
+                + namespaceFq
+                + "."
+                + tableName
+                + "; refreshable usage requires s3.session-token-expires-at-ms")
+        .asRuntimeException();
+  }
+
+  /**
+   * Classifies a source-catalog failure so the reconciler can stop retrying what will never
+   * succeed.
+   *
+   * <p>Only recognisable authentication and authorization refusals become terminal. Anything else
+   * -- a connection reset, a 5xx, a timeout -- is genuinely transient and keeps INTERNAL so the
+   * existing retry behaviour still applies.
+   */
+  private static StatusRuntimeException catalogFailureStatus(
+      RuntimeException cause, Connector connector, String namespaceFq, String tableName) {
+    String detail =
+        String.format(
+            "source catalog %s refused credentials for %s.%s: %s",
+            connector.getResourceId().getId(), namespaceFq, tableName, cause);
+
+    String message = rootMessage(cause).toLowerCase(java.util.Locale.ROOT);
+    boolean unauthenticated =
+        message.contains("401")
+            || message.contains("unauthorized")
+            || message.contains("invalid_client");
+    boolean forbidden =
+        message.contains("403")
+            || message.contains("forbidden")
+            || message.contains("access denied");
+
+    if (unauthenticated) {
+      return io.grpc.Status.UNAUTHENTICATED
+          .withDescription(detail)
+          .withCause(cause)
+          .asRuntimeException();
+    }
+    if (forbidden) {
+      return io.grpc.Status.PERMISSION_DENIED
+          .withDescription(detail)
+          .withCause(cause)
+          .asRuntimeException();
+    }
+    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
+  }
+
+  private static String rootMessage(Throwable t) {
+    StringBuilder all = new StringBuilder();
+    for (Throwable c = t; c != null && all.length() < 2000; c = c.getCause()) {
+      if (c.getMessage() != null) {
+        all.append(c.getMessage()).append(' ');
+      }
+      if (c.getCause() == c) {
+        break;
+      }
+    }
+    return all.toString();
   }
 
   /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */

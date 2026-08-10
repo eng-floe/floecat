@@ -507,6 +507,42 @@ class StorageAuthorityServiceImplTest {
   }
 
   /**
+   * Credentials with no expiry are refused rather than installed.
+   *
+   * <p>The reconcile worker only registers a refresh provider when it can see an expiry; without
+   * one it embeds the credentials statically and never re-vends, so they expire mid-read with no
+   * recovery. Accepting them here would trade a clear failure at vend time for an opaque 403
+   * partway through a file group.
+   */
+  @Test
+  void vendedCredentialsWithoutExpiryAreRefused() {
+    var noExpiry =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+            java.util.Map.of(
+                "s3.access-key-id", "ASIA",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "token"),
+            null);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> StorageAuthorityServiceImpl.requireUsableExpiry(noExpiry, "tpch_10", "customer"));
+
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+  }
+
+  @Test
+  void vendedCredentialsWithExpiryAreAccepted() {
+    var withExpiry =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+            java.util.Map.of("s3.access-key-id", "ASIA"),
+            java.time.Instant.ofEpochMilli(1786000000000L));
+
+    StorageAuthorityServiceImpl.requireUsableExpiry(withExpiry, "tpch_10", "customer");
+  }
+
+  /**
    * Registering files in place (add_files) leaves an Iceberg table's data outside its own location,
    * so scoping a lease to the table location alone rejects the very files the lease planned. A
    * leased file must be readable even from an unrelated prefix.

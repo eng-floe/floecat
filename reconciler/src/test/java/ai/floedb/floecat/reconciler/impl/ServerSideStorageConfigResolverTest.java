@@ -398,15 +398,76 @@ class ServerSideStorageConfigResolverTest {
    * short-circuits it, not a missing location hint.
    */
   @Test
-  void delegatingRestConnectorSkipsStorageAuthorityVending() {
+  void delegatingRestConnectorFallsBackToCatalogWhenNoAuthorityMatches() {
     ConnectorConfig config = delegationTestConfig(true);
     ServerSideStorageConfigResolver resolver =
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
     resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    // "no storage credential authority is configured for this table"
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
 
     ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
 
-    verify(resolver.storageAuthorities, never()).vendStorageCredentials(any());
+    // The authority was consulted first; only its absence hands over to the catalog.
+    verify(resolver.storageAuthorities).vendStorageCredentials(any());
+    assertEquals(config.options(), resolved.options());
+  }
+
+  /**
+   * Authority precedence. Adding a delegation header to a connector that already has a working
+   * storage authority must not silently stop using it -- an earlier revision short-circuited before
+   * the lookup and did exactly that, which is a behaviour change for existing deployments.
+   */
+  @Test
+  void workingStorageAuthorityWinsOverDeclaredDelegation() {
+    ConnectorConfig config = delegationTestConfig(true);
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenReturn(authorityResponseWithCredentials());
+
+    ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
+
+    verify(resolver.storageAuthorities).vendStorageCredentials(any());
+    assertEquals("AUTHORITY_KEY", resolved.options().get("s3.access-key-id"));
+  }
+
+  /**
+   * Delegation configured through auth().headerHints() rather than options(). The factory turns
+   * hints into the same header.&lt;name&gt; catalog property, so reading options alone misses this
+   * route and falls through to authority vending despite delegation having been asked for.
+   */
+  @Test
+  void delegationViaHeaderHintsIsDetected() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "s3tables",
+            "https://s3tables.us-east-1.amazonaws.com/iceberg",
+            java.util.Map.of(
+                "iceberg.source", "rest",
+                "warehouse", "arn:aws:s3tables:us-east-1:000000000000:bucket/bench"),
+            new ConnectorConfig.Auth(
+                "aws-sigv4",
+                Map.of(),
+                Map.of("X-Iceberg-Access-Delegation", "vended-credentials")));
+
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException());
+
+    ConnectorConfig resolved = resolveWithStorageLocation(resolver, config).config();
+
     assertEquals(config.options(), resolved.options());
   }
 
@@ -436,6 +497,16 @@ class ServerSideStorageConfigResolverTest {
     resolveWithStorageLocation(resolver, config);
 
     verify(resolver.storageAuthorities, times(1)).vendStorageCredentials(any());
+  }
+
+  private static ResolveStorageAuthorityResponse authorityResponseWithCredentials() {
+    return ResolveStorageAuthorityResponse.newBuilder()
+        .addStorageCredentials(
+            VendedStorageCredential.newBuilder()
+                .setPrefix("s3://8c554103--table-s3/")
+                .putConfig("s3.access-key-id", "AUTHORITY_KEY")
+                .putConfig("s3.secret-access-key", "AUTHORITY_SECRET"))
+        .build();
   }
 
   private static ConnectorConfig delegationTestConfig(boolean withDelegation) {

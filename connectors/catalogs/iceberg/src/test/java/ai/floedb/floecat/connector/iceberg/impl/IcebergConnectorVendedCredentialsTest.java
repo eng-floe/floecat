@@ -152,8 +152,13 @@ class IcebergConnectorVendedCredentialsTest {
   }
 
   /**
-   * Absent expiry must stay null. Callers are documented to treat null as "do not cache"; inventing
-   * a TTL here would produce credentials that expire mid-read.
+   * Absent expiry stays null rather than being invented -- guessing a TTL here would produce
+   * credentials that expire mid-read with no way to tell.
+   *
+   * <p>Null is not "do not cache", which an earlier version of this comment claimed. The reconcile
+   * worker treats a missing expiry as "not refreshable" and embeds the credentials statically, so
+   * the service refuses them outright; see {@code requireUsableExpiry}. This connector's job is to
+   * report the absence faithfully, not to decide what it means.
    */
   @Test
   void absentExpiryIsNullNotGuessed() {
