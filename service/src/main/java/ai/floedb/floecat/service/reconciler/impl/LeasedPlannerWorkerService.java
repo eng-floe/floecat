@@ -585,14 +585,18 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         loadStagedPlanSnapshotChunks(principalContext, jobId, leaseEpoch, chunkCount);
     List<PlannedFileGroupJob> referencedJobs = List.of();
     SnapshotPlanBlobStore.AppendOnlyBase referencedAppendOnlyBase = null;
-    if (chunkCount == 0 && plannedFileGroupJobs > 0) {
+    boolean referencedPlanLoaded =
+        chunkCount == 0
+            && durableSnapshotTask.fileGroupPlanBlobUri() != null
+            && !durableSnapshotTask.fileGroupPlanBlobUri().isBlank();
+    if (referencedPlanLoaded) {
       validateReferencedPlanUri(lease, durableSnapshotTask.fileGroupPlanBlobUri());
       SnapshotPlanBlobStore.SnapshotPlanBlob referencedPlan =
           snapshotPlanBlobStore.loadPlan(durableSnapshotTask.fileGroupPlanBlobUri());
       referencedJobs = referencedPlan.toPlannedFileGroupJobs();
       referencedAppendOnlyBase = referencedPlan.appendOnlyBase().orElse(null);
     }
-    if (!referencedJobs.isEmpty()) {
+    if (referencedPlanLoaded) {
       validateReferencedPlan(lease, durableSnapshotTask, referencedJobs, referencedAppendOnlyBase);
     }
     long stagedFileGroupJobs =

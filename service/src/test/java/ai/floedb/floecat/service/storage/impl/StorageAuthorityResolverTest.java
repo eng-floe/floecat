@@ -259,6 +259,41 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
+  void assumeRoleCacheCanonicalizesEquivalentScopeSets() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"));
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"));
+
+    assertEquals(1, resolutions.get());
+  }
+
+  @Test
   void assumeRoleCacheEvictsCompletedEntriesAtItsConfiguredBound() {
     AtomicInteger resolutions = new AtomicInteger();
     StorageAuthorityResolver assumeRoleResolver =
@@ -687,6 +722,18 @@ class StorageAuthorityResolverTest {
     assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
     assertTrue(policy.contains("part-000.parquet"));
     assertTrue(policy.contains("delete-000.parquet"));
+  }
+
+  @Test
+  void scopedSessionPolicyCanonicalizesScopeOrderAndSchemes() {
+    String first =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"));
+    String second =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"));
+
+    assertEquals(first, second);
   }
 
   private static StorageAuthority authority() {

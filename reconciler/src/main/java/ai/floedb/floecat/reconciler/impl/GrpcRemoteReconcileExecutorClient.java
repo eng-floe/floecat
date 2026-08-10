@@ -63,6 +63,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
@@ -76,6 +77,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultReques
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -1297,7 +1299,10 @@ class GrpcRemoteReconcileExecutorClient
         input.getSnapshotPlanUri(),
         input.getFileGroupCount(),
         input.getStatsObjectPrefix(),
-        input.getCaptureManifestUri(),
+        input.getDurableCaptureManifestPrefix(),
+        input.getReusableArtifactIndexObjectPrefix(),
+        input.getStatsGenerationManifestUri(),
+        input.getIndexGenerationCaptureManifestPrefix(),
         input.hasIndexPredecessor()
             ? fromProtoIndexPredecessor(input.getIndexPredecessor())
             : null);
@@ -1386,7 +1391,10 @@ class GrpcRemoteReconcileExecutorClient
       RemoteLeasedJob lease,
       String resultId,
       String statsObjectPrefix,
-      String captureManifestUri,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
@@ -1402,7 +1410,10 @@ class GrpcRemoteReconcileExecutorClient
         lease.lease(),
         resultId,
         statsObjectPrefix,
-        captureManifestUri,
+        durableCaptureManifestPrefix,
+        reusableArtifactIndexObjectPrefix,
+        statsGenerationManifestUri,
+        indexGenerationCaptureManifestPrefix,
         sourceFileCount,
         fileGroups,
         fileStats,
@@ -1420,7 +1431,10 @@ class GrpcRemoteReconcileExecutorClient
       RemoteLeasedJob lease,
       String resultId,
       String statsObjectPrefix,
-      String captureManifestUri,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
@@ -1437,7 +1451,10 @@ class GrpcRemoteReconcileExecutorClient
         lease.lease(),
         resultId,
         statsObjectPrefix,
-        captureManifestUri,
+        durableCaptureManifestPrefix,
+        reusableArtifactIndexObjectPrefix,
+        statsGenerationManifestUri,
+        indexGenerationCaptureManifestPrefix,
         sourceFileCount,
         fileGroups,
         fileStats,
@@ -1455,7 +1472,10 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileJobStore.LeasedJob leasedJob,
       String resultId,
       String statsObjectPrefix,
-      String captureManifestUri,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
@@ -1469,15 +1489,33 @@ class GrpcRemoteReconcileExecutorClient
       SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     String stableStatsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
-    String stableManifestUri = captureManifestUri == null ? "" : captureManifestUri.trim();
+    String stableDurableManifestPrefix =
+        durableCaptureManifestPrefix == null ? "" : durableCaptureManifestPrefix.trim();
+    String stableReusableIndexPrefix =
+        reusableArtifactIndexObjectPrefix == null ? "" : reusableArtifactIndexObjectPrefix.trim();
+    String stableStatsGenerationManifestUri =
+        statsGenerationManifestUri == null ? "" : statsGenerationManifestUri.trim();
+    String stableIndexGenerationManifestPrefix =
+        indexGenerationCaptureManifestPrefix == null
+            ? ""
+            : indexGenerationCaptureManifestPrefix.trim();
     if (stableResultId.isBlank()) {
       throw new IllegalArgumentException("resultId is required");
     }
     if (stableStatsObjectPrefix.isBlank()) {
       throw new IllegalArgumentException("statsObjectPrefix is required");
     }
-    if (stableManifestUri.isBlank()) {
-      throw new IllegalArgumentException("captureManifestUri is required");
+    if (stableDurableManifestPrefix.isBlank()) {
+      throw new IllegalArgumentException("durableCaptureManifestPrefix is required");
+    }
+    if (stableReusableIndexPrefix.isBlank()) {
+      throw new IllegalArgumentException("reusableArtifactIndexObjectPrefix is required");
+    }
+    if (stableStatsGenerationManifestUri.isBlank()) {
+      throw new IllegalArgumentException("statsGenerationManifestUri is required");
+    }
+    if (stableIndexGenerationManifestPrefix.isBlank()) {
+      throw new IllegalArgumentException("indexGenerationCaptureManifestPrefix is required");
     }
     ReconcileSnapshotTask snapshotTask = leasedJob.snapshotTask;
     List<TargetStatsRecord> records =
@@ -1492,10 +1530,6 @@ class GrpcRemoteReconcileExecutorClient
         fileGroups == null
             ? List.of()
             : fileGroups.stream().filter(java.util.Objects::nonNull).toList();
-    List<StatsObjectDescriptor> stableIndexArtifacts =
-        indexArtifacts == null
-            ? List.of()
-            : indexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
     List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> stableReuseBundles =
         reusableArtifactBundles == null
             ? List.of()
@@ -1579,7 +1613,6 @@ class GrpcRemoteReconcileExecutorClient
                     .sum())
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(totalIndexArtifacts)
-            .setGenerationChainDepth(nextGenerationChainDepth(appendOnlyBase))
             .addAllReusableArtifactBundles(stableReuseBundles)
             .setReusableArtifactBundlesComplete(true)
             .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
@@ -1601,9 +1634,21 @@ class GrpcRemoteReconcileExecutorClient
               .setIndexArtifactCount(appendOnlyBase.indexArtifactCount())
               .setStatsGenerationId(appendOnlyBase.statsGenerationId())
               .setIndexGenerationId(appendOnlyBase.indexGenerationId())
-              .setChainDepth(appendOnlyBase.chainDepth())
               .setReusableArtifactIndex(appendOnlyBase.reusableArtifactIndex()));
     }
+    ReusableArtifactIndexReference baseIndex =
+        appendOnlyBase == null
+            ? ReusableArtifactIndexStore.emptyReference()
+            : appendOnlyBase.reusableArtifactIndex();
+    ReusableArtifactIndexReference reusableArtifactIndex =
+        new ReusableArtifactIndexStore(blobStore)
+            .append(stableReusableIndexPrefix, baseIndex, stableReuseBundles);
+    if (reusableArtifactIndex.getFileStatsRecordCount() != totalFileStats
+        || reusableArtifactIndex.getIndexArtifactCount() != totalIndexArtifacts) {
+      throw new IllegalArgumentException(
+          "reusable artifact index counts do not match the capture manifest");
+    }
+    manifest.setReusableArtifactIndex(reusableArtifactIndex);
     Set<String> indexedStatsTargets = new HashSet<>();
     for (ReconcileFileGroupResultDescriptor fileGroup : stableFileGroups) {
       manifest.addFileGroups(toProtoFileGroupResultDescriptor(fileGroup));
@@ -1635,13 +1680,26 @@ class GrpcRemoteReconcileExecutorClient
       }
     }
     byte[] manifestBytes = manifest.build().toByteArray();
+    byte[] manifestSha256 = sha256(manifestBytes);
+    String stableManifestUri =
+        stableDurableManifestPrefix + HexFormat.of().formatHex(manifestSha256) + ".pb";
     LOG.infof(
         "Persisting snapshot capture manifest uri=%s bytes=%d fileGroups=%d reuseBundles=%d",
         stableManifestUri,
         manifestBytes.length,
         stableFileGroups.size(),
         stableReuseBundles.size());
-    blobStore.put(stableManifestUri, manifestBytes, "application/x-protobuf");
+    blobStore.putImmutable(stableManifestUri, manifestBytes, "application/x-protobuf");
+    if (capturePolicy.requestsIndexes()) {
+      blobStore.putImmutable(
+          stableIndexGenerationManifestPrefix + HexFormat.of().formatHex(manifestSha256) + ".pb",
+          manifestBytes,
+          "application/x-protobuf");
+    }
+    blobStore.putImmutable(
+        stableStatsGenerationManifestUri,
+        StringValue.of("full-rescan-" + leasedJob.parentJobId).toByteArray(),
+        "application/x-protobuf");
     LOG.infof(
         "Persisted snapshot capture manifest uri=%s bytes=%d",
         stableManifestUri, manifestBytes.length);
@@ -1658,21 +1716,13 @@ class GrpcRemoteReconcileExecutorClient
             .setResultId(stableResultId)
             .setManifestUri(stableManifestUri)
             .setManifestBytes(manifestBytes.length)
-            .setManifestSha256(ByteString.copyFrom(sha256(manifestBytes)))
+            .setManifestSha256(ByteString.copyFrom(manifestSha256))
             .setFileGroupCount(stableFileGroups.size())
             .setSourceFileCount(sourceFileCount)
             .setStatsRecordCount(totalFileStats + records.size())
             .setIndexArtifactCount(totalIndexArtifacts)
             .build();
     return new PreparedSnapshotFinalizeSuccess(stableResultId, manifestDescriptor);
-  }
-
-  static int nextGenerationChainDepth(SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
-    if (appendOnlyBase == null
-        || appendOnlyBase.chainDepth() >= SnapshotPlanBlobStore.MAX_GENERATION_CHAIN_DEPTH) {
-      return 1;
-    }
-    return appendOnlyBase.chainDepth() + 1;
   }
 
   @Override
@@ -1932,7 +1982,7 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private static int realizedIndexColumnCount(Set<String> selectors) {
-    return FileArtifactReuse.selectorIdentities(selectors).size();
+    return FileArtifactReuse.realizedColumnCount(selectors);
   }
 
   private static Set<String> persistedIndexSelectors(

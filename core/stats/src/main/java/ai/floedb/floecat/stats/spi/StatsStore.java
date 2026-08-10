@@ -297,23 +297,17 @@ public interface StatsStore {
     throw new UnsupportedOperationException("prewritten stats objects are not supported");
   }
 
-  /** Registers immutable bundle references inherited from an earlier snapshot of the same table. */
-  default void registerInheritedStatsReferencesInGeneration(
+  /**
+   * Binds a generation to the immutable capture manifest whose block index is its complete,
+   * structurally shared file-artifact map.
+   */
+  default void registerGenerationArtifactMap(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<PrewrittenTargetStatsReference> references) {
-    throw new UnsupportedOperationException("inherited stats objects are not supported");
-  }
-
-  /** Shares all missing targets from an immutable generation of an earlier snapshot. */
-  default void registerBaseStatsGeneration(
-      ResourceId tableId,
-      long snapshotId,
-      String generationId,
-      long baseSnapshotId,
-      String baseGenerationId) {
-    throw new UnsupportedOperationException("base stats generations are not supported");
+      String captureManifestUri,
+      long captureManifestBytes) {
+    throw new UnsupportedOperationException("generation artifact maps are not supported");
   }
 
   /** Registers worker-written records and publishes their generation without reading the blobs. */

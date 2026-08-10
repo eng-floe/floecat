@@ -21,11 +21,14 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -197,7 +200,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
       List<TargetStatsRecord> partials = new ArrayList<>();
       List<StatsObjectDescriptor> fileStats = new ArrayList<>();
-      List<StatsObjectDescriptor> indexArtifacts = new ArrayList<>();
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> reuseBundles =
           new ArrayList<>();
       Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
@@ -222,7 +224,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         realizedStatsSelectors.addAll(appendOnly.realizedStatsSelectors());
         realizedIndexSelectors.addAll(appendOnly.realizedIndexSelectors());
         if (defaultStatsSelection) {
-          resolvedDefaultStatsSelectors = Set.copyOf(appendOnly.realizedStatsSelectors());
+          resolvedDefaultStatsSelectors =
+              FileArtifactReuse.selectorIdentities(appendOnly.realizedStatsSelectors());
         }
         if (defaultIndexSelection) {
           resolvedDefaultIndexSelectors =
@@ -239,12 +242,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
             loadValidatedArtifacts(lease, input, descriptor, plannedGroup);
         partials.addAll(artifacts.partialAggregates());
         fileStats.addAll(artifacts.fileStats());
-        indexArtifacts.addAll(artifacts.indexArtifacts());
         if (artifacts.reusableArtifactBundle() != null) {
           reuseBundles.add(artifacts.reusableArtifactBundle());
         }
         if (defaultStatsSelection) {
-          Set<String> groupSelectors = Set.copyOf(artifacts.realizedStatsSelectors());
+          Set<String> groupSelectors =
+              FileArtifactReuse.selectorIdentities(artifacts.realizedStatsSelectors());
           if (resolvedDefaultStatsSelectors == null) {
             resolvedDefaultStatsSelectors = groupSelectors;
           } else if (!resolvedDefaultStatsSelectors.equals(groupSelectors)) {
@@ -278,6 +281,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           deduplicateSnapshotArtifacts(fileStats, reuseBundles);
       List<StatsObjectDescriptor> uniqueFileStats = deduplicated.fileStats();
       reuseBundles = deduplicated.reuseBundles();
+      validateRealizedSelectors(
+          capturePolicy, input.sourceFileCount(), realizedStatsSelectors, realizedIndexSelectors);
+      ReconcileSnapshotContentState.validateMaterializedStatsCoverage(
+          lease.snapshotTask.requestedCoverage(),
+          List.copyOf(realizedStatsSelectors),
+          input.sourceFileCount());
       String resultId = resultId(lease, "success");
       RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
           appendOnly == null
@@ -285,12 +294,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   remoteLease,
                   resultId,
                   input.statsObjectPrefix(),
-                  input.captureManifestUri(),
+                  input.durableCaptureManifestPrefix(),
+                  input.reusableArtifactIndexObjectPrefix(),
+                  input.statsGenerationManifestUri(),
+                  input.indexGenerationCaptureManifestPrefix(),
                   input.sourceFileCount(),
                   descriptors,
                   uniqueFileStats,
                   finalStats,
-                  indexArtifacts,
+                  List.of(),
                   reuseBundles,
                   List.copyOf(realizedStatsSelectors),
                   List.copyOf(realizedIndexSelectors),
@@ -299,12 +311,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   remoteLease,
                   resultId,
                   input.statsObjectPrefix(),
-                  input.captureManifestUri(),
+                  input.durableCaptureManifestPrefix(),
+                  input.reusableArtifactIndexObjectPrefix(),
+                  input.statsGenerationManifestUri(),
+                  input.indexGenerationCaptureManifestPrefix(),
                   input.sourceFileCount(),
                   descriptors,
                   uniqueFileStats,
                   finalStats,
-                  indexArtifacts,
+                  List.of(),
                   reuseBundles,
                   List.copyOf(realizedStatsSelectors),
                   List.copyOf(realizedIndexSelectors),
@@ -412,6 +427,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     } catch (com.google.protobuf.InvalidProtocolBufferException error) {
       throw new IllegalArgumentException("append-only snapshot base manifest is invalid", error);
     }
+    ReusableArtifactManifest.validateReuseBaseSummary(manifest);
     ReconcileCapturePolicy policy =
         lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
     if (manifest.getFormatVersion() != 1
@@ -426,8 +442,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || !base.reusableArtifactIndex().equals(manifest.getReusableArtifactIndex())
         || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
         || !manifest.getReusableArtifactBundlesComplete()
-        || base.chainDepth() <= 0
-        || base.chainDepth() > SnapshotPlanBlobStore.MAX_GENERATION_CHAIN_DEPTH
         || (base.indexArtifactCount() > 0
             && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
         || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(
@@ -546,6 +560,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
             .distinct()
             .sorted()
             .toList();
+    validateRealizedStatsSelectors(
+        capturePolicy, descriptor.succeededFileCount(), realizedStatsSelectors);
     if (capturePolicy.requestsIndexes() && realizedIndexSelectors.isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot file-group result does not report realized index selectors");
@@ -663,6 +679,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       throw new IllegalArgumentException(
           "snapshot file-group reuse bundle indexes do not match published references");
     }
+    validateReuseMetadata(
+        capturePolicy,
+        plannedGroup.fileExecutionPlans(),
+        reuseBundle,
+        realizedStatsSelectors,
+        realizedIndexSelectors);
     validatePartialAggregates(
         input,
         statsRequested,
@@ -771,7 +793,9 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         bundles == null ? List.of() : List.copyOf(bundles);
     Map<String, Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata>>
         metadataByPayload = new HashMap<>();
-    for (var bundle : references) {
+    Map<String, Map<String, Integer>> ownerByPayload = new HashMap<>();
+    for (int bundleIndex = 0; bundleIndex < references.size(); bundleIndex++) {
+      var bundle = references.get(bundleIndex);
       if (bundle == null
           || !bundle.hasArtifact()
           || bundle.getArtifact().getPayloadUri().isBlank()) {
@@ -779,6 +803,9 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
       Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata> byTarget =
           metadataByPayload.computeIfAbsent(
+              bundle.getArtifact().getPayloadUri(), ignored -> new HashMap<>());
+      Map<String, Integer> owners =
+          ownerByPayload.computeIfAbsent(
               bundle.getArtifact().getPayloadUri(), ignored -> new HashMap<>());
       Set<String> bundleTargets = new HashSet<>();
       for (var metadata : bundle.getFileStatsList()) {
@@ -795,6 +822,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         if (existing != null && !equivalentReusableStatsMetadata(existing, metadata)) {
           throw new IllegalArgumentException(
               "conflicting reusable stats metadata for target " + target);
+        }
+        Integer existingOwner = owners.putIfAbsent(target, bundleIndex);
+        if (existingOwner != null
+            && bundle
+                    .getArtifact()
+                    .getTargetStorageId()
+                    .compareTo(references.get(existingOwner).getArtifact().getTargetStorageId())
+                < 0) {
+          owners.put(target, bundleIndex);
         }
       }
     }
@@ -837,30 +873,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     for (var entry : byTarget.entrySet()) {
       String target = entry.getKey();
       String payloadUri = entry.getValue().getPayloadUri();
-      int owner = -1;
-      String ownerId = null;
-      for (int index = 0; index < references.size(); index++) {
-        var bundle = references.get(index);
-        if (!payloadUri.equals(bundle.getArtifact().getPayloadUri())) {
-          continue;
-        }
-        boolean containsTarget =
-            bundle.getFileStatsList().stream()
-                .anyMatch(
-                    metadata ->
-                        target.equals(
-                            StatsTargetIdentity.storageId(
-                                StatsTargetIdentity.fileTarget(metadata.getFilePath()))));
-        if (!containsTarget) {
-          continue;
-        }
-        String candidateId = bundle.getArtifact().getTargetStorageId();
-        if (owner < 0 || candidateId.compareTo(ownerId) < 0) {
-          owner = index;
-          ownerId = candidateId;
-        }
-      }
-      if (owner < 0) {
+      Integer owner = ownerByPayload.getOrDefault(payloadUri, Map.of()).get(target);
+      if (owner == null) {
         throw new IllegalArgumentException(
             "snapshot reusable bundle metadata is missing target " + target);
       }
@@ -915,6 +929,216 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
 
   static Set<String> defaultIndexSelectorIdentities(java.util.Collection<String> selectors) {
     return FileArtifactReuse.selectorIdentities(selectors);
+  }
+
+  private record ExpectedReuseMetadata(String sourceFingerprint, String captureSignature) {}
+
+  static void validateReuseMetadata(
+      ReconcileCapturePolicy capturePolicy,
+      List<ReconcileFileExecutionPlan> executionPlans,
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference reuseBundle,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors) {
+    ReconcileCapturePolicy policy =
+        capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    Map<String, ExpectedReuseMetadata> expectedStats = new HashMap<>();
+    Map<String, ExpectedReuseMetadata> expectedIndexes = new HashMap<>();
+    for (ReconcileFileExecutionPlan plan :
+        executionPlans == null ? List.<ReconcileFileExecutionPlan>of() : executionPlans) {
+      if (policy.requestsStats()) {
+        putExpectedReuseMetadata(
+            expectedStats,
+            plan.filePath(),
+            plan.sourceFingerprint(),
+            plan.statsCaptureSignature(),
+            "stats");
+        for (var auxiliary : plan.auxiliaryStatsFingerprints().entrySet()) {
+          putExpectedReuseMetadata(
+              expectedStats,
+              auxiliary.getKey(),
+              auxiliary.getValue(),
+              plan.statsCaptureSignature(),
+              "stats");
+        }
+      }
+      if (policy.requestsIndexes()) {
+        putExpectedReuseMetadata(
+            expectedIndexes,
+            plan.filePath(),
+            plan.indexSourceFingerprint(),
+            plan.indexCaptureSignature(),
+            "index");
+      }
+    }
+    Set<String> groupStats = Set.copyOf(realizedStatsSelectors);
+    Set<String> groupIndexes = Set.copyOf(realizedIndexSelectors);
+    Set<String> metadataStats = new HashSet<>();
+    Set<String> metadataIndexes = new HashSet<>();
+    boolean defaultStatsSelection =
+        policy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)
+            && policy.selectorsForStats().isEmpty()
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    boolean defaultIndexSelection =
+        policy.requestsIndexes()
+            && policy.selectorsForIndex().isEmpty()
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    for (var metadata : reuseBundle.getFileStatsList()) {
+      ExpectedReuseMetadata expected = expectedStats.get(metadata.getFilePath());
+      if (expected == null
+          || expected.sourceFingerprint().isBlank()
+          || expected.captureSignature().isBlank()
+          || !expected.sourceFingerprint().equals(metadata.getSourceFingerprint())
+          || !expected.captureSignature().equals(metadata.getStatsCaptureSignature())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group reuse stats metadata does not match the immutable plan");
+      }
+      Set<String> metadataSelectors = Set.copyOf(metadata.getRealizedStatsSelectorsList());
+      metadataStats.addAll(metadataSelectors);
+      if (!groupStats.containsAll(metadataSelectors)
+          || (policy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)
+              && !FileArtifactReuse.coversExplicitSelectors(
+                  metadataSelectors, policy.selectorsForStats()))
+          || (defaultStatsSelection && metadataSelectors.isEmpty())
+          || (defaultStatsSelection
+              && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+              && FileArtifactReuse.realizedColumnCount(metadataSelectors)
+                  > policy.maxDefaultColumns())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group reuse stats selectors do not cover the capture policy");
+      }
+    }
+    for (var metadata : reuseBundle.getIndexArtifactsList()) {
+      ExpectedReuseMetadata expected = expectedIndexes.get(metadata.getFilePath());
+      if (expected == null
+          || expected.sourceFingerprint().isBlank()
+          || expected.captureSignature().isBlank()
+          || !expected.sourceFingerprint().equals(metadata.getSourceFingerprint())
+          || !expected.captureSignature().equals(metadata.getIndexCaptureSignature())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group reuse index metadata does not match the immutable plan");
+      }
+      Set<String> metadataSelectors = Set.copyOf(metadata.getRealizedIndexSelectorsList());
+      metadataIndexes.addAll(metadataSelectors);
+      if (!groupIndexes.containsAll(metadataSelectors)
+          || !FileArtifactReuse.coversExplicitSelectors(
+              metadataSelectors, policy.selectorsForIndex())
+          || (defaultIndexSelection && metadataSelectors.isEmpty())
+          || (defaultIndexSelection
+              && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+              && FileArtifactReuse.realizedColumnCount(metadataSelectors)
+                  > policy.maxDefaultColumns())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group reuse index selectors do not cover the capture policy");
+      }
+    }
+    if (!metadataStats.equals(groupStats) || !metadataIndexes.equals(groupIndexes)) {
+      throw new IllegalArgumentException(
+          "snapshot file-group reuse selector metadata does not match the file-group result");
+    }
+  }
+
+  private static void putExpectedReuseMetadata(
+      Map<String, ExpectedReuseMetadata> expected,
+      String filePath,
+      String sourceFingerprint,
+      String captureSignature,
+      String kind) {
+    ExpectedReuseMetadata value = new ExpectedReuseMetadata(sourceFingerprint, captureSignature);
+    ExpectedReuseMetadata prior = expected.putIfAbsent(filePath, value);
+    if (filePath == null
+        || filePath.isBlank()
+        || sourceFingerprint == null
+        || sourceFingerprint.isBlank()
+        || captureSignature == null
+        || captureSignature.isBlank()
+        || (prior != null && !prior.equals(value))) {
+      throw new IllegalArgumentException(
+          "snapshot file-group has conflicting immutable " + kind + " reuse metadata");
+    }
+  }
+
+  static void validateRealizedSelectors(
+      ReconcileCapturePolicy policy,
+      int sourceFileCount,
+      Set<String> realizedStatsSelectors,
+      Set<String> realizedIndexSelectors) {
+    ReconcileCapturePolicy effective = policy == null ? ReconcileCapturePolicy.empty() : policy;
+    Set<String> realizedIndexes =
+        realizedIndexSelectors == null ? Set.of() : Set.copyOf(realizedIndexSelectors);
+    Set<String> realizedStats =
+        realizedStatsSelectors == null ? Set.of() : Set.copyOf(realizedStatsSelectors);
+    if (!effective.requestsIndexes()) {
+      if (!realizedIndexes.isEmpty()) {
+        throw new IllegalArgumentException("snapshot contains unrequested index selectors");
+      }
+    } else if (sourceFileCount > 0) {
+      Set<String> required = effective.selectorsForIndex();
+      boolean defaultSelection =
+          required.isEmpty()
+              && effective.defaultColumnScope()
+                  != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      if (!required.isEmpty() && !realizedIndexes.containsAll(required)) {
+        throw new IllegalArgumentException(
+            "snapshot does not cover explicitly requested index selectors");
+      }
+      if (defaultSelection && realizedIndexes.isEmpty()) {
+        throw new IllegalArgumentException(
+            "snapshot does not report resolved default index selectors");
+      }
+      if (defaultSelection
+          && effective.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+          && realizedColumnCount(realizedIndexes) > effective.maxDefaultColumns()) {
+        throw new IllegalArgumentException("snapshot exceeds the requested default index limit");
+      }
+    }
+    if (!effective.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      if (!realizedStats.isEmpty()) {
+        throw new IllegalArgumentException("snapshot contains unrequested stats selectors");
+      }
+      return;
+    }
+    validateRealizedStatsSelectors(effective, sourceFileCount, realizedStats);
+  }
+
+  private static void validateRealizedStatsSelectors(
+      ReconcileCapturePolicy policy,
+      int sourceFileCount,
+      java.util.Collection<String> realizedStatsSelectors) {
+    Set<String> realizedStats =
+        realizedStatsSelectors == null ? Set.of() : Set.copyOf(realizedStatsSelectors);
+    if (!policy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      if (!realizedStats.isEmpty()) {
+        throw new IllegalArgumentException("snapshot contains unrequested stats selectors");
+      }
+      return;
+    }
+    Set<String> requiredStats = policy.selectorsForStats();
+    boolean defaultStatsSelection =
+        requiredStats.isEmpty()
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    if (sourceFileCount > 0) {
+      if (!requiredStats.isEmpty()
+          && !FileArtifactReuse.coversExplicitSelectors(realizedStats, requiredStats)) {
+        throw new IllegalArgumentException(
+            "snapshot does not cover explicitly requested stats selectors");
+      }
+      if (defaultStatsSelection && realizedStats.isEmpty()) {
+        throw new IllegalArgumentException(
+            "snapshot does not report resolved default stats selectors");
+      }
+      if (defaultStatsSelection
+          && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+          && realizedColumnCount(realizedStats) > policy.maxDefaultColumns()) {
+        throw new IllegalArgumentException("snapshot exceeds the requested default stats limit");
+      }
+    }
+  }
+
+  static int realizedColumnCount(Set<String> selectors) {
+    return FileArtifactReuse.realizedColumnCount(selectors);
   }
 
   static void validateReuseBundleArtifact(

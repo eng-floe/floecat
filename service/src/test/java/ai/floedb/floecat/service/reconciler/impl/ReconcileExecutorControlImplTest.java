@@ -818,7 +818,10 @@ class ReconcileExecutorControlImplTest {
                 "/accounts/acct/reconcile/jobs/parent-1/snapshot-plan/blob.json",
                 1,
                 "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
-                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                "/accounts/acct/reconcile/result-payloads/reuse-manifests/",
+                "/accounts/acct/tables/table-1/reusable-index/",
+                "/accounts/acct/tables/table-1/stats-generation.pb",
+                "/accounts/acct/tables/table-1/index-capture-manifests/",
                 new ai.floedb.floecat.service.repo.impl.IndexArtifactRepository
                     .GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L)));
 
@@ -850,8 +853,8 @@ class ReconcileExecutorControlImplTest {
         "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
         response.getInput().getStatsObjectPrefix());
     assertEquals(
-        "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
-        response.getInput().getCaptureManifestUri());
+        "/accounts/acct/reconcile/result-payloads/reuse-manifests/",
+        response.getInput().getDurableCaptureManifestPrefix());
     assertEquals("generation-1", response.getInput().getIndexPredecessor().getGenerationId());
   }
 
@@ -877,7 +880,10 @@ class ReconcileExecutorControlImplTest {
                 "",
                 0,
                 "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
-                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                "/accounts/acct/reconcile/result-payloads/reuse-manifests/",
+                "/accounts/acct/tables/table-1/reusable-index/",
+                "/accounts/acct/tables/table-1/stats-generation.pb",
+                "/accounts/acct/tables/table-1/index-capture-manifests/",
                 null));
 
     var response =

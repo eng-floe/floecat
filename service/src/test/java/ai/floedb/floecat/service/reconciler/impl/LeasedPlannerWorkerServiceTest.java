@@ -260,7 +260,6 @@ class LeasedPlannerWorkerServiceTest {
             0,
             "stats-generation",
             "",
-            1,
             testArtifactIndex(2, 0));
     ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 3, base);
 
@@ -269,6 +268,35 @@ class LeasedPlannerWorkerServiceTest {
         snapshotTask,
         List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)),
         base);
+  }
+
+  @Test
+  void referencedZeroDeltaAppendRequiresExactInheritedSourceCount() {
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L,
+            "/capture/base.pb",
+            100L,
+            "ab".repeat(32),
+            2,
+            2,
+            0,
+            "stats-generation",
+            "",
+            testArtifactIndex(2, 0));
+    ReconcileSnapshotTask valid = referencedSnapshotTask(List.of(), 2, base);
+
+    LeasedPlannerWorkerService.validateReferencedPlan(
+        snapshotLease(ReconcileScope.empty(), valid), valid, List.of(), base);
+
+    ReconcileSnapshotTask invalid = referencedSnapshotTask(List.of(), 3, base);
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), invalid), invalid, List.of(), base));
+    assertTrue(error.getStatus().getDescription().contains("source file count"));
   }
 
   @Test

@@ -379,13 +379,21 @@ message ReusableArtifactIndexObjectReference {
   string uri = 1;
   uint64 payload_bytes = 2;
   bytes payload_sha256 = 3;
+  // Small immutable index objects are carried by the enclosing capture manifest. This keeps the
+  // structurally shared index from creating several sub-request-sized S3 objects per reconcile.
+  bytes inline_payload = 4;
 }
 
 message ReusableArtifactIndexBlockReference {
+  // The immutable pack containing this logical block. Multiple adjacent block references normally
+  // share this object and select their payload with offset/length.
   ReusableArtifactIndexObjectReference object = 1;
   bytes first_key_sha256 = 2;
   bytes last_key_sha256 = 3;
   uint64 entry_count = 4;
+  uint64 offset = 5;
+  uint32 length = 6;
+  bytes block_sha256 = 7;
 }
 
 // Authenticated block directory for one immutable sorted run.
@@ -445,7 +453,7 @@ message AppendOnlySnapshotBase {
   uint32 index_artifact_count = 8;
   string stats_generation_id = 9;
   string index_generation_id = 10;
-  uint32 chain_depth = 11;
+  reserved 11;
   ReusableArtifactIndexReference reusable_artifact_index = 12;
 }
 
@@ -495,7 +503,7 @@ message SnapshotCaptureManifest {
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
   repeated StatsObjectDescriptor final_stats = 12;
-  reserved 13, 14, 23, 24, 25, 26;
+  reserved 13, 14, 23, 24, 25, 26, 30;
   uint32 source_file_count = 15;
   // Unique snapshot-level file-stats target count after deduplicating targets repeated across
   // file groups.
@@ -514,15 +522,11 @@ message SnapshotCaptureManifest {
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
   AppendOnlySnapshotBase append_only_base = 28;
   // Marks a complete compatibility contract: current bundles plus the authenticated base runs are
-  // sufficient for the service to publish the complete persistent index. A false value is not
+  // sufficient for the finalizer to publish the complete persistent index. A false value is not
   // eligible as a reuse source and is replaced by the next complete capture.
   bool reusable_artifact_bundles_complete = 29;
-  // Depth of the published stats/index generation overlay. A value of one is a fully
-  // materialized checkpoint. Append-only finalizers may build bounded overlays and reset this
-  // value to one whenever the configured maximum depth is reached.
-  uint32 generation_chain_depth = 30;
-  // Complete persistent compatibility index for this snapshot. The service constructs this run set
-  // from the authenticated base runs and the current file-group bundles before publication.
+  // Complete persistent compatibility index for this snapshot. The trusted finalizer constructs
+  // this run set from authenticated base runs and current file-group bundles before submission.
   ReusableArtifactIndexReference reusable_artifact_index = 31;
 }
 
@@ -824,11 +828,17 @@ message LeasedSnapshotFinalizeInput {
   uint32 file_group_count = 12;
   // Server-allocated immutable prefix for this fenced finalizer's individual stats objects.
   string stats_object_prefix = 13;
-  // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
-  string capture_manifest_uri = 14;
+  // Server-allocated immutable prefix for content-addressed durable capture manifests.
+  string durable_capture_manifest_prefix = 14;
   // Index-generation state captured directly for a finalizer with no file-group children.
   // Non-empty captures continue to derive and cross-check this value from file-group results.
   IndexGenerationPredecessor index_predecessor = 15;
+  // Server-allocated table prefix for reusable-index blocks, filters, and run manifests.
+  string reusable_artifact_index_object_prefix = 16;
+  // Exact immutable stats-generation manifest URI for this publication generation.
+  string stats_generation_manifest_uri = 17;
+  // Server-allocated prefix for the content-addressed index-generation capture manifest.
+  string index_generation_capture_manifest_prefix = 18;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
@@ -1400,6 +1410,7 @@ service ReconcileExecutorControl {
   // Pages compact committed file-group payload descriptors without hydrating result objects.
   rpc ListLeasedSnapshotFileGroupResults(ListLeasedSnapshotFileGroupResultsRequest)
       returns (ListLeasedSnapshotFileGroupResultsResponse);
+  // Persists bounded inherited references prepared and authenticated by the trusted finalizer.
   // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
       returns (SubmitLeasedSnapshotFinalizeResultResponse);

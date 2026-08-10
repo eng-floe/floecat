@@ -37,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadLocalRandom;
@@ -619,12 +620,12 @@ public class StorageAuthorityResolver {
     if (locationPrefixes == null || locationPrefixes.isEmpty()) {
       return List.of();
     }
-    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    TreeSet<String> normalized = new TreeSet<>();
     for (String locationPrefix : locationPrefixes) {
-      if (locationPrefix == null || locationPrefix.isBlank()) {
-        continue;
+      S3Location scope = S3Location.parse(locationPrefix);
+      if (scope != null) {
+        normalized.add(scope.canonicalUri());
       }
-      normalized.add(locationPrefix.trim());
     }
     return List.copyOf(normalized);
   }
@@ -663,7 +664,9 @@ public class StorageAuthorityResolver {
         return null;
       }
       int slash = normalized.indexOf('/');
-      String bucket = slash < 0 ? normalized : normalized.substring(0, slash);
+      String bucket =
+          (slash < 0 ? normalized : normalized.substring(0, slash))
+              .toLowerCase(java.util.Locale.ROOT);
       if (bucket.isBlank()) {
         return null;
       }
@@ -672,6 +675,10 @@ public class StorageAuthorityResolver {
         prefix = prefix.substring(0, prefix.length() - 1);
       }
       return new S3Location(bucket, prefix);
+    }
+
+    String canonicalUri() {
+      return keyPrefix.isBlank() ? "s3://" + bucket : "s3://" + bucket + "/" + keyPrefix;
     }
 
     String listPrefix() {

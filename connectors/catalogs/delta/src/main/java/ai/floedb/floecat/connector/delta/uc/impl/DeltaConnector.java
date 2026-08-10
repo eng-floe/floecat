@@ -396,52 +396,6 @@ abstract class DeltaConnector implements FloecatConnector {
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes,
-        ColumnSelectorPolicy.defaults());
-  }
-
-  @Override
-  public FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes,
-        columnSelectorPolicy);
-  }
-
-  @Override
-  public FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,

@@ -20,6 +20,7 @@ import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -27,8 +28,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -37,6 +38,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
@@ -45,23 +47,32 @@ import java.util.function.Consumer;
 public final class ReusableArtifactIndexStore {
   static final int FORMAT_VERSION = 1;
   static final int TARGET_BLOCK_BYTES = 512 * 1024;
+  static final int TARGET_PACK_BYTES = 64 * 1024 * 1024;
   static final int MAX_L0_RUNS = 32;
   static final int MAX_L1_RUNS = 32;
+  static final int MAX_BLOOM_BYTES = 16 * 1024 * 1024;
+  private static final int MAX_SINGLE_CACHED_OBJECT_BYTES = 16 * 1024 * 1024;
+  private static final long MAX_BLOOM_OBJECT_BYTES = 9L + MAX_BLOOM_BYTES;
+  private static final long MAX_RUN_MANIFEST_BYTES = MAX_SINGLE_CACHED_OBJECT_BYTES;
+  private static final long MAX_DELTA_BUFFER_BYTES = 8L * 1024L * 1024L;
+  private static final int MAX_SEQUENTIAL_READ_WINDOW_BYTES = 8 * 1024 * 1024;
+  private static final int MAX_SEQUENTIAL_READ_BUDGET_BYTES = 64 * 1024 * 1024;
+  private static final int OBJECT_AUTHENTICATION_WINDOW_BYTES = 8 * 1024 * 1024;
+  static final int INLINE_OBJECT_BYTES = 64 * 1024;
+  private static final int MAX_RUN_LEVEL = 32;
   private static final int BLOOM_BITS_PER_ENTRY = 20;
   private static final int BLOOM_HASHES = 14;
   private static final int MIN_BLOOM_BITS = 1024;
-  private static final int MAX_CACHED_OBJECTS = 8_192;
+  private static final long DEFAULT_MAX_CACHED_BYTES = 64L * 1024L * 1024L;
+  private static final long MAX_CACHED_BYTES = configuredMaxCachedBytes();
   private static final String PROTOBUF_CONTENT_TYPE = "application/x-protobuf";
   private static final String FILTER_CONTENT_TYPE = "application/x-floecat-bloom-filter";
+  private static final String PACK_CONTENT_TYPE = "application/x-floecat-reusable-index-pack";
 
-  private static final Map<String, byte[]> SHARED_OBJECT_CACHE =
-      Collections.synchronizedMap(
-          new LinkedHashMap<>(256, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
-              return size() > MAX_CACHED_OBJECTS;
-            }
-          });
+  private static final Object SHARED_OBJECT_CACHE_LOCK = new Object();
+  private static final LinkedHashMap<String, CachedObject> SHARED_OBJECT_CACHE =
+      new LinkedHashMap<>(256, 0.75f, true);
+  private static long sharedObjectCacheBytes;
 
   private static final Comparator<IndexedEntry> INDEXED_ENTRY_ORDER =
       (left, right) -> {
@@ -78,7 +89,54 @@ public final class ReusableArtifactIndexStore {
     this.blobStore = blobStore;
   }
 
-  /** Adds one immutable delta run and performs bounded low-level compaction. */
+  /** Authenticates run manifests and verifies that their block directory is readable. */
+  public void validateReadableReference(ReusableArtifactIndexReference index) {
+    validateReferenceObjects(index, null, true);
+  }
+
+  /** Authenticates every external object and rejects objects outside the owning table prefix. */
+  public void validateReadableReference(String objectPrefix, ReusableArtifactIndexReference index) {
+    validateReferenceObjects(index, normalizePrefix(objectPrefix), true);
+  }
+
+  /** Authenticates lookup metadata without reading packs that have no candidate block. */
+  public void validateLookupReference(ReusableArtifactIndexReference index) {
+    validateReferenceObjects(index, null, false);
+  }
+
+  private void validateReferenceObjects(
+      ReusableArtifactIndexReference index, String ownedPrefix, boolean authenticatePacks) {
+    ReusableArtifactIndexReference effective = effectiveReference(index);
+    validateReference(effective);
+    Map<String, ReusableArtifactIndexObjectReference> packs = new HashMap<>();
+    for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(effective.getRunsList())) {
+      primeRunMetadata(batch);
+      for (ReusableArtifactIndexRunReference run : batch) {
+        validateOwnedObject(ownedPrefix, run.getFilter());
+        validateOwnedObject(ownedPrefix, run.getManifest());
+        loadFilter(run);
+        ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
+        for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
+          ReusableArtifactIndexObjectReference object = block.getObject();
+          validateOwnedObject(ownedPrefix, object);
+          if (!object.getInlinePayload().isEmpty()) {
+            validateObjectBytes(object, object.getInlinePayload().toByteArray());
+          } else if (authenticatePacks) {
+            ReusableArtifactIndexObjectReference existing =
+                packs.putIfAbsent(object.getUri(), object);
+            if (existing == null) {
+              authenticateExternalObject(object);
+            } else if (!existing.equals(object)) {
+              throw new IllegalArgumentException(
+                  "reusable artifact index pack has conflicting references");
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Adds one immutable delta run and restores the bounded run-count invariant at every level. */
   public ReusableArtifactIndexReference append(
       String objectPrefix,
       ReusableArtifactIndexReference base,
@@ -88,48 +146,34 @@ public final class ReusableArtifactIndexStore {
     validateReference(effectiveBase);
     validateOwnedRuns(prefix, effectiveBase);
 
-    List<ReusableArtifactIndexEntry> additions = entriesFromBundles(bundles);
-    if (additions.isEmpty()) {
-      return effectiveBase;
-    }
-    List<IndexedEntry> indexed = indexEntries(additions);
-    Set<String> additionKeys = new HashSet<>();
-    for (IndexedEntry entry : indexed) {
-      if (!additionKeys.add(entry.key())) {
-        throw new IllegalArgumentException(
-            "duplicate reusable artifact index entry " + entry.key());
+    DeltaRunAccumulator accumulator = new DeltaRunAccumulator(prefix, effectiveBase);
+    for (ReusableArtifactBundleReference bundle :
+        bundles == null ? List.<ReusableArtifactBundleReference>of() : bundles) {
+      if (bundle == null || !bundle.hasArtifact()) {
+        throw new IllegalArgumentException("reusable artifact bundle descriptor is required");
       }
+      StatsObjectDescriptor artifact = bundle.getArtifact();
+      validateArtifact(artifact);
+      bundle
+          .getFileStatsList()
+          .forEach(
+              metadata ->
+                  accumulator.add(
+                      ReusableArtifactIndexEntry.newBuilder()
+                          .setArtifact(artifact)
+                          .setFileStats(metadata)
+                          .build()));
+      bundle
+          .getIndexArtifactsList()
+          .forEach(
+              metadata ->
+                  accumulator.add(
+                      ReusableArtifactIndexEntry.newBuilder()
+                          .setArtifact(artifact)
+                          .setIndexArtifact(metadata)
+                          .build()));
     }
-    Set<String> existing = lookupKeys(effectiveBase, additionKeys).keySet();
-    if (!existing.isEmpty()) {
-      throw new IllegalArgumentException(
-          "reusable artifact index already contains " + existing.iterator().next());
-    }
-
-    List<ReusableArtifactIndexRunReference> runs = new ArrayList<>(effectiveBase.getRunsList());
-    runs.add(writeRun(prefix, 0, indexed));
-    runs = compactBoundedLevels(prefix, runs);
-
-    long fileStats =
-        Math.addExact(
-            Integer.toUnsignedLong(effectiveBase.getFileStatsRecordCount()),
-            additions.stream().filter(ReusableArtifactIndexEntry::hasFileStats).count());
-    long indexes =
-        Math.addExact(
-            Integer.toUnsignedLong(effectiveBase.getIndexArtifactCount()),
-            additions.stream().filter(ReusableArtifactIndexEntry::hasIndexArtifact).count());
-    if (fileStats > Integer.MAX_VALUE || indexes > Integer.MAX_VALUE) {
-      throw new IllegalArgumentException("reusable artifact index count exceeds supported range");
-    }
-    return buildReference(runs, (int) fileStats, (int) indexes);
-  }
-
-  public boolean containsFileStats(ReusableArtifactIndexReference index, String filePath) {
-    return !lookupKeys(index, Set.of(statsKey(filePath))).isEmpty();
-  }
-
-  public boolean containsIndexArtifact(ReusableArtifactIndexReference index, String filePath) {
-    return !lookupKeys(index, Set.of(indexKey(filePath))).isEmpty();
+    return accumulator.finish();
   }
 
   /** Performs one batched lookup for all requested typed paths. */
@@ -154,6 +198,92 @@ public final class ReusableArtifactIndexStore {
     return bundlesFromEntries(lookup(index, statsPaths, indexPaths).values());
   }
 
+  public enum EntryKind {
+    FILE_STATS,
+    INDEX_ARTIFACT
+  }
+
+  public record EntryPage(
+      List<ReusableArtifactIndexEntry> entries,
+      String nextPageToken,
+      List<String> continuationTokens) {
+    public EntryPage {
+      entries = entries == null ? List.of() : List.copyOf(entries);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
+      continuationTokens = continuationTokens == null ? List.of() : List.copyOf(continuationTokens);
+      if (!continuationTokens.isEmpty() && continuationTokens.size() != entries.size()) {
+        throw new IllegalArgumentException("artifact page continuation count does not match");
+      }
+    }
+
+    public EntryPage(List<ReusableArtifactIndexEntry> entries, String nextPageToken) {
+      this(entries, nextPageToken, List.of());
+    }
+  }
+
+  /**
+   * Pages one artifact kind directly from the immutable sorted runs. The opaque cursor is the last
+   * typed key returned, so a page reads at most one starting block per run plus blocks crossed
+   * while filling the page; it never materializes the complete index or writes pagination state.
+   */
+  public EntryPage page(
+      ReusableArtifactIndexReference index, EntryKind kind, int limit, String pageToken) {
+    ReusableArtifactIndexReference effective = effectiveReference(index);
+    validateReference(effective);
+    if (kind == null || limit <= 0) {
+      throw new IllegalArgumentException("reusable artifact page arguments are invalid");
+    }
+    IndexedEntry after = decodePageToken(pageToken);
+    List<ReusableArtifactIndexRunReference> runs = orderedRuns(effective.getRunsList());
+    PriorityQueue<RunCursor> pending =
+        new PriorityQueue<>(
+            (left, right) -> INDEXED_ENTRY_ORDER.compare(left.current(), right.current()));
+    int readWindowBytes = sequentialReadWindowBytes(runs.size());
+    for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(runs)) {
+      primeObjects(batch.stream().map(ReusableArtifactIndexRunReference::getManifest).toList());
+      for (ReusableArtifactIndexRunReference run : batch) {
+        RunCursor cursor = new RunCursor(loadRunManifest(run), after, readWindowBytes);
+        if (cursor.current() != null) {
+          pending.add(cursor);
+        }
+      }
+    }
+    List<ReusableArtifactIndexEntry> entries = new ArrayList<>(limit);
+    List<String> continuationTokens = new ArrayList<>(limit);
+    String lastKey = null;
+    String previousKey = null;
+    while (!pending.isEmpty() && entries.size() < limit) {
+      RunCursor cursor = pending.remove();
+      IndexedEntry next = cursor.current();
+      if (next.key().equals(previousKey)) {
+        throw new IllegalArgumentException("reusable artifact index contains a duplicate");
+      }
+      previousKey = next.key();
+      boolean selected =
+          kind == EntryKind.FILE_STATS
+              ? next.entry().hasFileStats()
+              : next.entry().hasIndexArtifact();
+      if (selected) {
+        entries.add(next.entry());
+        lastKey = next.key();
+        continuationTokens.add(encodePageToken(next.key()));
+      }
+      cursor.advance();
+      if (cursor.current() != null) {
+        pending.add(cursor);
+      }
+    }
+    if (entries.size() == limit
+        && !pending.isEmpty()
+        && pending.peek().current().key().equals(lastKey)) {
+      throw new IllegalArgumentException("reusable artifact index contains a duplicate");
+    }
+    return new EntryPage(
+        entries,
+        entries.size() == limit && lastKey != null ? encodePageToken(lastKey) : "",
+        continuationTokens);
+  }
+
   /**
    * Full traversal retained for exceptional rebuild paths; callers should consume it as a stream.
    */
@@ -165,33 +295,24 @@ public final class ReusableArtifactIndexStore {
       throw new IllegalArgumentException("reusable artifact index consumer is required");
     }
     long[] counts = new long[2];
-    for (ReusableArtifactIndexRunReference run : orderedRuns(effective.getRunsList())) {
-      ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-      for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
-        ReusableArtifactIndexBlock loaded = loadBlock(block);
-        for (ReusableArtifactIndexEntry entry : loaded.getEntriesList()) {
+    try (SpillableDuplicateDetector duplicates = new SpillableDuplicateDetector()) {
+      for (ReusableArtifactIndexRunReference run : orderedRuns(effective.getRunsList())) {
+        ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
+        RunCursor cursor = new RunCursor(manifest, MAX_SEQUENTIAL_READ_WINDOW_BYTES);
+        while (cursor.current() != null) {
+          ReusableArtifactIndexEntry entry = cursor.current().entry();
+          duplicates.add(entryKey(entry), entry);
           counts[entry.hasFileStats() ? 0 : 1]++;
-          consumer.accept(entry);
+          cursor.advance();
         }
       }
+      duplicates.verifyNoDuplicates();
+      if (counts[0] != effective.getFileStatsRecordCount()
+          || counts[1] != effective.getIndexArtifactCount()) {
+        throw new IllegalArgumentException("reusable artifact run index kind count mismatch");
+      }
+      duplicates.forEachEntry(consumer);
     }
-    if (counts[0] != effective.getFileStatsRecordCount()
-        || counts[1] != effective.getIndexArtifactCount()) {
-      throw new IllegalArgumentException("reusable artifact run index kind count mismatch");
-    }
-  }
-
-  public List<ReusableArtifactIndexEntry> loadEntries(ReusableArtifactIndexReference index) {
-    List<ReusableArtifactIndexEntry> entries = new ArrayList<>();
-    forEachEntry(index, entries::add);
-    entries.sort(Comparator.comparing(ReusableArtifactIndexStore::entryKey));
-    return List.copyOf(entries);
-  }
-
-  public List<ReusableArtifactBundleReference> loadBundles(ReusableArtifactIndexReference index) {
-    List<ReusableArtifactIndexEntry> entries = new ArrayList<>();
-    forEachEntry(index, entries::add);
-    return bundlesFromEntries(entries);
   }
 
   /** Roots immutable run manifests, filters, blocks, and referenced artifact bundles. */
@@ -200,24 +321,43 @@ public final class ReusableArtifactIndexStore {
       Set<String> visitedObjectUris,
       Consumer<ReusableArtifactIndexObjectReference> objectConsumer,
       Consumer<ReusableArtifactIndexEntry> entryConsumer) {
+    walkReachable(index, visitedObjectUris, new HashMap<>(), objectConsumer, entryConsumer);
+  }
+
+  public void walkReachable(
+      ReusableArtifactIndexReference index,
+      Set<String> visitedObjectUris,
+      Map<String, Integer> nextBlockByRun,
+      Consumer<ReusableArtifactIndexObjectReference> objectConsumer,
+      Consumer<ReusableArtifactIndexEntry> entryConsumer) {
     ReusableArtifactIndexReference effective = effectiveReference(index);
     validateReference(effective);
-    if (visitedObjectUris == null || objectConsumer == null || entryConsumer == null) {
+    if (visitedObjectUris == null
+        || nextBlockByRun == null
+        || objectConsumer == null
+        || entryConsumer == null) {
       throw new IllegalArgumentException("reusable artifact index walk arguments are required");
     }
     for (ReusableArtifactIndexRunReference run : effective.getRunsList()) {
       acceptObject(run.getFilter(), visitedObjectUris, objectConsumer);
-      boolean newManifest = acceptObject(run.getManifest(), visitedObjectUris, objectConsumer);
-      if (!newManifest) {
+      String runIdentity = objectIdentity(run.getManifest());
+      boolean firstVisit = acceptObject(run.getManifest(), visitedObjectUris, objectConsumer);
+      if (!firstVisit && !nextBlockByRun.containsKey(runIdentity)) {
         continue;
       }
+      nextBlockByRun.putIfAbsent(runIdentity, 0);
       ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-      for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
-        boolean newBlock = acceptObject(block.getObject(), visitedObjectUris, objectConsumer);
-        if (newBlock) {
-          loadBlock(block).getEntriesList().forEach(entryConsumer);
-        }
+      int nextBlock = nextBlockByRun.get(runIdentity);
+      if (nextBlock < 0 || nextBlock > manifest.getBlocksCount()) {
+        throw new IllegalArgumentException("reusable artifact index walk cursor is invalid");
       }
+      for (int blockIndex = nextBlock; blockIndex < manifest.getBlocksCount(); blockIndex++) {
+        ReusableArtifactIndexBlockReference block = manifest.getBlocks(blockIndex);
+        acceptObject(block.getObject(), visitedObjectUris, objectConsumer);
+        loadBlock(block).getEntriesList().forEach(entryConsumer);
+        nextBlockByRun.put(runIdentity, blockIndex + 1);
+      }
+      nextBlockByRun.remove(runIdentity);
     }
   }
 
@@ -267,9 +407,14 @@ public final class ReusableArtifactIndexStore {
     long stats = 0L;
     long indexes = 0L;
     Set<String> manifests = new HashSet<>();
+    int[] runsByLevel = new int[MAX_RUN_LEVEL + 1];
     for (ReusableArtifactIndexRunReference run : effective.getRunsList()) {
       validateRunReference(run);
-      if (!manifests.add(run.getManifest().getUri())) {
+      int maximum = run.getLevel() == 0 ? MAX_L0_RUNS : MAX_L1_RUNS;
+      if (++runsByLevel[run.getLevel()] > maximum) {
+        throw new IllegalArgumentException("reusable artifact run level is not compacted");
+      }
+      if (!manifests.add(objectIdentity(run.getManifest()))) {
         throw new IllegalArgumentException("reusable artifact run is duplicated");
       }
       stats = Math.addExact(stats, Integer.toUnsignedLong(run.getFileStatsRecordCount()));
@@ -298,94 +443,187 @@ public final class ReusableArtifactIndexStore {
     }
     Map<String, ReusableArtifactIndexEntry> found = new LinkedHashMap<>();
     List<ReusableArtifactIndexRunReference> runs = orderedRuns(effective.getRunsList());
-    primeObjects(runs.stream().map(ReusableArtifactIndexRunReference::getFilter).toList());
-    primeObjects(runs.stream().map(ReusableArtifactIndexRunReference::getManifest).toList());
-    Map<String, ReusableArtifactIndexRunManifest> manifests = new HashMap<>();
-    for (ReusableArtifactIndexRunReference run : runs) {
-      manifests.put(run.getManifest().getUri(), loadRunManifest(run));
-    }
-    List<CandidateRun> candidateRuns = new ArrayList<>();
-    for (ReusableArtifactIndexRunReference run : runs) {
-      BloomFilter filter = loadFilter(run);
-      Map<String, byte[]> candidates = new LinkedHashMap<>();
-      keyHashes.forEach(
-          (key, digest) -> {
-            if (filter.mightContain(digest)) {
-              candidates.put(key, digest);
+    for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(runs)) {
+      primeRunMetadata(batch);
+      for (ReusableArtifactIndexRunReference run : batch) {
+        ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
+        BloomFilter filter = loadFilter(run);
+        Map<BlockIdentity, List<String>> blockKeys = new LinkedHashMap<>();
+        Map<BlockIdentity, ReusableArtifactIndexBlockReference> blocks = new LinkedHashMap<>();
+        keyHashes.forEach(
+            (key, digest) -> {
+              if (!filter.mightContain(digest)) {
+                return;
+              }
+              ReusableArtifactIndexBlockReference block = findBlock(manifest, digest);
+              if (block != null) {
+                BlockIdentity identity = blockIdentity(block);
+                blocks.put(identity, block);
+                blockKeys.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(key);
+              }
+            });
+        for (Map.Entry<BlockIdentity, List<String>> selected : blockKeys.entrySet()) {
+          ReusableArtifactIndexBlock block = loadBlock(blocks.get(selected.getKey()));
+          Map<String, ReusableArtifactIndexEntry> byKey = new HashMap<>();
+          for (ReusableArtifactIndexEntry entry : block.getEntriesList()) {
+            byKey.put(entryKey(entry), entry);
+          }
+          for (String key : selected.getValue()) {
+            ReusableArtifactIndexEntry entry = byKey.get(key);
+            if (entry != null && found.putIfAbsent(key, entry) != null) {
+              throw new IllegalArgumentException("reusable artifact index contains a duplicate");
             }
-          });
-      if (!candidates.isEmpty()) {
-        candidateRuns.add(new CandidateRun(run, candidates));
-      }
-    }
-    Map<String, List<String>> blockKeys = new LinkedHashMap<>();
-    Map<String, ReusableArtifactIndexBlockReference> blocks = new LinkedHashMap<>();
-    for (CandidateRun candidateRun : candidateRuns) {
-      ReusableArtifactIndexRunManifest manifest =
-          manifests.get(candidateRun.run().getManifest().getUri());
-      candidateRun
-          .keys()
-          .forEach(
-              (key, digest) -> {
-                ReusableArtifactIndexBlockReference block = findBlock(manifest, digest);
-                if (block != null) {
-                  blocks.put(block.getObject().getUri(), block);
-                  blockKeys
-                      .computeIfAbsent(block.getObject().getUri(), ignored -> new ArrayList<>())
-                      .add(key);
-                }
-              });
-    }
-    primeObjects(
-        blocks.values().stream().map(ReusableArtifactIndexBlockReference::getObject).toList());
-    for (Map.Entry<String, List<String>> selected : blockKeys.entrySet()) {
-      ReusableArtifactIndexBlock block = loadBlock(blocks.get(selected.getKey()));
-      Map<String, ReusableArtifactIndexEntry> byKey = new HashMap<>();
-      for (ReusableArtifactIndexEntry entry : block.getEntriesList()) {
-        byKey.put(entryKey(entry), entry);
-      }
-      for (String key : selected.getValue()) {
-        ReusableArtifactIndexEntry entry = byKey.get(key);
-        if (entry != null) {
-          found.put(key, entry);
+          }
         }
       }
     }
     return Map.copyOf(found);
   }
 
+  private void primeRunMetadata(List<ReusableArtifactIndexRunReference> runs) {
+    List<ReusableArtifactIndexObjectReference> references = new ArrayList<>(runs.size() * 2);
+    runs.forEach(
+        run -> {
+          references.add(run.getFilter());
+          references.add(run.getManifest());
+        });
+    primeObjects(references);
+  }
+
+  private static List<List<ReusableArtifactIndexRunReference>> metadataBatches(
+      Collection<ReusableArtifactIndexRunReference> runs) {
+    List<List<ReusableArtifactIndexRunReference>> batches = new ArrayList<>();
+    List<ReusableArtifactIndexRunReference> batch = new ArrayList<>();
+    long bytes = 0L;
+    for (ReusableArtifactIndexRunReference run : runs) {
+      long runBytes =
+          Math.addExact(run.getFilter().getPayloadBytes(), run.getManifest().getPayloadBytes());
+      if (!batch.isEmpty() && runBytes > MAX_CACHED_BYTES - bytes) {
+        batches.add(List.copyOf(batch));
+        batch.clear();
+        bytes = 0L;
+      }
+      batch.add(run);
+      bytes = runBytes > MAX_CACHED_BYTES ? MAX_CACHED_BYTES : bytes + runBytes;
+    }
+    if (!batch.isEmpty()) {
+      batches.add(List.copyOf(batch));
+    }
+    return List.copyOf(batches);
+  }
+
   private List<ReusableArtifactIndexRunReference> compactBoundedLevels(
       String prefix, List<ReusableArtifactIndexRunReference> source) {
     List<ReusableArtifactIndexRunReference> runs = new ArrayList<>(source);
-    compactLevel(prefix, runs, 0, MAX_L0_RUNS);
-    compactLevel(prefix, runs, 1, MAX_L1_RUNS);
+    for (int level = 0; level <= MAX_RUN_LEVEL; level++) {
+      int maximum = level == 0 ? MAX_L0_RUNS : MAX_L1_RUNS;
+      while (compactLevel(prefix, runs, level, maximum)) {
+        // A level may require more than one merge; the promoted run is handled by the next level.
+      }
+    }
     return List.copyOf(runs);
   }
 
-  private void compactLevel(
+  private boolean compactLevel(
       String prefix, List<ReusableArtifactIndexRunReference> runs, int level, int maximum) {
     List<ReusableArtifactIndexRunReference> selected =
-        runs.stream().filter(run -> run.getLevel() == level).toList();
+        orderedRuns(runs).stream().filter(run -> run.getLevel() == level).toList();
     if (selected.size() <= maximum) {
-      return;
+      return false;
     }
-    List<IndexedEntry> entries = new ArrayList<>();
-    Set<String> keys = new HashSet<>();
-    for (ReusableArtifactIndexRunReference run : selected) {
-      ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-      for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
-        for (ReusableArtifactIndexEntry entry : loadBlock(block).getEntriesList()) {
-          IndexedEntry indexed = indexed(entry);
-          if (!keys.add(indexed.key())) {
-            throw new IllegalArgumentException("reusable artifact compaction found a duplicate");
-          }
-          entries.add(indexed);
-        }
+    if (level >= MAX_RUN_LEVEL) {
+      throw new IllegalArgumentException("reusable artifact run level exceeds supported range");
+    }
+    int maximumFanIn = Math.min(maximum + 1, selected.size());
+    List<ReusableArtifactIndexRunReference> preferred =
+        new ArrayList<>(selected.subList(0, maximumFanIn));
+    List<ReusableArtifactIndexRunReference> merge = preferred;
+    runs.removeAll(merge);
+    runs.add(writeMergedRun(prefix, level + 1, merge));
+    return true;
+  }
+
+  private ReusableArtifactIndexRunReference writeMergedRun(
+      String prefix, int level, List<ReusableArtifactIndexRunReference> runs) {
+    long expectedEntries =
+        runs.stream()
+            .mapToLong(ReusableArtifactIndexRunReference::getEntryCount)
+            .reduce(0L, Math::addExact);
+    if (expectedEntries <= 0L || expectedEntries > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException("reusable artifact compaction size is invalid");
+    }
+    PriorityQueue<RunCursor> pendingRuns =
+        new PriorityQueue<>(
+            (left, right) -> INDEXED_ENTRY_ORDER.compare(left.current(), right.current()));
+    int readWindowBytes = sequentialReadWindowBytes(runs.size());
+    for (ReusableArtifactIndexRunReference run : runs) {
+      RunCursor cursor = new RunCursor(loadRunManifest(run), readWindowBytes);
+      if (cursor.current() != null) {
+        pendingRuns.add(cursor);
       }
     }
-    entries.sort(INDEXED_ENTRY_ORDER);
-    runs.removeAll(selected);
-    runs.add(writeRun(prefix, level + 1, entries));
+
+    PackWriter packs = new PackWriter(prefix);
+    List<ReusableArtifactIndexEntry> pendingBlock = new ArrayList<>();
+    int pendingBytes = 8;
+    byte[] previousHash = null;
+    String previousKey = null;
+    long stats = 0L;
+    long emitted = 0L;
+    BloomFilter filter = BloomFilter.create(Math.toIntExact(expectedEntries));
+    while (!pendingRuns.isEmpty()) {
+      RunCursor cursor = pendingRuns.remove();
+      IndexedEntry next = cursor.current();
+      if (next.key().equals(previousKey)) {
+        throw new IllegalArgumentException("reusable artifact compaction found a duplicate");
+      }
+      int entryBytes = next.entry().getSerializedSize() + 8;
+      if (!pendingBlock.isEmpty()
+          && pendingBytes + entryBytes > TARGET_BLOCK_BYTES
+          && compareUnsigned(previousHash, next.keyHash()) != 0) {
+        packs.add(buildBlock(pendingBlock));
+        pendingBlock = new ArrayList<>();
+        pendingBytes = 8;
+      }
+      pendingBlock.add(next.entry());
+      pendingBytes = Math.addExact(pendingBytes, entryBytes);
+      previousHash = next.keyHash();
+      previousKey = next.key();
+      filter.add(next.keyHash());
+      if (next.entry().hasFileStats()) {
+        stats++;
+      }
+      emitted++;
+      cursor.advance();
+      if (cursor.current() != null) {
+        pendingRuns.add(cursor);
+      }
+    }
+    if (emitted != expectedEntries) {
+      throw new IllegalArgumentException("reusable artifact compaction count mismatch");
+    }
+    if (!pendingBlock.isEmpty()) {
+      packs.add(buildBlock(pendingBlock));
+    }
+    List<ReusableArtifactIndexBlockReference> blocks = packs.finish();
+    ReusableArtifactIndexRunManifest manifest =
+        ReusableArtifactIndexRunManifest.newBuilder()
+            .setFormatVersion(FORMAT_VERSION)
+            .addAllBlocks(blocks)
+            .build();
+    ReusableArtifactIndexObjectReference manifestRef =
+        writeObject(
+            prefix + "run-manifests/", ".pb", manifest.toByteArray(), PROTOBUF_CONTENT_TYPE);
+    ReusableArtifactIndexObjectReference filterRef =
+        writeObject(prefix + "filters/", ".bf", filter.bytes(), FILTER_CONTENT_TYPE);
+    return ReusableArtifactIndexRunReference.newBuilder()
+        .setLevel(level)
+        .setManifest(manifestRef)
+        .setFilter(filterRef)
+        .setEntryCount(emitted)
+        .setFileStatsRecordCount(Math.toIntExact(stats))
+        .setIndexArtifactCount(Math.toIntExact(emitted - stats))
+        .build();
   }
 
   private ReusableArtifactIndexRunReference writeRun(
@@ -393,7 +631,7 @@ public final class ReusableArtifactIndexStore {
     if (entries.isEmpty()) {
       throw new IllegalArgumentException("cannot write an empty reusable artifact run");
     }
-    List<ReusableArtifactIndexBlockReference> blocks = new ArrayList<>();
+    PackWriter packs = new PackWriter(prefix);
     List<ReusableArtifactIndexEntry> pending = new ArrayList<>();
     int pendingBytes = 8;
     byte[] previousHash = null;
@@ -402,7 +640,7 @@ public final class ReusableArtifactIndexStore {
       if (!pending.isEmpty()
           && pendingBytes + entryBytes > TARGET_BLOCK_BYTES
           && compareUnsigned(previousHash, indexed.keyHash()) != 0) {
-        blocks.add(writeBlock(prefix, pending));
+        packs.add(buildBlock(pending));
         pending = new ArrayList<>();
         pendingBytes = 8;
       }
@@ -411,8 +649,9 @@ public final class ReusableArtifactIndexStore {
       previousHash = indexed.keyHash();
     }
     if (!pending.isEmpty()) {
-      blocks.add(writeBlock(prefix, pending));
+      packs.add(buildBlock(pending));
     }
+    List<ReusableArtifactIndexBlockReference> blocks = packs.finish();
     ReusableArtifactIndexRunManifest manifest =
         ReusableArtifactIndexRunManifest.newBuilder()
             .setFormatVersion(FORMAT_VERSION)
@@ -436,27 +675,154 @@ public final class ReusableArtifactIndexStore {
         .build();
   }
 
-  private ReusableArtifactIndexBlockReference writeBlock(
-      String prefix, List<ReusableArtifactIndexEntry> entries) {
+  private final class DeltaRunAccumulator {
+    private final String prefix;
+    private final List<ReusableArtifactIndexRunReference> runs;
+    private final List<ReusableArtifactIndexEntry> pending = new ArrayList<>();
+    private long pendingBytes;
+    private int stats;
+    private int indexes;
+
+    private DeltaRunAccumulator(String prefix, ReusableArtifactIndexReference base) {
+      this.prefix = prefix;
+      this.runs = new ArrayList<>(base.getRunsList());
+      this.stats = base.getFileStatsRecordCount();
+      this.indexes = base.getIndexArtifactCount();
+    }
+
+    private void add(ReusableArtifactIndexEntry entry) {
+      validateEntry(entry);
+      long weight = Math.addExact(64L, entry.getSerializedSize());
+      if (weight > MAX_DELTA_BUFFER_BYTES) {
+        throw new IllegalArgumentException(
+            "reusable artifact index entry exceeds the delta buffer");
+      }
+      if (!pending.isEmpty() && weight > MAX_DELTA_BUFFER_BYTES - pendingBytes) {
+        flush();
+      }
+      pending.add(entry);
+      pendingBytes += weight;
+    }
+
+    private ReusableArtifactIndexReference finish() {
+      flush();
+      return buildReference(runs, stats, indexes);
+    }
+
+    private void flush() {
+      if (pending.isEmpty()) {
+        return;
+      }
+      List<IndexedEntry> indexed = indexEntries(pending);
+      ReusableArtifactIndexReference current = buildReference(runs, stats, indexes);
+      Set<String> existing =
+          lookupKeys(current, indexed.stream().map(IndexedEntry::key).toList()).keySet();
+      if (!existing.isEmpty()) {
+        throw new IllegalArgumentException(
+            "reusable artifact index already contains " + existing.iterator().next());
+      }
+      ReusableArtifactIndexRunReference run = writeRun(prefix, 0, indexed);
+      long nextStats = Math.addExact(Integer.toUnsignedLong(stats), run.getFileStatsRecordCount());
+      long nextIndexes =
+          Math.addExact(Integer.toUnsignedLong(indexes), run.getIndexArtifactCount());
+      if (nextStats > Integer.MAX_VALUE || nextIndexes > Integer.MAX_VALUE) {
+        throw new IllegalArgumentException("reusable artifact index count exceeds supported range");
+      }
+      runs.add(run);
+      List<ReusableArtifactIndexRunReference> compacted = compactBoundedLevels(prefix, runs);
+      runs.clear();
+      runs.addAll(compacted);
+      stats = (int) nextStats;
+      indexes = (int) nextIndexes;
+      pending.clear();
+      pendingBytes = 0L;
+    }
+  }
+
+  private PendingBlock buildBlock(List<ReusableArtifactIndexEntry> entries) {
     List<IndexedEntry> indexed = indexEntries(entries);
     ReusableArtifactIndexBlock block =
         ReusableArtifactIndexBlock.newBuilder()
             .setFormatVersion(FORMAT_VERSION)
             .addAllEntries(indexed.stream().map(IndexedEntry::entry).toList())
             .build();
-    ReusableArtifactIndexObjectReference object =
-        writeObject(prefix + "blocks/", ".pb", block.toByteArray(), PROTOBUF_CONTENT_TYPE);
-    return ReusableArtifactIndexBlockReference.newBuilder()
-        .setObject(object)
-        .setFirstKeySha256(ByteString.copyFrom(indexed.getFirst().keyHash()))
-        .setLastKeySha256(ByteString.copyFrom(indexed.getLast().keyHash()))
-        .setEntryCount(indexed.size())
-        .build();
+    byte[] bytes = block.toByteArray();
+    return new PendingBlock(
+        bytes,
+        indexed.getFirst().keyHash(),
+        indexed.getLast().keyHash(),
+        indexed.size(),
+        sha256(bytes));
+  }
+
+  private final class PackWriter {
+    private final String prefix;
+    private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    private final List<PendingBlockMetadata> pending = new ArrayList<>();
+    private final List<ReusableArtifactIndexBlockReference> references = new ArrayList<>();
+
+    private PackWriter(String prefix) {
+      this.prefix = prefix;
+    }
+
+    private void add(PendingBlock block) {
+      if (block.bytes().length > TARGET_PACK_BYTES) {
+        throw new IllegalArgumentException("reusable artifact index block exceeds pack size");
+      }
+      if (!pending.isEmpty() && bytes.size() + block.bytes().length > TARGET_PACK_BYTES) {
+        flush();
+      }
+      bytes.writeBytes(block.bytes());
+      pending.add(
+          new PendingBlockMetadata(
+              block.bytes().length,
+              block.firstKeyHash(),
+              block.lastKeyHash(),
+              block.entryCount(),
+              block.digest()));
+    }
+
+    private List<ReusableArtifactIndexBlockReference> finish() {
+      flush();
+      return List.copyOf(references);
+    }
+
+    private void flush() {
+      if (pending.isEmpty()) {
+        return;
+      }
+      byte[] packed = bytes.toByteArray();
+      ReusableArtifactIndexObjectReference object =
+          writeObject(prefix + "packs/", ".pack", packed, PACK_CONTENT_TYPE);
+      long offset = 0L;
+      for (PendingBlockMetadata block : pending) {
+        references.add(
+            ReusableArtifactIndexBlockReference.newBuilder()
+                .setObject(object)
+                .setFirstKeySha256(ByteString.copyFrom(block.firstKeyHash()))
+                .setLastKeySha256(ByteString.copyFrom(block.lastKeyHash()))
+                .setEntryCount(block.entryCount())
+                .setOffset(offset)
+                .setLength(block.length())
+                .setBlockSha256(ByteString.copyFrom(block.digest()))
+                .build());
+        offset = Math.addExact(offset, block.length());
+      }
+      bytes.reset();
+      pending.clear();
+    }
   }
 
   private ReusableArtifactIndexObjectReference writeObject(
       String prefix, String suffix, byte[] bytes, String contentType) {
     byte[] digest = sha256(bytes);
+    if (bytes.length <= INLINE_OBJECT_BYTES) {
+      return ReusableArtifactIndexObjectReference.newBuilder()
+          .setPayloadBytes(bytes.length)
+          .setPayloadSha256(ByteString.copyFrom(digest))
+          .setInlinePayload(ByteString.copyFrom(bytes))
+          .build();
+    }
     String uri = prefix + HexFormat.of().formatHex(digest) + suffix;
     blobStore.putImmutable(uri, bytes, contentType);
     cache(uri, bytes);
@@ -480,7 +846,34 @@ public final class ReusableArtifactIndexStore {
 
   private ReusableArtifactIndexBlock loadBlock(ReusableArtifactIndexBlockReference reference) {
     validateBlockReference(reference);
-    byte[] bytes = loadObject(reference.getObject());
+    byte[] bytes = loadBlockBytes(reference);
+    return decodeBlock(reference, bytes);
+  }
+
+  private ReusableArtifactIndexBlock loadBlockFromValidatedPack(
+      ReusableArtifactIndexBlockReference reference, byte[] packBytes) {
+    validateBlockReference(reference);
+    return decodeBlock(reference, sliceBlock(reference, packBytes));
+  }
+
+  private ReusableArtifactIndexBlock loadBlockFromWindow(
+      ReusableArtifactIndexBlockReference reference, long windowOffset, byte[] windowBytes) {
+    validateBlockReference(reference);
+    long relativeOffset = Math.subtractExact(reference.getOffset(), windowOffset);
+    int start = Math.toIntExact(relativeOffset);
+    int end = Math.addExact(start, reference.getLength());
+    if (start < 0 || end > windowBytes.length) {
+      throw new IllegalArgumentException("reusable artifact block exceeds its scan window");
+    }
+    return decodeBlock(reference, Arrays.copyOfRange(windowBytes, start, end));
+  }
+
+  private ReusableArtifactIndexBlock decodeBlock(
+      ReusableArtifactIndexBlockReference reference, byte[] bytes) {
+    if (bytes.length != reference.getLength()
+        || !MessageDigest.isEqual(sha256(bytes), reference.getBlockSha256().toByteArray())) {
+      throw new IllegalArgumentException("reusable artifact index block metadata mismatch");
+    }
     try {
       ReusableArtifactIndexBlock block = ReusableArtifactIndexBlock.parseFrom(bytes);
       if (block.getFormatVersion() != FORMAT_VERSION
@@ -504,16 +897,51 @@ public final class ReusableArtifactIndexStore {
     }
   }
 
+  private byte[] loadBlockBytes(ReusableArtifactIndexBlockReference reference) {
+    ReusableArtifactIndexObjectReference object = reference.getObject();
+    if (!object.getInlinePayload().isEmpty()) {
+      byte[] pack = object.getInlinePayload().toByteArray();
+      validateObjectBytes(object, pack);
+      return sliceBlock(reference, pack);
+    }
+    byte[] cached = cached(object);
+    if (cached != null) {
+      return sliceBlock(reference, cached);
+    }
+    byte[] bytes =
+        blobStore.getRange(object.getUri(), reference.getOffset(), reference.getLength());
+    if (bytes == null) {
+      throw new StorageNotFoundException(
+          "reusable artifact index pack is missing: " + object.getUri());
+    }
+    return bytes;
+  }
+
+  private static byte[] sliceBlock(
+      ReusableArtifactIndexBlockReference reference, byte[] packBytes) {
+    int start = Math.toIntExact(reference.getOffset());
+    int end = Math.addExact(start, reference.getLength());
+    if (end > packBytes.length) {
+      throw new IllegalArgumentException("reusable artifact block range exceeds its pack");
+    }
+    return Arrays.copyOfRange(packBytes, start, end);
+  }
+
   private BloomFilter loadFilter(ReusableArtifactIndexRunReference run) {
+    validateFilterReference(run.getFilter());
     return BloomFilter.parse(loadObject(run.getFilter()), run.getEntryCount());
   }
 
   private byte[] loadObject(ReusableArtifactIndexObjectReference reference) {
     validateObjectReference(reference);
-    byte[] cached = SHARED_OBJECT_CACHE.get(reference.getUri());
+    if (!reference.getInlinePayload().isEmpty()) {
+      byte[] bytes = reference.getInlinePayload().toByteArray();
+      validateObjectBytes(reference, bytes);
+      return bytes;
+    }
+    byte[] cached = cached(reference);
     if (cached != null) {
-      validateObjectBytes(reference, cached);
-      return cached.clone();
+      return cached;
     }
     byte[] bytes = blobStore.get(reference.getUri());
     validateObjectBytes(reference, bytes);
@@ -522,25 +950,86 @@ public final class ReusableArtifactIndexStore {
   }
 
   private void primeObjects(List<ReusableArtifactIndexObjectReference> references) {
-    List<String> missing =
-        references.stream()
-            .map(ReusableArtifactIndexObjectReference::getUri)
-            .distinct()
-            .filter(uri -> !SHARED_OBJECT_CACHE.containsKey(uri))
-            .toList();
+    Map<String, ReusableArtifactIndexObjectReference> missingReferences = new LinkedHashMap<>();
+    long missingBytes = 0L;
+    for (ReusableArtifactIndexObjectReference reference : references) {
+      validateObjectReference(reference);
+      if (!reference.getInlinePayload().isEmpty()) {
+        validateObjectBytes(reference, reference.getInlinePayload().toByteArray());
+        continue;
+      }
+      if (isCached(reference.getUri()) || missingReferences.containsKey(reference.getUri())) {
+        continue;
+      }
+      if (reference.getPayloadBytes() > MAX_CACHED_BYTES
+          || reference.getPayloadBytes() > MAX_SINGLE_CACHED_OBJECT_BYTES) {
+        continue;
+      }
+      if (reference.getPayloadBytes() > MAX_CACHED_BYTES - missingBytes) {
+        loadObjectBatch(missingReferences);
+        missingReferences.clear();
+        missingBytes = 0L;
+      }
+      missingReferences.put(reference.getUri(), reference);
+      missingBytes += reference.getPayloadBytes();
+    }
+    loadObjectBatch(missingReferences);
+  }
+
+  private void loadObjectBatch(
+      Map<String, ReusableArtifactIndexObjectReference> missingReferences) {
+    List<String> missing = List.copyOf(missingReferences.keySet());
     if (missing.isEmpty()) {
       return;
     }
     Map<String, byte[]> loaded = blobStore.getBatch(missing);
-    Map<String, ReusableArtifactIndexObjectReference> byUri = new HashMap<>();
-    references.forEach(reference -> byUri.put(reference.getUri(), reference));
     for (String uri : missing) {
       byte[] bytes = loaded.get(uri);
       if (bytes == null) {
         throw new StorageNotFoundException("reusable artifact index object is missing: " + uri);
       }
-      validateObjectBytes(byUri.get(uri), bytes);
+      validateObjectBytes(missingReferences.get(uri), bytes);
       cache(uri, bytes);
+    }
+  }
+
+  private void authenticateExternalObject(ReusableArtifactIndexObjectReference reference) {
+    validateObjectReference(reference);
+    if (!reference.getInlinePayload().isEmpty()) {
+      validateObjectBytes(reference, reference.getInlinePayload().toByteArray());
+      return;
+    }
+    var header =
+        blobStore
+            .head(reference.getUri())
+            .orElseThrow(
+                () ->
+                    new StorageNotFoundException(
+                        "reusable artifact index pack is missing: " + reference.getUri()));
+    if (header.getContentLength() != reference.getPayloadBytes()) {
+      throw new IllegalArgumentException(
+          "reusable artifact index pack size does not match its reference");
+    }
+    MessageDigest digest = sha256Digest();
+    long offset = 0L;
+    while (offset < reference.getPayloadBytes()) {
+      int length =
+          (int) Math.min(OBJECT_AUTHENTICATION_WINDOW_BYTES, reference.getPayloadBytes() - offset);
+      byte[] bytes = blobStore.getRange(reference.getUri(), offset, length);
+      if (bytes == null) {
+        throw new StorageNotFoundException(
+            "reusable artifact index pack is missing: " + reference.getUri());
+      }
+      if (bytes.length != length) {
+        throw new IllegalArgumentException(
+            "reusable artifact index pack range size does not match its reference");
+      }
+      digest.update(bytes);
+      offset = Math.addExact(offset, length);
+    }
+    if (!MessageDigest.isEqual(digest.digest(), reference.getPayloadSha256().toByteArray())) {
+      throw new IllegalArgumentException(
+          "reusable artifact index pack sha256 does not match its reference");
     }
   }
 
@@ -598,7 +1087,7 @@ public final class ReusableArtifactIndexStore {
     return runs.stream()
         .sorted(
             Comparator.comparingInt(ReusableArtifactIndexRunReference::getLevel)
-                .thenComparing(run -> run.getManifest().getUri()))
+                .thenComparing(run -> objectIdentity(run.getManifest())))
         .toList();
   }
 
@@ -622,32 +1111,85 @@ public final class ReusableArtifactIndexStore {
     return new IndexedEntry(key, hash(key), entry);
   }
 
+  private static String encodePageToken(String key) {
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(key.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static IndexedEntry decodePageToken(String token) {
+    if (token == null || token.isBlank()) {
+      return null;
+    }
+    try {
+      String key = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
+      if (!key.startsWith("stats\u0000") && !key.startsWith("index\u0000")) {
+        throw new IllegalArgumentException("invalid reusable artifact page token");
+      }
+      return new IndexedEntry(key, hash(key), null);
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("invalid reusable artifact page token", e);
+    }
+  }
+
   private static boolean acceptObject(
       ReusableArtifactIndexObjectReference reference,
       Set<String> visited,
       Consumer<ReusableArtifactIndexObjectReference> consumer) {
-    if (!visited.add(reference.getUri())) {
+    String identity = objectIdentity(reference);
+    if (visited.contains(identity)) {
       return false;
     }
     consumer.accept(reference);
+    visited.add(identity);
     return true;
+  }
+
+  private static String objectIdentity(ReusableArtifactIndexObjectReference reference) {
+    return reference.getUri().isEmpty()
+        ? "inline:" + HexFormat.of().formatHex(reference.getPayloadSha256().toByteArray())
+        : "uri:" + reference.getUri();
+  }
+
+  private static BlockIdentity blockIdentity(ReusableArtifactIndexBlockReference reference) {
+    return new BlockIdentity(
+        objectIdentity(reference.getObject()), reference.getOffset(), reference.getLength());
   }
 
   private static void validateOwnedRuns(String prefix, ReusableArtifactIndexReference reference) {
     for (ReusableArtifactIndexRunReference run : reference.getRunsList()) {
-      if (!run.getManifest().getUri().startsWith(prefix)
-          || !run.getFilter().getUri().startsWith(prefix)) {
+      if ((!run.getManifest().getUri().isEmpty() && !run.getManifest().getUri().startsWith(prefix))
+          || (!run.getFilter().getUri().isEmpty()
+              && !run.getFilter().getUri().startsWith(prefix))) {
         throw new IllegalArgumentException("reusable artifact run belongs to another table");
       }
     }
   }
 
+  private static void validateOwnedObject(
+      String prefix, ReusableArtifactIndexObjectReference reference) {
+    if (prefix != null
+        && reference.getInlinePayload().isEmpty()
+        && !reference.getUri().startsWith(prefix)) {
+      throw new IllegalArgumentException("reusable artifact index object belongs to another table");
+    }
+  }
+
   private static void validateRunReference(ReusableArtifactIndexRunReference run) {
-    if (run == null || !run.hasManifest() || !run.hasFilter() || run.getEntryCount() <= 0L) {
+    if (run == null
+        || !run.hasManifest()
+        || !run.hasFilter()
+        || run.getEntryCount() <= 0L
+        || run.getLevel() < 0
+        || run.getLevel() > MAX_RUN_LEVEL) {
       throw new IllegalArgumentException("reusable artifact run reference is invalid");
     }
     validateObjectReference(run.getManifest());
     validateObjectReference(run.getFilter());
+    if (run.getManifest().getPayloadBytes() > MAX_RUN_MANIFEST_BYTES) {
+      throw new IllegalArgumentException("reusable artifact run manifest is too large");
+    }
+    validateFilterReference(run.getFilter());
     if ((long) run.getFileStatsRecordCount() + run.getIndexArtifactCount() != run.getEntryCount()) {
       throw new IllegalArgumentException("reusable artifact run count is invalid");
     }
@@ -655,7 +1197,10 @@ public final class ReusableArtifactIndexStore {
 
   private static void validateRunManifest(
       ReusableArtifactIndexRunManifest manifest, long expectedEntries) {
-    if (manifest.getFormatVersion() != FORMAT_VERSION || manifest.getBlocksList().isEmpty()) {
+    if (manifest.getFormatVersion() != FORMAT_VERSION) {
+      throw new IllegalArgumentException("reusable artifact run manifest format is invalid");
+    }
+    if (manifest.getBlocksList().isEmpty()) {
       throw new IllegalArgumentException("reusable artifact run manifest shape is invalid");
     }
     long entries = 0L;
@@ -678,6 +1223,8 @@ public final class ReusableArtifactIndexStore {
     if (reference == null
         || !reference.hasObject()
         || reference.getEntryCount() <= 0L
+        || reference.getLength() <= 0
+        || reference.getBlockSha256().size() != 32
         || reference.getFirstKeySha256().size() != 32
         || reference.getLastKeySha256().size() != 32
         || compareUnsigned(
@@ -687,14 +1234,32 @@ public final class ReusableArtifactIndexStore {
       throw new IllegalArgumentException("reusable artifact block reference is invalid");
     }
     validateObjectReference(reference.getObject());
+    if (reference.getObject().getPayloadBytes() > TARGET_PACK_BYTES) {
+      throw new IllegalArgumentException("reusable artifact index pack is too large");
+    }
+    long length = Integer.toUnsignedLong(reference.getLength());
+    if (reference.getLength() < 0
+        || reference.getOffset() > reference.getObject().getPayloadBytes()
+        || length > reference.getObject().getPayloadBytes() - reference.getOffset()) {
+      throw new IllegalArgumentException("reusable artifact block range is invalid");
+    }
   }
 
   private static void validateObjectReference(ReusableArtifactIndexObjectReference reference) {
+    boolean inline = reference != null && !reference.getInlinePayload().isEmpty();
     if (reference == null
-        || reference.getUri().isBlank()
+        || inline == !reference.getUri().isBlank()
         || reference.getPayloadBytes() <= 0L
-        || reference.getPayloadSha256().size() != 32) {
+        || reference.getPayloadSha256().size() != 32
+        || (inline && reference.getInlinePayload().size() != reference.getPayloadBytes())) {
       throw new IllegalArgumentException("reusable artifact index object reference is invalid");
+    }
+  }
+
+  private static void validateFilterReference(ReusableArtifactIndexObjectReference reference) {
+    validateObjectReference(reference);
+    if (reference.getPayloadBytes() > MAX_BLOOM_OBJECT_BYTES) {
+      throw new IllegalArgumentException("reusable artifact Bloom filter is too large");
     }
   }
 
@@ -787,11 +1352,68 @@ public final class ReusableArtifactIndexStore {
   }
 
   static void clearSharedCacheForTests() {
-    SHARED_OBJECT_CACHE.clear();
+    synchronized (SHARED_OBJECT_CACHE_LOCK) {
+      SHARED_OBJECT_CACHE.clear();
+      sharedObjectCacheBytes = 0L;
+    }
   }
 
   private static void cache(String uri, byte[] bytes) {
-    SHARED_OBJECT_CACHE.put(uri, bytes.clone());
+    if (bytes == null
+        || bytes.length > MAX_CACHED_BYTES
+        || bytes.length > MAX_SINGLE_CACHED_OBJECT_BYTES) {
+      return;
+    }
+    synchronized (SHARED_OBJECT_CACHE_LOCK) {
+      CachedObject replaced = SHARED_OBJECT_CACHE.remove(uri);
+      if (replaced != null) {
+        sharedObjectCacheBytes -= replaced.bytes().length;
+      }
+      var iterator = SHARED_OBJECT_CACHE.entrySet().iterator();
+      while (sharedObjectCacheBytes > MAX_CACHED_BYTES - bytes.length && iterator.hasNext()) {
+        sharedObjectCacheBytes -= iterator.next().getValue().bytes().length;
+        iterator.remove();
+      }
+      SHARED_OBJECT_CACHE.put(uri, new CachedObject(bytes.clone(), sha256(bytes)));
+      sharedObjectCacheBytes += bytes.length;
+    }
+  }
+
+  private static byte[] cached(ReusableArtifactIndexObjectReference reference) {
+    synchronized (SHARED_OBJECT_CACHE_LOCK) {
+      CachedObject cached = SHARED_OBJECT_CACHE.get(reference.getUri());
+      if (cached == null) {
+        return null;
+      }
+      if (cached.bytes().length != reference.getPayloadBytes()
+          || !MessageDigest.isEqual(cached.sha256(), reference.getPayloadSha256().toByteArray())) {
+        throw new IllegalArgumentException("reusable artifact index object metadata mismatch");
+      }
+      return cached.bytes();
+    }
+  }
+
+  private static boolean isCached(String uri) {
+    synchronized (SHARED_OBJECT_CACHE_LOCK) {
+      return SHARED_OBJECT_CACHE.containsKey(uri);
+    }
+  }
+
+  private static long configuredMaxCachedBytes() {
+    String configured =
+        System.getProperty("floecat.reusable-artifact-index.cache.max-weight-bytes");
+    if (configured == null || configured.isBlank()) {
+      configured = System.getenv("FLOECAT_REUSABLE_ARTIFACT_INDEX_CACHE_MAX_WEIGHT_BYTES");
+    }
+    if (configured == null || configured.isBlank()) {
+      return DEFAULT_MAX_CACHED_BYTES;
+    }
+    try {
+      long parsed = Long.parseLong(configured);
+      return parsed > 0L ? parsed : DEFAULT_MAX_CACHED_BYTES;
+    } catch (NumberFormatException ignored) {
+      return DEFAULT_MAX_CACHED_BYTES;
+    }
   }
 
   private static byte[] hash(String value) {
@@ -799,8 +1421,12 @@ public final class ReusableArtifactIndexStore {
   }
 
   private static byte[] sha256(byte[] bytes) {
+    return sha256Digest().digest(bytes);
+  }
+
+  private static MessageDigest sha256Digest() {
     try {
-      return MessageDigest.getInstance("SHA-256").digest(bytes);
+      return MessageDigest.getInstance("SHA-256");
     } catch (NoSuchAlgorithmException error) {
       throw new IllegalStateException("SHA-256 unavailable", error);
     }
@@ -812,17 +1438,133 @@ public final class ReusableArtifactIndexStore {
 
   private record IndexedEntry(String key, byte[] keyHash, ReusableArtifactIndexEntry entry) {}
 
-  private record CandidateRun(ReusableArtifactIndexRunReference run, Map<String, byte[]> keys) {}
+  private record PendingBlock(
+      byte[] bytes, byte[] firstKeyHash, byte[] lastKeyHash, int entryCount, byte[] digest) {}
+
+  private record PendingBlockMetadata(
+      int length, byte[] firstKeyHash, byte[] lastKeyHash, int entryCount, byte[] digest) {}
+
+  private record BlockIdentity(String objectIdentity, long offset, int length) {}
+
+  private record CachedObject(byte[] bytes, byte[] sha256) {}
+
+  private final class RunCursor {
+    private final ReusableArtifactIndexRunManifest manifest;
+    private final int readWindowBytes;
+    private int blockIndex;
+    private int entryIndex;
+    private ReusableArtifactIndexBlock block;
+    private IndexedEntry current;
+    private String loadedPackIdentity;
+    private long loadedWindowOffset;
+    private byte[] loadedWindow;
+
+    private RunCursor(ReusableArtifactIndexRunManifest manifest, int readWindowBytes) {
+      this.manifest = manifest;
+      this.readWindowBytes = readWindowBytes;
+      advance();
+    }
+
+    private RunCursor(
+        ReusableArtifactIndexRunManifest manifest, IndexedEntry after, int readWindowBytes) {
+      this.manifest = manifest;
+      this.readWindowBytes = readWindowBytes;
+      if (after != null) {
+        while (blockIndex < manifest.getBlocksCount()
+            && compareUnsigned(
+                    manifest.getBlocks(blockIndex).getLastKeySha256().toByteArray(),
+                    after.keyHash())
+                < 0) {
+          blockIndex++;
+        }
+      }
+      advance();
+      while (current != null && after != null && INDEXED_ENTRY_ORDER.compare(current, after) <= 0) {
+        advance();
+      }
+    }
+
+    private IndexedEntry current() {
+      return current;
+    }
+
+    private void advance() {
+      while (block == null || entryIndex >= block.getEntriesCount()) {
+        if (blockIndex >= manifest.getBlocksCount()) {
+          current = null;
+          block = null;
+          return;
+        }
+        ReusableArtifactIndexBlockReference reference = manifest.getBlocks(blockIndex++);
+        String packIdentity = objectIdentity(reference.getObject());
+        long blockEnd = Math.addExact(reference.getOffset(), reference.getLength());
+        long windowEnd =
+            loadedWindow == null ? 0L : Math.addExact(loadedWindowOffset, loadedWindow.length);
+        if (!packIdentity.equals(loadedPackIdentity)
+            || reference.getOffset() < loadedWindowOffset
+            || blockEnd > windowEnd) {
+          ReusableArtifactIndexObjectReference object = reference.getObject();
+          loadedWindowOffset = object.getInlinePayload().isEmpty() ? reference.getOffset() : 0L;
+          if (object.getInlinePayload().isEmpty()) {
+            long remaining = object.getPayloadBytes() - loadedWindowOffset;
+            int length =
+                Math.toIntExact(
+                    Math.min(remaining, Math.max(reference.getLength(), readWindowBytes)));
+            loadedWindow = blobStore.getRange(object.getUri(), loadedWindowOffset, length);
+            if (loadedWindow == null) {
+              throw new StorageNotFoundException(
+                  "reusable artifact index pack is missing: " + object.getUri());
+            }
+          } else {
+            loadedWindow = object.getInlinePayload().toByteArray();
+            validateObjectBytes(object, loadedWindow);
+          }
+          loadedPackIdentity = packIdentity;
+        }
+        block = loadBlockFromWindow(reference, loadedWindowOffset, loadedWindow);
+        entryIndex = 0;
+      }
+      current = indexed(block.getEntries(entryIndex++));
+    }
+  }
+
+  private static int sequentialReadWindowBytes(int runCount) {
+    if (runCount <= 0) {
+      return TARGET_BLOCK_BYTES;
+    }
+    return Math.max(
+        TARGET_BLOCK_BYTES,
+        Math.min(MAX_SEQUENTIAL_READ_WINDOW_BYTES, MAX_SEQUENTIAL_READ_BUDGET_BYTES / runCount));
+  }
+
+  static int bloomBitCount(int entryCount) {
+    if (entryCount <= 0) {
+      throw new IllegalArgumentException("reusable artifact Bloom filter entry count is invalid");
+    }
+    long desiredBits =
+        Math.max(
+            (long) MIN_BLOOM_BITS, Math.multiplyExact((long) entryCount, BLOOM_BITS_PER_ENTRY));
+    long maximumBits = (long) MAX_BLOOM_BYTES * Byte.SIZE;
+    return Math.toIntExact(Math.ceilDiv(Math.min(desiredBits, maximumBits), 64L) * 64L);
+  }
 
   private record BloomFilter(int bitCount, int hashes, int entryCount, byte[] bits) {
     static BloomFilter create(List<byte[]> digests) {
-      int bitCount =
-          Math.max(MIN_BLOOM_BITS, Math.multiplyExact(digests.size(), BLOOM_BITS_PER_ENTRY));
-      bitCount = Math.ceilDiv(bitCount, 64) * 64;
-      byte[] bits = new byte[Math.ceilDiv(bitCount, 8)];
-      BloomFilter filter = new BloomFilter(bitCount, BLOOM_HASHES, digests.size(), bits);
+      BloomFilter filter = create(digests.size());
       digests.forEach(filter::add);
       return filter;
+    }
+
+    static BloomFilter create(int entryCount) {
+      int bitCount = bloomBitCount(entryCount);
+      int hashes =
+          Math.max(
+              1,
+              Math.min(
+                  BLOOM_HASHES,
+                  (int) Math.round(((double) bitCount / (double) entryCount) * Math.log(2.0d))));
+      byte[] bits = new byte[Math.ceilDiv(bitCount, 8)];
+      return new BloomFilter(bitCount, hashes, entryCount, bits);
     }
 
     static BloomFilter parse(byte[] bytes, long expectedEntries) {
@@ -833,15 +1575,18 @@ public final class ReusableArtifactIndexStore {
       int bitCount = input.getInt();
       int hashes = Byte.toUnsignedInt(input.get());
       int entryCount = input.getInt();
-      byte[] bits = new byte[input.remaining()];
-      input.get(bits);
+      int bitBytes = bitCount > 0 ? Math.ceilDiv(bitCount, 8) : -1;
       if (bitCount <= 0
           || bitCount % 64 != 0
           || hashes <= 0
-          || bits.length != Math.ceilDiv(bitCount, 8)
+          || hashes > BLOOM_HASHES
+          || bitCount > MAX_BLOOM_BYTES * Byte.SIZE
+          || input.remaining() != bitBytes
           || Integer.toUnsignedLong(entryCount) != expectedEntries) {
         throw new IllegalArgumentException("reusable artifact Bloom filter shape is invalid");
       }
+      byte[] bits = new byte[bitBytes];
+      input.get(bits);
       return new BloomFilter(bitCount, hashes, entryCount, bits);
     }
 

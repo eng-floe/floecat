@@ -577,11 +577,13 @@ class IcebergConnectorIssuesTest {
               snapshotId,
               plannedFilePaths,
               Set.of(),
+              Set.of(),
               Set.of(
                   FloecatConnector.StatsTargetKind.TABLE,
                   FloecatConnector.StatsTargetKind.COLUMN,
                   FloecatConnector.StatsTargetKind.FILE),
-              false);
+              false,
+              FloecatConnector.ColumnSelectorPolicy.defaults());
 
       assertTrue(
           captured.statsRecords().stream()

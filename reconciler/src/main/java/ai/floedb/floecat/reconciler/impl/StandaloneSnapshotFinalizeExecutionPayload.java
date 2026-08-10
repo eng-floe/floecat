@@ -31,7 +31,10 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     String snapshotPlanUri,
     int fileGroupCount,
     String statsObjectPrefix,
-    String captureManifestUri,
+    String durableCaptureManifestPrefix,
+    String reusableArtifactIndexObjectPrefix,
+    String statsGenerationManifestUri,
+    String indexGenerationCaptureManifestPrefix,
     ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
   public StandaloneSnapshotFinalizeExecutionPayload {
     jobId = trim(jobId);
@@ -40,7 +43,10 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     tableId = tableId == null ? ResourceId.getDefaultInstance() : tableId;
     snapshotPlanUri = trim(snapshotPlanUri);
     statsObjectPrefix = trim(statsObjectPrefix);
-    captureManifestUri = trim(captureManifestUri);
+    durableCaptureManifestPrefix = trim(durableCaptureManifestPrefix);
+    reusableArtifactIndexObjectPrefix = trim(reusableArtifactIndexObjectPrefix);
+    statsGenerationManifestUri = trim(statsGenerationManifestUri);
+    indexGenerationCaptureManifestPrefix = trim(indexGenerationCaptureManifestPrefix);
     sourceFileCount = Math.max(0, sourceFileCount);
     fileGroupCount = Math.max(0, fileGroupCount);
   }

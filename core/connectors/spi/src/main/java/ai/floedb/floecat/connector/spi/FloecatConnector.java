@@ -307,52 +307,10 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes);
-
-  default FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes);
-  }
-
-  default FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes,
-        columnSelectorPolicy);
-  }
+      ColumnSelectorPolicy columnSelectorPolicy);
 
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.

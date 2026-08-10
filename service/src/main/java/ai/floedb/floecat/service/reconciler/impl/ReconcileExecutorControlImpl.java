@@ -1002,7 +1002,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setFullRescan(payload.fullRescan())
                       .setFileGroupCount(payload.fileGroupCount())
                       .setStatsObjectPrefix(payload.statsObjectPrefix())
-                      .setCaptureManifestUri(payload.captureManifestUri());
+                      .setDurableCaptureManifestPrefix(payload.durableCaptureManifestPrefix())
+                      .setReusableArtifactIndexObjectPrefix(
+                          payload.reusableArtifactIndexObjectPrefix())
+                      .setStatsGenerationManifestUri(payload.statsGenerationManifestUri())
+                      .setIndexGenerationCaptureManifestPrefix(
+                          payload.indexGenerationCaptureManifestPrefix());
               if (payload.indexPredecessor() != null) {
                 var predecessor = payload.indexPredecessor();
                 inputBuilder.setIndexPredecessor(

@@ -46,7 +46,6 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotPlanBlobStore {
-  public static final int MAX_GENERATION_CHAIN_DEPTH = 8;
   private static final Logger LOG = Logger.getLogger(SnapshotPlanBlobStore.class);
   private static final int MAX_CACHED_PLAN_INDEXES = 64;
   private static final int MAX_CACHED_PLAN_FILES = 65_536;
@@ -482,7 +481,6 @@ public class SnapshotPlanBlobStore {
       int indexArtifactCount,
       String statsGenerationId,
       String indexGenerationId,
-      int chainDepth,
       ReusableArtifactIndexReference reusableArtifactIndex) {
     public AppendOnlyBase {
       manifestUri = manifestUri == null ? "" : manifestUri.trim();
@@ -501,8 +499,7 @@ public class SnapshotPlanBlobStore {
           || fileStatsRecordCount < 0
           || indexArtifactCount < 0
           || statsGenerationId.isBlank()
-          || (indexArtifactCount > 0 && indexGenerationId.isBlank())
-          || chainDepth <= 0) {
+          || (indexArtifactCount > 0 && indexGenerationId.isBlank())) {
         throw new IllegalArgumentException("invalid append-only snapshot base");
       }
       ReusableArtifactIndexStore.validateReference(reusableArtifactIndex);
@@ -535,7 +532,6 @@ public class SnapshotPlanBlobStore {
           Integer.toString(indexArtifactCount),
           statsGenerationId,
           indexGenerationId,
-          Integer.toString(chainDepth),
           Base64.getEncoder().encodeToString(reusableArtifactIndex.toByteArray()));
     }
   }
@@ -550,7 +546,6 @@ public class SnapshotPlanBlobStore {
     public int indexArtifactCount = 0;
     public String statsGenerationId = "";
     public String indexGenerationId = "";
-    public int chainDepth = 0;
     public String artifactIndex = "";
 
     static StoredAppendOnlyBase from(AppendOnlyBase value) {
@@ -567,7 +562,6 @@ public class SnapshotPlanBlobStore {
       stored.indexArtifactCount = value.indexArtifactCount();
       stored.statsGenerationId = value.statsGenerationId();
       stored.indexGenerationId = value.indexGenerationId();
-      stored.chainDepth = value.chainDepth();
       stored.artifactIndex =
           Base64.getEncoder().encodeToString(value.reusableArtifactIndex().toByteArray());
       return stored;
@@ -584,7 +578,6 @@ public class SnapshotPlanBlobStore {
           indexArtifactCount,
           statsGenerationId,
           indexGenerationId,
-          chainDepth,
           artifactIndexReference());
     }
 

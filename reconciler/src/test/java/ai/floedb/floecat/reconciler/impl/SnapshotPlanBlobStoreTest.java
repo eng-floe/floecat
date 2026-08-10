@@ -340,7 +340,6 @@ class SnapshotPlanBlobStoreTest {
             1,
             "full-rescan-base-job",
             "full-rescan-base-job",
-            1,
             testArtifactIndex(0, 1));
 
     ReconcileSnapshotTask persisted =
@@ -356,7 +355,6 @@ class SnapshotPlanBlobStoreTest {
             0,
             "full-rescan-other-base-job",
             "",
-            1,
             testArtifactIndex(1, 0));
     ReconcileSnapshotTask persistedOther =
         store.persistPlan("acct", "job-1", snapshotTask, List.of(), otherBase);

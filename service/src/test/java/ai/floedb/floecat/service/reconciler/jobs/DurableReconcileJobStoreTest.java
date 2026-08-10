@@ -6209,7 +6209,6 @@ class DurableReconcileJobStoreTest {
             0,
             "full-rescan-base-job",
             "",
-            1,
             testArtifactIndex(5, 0));
     String sourcePlanUri = "/accounts/acct-1/reconcile/jobs/snapshot-job/snapshot-plan.json";
     store.blobStore.put(
@@ -6288,7 +6287,6 @@ class DurableReconcileJobStoreTest {
             0,
             "full-rescan-base-job",
             "",
-            1,
             testArtifactIndex(1, 0));
     String planUri =
         SnapshotPlanManifestIds.manifestBlobUri(

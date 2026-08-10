@@ -287,6 +287,13 @@ public final class FileArtifactReuse {
     return fieldIds.isEmpty() ? java.util.Set.copyOf(normalized) : fieldIds;
   }
 
+  static int realizedColumnCount(Collection<String> selectors) {
+    List<String> normalized = normalizedSelectors(selectors);
+    int fieldIds = (int) normalized.stream().filter(selector -> selector.startsWith("#")).count();
+    int names = normalized.size() - fieldIds;
+    return Math.max(fieldIds, names);
+  }
+
   /** Checks every explicit selector without collapsing distinct named requirements. */
   static boolean coversExplicitSelectors(
       Collection<String> realizedSelectors, Collection<String> requiredSelectors) {

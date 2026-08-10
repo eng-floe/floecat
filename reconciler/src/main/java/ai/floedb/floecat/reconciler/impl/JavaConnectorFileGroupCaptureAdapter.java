@@ -49,28 +49,17 @@ final class JavaConnectorFileGroupCaptureAdapter {
     List<TargetStatsRecord> partialAggregates = List.of();
     throwIfCancellationRequested(request);
     FloecatConnector.FileGroupCaptureResult captured =
-        request.capturePageIndex() && !request.statsColumns().equals(request.indexColumns())
-            ? source.capturePlannedFileGroup(
-                request.sourceNamespace(),
-                request.sourceTable(),
-                request.tableId(),
-                request.snapshotId(),
-                new java.util.LinkedHashSet<>(request.plannedFilePaths()),
-                request.statsColumns(),
-                request.indexColumns(),
-                request.requestedStatsTargetKinds(),
-                true,
-                request.columnSelectorPolicy())
-            : source.capturePlannedFileGroup(
-                request.sourceNamespace(),
-                request.sourceTable(),
-                request.tableId(),
-                request.snapshotId(),
-                new java.util.LinkedHashSet<>(request.plannedFilePaths()),
-                request.statsColumns(),
-                request.requestedStatsTargetKinds(),
-                request.capturePageIndex(),
-                request.columnSelectorPolicy());
+        source.capturePlannedFileGroup(
+            request.sourceNamespace(),
+            request.sourceTable(),
+            request.tableId(),
+            request.snapshotId(),
+            new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+            request.statsColumns(),
+            request.indexColumns(),
+            request.requestedStatsTargetKinds(),
+            request.capturePageIndex(),
+            request.columnSelectorPolicy());
     List<TargetStatsRecord> capturedFileStats =
         uniqueFileStats(captured.statsRecords(), publishedFileTargets);
     realizedStatsSelectors.addAll(captured.realizedStatsSelectors());

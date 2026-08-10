@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
@@ -52,11 +53,82 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemoteSnapshotFinalizeReconcileExecutorTest {
+
+  @Test
+  void trustedFinalizerRejectsUnrequestedRealizedSelectors() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                ReconcileCapturePolicy.empty(), 1, Set.of(), Set.of("#1")));
+  }
+
+  @Test
+  void trustedFinalizerEnforcesFirstNSelectorLimitsByFieldIdentity() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            2);
+
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                policy,
+                1,
+                Set.of("#1", "#2", "customer_id", "customer_name"),
+                Set.of("#1", "#2", "customer_id", "customer_name")));
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                policy,
+                1,
+                Set.of("#1", "customer_id", "customer_name"),
+                Set.of("#1", "customer_id", "customer_name")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                policy, 1, Set.of("#1", "#2", "#3"), Set.of("#1", "#2")));
+  }
+
+  @Test
+  void trustedFinalizerRejectsMissingExplicitAndDefaultStatsSelectors() {
+    ReconcileCapturePolicy explicit =
+        ReconcileCapturePolicy.of(
+            List.of(
+                new ReconcileCapturePolicy.Column("#1", true, false),
+                new ReconcileCapturePolicy.Column("#2", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    ReconcileCapturePolicy defaults =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            2);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                explicit, 1, Set.of("#1"), Set.of()));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateRealizedSelectors(
+                defaults, 1, Set.of(), Set.of()));
+  }
 
   @Test
   void rejectsMissingRequestedIndexArtifactCoverage() {
@@ -88,12 +160,115 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   void appendOnlyDefaultIndexSelectorsCompareByStableFieldIdentity() {
     Set<String> inherited =
         RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(
-            List.of("#1", "customer_id", "id"));
+            List.of("#1", "customer_id"));
     Set<String> delta =
         RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(List.of("#1"));
 
     assertEquals(Set.of("#1"), inherited);
     assertEquals(inherited, delta);
+    assertEquals(
+        Set.of("#1"),
+        RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(
+            List.of("#1", "customer_id", "id")));
+  }
+
+  @Test
+  void reuseMetadataMustMatchImmutableFingerprintsSignaturesAndSelectors() {
+    String filePath = "s3://bucket/data.parquet";
+    String deletePath = "s3://bucket/delete.parquet";
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+                filePath, 10L, "{}", null, "parquet", 0, List.of(), "content-1")
+            .withReuseBundleSelections(
+                "stats-source",
+                "index-source",
+                "stats-signature",
+                "index-signature",
+                Map.of(deletePath, "delete-source"),
+                List.of());
+    var valid =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(statsDescriptor("reuse-bundle:g", "/bundle.pb", new byte[32]))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(filePath)
+                    .setSourceFingerprint("stats-source")
+                    .setStatsCaptureSignature("stats-signature")
+                    .addRealizedStatsSelectors("#1"))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(deletePath)
+                    .setSourceFingerprint("delete-source")
+                    .setStatsCaptureSignature("stats-signature")
+                    .addRealizedStatsSelectors("#1"))
+            .addIndexArtifacts(
+                ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+                    .setFilePath(filePath)
+                    .setSourceFingerprint("index-source")
+                    .setIndexCaptureSignature("index-signature")
+                    .addRealizedIndexSelectors("#1"))
+            .build();
+
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseMetadata(
+                policy, List.of(plan), valid, List.of("#1"), List.of("#1")));
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseMetadata(
+                policy,
+                List.of(plan),
+                valid.toBuilder()
+                    .setFileStats(
+                        0,
+                        valid.getFileStats(0).toBuilder().addRealizedStatsSelectors("customer_id"))
+                    .build(),
+                List.of("#1", "customer_id"),
+                List.of("#1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseMetadata(
+                policy,
+                List.of(plan),
+                valid.toBuilder()
+                    .setFileStats(
+                        0, valid.getFileStats(0).toBuilder().setSourceFingerprint("forged"))
+                    .build(),
+                List.of("#1"),
+                List.of("#1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseMetadata(
+                policy,
+                List.of(plan),
+                valid.toBuilder()
+                    .setFileStats(
+                        1, valid.getFileStats(1).toBuilder().setStatsCaptureSignature("forged"))
+                    .build(),
+                List.of("#1"),
+                List.of("#1")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validateReuseMetadata(
+                policy,
+                List.of(plan),
+                valid.toBuilder()
+                    .setIndexArtifacts(
+                        0, valid.getIndexArtifacts(0).toBuilder().clearRealizedIndexSelectors())
+                    .build(),
+                List.of("#1"),
+                List.of("#1")));
   }
 
   @Test
@@ -312,6 +487,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             1,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     assertDoesNotThrow(
@@ -341,6 +519,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             1,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     IllegalArgumentException error =
@@ -397,6 +578,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             2,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
@@ -422,8 +606,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
     verify(workerClient, never())
         .prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any(),
-            any());
+            any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any(),
+            any(), any(), any(), any());
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
@@ -449,6 +633,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             1,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
@@ -482,8 +669,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(workerClient.prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), any()))
+            any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
+            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
     when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
 
@@ -515,8 +702,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), any()))
+            any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
+            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(false);
 
@@ -551,8 +738,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), any()))
+            any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
+            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenThrow(uncertain);
 
@@ -606,6 +793,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .setSnapshotId(54L)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .addFileGroups(baseFileGroup())
             .setReusableArtifactBundlesComplete(true)
             .addReusableArtifactBundles(bundle)
             .setReusableArtifactIndex(testArtifactIndex(1, 0))
@@ -623,7 +811,6 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             0,
             "full-rescan-snapshot-job",
             "",
-            1,
             testArtifactIndex(1, 0));
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -638,6 +825,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             0,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
@@ -645,8 +835,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .thenReturn(SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of(), base));
     when(blobStore.get(manifestUri)).thenReturn(manifestBytes);
     when(workerClient.prepareAppendOnlySnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), any(), any()))
+            any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
+            anyList(), anyList(), anyList(), anyList(), anyList(), any(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
 
@@ -659,6 +849,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     verify(workerClient, never()).listSnapshotFileGroupResults(any());
     verify(workerClient)
         .prepareAppendOnlySnapshotFinalizeSuccess(
+            any(),
+            any(),
+            any(),
             any(),
             any(),
             any(),
@@ -691,7 +884,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .setArtifact(
                 StatsObjectDescriptor.newBuilder()
                     .setTargetStorageId("reuse-bundle:snapshot-54-group-0")
-                    .setPayloadUri("/reuse-bundle.pb")
+                    .setPayloadUri(
+                        "/accounts/acct/tables/table-1/reuse-bundles/"
+                            + "0000000000000000000000000000000000000000000000000000000000000000.pb")
                     .setPayloadBytes(100)
                     .setPayloadSha256(ByteString.copyFrom(new byte[32])))
             .addFileStats(
@@ -710,6 +905,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             .setSnapshotId(54L)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .addFileGroups(baseFileGroup())
             .setReusableArtifactBundlesComplete(true)
             .addReusableArtifactBundles(bundle)
             .setReusableArtifactIndex(testArtifactIndex(1, 0))
@@ -727,7 +923,6 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             0,
             "full-rescan-snapshot-job",
             "",
-            1,
             testArtifactIndex(1, 0));
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -742,6 +937,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             1,
             "/final-stats.pb",
             "/capture-manifest.pb",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-capture-manifests/",
             null);
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
@@ -782,6 +980,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         0,
         "/final-stats.pb",
         "/capture-manifest.pb",
+        "/reusable-index/",
+        "/stats-generation.pb",
+        "/index-capture-manifests/",
         null);
   }
 
@@ -867,6 +1068,14 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .setAccountId("acct")
         .setKind(ResourceKind.RK_TABLE)
         .setId("table-1")
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor baseFileGroup() {
+    return ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor.newBuilder()
+        .setGroupId("snapshot-54-group-0")
+        .setStatsObjectPrefix("/accounts/acct/tables/table-1/")
+        .setSucceededFileCount(1)
         .build();
   }
 
