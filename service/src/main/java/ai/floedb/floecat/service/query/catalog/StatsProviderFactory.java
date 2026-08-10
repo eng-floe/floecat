@@ -49,7 +49,6 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -64,11 +63,9 @@ public final class StatsProviderFactory {
   private final Duration syncLatencyBudget;
   private final Duration syncMaxLatencyBudget;
   private final boolean syncEnabled;
-  // Bound on concurrent stats warms per chunk. Local per-request bound; total store concurrency is
-  // bounded by the shared executor pool, not this. Read once here via ConfigProvider (not a
-  // @ConfigProperty ctor param) so the new-constructed test call sites keep compiling while prod
-  // still honors config.
+  // One setting supplies both the per-query fan-out width and the process-wide warm ceiling.
   private final int maxParallelStatsWarms;
+  private final StatsWarmAdmission statsWarmAdmission;
 
   @Inject
   public StatsProviderFactory(
@@ -76,7 +73,8 @@ public final class StatsProviderFactory {
       TableRepository tableRepository,
       QueryContextStore queryStore,
       SnapshotRepository snapshotRepository,
-      StatsProviderFactoryConfig config) {
+      StatsProviderFactoryConfig config,
+      StatsWarmAdmission statsWarmAdmission) {
     this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
     this.queryStore = queryStore;
@@ -84,15 +82,23 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
-    // Clamp to >=1: a 0/negative value reaches MetadataFanout and throws, which warmChunkStats
-    // swallows -- silently disabling the batch warm path with no startup signal. Match the sibling
-    // caps (max_parallel_relations) and clamp here.
-    this.maxParallelStatsWarms =
-        Math.max(
-            1,
-            ConfigProvider.getConfig()
-                .getOptionalValue("floecat.catalog.bundle.max_parallel_stats_warms", Integer.class)
-                .orElse(16));
+    this.statsWarmAdmission = statsWarmAdmission;
+    this.maxParallelStatsWarms = statsWarmAdmission.capacity();
+  }
+
+  StatsProviderFactory(
+      StatsOrchestrator statsOrchestrator,
+      TableRepository tableRepository,
+      QueryContextStore queryStore,
+      SnapshotRepository snapshotRepository,
+      StatsProviderFactoryConfig config) {
+    this(
+        statsOrchestrator,
+        tableRepository,
+        queryStore,
+        snapshotRepository,
+        config,
+        new StatsWarmAdmission());
   }
 
   public StatsProviderFactory(
@@ -113,7 +119,8 @@ public final class StatsProviderFactory {
         false,
         syncLatencyBudget,
         syncEnabled,
-        maxParallelStatsWarms);
+        maxParallelStatsWarms,
+        statsWarmAdmission);
   }
 
   public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
@@ -127,7 +134,8 @@ public final class StatsProviderFactory {
         true,
         syncLatencyBudget,
         syncEnabled,
-        maxParallelStatsWarms);
+        maxParallelStatsWarms,
+        statsWarmAdmission);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -135,9 +143,9 @@ public final class StatsProviderFactory {
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
-    // Bound on concurrent stats warms per chunk (chunk cap is 25); virtual threads make this cheap.
-    // Local per-request bound; total store concurrency is bounded by the shared executor pool.
+    // Per-request fan-out stays fair while StatsWarmAdmission caps all providers together.
     private final MetadataFanout statsFanout;
+    private final StatsWarmAdmission statsWarmAdmission;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -162,7 +170,8 @@ public final class StatsProviderFactory {
         boolean allowUnpinnedLatestSnapshotFallback,
         Duration syncLatencyBudget,
         boolean syncEnabled,
-        int maxParallelStatsWarms) {
+        int maxParallelStatsWarms,
+        StatsWarmAdmission statsWarmAdmission) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.snapshotRepository = snapshotRepository;
@@ -170,6 +179,7 @@ public final class StatsProviderFactory {
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
       this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
+      this.statsWarmAdmission = statsWarmAdmission;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -207,14 +217,14 @@ public final class StatsProviderFactory {
       // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
       // (on cheap virtual threads); these reads are thread-safe, and each call populates the shared
       // tableCache so the subsequent per-relation tableStats() is a hit. A single table's failure
-      // yields empty, never aborts the batch. The stats/snapshot repositories are outside the
-      // process-wide metadata-I/O ceiling, so this fan-out's configured concurrency is their bound.
+      // yields empty, never aborts the batch. The fan-out limits one query; the shared admission
+      // prevents concurrent queries from multiplying backing-store work.
       List<Optional<StatsProvider.TableStatsView>> results =
           statsFanout.mapOrdered(
               ids,
               id -> {
                 try {
-                  return tableStats(id);
+                  return statsWarmAdmission.call(cancelled, () -> tableStats(id));
                 } catch (java.util.concurrent.CancellationException e) {
                   throw e;
                 } catch (RuntimeException e) {

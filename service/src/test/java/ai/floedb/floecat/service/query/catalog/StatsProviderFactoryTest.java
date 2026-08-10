@@ -58,11 +58,16 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -82,6 +87,81 @@ class StatsProviderFactoryTest {
           .setId("users")
           .setKind(ResourceKind.RK_TABLE)
           .build();
+
+  @Test
+  void statsWarmAdmissionIsSharedAcrossQueryProviders() throws Exception {
+    int processLimit = 16;
+    int queryCount = processLimit + 1;
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    CountDownLatch callersReady = new CountDownLatch(queryCount);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch firstWaveEntered = new CountDownLatch(processLimit);
+    CountDownLatch extraCallEntered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicInteger active = new AtomicInteger();
+
+    when(tableRepository.getById(TABLE))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenAnswer(
+            ignored -> {
+              int now = active.incrementAndGet();
+              if (now <= processLimit) {
+                firstWaveEntered.countDown();
+              } else {
+                extraCallEntered.countDown();
+              }
+              try {
+                release.await();
+              } finally {
+                active.decrementAndGet();
+              }
+              return StatsResolutionResult.skipped("test");
+            });
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            store,
+            null,
+            defaultSyncConfig(),
+            new StatsWarmAdmission(processLimit));
+    var providers = new ArrayList<ai.floedb.floecat.scanner.spi.StatsProvider>(queryCount);
+    for (int i = 0; i < queryCount; i++) {
+      QueryContext query = queryContextWithPin("query-admission-" + i, 10L);
+      store.seed(query);
+      providers.add(factory.forQuery(query, "corr-" + i));
+    }
+
+    List<Future<?>> calls = new ArrayList<>(queryCount);
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      for (var provider : providers) {
+        calls.add(
+            executor.submit(
+                () -> {
+                  callersReady.countDown();
+                  assertTrue(start.await(1, TimeUnit.SECONDS));
+                  provider.tableStatsBatch(List.of(TABLE), () -> false);
+                  return null;
+                }));
+      }
+      assertTrue(callersReady.await(1, TimeUnit.SECONDS));
+      start.countDown();
+      assertTrue(firstWaveEntered.await(1, TimeUnit.SECONDS));
+      try {
+        assertTrue(
+            !extraCallEntered.await(250, TimeUnit.MILLISECONDS),
+            "a seventeenth query bypassed the shared stats-warm ceiling");
+      } finally {
+        release.countDown();
+      }
+      for (Future<?> call : calls) {
+        call.get(1, TimeUnit.SECONDS);
+      }
+    }
+  }
 
   @Test
   void tableStatsAreOptionalWhenMissing() {

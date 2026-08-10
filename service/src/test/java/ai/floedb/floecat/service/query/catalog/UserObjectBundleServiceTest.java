@@ -70,7 +70,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;
@@ -78,8 +77,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -902,28 +899,13 @@ class UserObjectBundleServiceTest {
     QueryInputResolver emptyResolver =
         new QueryInputResolver(null) {
           @Override
-          public ResolutionResult resolveInputs(
+          protected ResolutionResult resolveInputsAttempt(
               String queryId,
               String correlationId,
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics,
-              java.util.function.BooleanSupplier cancelled) {
-            return emptyPinResolution(inputs);
-          }
-
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics,
-              java.util.function.BooleanSupplier cancelled) {
+              QueryInputResolver.ResolutionAttempt attempt) {
             return emptyPinResolution(inputs);
           }
 
@@ -1387,6 +1369,64 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void concurrentOverlayDoesNotMoveThreadConfinedDecoratorCallbacks() {
+    Thread producer = Thread.currentThread();
+    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
+    concurrentOverlay.registerTable(
+        TABLE_A,
+        UserObjectBundleTestSupport.schemaFor("id_a"),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    AtomicReference<Thread> callbackThread = new AtomicReference<>();
+    EngineMetadataDecoratorProvider provider =
+        ignored ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateRelation(
+                      EngineContext context,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
+                    callbackThread.set(Thread.currentThread());
+                    assertThat(Thread.currentThread()).isSameAs(producer);
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            concurrentOverlay,
+            new TestQueryInputResolver(),
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    Context context =
+        Context.current()
+            .withValue(
+                InboundContextInterceptor.ENGINE_CONTEXT_KEY, EngineContext.of("pg", "16.0"));
+    Context previous = context.attach();
+    try {
+      decoratedService.stream("cid", ctx, List.of(candidate))
+          .collect()
+          .asList()
+          .await()
+          .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(callbackThread.get()).isSameAs(producer);
+  }
+
+  @Test
   void cancellationAfterPinResolutionReleasesTransientRoots() {
     /** Subscriber that exposes cancellation at the resolver-return ownership boundary. */
     class CancelAfterResolutionSubscriber extends CollectingSubscriber {
@@ -1400,15 +1440,13 @@ class UserObjectBundleServiceTest {
     QueryInputResolver cancellingResolver =
         new QueryInputResolver(null) {
           @Override
-          public ResolutionResult resolveInputs(
+          protected ResolutionResult resolveInputsAttempt(
               String queryId,
               String correlationId,
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics,
-              java.util.function.BooleanSupplier cancelled) {
+              QueryInputResolver.ResolutionAttempt attempt) {
             RelationPinSet pins =
                 SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
@@ -2854,6 +2892,13 @@ class UserObjectBundleServiceTest {
         throw new AssertionError("thread-confined overlay callback left the stream producer");
       }
       callbackCount.incrementAndGet();
+    }
+  }
+
+  private static final class ConcurrentCatalogOverlay extends FakeCatalogOverlay {
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return true;
     }
   }
 }

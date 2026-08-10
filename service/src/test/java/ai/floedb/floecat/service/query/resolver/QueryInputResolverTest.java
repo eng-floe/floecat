@@ -139,6 +139,48 @@ public class QueryInputResolverTest {
     }
   }
 
+  @Test
+  void typedCancellableOverloadDoesNotDispatchThroughLegacyMapOverride() {
+    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
+    QueryInputResolver legacySubclass =
+        new QueryInputResolver(metadataGraph) {
+          @Override
+          public ResolutionResult resolveInputs(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              Map<ResourceId, TablePin> currentSnapshotPinCache,
+              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
+            legacyOverrideCalled.set(true);
+            return super.resolveInputs(
+                queryId,
+                correlationId,
+                inputs,
+                asOfDefault,
+                defaultCatalogId,
+                currentSnapshotPinCache,
+                diagnostics);
+          }
+        };
+    ResourceId tableId = rid("legacy-dispatch");
+
+    var result =
+        legacySubclass.resolveInputs(
+            "q-legacy-dispatch",
+            "cid",
+            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+            Optional.empty(),
+            Optional.empty(),
+            new ConcurrentHashMap<>(),
+            null,
+            () -> false);
+
+    assertFalse(legacyOverrideCalled.get());
+    assertEquals(tableId, result.resolved().getFirst());
+  }
+
   /**
    * As each pin is constructed, the resolver registers its blobs as transient GC roots — the single
    * transparent seam that protects a resolved-but-not-yet-persisted blob on every resolve path.

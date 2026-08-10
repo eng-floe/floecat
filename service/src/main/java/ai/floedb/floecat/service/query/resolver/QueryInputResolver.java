@@ -62,7 +62,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -121,11 +120,6 @@ public class QueryInputResolver {
   // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
-
-  // All overloads retain virtual dispatch through the completed-pin Map extension seam. This
-  // per-thread scope carries the single-flight cache and cancellation signal through that seam
-  // without exposing their synchronization details in its signature.
-  private final ThreadLocal<ResolutionInvocation> resolutionInvocation = new ThreadLocal<>();
 
   @Inject
   public QueryInputResolver(
@@ -202,6 +196,27 @@ public class QueryInputResolver {
 
     private CurrentSnapshotPinCache(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
       this.pins = pins;
+    }
+
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> entries() {
+      return pins;
+    }
+  }
+
+  /**
+   * Explicit per-call ownership for one resolution attempt.
+   *
+   * <p>Compatibility overloads construct this value before entering the one extension seam. The
+   * resolver core then receives its cache and cancellation policy as ordinary parameters, never
+   * through ambient thread state.
+   */
+  public record ResolutionAttempt(
+      CurrentSnapshotPinCache currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    public ResolutionAttempt {
+      currentSnapshotPinCache = java.util.Objects.requireNonNull(currentSnapshotPinCache);
+      cancelled = java.util.Objects.requireNonNull(cancelled);
     }
   }
 
@@ -301,28 +316,14 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       CurrentSnapshotPinCache currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ResolutionInvocation current = resolutionInvocation.get();
-    if (current != null) {
-      return resolveInputsViaLegacyOverride(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          currentSnapshotPinCache,
-          diagnostics);
-    }
-    return withResolutionInvocation(
-        new ResolutionInvocation(currentSnapshotPinCache, Context.current()::isCancelled),
-        () ->
-            resolveInputsViaLegacyOverride(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics));
+    return resolveInputsAttempt(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new ResolutionAttempt(
+            currentSnapshotPinCache, diagnostics, Context.current()::isCancelled));
   }
 
   /**
@@ -358,17 +359,6 @@ public class QueryInputResolver {
       ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
-    ResolutionInvocation current = resolutionInvocation.get();
-    if (current != null) {
-      return resolveInputs(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          current.currentSnapshotPinCache(),
-          diagnostics);
-    }
     return resolveInputs(
         queryId,
         correlationId,
@@ -397,34 +387,23 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ResolutionInvocation current = resolutionInvocation.get();
-    if (current != null) {
-      return resolveInputsCore(
-          queryId,
-          correlationId,
-          inputs,
-          asOfDefault,
-          defaultCatalogId,
-          current.currentSnapshotPinCache(),
-          diagnostics,
-          current.cancelled());
-    }
-    Map<ResourceId, TablePin> initialCache = snapshotCompletedPinCache(currentSnapshotPinCache);
-    CurrentSnapshotPinCache singleFlightCache = toSingleFlightCache(initialCache);
+    Map<ResourceId, TablePin> initialCache =
+        LegacyCurrentSnapshotPinCaches.snapshot(currentSnapshotPinCache);
+    CurrentSnapshotPinCache singleFlightCache =
+        LegacyCurrentSnapshotPinCaches.singleFlight(initialCache);
     ResolutionResult result =
-        resolveInputsCore(
+        resolveInputsAttempt(
             queryId,
             correlationId,
             inputs,
             asOfDefault,
             defaultCatalogId,
-            singleFlightCache,
-            diagnostics,
-            Context.current()::isCancelled);
+            new ResolutionAttempt(singleFlightCache, diagnostics, Context.current()::isCancelled));
     try {
-      copyCompletedPins(singleFlightCache, currentSnapshotPinCache);
+      LegacyCurrentSnapshotPinCaches.copySuccessful(singleFlightCache, currentSnapshotPinCache);
     } catch (RuntimeException | Error copyFailure) {
-      if (restoreCompletedPinCache(currentSnapshotPinCache, initialCache, copyFailure)) {
+      if (LegacyCurrentSnapshotPinCaches.restore(
+          currentSnapshotPinCache, initialCache, copyFailure)) {
         try {
           if (queryStore != null && queryId != null && !queryId.isEmpty()) {
             queryStore.releaseResolvingPinBlobs(
@@ -461,19 +440,35 @@ public class QueryInputResolver {
       CurrentSnapshotPinCache currentSnapshotPinCache,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
-    throwIfCancelled(cancelled);
-    return withResolutionInvocation(
-        new ResolutionInvocation(currentSnapshotPinCache, cancelled),
-        () ->
-            resolveInputs(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache.pins,
-                diagnostics,
-                cancelled));
+    return resolveInputsAttempt(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new ResolutionAttempt(currentSnapshotPinCache, diagnostics, cancelled));
+  }
+
+  /**
+   * Stable test extension seam. Production overloads adapt their legacy inputs into one explicit
+   * attempt before reaching this method; the resolution implementation itself is non-virtual.
+   */
+  protected ResolutionResult resolveInputsAttempt(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ResolutionAttempt attempt) {
+    return resolveInputsCore(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        attempt.currentSnapshotPinCache(),
+        attempt.diagnostics(),
+        attempt.cancelled());
   }
 
   /** Run the base resolution implementation after compatibility overload dispatch has completed. */
@@ -564,115 +559,6 @@ public class QueryInputResolver {
       }
     }
   }
-
-  /** Dispatch through the completed-pin extension seam and copy any subclass cache writes. */
-  private ResolutionResult resolveInputsViaLegacyOverride(
-      String queryId,
-      String correlationId,
-      List<QueryInput> inputs,
-      Optional<Timestamp> asOfDefault,
-      Optional<ResourceId> defaultCatalogId,
-      CurrentSnapshotPinCache currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics) {
-    Map<ResourceId, TablePin> completedPinCache = completedPins(currentSnapshotPinCache);
-    ResolutionResult result =
-        resolveInputs(
-            queryId,
-            correlationId,
-            inputs,
-            asOfDefault,
-            defaultCatalogId,
-            completedPinCache,
-            diagnostics);
-    completedPinCache.forEach(
-        (tableId, pin) ->
-            currentSnapshotPinCache.pins.putIfAbsent(
-                tableId, CompletableFuture.completedFuture(pin)));
-    return result;
-  }
-
-  /**
-   * Install one cancellable invocation while preserving nested resolver calls on the same thread.
-   */
-  private <T> T withResolutionInvocation(ResolutionInvocation invocation, Supplier<T> operation) {
-    ResolutionInvocation previous = resolutionInvocation.get();
-    resolutionInvocation.set(invocation);
-    try {
-      return operation.get();
-    } finally {
-      if (previous == null) {
-        resolutionInvocation.remove();
-      } else {
-        resolutionInvocation.set(previous);
-      }
-    }
-  }
-
-  /** Snapshot a completed-pin cache without exposing it to resolution workers. */
-  private static Map<ResourceId, TablePin> snapshotCompletedPinCache(
-      Map<ResourceId, TablePin> completedPinCache) {
-    synchronized (completedPinCache) {
-      return new LinkedHashMap<>(completedPinCache);
-    }
-  }
-
-  /** Convert a completed-pin snapshot into the resolver's single-flight representation. */
-  private static CurrentSnapshotPinCache toSingleFlightCache(
-      Map<ResourceId, TablePin> completedPinCache) {
-    CurrentSnapshotPinCache singleFlightCache = new CurrentSnapshotPinCache();
-    completedPinCache.forEach(
-        (tableId, pin) ->
-            singleFlightCache.pins.put(tableId, CompletableFuture.completedFuture(pin)));
-    return singleFlightCache;
-  }
-
-  /** Restore the caller cache after a failed copy, recording rollback failures on the cause. */
-  private static boolean restoreCompletedPinCache(
-      Map<ResourceId, TablePin> completedPinCache,
-      Map<ResourceId, TablePin> initialCache,
-      Throwable copyFailure) {
-    synchronized (completedPinCache) {
-      if (completedPinCache.equals(initialCache)) {
-        return true;
-      }
-      try {
-        completedPinCache.clear();
-        completedPinCache.putAll(initialCache);
-      } catch (RuntimeException | Error rollbackFailure) {
-        copyFailure.addSuppressed(rollbackFailure);
-      }
-      return completedPinCache.equals(initialCache);
-    }
-  }
-
-  /**
-   * Snapshot successful single-flight entries into a completed-pin map after resolution succeeds.
-   */
-  private static void copyCompletedPins(
-      CurrentSnapshotPinCache singleFlightCache, Map<ResourceId, TablePin> completedPinCache) {
-    synchronized (completedPinCache) {
-      completedPins(singleFlightCache).forEach(completedPinCache::put);
-    }
-  }
-
-  /** Snapshot only successfully completed single-flight entries. */
-  private static Map<ResourceId, TablePin> completedPins(
-      CurrentSnapshotPinCache singleFlightCache) {
-    Map<ResourceId, TablePin> completed = new LinkedHashMap<>();
-    singleFlightCache.pins.forEach(
-        (tableId, pinFuture) -> {
-          if (pinFuture.isDone()
-              && !pinFuture.isCompletedExceptionally()
-              && !pinFuture.isCancelled()) {
-            completed.put(tableId, Futures.join(pinFuture));
-          }
-        });
-    return completed;
-  }
-
-  /** Per-thread state carried through the completed-pin virtual extension seam. */
-  private record ResolutionInvocation(
-      CurrentSnapshotPinCache currentSnapshotPinCache, BooleanSupplier cancelled) {}
 
   // =============================================================================
   // Pin resolution

@@ -24,16 +24,22 @@ import java.util.Set;
  * ai.floedb.floecat.service.query.catalog.UserObjectBundleService}.
  *
  * <p>Implementations are invoked during bundle construction and receive normalized engine kind +
- * version. When the metadata source supports concurrent resolution, GetUserObjects invokes
- * callbacks from parallel bundle-build workers. A thread-confined source instead invokes them
- * serially on its producer thread, because its overlay work cannot leave that thread. A shared
- * decorator instance is serialized across one relation's complete lifecycle (relation, view,
- * column, and completion callbacks), but is not thread-confined across calls or requests:
- * implementations must not rely on caller-thread state. Cancellation interrupts an active worker in
- * concurrent mode; blocking implementations must respond promptly to interruption and enforce their
- * own downstream deadlines. Decoration remains optional and is not part of scanner implementations.
+ * version. Callbacks stay on the request's producer thread unless the decorator explicitly opts in
+ * through {@link #supportsWorkerThreadCallbacks()}; overlay concurrency alone never changes a
+ * decorator's thread-affinity contract. A shared decorator instance is serialized across one
+ * relation's complete lifecycle (relation, view, column, and completion callbacks). Cancellation
+ * interrupts an active worker in concurrent mode; blocking implementations must respond promptly to
+ * interruption and enforce their own downstream deadlines. Decoration remains optional and is not
+ * part of scanner implementations.
  */
 public interface EngineMetadataDecorator {
+
+  /**
+   * Whether callbacks may run off the request's producer thread during parallel relation builds.
+   */
+  default boolean supportsWorkerThreadCallbacks() {
+    return false;
+  }
 
   default void decorateNamespace(EngineContext ctx, NamespaceDecoration ns) {}
 

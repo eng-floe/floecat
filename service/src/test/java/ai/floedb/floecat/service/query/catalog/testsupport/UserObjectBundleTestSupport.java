@@ -42,7 +42,6 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -427,43 +426,14 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public ResolutionResult resolveInputs(
+    protected ResolutionResult resolveInputsAttempt(
         String queryId,
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
-            currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
-      return resolveInputs(inputs, () -> false);
-    }
-
-    @Override
-    public ResolutionResult resolveInputs(
-        String queryId,
-        String correlationId,
-        List<QueryInput> inputs,
-        Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId,
-        java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
-            currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics,
-        BooleanSupplier cancelled) {
-      return resolveInputs(inputs, cancelled);
-    }
-
-    @Override
-    public ResolutionResult resolveInputs(
-        String queryId,
-        String correlationId,
-        List<QueryInput> inputs,
-        Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId,
-        QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics,
-        BooleanSupplier cancelled) {
-      return resolveInputs(inputs, cancelled);
+        QueryInputResolver.ResolutionAttempt attempt) {
+      return resolveInputs(inputs, attempt.cancelled());
     }
 
     private ResolutionResult resolveInputs(List<QueryInput> inputs, BooleanSupplier cancelled) {

@@ -15,18 +15,25 @@
  */
 package ai.floedb.floecat.runtime.concurrent;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicReference;
 
-/** Owns the one metadata-I/O admission gate shared by every application generation in this JVM. */
+/** Owns named admission gates shared by every application generation in this JVM. */
 public final class ProcessWideAdmission {
+
+  /** Fixed admission domains keep the JVM-lifetime registry bounded across reloads. */
+  public enum Domain {
+    METADATA_IO,
+    STATS_WARM
+  }
 
   /** Immutable identity of the process gate; the semaphore itself carries its live usage. */
   public record State(int capacity, Semaphore permits) {
     /** Require a positive capacity and a live semaphore for the process gate. */
     public State {
       if (capacity < 1) {
-        throw new IllegalArgumentException("process-wide metadata-I/O capacity must be positive");
+        throw new IllegalArgumentException("process-wide admission capacity must be positive");
       }
       if (permits == null) {
         throw new NullPointerException("permits");
@@ -34,7 +41,7 @@ public final class ProcessWideAdmission {
     }
   }
 
-  private static final AtomicReference<State> CURRENT = new AtomicReference<>();
+  private static final ConcurrentMap<Domain, State> GATES = new ConcurrentHashMap<>();
 
   private ProcessWideAdmission() {}
 
@@ -45,14 +52,22 @@ public final class ProcessWideAdmission {
    * during reload would let old and new generations admit independently.
    */
   public static State resolve(int capacity) {
+    return resolve(Domain.METADATA_IO, capacity);
+  }
+
+  /**
+   * Return the domain's process gate, creating it with {@code capacity} on first use.
+   *
+   * <p>Domains isolate independent ceilings. The first application generation to resolve a domain
+   * fixes that gate's capacity until JVM exit.
+   */
+  public static State resolve(Domain domain, int capacity) {
+    if (domain == null) {
+      throw new NullPointerException("domain");
+    }
     if (capacity < 1) {
-      throw new IllegalArgumentException("process-wide metadata-I/O capacity must be positive");
+      throw new IllegalArgumentException("process-wide admission capacity must be positive");
     }
-    State current = CURRENT.get();
-    if (current != null) {
-      return current;
-    }
-    State candidate = new State(capacity, new Semaphore(capacity));
-    return CURRENT.compareAndSet(null, candidate) ? candidate : CURRENT.get();
+    return GATES.computeIfAbsent(domain, ignored -> new State(capacity, new Semaphore(capacity)));
   }
 }

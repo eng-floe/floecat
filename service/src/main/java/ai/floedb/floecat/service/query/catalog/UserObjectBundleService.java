@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -113,12 +114,9 @@ public class UserObjectBundleService {
 
   @Inject Observability observability;
 
-  // Caps how many of a chunk's relations resolve concurrently, across the select and build
-  // fan-outs. Each is an independent, mostly store-bound resolution; a small fan-out overlaps their
-  // round-trips without flooding the store. Per-request bound only: the virtual-thread executor has
-  // no shared-pool ceiling, so total store concurrency scales with concurrent requests times this
-  // value (upstream gRPC concurrency bounds the request count).
-  private final MetadataFanout relationFanout;
+  // Selection is overlay-only; payload builds also depend on a decorator's callback affinity.
+  private final MetadataFanout selectionFanout;
+  private final int maxParallelRelations;
 
   /** Stop cancellation teardown work without owning the resolver's metadata executors. */
   @PreDestroy
@@ -192,10 +190,10 @@ public class UserObjectBundleService {
           "floecat.catalog.bundle.max_parallel_relations=%d is invalid; clamping to 1 (serial)",
           maxParallelRelations);
     }
-    int effectiveMaxParallelRelations = Math.max(1, maxParallelRelations);
-    this.relationFanout =
+    this.maxParallelRelations = Math.max(1, maxParallelRelations);
+    this.selectionFanout =
         overlay.supportsConcurrentResolution()
-            ? MetadataFanout.concurrent(effectiveMaxParallelRelations)
+            ? MetadataFanout.concurrent(this.maxParallelRelations)
             : MetadataFanout.serial();
     FlightEndpointRef advertisedFlightEndpoint =
         FlightEndpointRef.newBuilder()
@@ -704,6 +702,20 @@ public class UserObjectBundleService {
     return value == null ? "" : value;
   }
 
+  /** Select a build scheduler without letting overlay capability change decorator affinity. */
+  private MetadataFanout buildFanout(EngineContext requestEngine) {
+    if (!overlay.supportsConcurrentResolution()) {
+      return MetadataFanout.serial();
+    }
+    if (!relationBuilder.decorationRequired(requestEngine)) {
+      return MetadataFanout.concurrent(maxParallelRelations);
+    }
+    Optional<EngineMetadataDecorator> decorator = relationBuilder.currentDecorator(requestEngine);
+    return decorator.isEmpty() || decorator.get().supportsWorkerThreadCallbacks()
+        ? MetadataFanout.concurrent(maxParallelRelations)
+        : MetadataFanout.serial();
+  }
+
   record ResolvedRelation(
       TableReferenceCandidate candidate,
       ResourceId relationId,
@@ -758,6 +770,7 @@ public class UserObjectBundleService {
     private final ResourceId defaultCatalogId;
     private final StatsProvider statsProvider;
     private final MetadataResolutionContext resolutionContext;
+    private final MetadataFanout buildFanout;
     private final String engineKind;
     private final String engineVersion;
     /* Content versions the request proved it holds; relations resolving to
@@ -820,6 +833,7 @@ public class UserObjectBundleService {
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
+      this.buildFanout = buildFanout(requestEngine);
       this.resolutionCache =
           new RelationResolutionCache(overlay, correlationId, requestEngine, timings);
       this.pinBarrier = new ChunkPinBarrier(inputResolver, queryStore, ctx, correlationId, timings);
@@ -938,7 +952,7 @@ public class UserObjectBundleService {
             };
         long selectStageStartNs = System.nanoTime();
         try {
-          relationFanout.forEachOrdered(plan, this::selectOne, consumeSelected, this::isCancelled);
+          selectionFanout.forEachOrdered(plan, this::selectOne, consumeSelected, this::isCancelled);
         } finally {
           timings.addResolveNanos(System.nanoTime() - selectStageStartNs);
         }
@@ -1422,7 +1436,7 @@ public class UserObjectBundleService {
       List<Integer> indices = java.util.stream.IntStream.range(0, toBuild.size()).boxed().toList();
       long buildFanoutStartNs = System.nanoTime();
       List<BuildOutcome> outcomes =
-          relationFanout.mapOrdered(
+          buildFanout.mapOrdered(
               indices,
               j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)),
               this::isCancelled);

@@ -272,15 +272,13 @@ class ChunkPinBarrierTest {
     }
 
     @Override
-    public ResolutionResult resolveInputs(
+    protected ResolutionResult resolveInputsAttempt(
         String queryId,
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics,
-        java.util.function.BooleanSupplier cancelled) {
+        QueryInputResolver.ResolutionAttempt attempt) {
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       for (QueryInput input : inputs) {
