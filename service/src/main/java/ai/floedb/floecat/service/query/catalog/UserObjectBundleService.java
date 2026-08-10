@@ -72,10 +72,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
@@ -89,91 +85,11 @@ import org.jboss.logging.Logger;
 public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
-  private static final long EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 5;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
       throw new CancellationException("GetUserObjects stream cancelled");
-    }
-  }
-
-  /** Arbitrates the single terminal telemetry outcome against producer activity. */
-  static final class StreamTelemetryGate {
-    /** The terminal outcome whose sole telemetry publication a gate transition may grant. */
-    enum Publication {
-      NONE,
-      COMPLETION,
-      FAILURE,
-      CANCELLATION
-    }
-
-    /** Whether this cancellation is duplicate, owns teardown, or also publishes immediately. */
-    enum CancellationDecision {
-      IGNORED,
-      ACCEPTED,
-      PUBLISH
-    }
-
-    private boolean producerActive;
-    private boolean cancellationPending;
-    private boolean publicationClaimed;
-
-    /** Begin one producer step unless cancellation already won. */
-    synchronized void begin(BooleanSupplier cancelled) {
-      throwIfCancelled(cancelled);
-      producerActive = true;
-    }
-
-    /**
-     * Atomically expose cancellation to request work and terminal-outcome arbitration. The caller
-     * owns teardown unless another cancellation already won.
-     */
-    synchronized CancellationDecision cancel(AtomicBoolean cancelled) {
-      if (!cancelled.compareAndSet(false, true)) {
-        return CancellationDecision.IGNORED;
-      }
-      cancellationPending = true;
-      if (producerActive) {
-        return CancellationDecision.ACCEPTED;
-      }
-      cancellationPending = false;
-      return claimInternal() ? CancellationDecision.PUBLISH : CancellationDecision.ACCEPTED;
-    }
-
-    /**
-     * Finish a producer step with {@link Publication#NONE}, {@link Publication#COMPLETION}, or
-     * {@link Publication#FAILURE}. Failure takes precedence over racing cancellation, and
-     * cancellation takes precedence over completion. A non-{@code NONE} return grants ownership of
-     * the stream's sole terminal telemetry publication.
-     */
-    synchronized Publication finish(Publication terminalOutcome) {
-      boolean publishFailure = terminalOutcome == Publication.FAILURE && claimInternal();
-      producerActive = false;
-      boolean publishCancellation = !publishFailure && cancellationPending && claimInternal();
-      cancellationPending = false;
-      if (publishFailure) {
-        return Publication.FAILURE;
-      }
-      if (publishCancellation) {
-        return Publication.CANCELLATION;
-      }
-      return terminalOutcome == Publication.COMPLETION && claimInternal()
-          ? Publication.COMPLETION
-          : Publication.NONE;
-    }
-
-    /** Claim publication from a non-racing terminal path. */
-    synchronized boolean claim() {
-      return claimInternal();
-    }
-
-    private boolean claimInternal() {
-      if (publicationClaimed) {
-        return false;
-      }
-      publicationClaimed = true;
-      return true;
     }
   }
 
@@ -189,10 +105,7 @@ public class UserObjectBundleService {
   private final StatsProviderFactory statsFactory;
   private final long slowRpcMs;
   private final RelationBundleBuilder relationBuilder;
-  // Cancellation can be signalled by a transport thread; release its store roots on a managed
-  // virtual-thread executor instead of blocking that termination callback.
-  private final ExecutorService cancellationTeardownExecutor =
-      Executors.newVirtualThreadPerTaskExecutor();
+  private final CancellationRootReleaser cancellationRootReleaser;
 
   // Mints the pin identity/possession token and serves the identity-only decision. Stateless per
   // call; reused on the driver thread across every chunk.
@@ -207,25 +120,10 @@ public class UserObjectBundleService {
   // value (upstream gRPC concurrency bounds the request count).
   private final MetadataFanout relationFanout;
 
-  /** Stop the owned executor while bounding teardown if a downstream call ignores interruption. */
+  /** Stop cancellation teardown work without owning the resolver's metadata executors. */
   @PreDestroy
-  void closeExecutors() {
-    shutdownExecutor(cancellationTeardownExecutor);
-  }
-
-  /** Bound bean destruction even if a store call ignores interruption during shutdown. */
-  private static void shutdownExecutor(ExecutorService executor) {
-    executor.shutdownNow();
-    boolean terminated;
-    try {
-      terminated = executor.awaitTermination(EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      terminated = false;
-    }
-    if (!terminated) {
-      LOG.warn("bundle cancellation teardown executor did not terminate before shutdown timeout");
-    }
+  void closeCancellationRootReleaser() {
+    cancellationRootReleaser.close();
   }
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
@@ -281,6 +179,7 @@ public class UserObjectBundleService {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
+    this.cancellationRootReleaser = new CancellationRootReleaser(queryStore);
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
@@ -1081,25 +980,7 @@ public class UserObjectBundleService {
         // onTermination may run on a transport/event-loop thread. Root release can perform store
         // I/O, so teardown runs on a managed executor. Telemetry is published only after the
         // producer reports that no mutable iterator state remains active.
-        try {
-          cancellationTeardownExecutor.submit(
-              () -> {
-                try {
-                  queryStore.releaseResolvingPinBlobs(
-                      ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
-                } catch (RuntimeException releaseFailure) {
-                  LOG.warnf(
-                      releaseFailure,
-                      "Failed to release cancelled stream pin roots query_id=%s",
-                      ctx.getQueryId());
-                }
-              });
-        } catch (RejectedExecutionException shutdown) {
-          LOG.warnf(
-              shutdown,
-              "Cancellation teardown executor stopped before pin-root release query_id=%s",
-              ctx.getQueryId());
-        }
+        cancellationRootReleaser.release(ctx.getQueryId(), toRelease);
       }
     }
 

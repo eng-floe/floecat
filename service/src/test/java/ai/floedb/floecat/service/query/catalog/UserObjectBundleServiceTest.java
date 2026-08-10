@@ -1337,39 +1337,36 @@ class UserObjectBundleServiceTest {
 
   @Test
   void terminalFailureClaimWinsBeforeProducerBecomesIdle() {
-    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    var gate = new StreamTelemetryGate();
     AtomicBoolean cancelled = new AtomicBoolean();
     gate.begin(() -> false);
 
-    assertThat(gate.cancel(cancelled))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
-    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.FAILURE);
+    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(gate.finish(StreamTelemetryGate.Publication.FAILURE))
+        .isEqualTo(StreamTelemetryGate.Publication.FAILURE);
   }
 
   @Test
   void cancellationClaimWinsWhenItRacesFinalCompletion() {
-    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    var gate = new StreamTelemetryGate();
     AtomicBoolean cancelled = new AtomicBoolean();
     gate.begin(() -> false);
 
-    assertThat(gate.cancel(cancelled))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
     assertThat(cancelled).isTrue();
-    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.CANCELLATION);
+    assertThat(gate.finish(StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(StreamTelemetryGate.Publication.CANCELLATION);
   }
 
   @Test
   void completionClaimWinsWhenTheProducerFinishesBeforeCancellation() {
-    var gate = new UserObjectBundleService.StreamTelemetryGate();
+    var gate = new StreamTelemetryGate();
     AtomicBoolean cancelled = new AtomicBoolean();
     gate.begin(() -> false);
 
-    assertThat(gate.finish(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.Publication.COMPLETION);
-    assertThat(gate.cancel(cancelled))
-        .isEqualTo(UserObjectBundleService.StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(gate.finish(StreamTelemetryGate.Publication.COMPLETION))
+        .isEqualTo(StreamTelemetryGate.Publication.COMPLETION);
+    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
   }
 
   @Test
