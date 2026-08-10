@@ -173,35 +173,16 @@ final class RelationBundleBuilder {
     try {
       EngineContext engine = resolutionContext.engineContext();
       Optional<EngineMetadataDecorator> decorator = currentDecorator(engine);
-      RelationInfo info;
-      if (decorator.isPresent()) {
-        // A provider's decorator is application-scoped. Preserve the SPI's thread-safety
-        // expectations while builds fan out by serializing one instance's complete
-        // per-relation lifecycle, including relation, column, view, and completion callbacks.
-        synchronized (decorator.get()) {
-          info =
-              buildRelation(
-                  correlationId,
-                  relation,
-                  liveCtx,
-                  resolutionContext,
-                  stats,
-                  timings,
-                  scopedIdentity,
-                  decorator);
-        }
-      } else {
-        info =
-            buildRelation(
-                correlationId,
-                relation,
-                liveCtx,
-                resolutionContext,
-                stats,
-                timings,
-                scopedIdentity,
-                decorator);
-      }
+      RelationInfo info =
+          buildRelation(
+              correlationId,
+              relation,
+              liveCtx,
+              resolutionContext,
+              stats,
+              timings,
+              scopedIdentity,
+              decorator);
       return BuildResult.success(info, timings);
     } catch (java.util.concurrent.CancellationException e) {
       throw e;
@@ -329,16 +310,7 @@ final class RelationBundleBuilder {
     EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     RelationDecoration relationDecoration = null;
-    boolean relationDecorationSucceeded = true;
-    // Per-phase payload-decoration success, tracked separately from
-    // relationDecorationSucceeded (which gates hint commits below). The possession-token stamp
-    // needs EVERY payload phase to have succeeded — a view or completion failure leaves the served
-    // payload incomplete, and stamping a token for it would lock that incomplete payload into a
-    // caching client until it happened to re-miss, instead of self-healing on the next query.
-    boolean viewDecorationSucceeded = true;
-    boolean completeRelationSucceeded = true;
-    long relationDecorationBeforeNanos = timings.decorationTotalNanos();
-
+    ViewDecoration viewDecoration = null;
     if (decorationRequired && decorator.isPresent()) {
       relationDecoration =
           new RelationDecoration(
@@ -348,111 +320,54 @@ final class RelationBundleBuilder {
               requireSchema(schemaColumns),
               requireSchema(pruned),
               resolutionContext);
-
-      try {
-        long decorateRelationStartNs = System.nanoTime();
-        try {
-          decorator.get().decorateRelation(ctx, relationDecoration);
-        } finally {
-          timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
-        }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        relationDecorationSucceeded = false;
-        LOG.debugf(
-            e,
-            "Decorator threw while decorating relation %s (engine=%s)",
-            relation.relationId(),
-            ctx.normalizedKind());
-      }
-
-      // Decorate columns
-      // handled below so columns can always emit READY/FAILED status
-
-      // decorate view
       if (viewBuilder != null) {
-        ViewDecoration viewDecoration =
+        viewDecoration =
             new ViewDecoration(
                 builder, viewBuilder, relation.relationId(), relation.node(), resolutionContext);
-
-        try {
-          long decorateViewStartNs = System.nanoTime();
-          try {
-            decorator.get().decorateView(ctx, viewDecoration);
-          } finally {
-            timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
-          }
-        } catch (java.util.concurrent.CancellationException e) {
-          throw e;
-        } catch (RuntimeException e) {
-          viewDecorationSucceeded = false;
-          LOG.debugf(
-              e,
-              "Decorator threw while decorating view %s (engine=%s)",
-              relation.relationId(),
-              ctx.normalizedKind());
-        }
       }
     }
 
-    if (viewBuilder != null) {
-      builder.setViewDefinition(viewBuilder);
-    }
-
-    List<ColumnResult> columnResults =
-        decorateColumns(
-            columns,
-            pruned,
-            relationDecoration,
-            decorator,
-            ctx,
-            decorationRequired,
-            relation.relationId(),
-            timings);
-    long relationWarmHitCount = decorationCounter(relationDecoration, COLUMN_WARM_HIT_COUNT_KEY);
-    timings.addDecorateColumnWarmHits(relationWarmHitCount);
-
-    if (relationDecoration != null && decorator.isPresent()) {
-      boolean commitRelationHints = relationDecorationSucceeded;
-      boolean commitColumnHints =
-          relationDecorationSucceeded && shouldCommitColumnDecorations(columnResults);
-      Set<Long> readyColumnIds = commitColumnHints ? readyColumnIds(columnResults) : Set.of();
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Decorator completion decisions relation=%s relation_succeeded=%s"
-                + " commit_relation_hints=%s commit_column_hints=%s ready_column_ids=%d",
-            relation.relationId(),
-            relationDecorationSucceeded,
-            commitRelationHints,
-            commitColumnHints,
-            readyColumnIds.size());
+    long relationDecorationBeforeNanos = timings.decorationTotalNanos();
+    DecorationOutcome decoration;
+    if (relationDecoration != null) {
+      // Decorators are application-scoped and their per-relation lifecycle is not thread-safe.
+      // All schema, pin, stats, and endpoint preparation above remains parallel; only callbacks
+      // from decorateRelation through completeRelation share the decorator monitor.
+      synchronized (decorator.orElseThrow()) {
+        decoration =
+            runDecoratorLifecycle(
+                relation,
+                builder,
+                viewBuilder,
+                columns,
+                pruned,
+                relationDecoration,
+                viewDecoration,
+                decorator,
+                ctx,
+                decorationRequired,
+                timings);
       }
-      try {
-        long decorateCompleteStartNs = System.nanoTime();
-        try {
-          decorator
-              .get()
-              .completeRelation(
-                  ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
-        } finally {
-          timings.addDecorateCompleteNanos(System.nanoTime() - decorateCompleteStartNs);
-          timings.addDecoratePersistRelationNanos(
-              decorationTimingNanos(relationDecoration, RELATION_HINT_PERSIST_NANOS_KEY));
-          timings.addDecoratePersistColumnsNanos(
-              decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
-        }
-      } catch (java.util.concurrent.CancellationException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        completeRelationSucceeded = false;
-        LOG.debugf(
-            e,
-            "Decorator threw while completing relation %s (engine=%s)",
-            relation.relationId(),
-            ctx == null ? "" : ctx.normalizedKind());
-      }
+    } else {
+      decoration =
+          runDecoratorLifecycle(
+              relation,
+              builder,
+              viewBuilder,
+              columns,
+              pruned,
+              null,
+              null,
+              decorator,
+              ctx,
+              decorationRequired,
+              timings);
     }
+    List<ColumnResult> columnResults = decoration.columnResults();
+    long relationWarmHitCount = decoration.relationWarmHitCount();
+    boolean relationDecorationSucceeded = decoration.relationDecorationSucceeded();
+    boolean viewDecorationSucceeded = decoration.viewDecorationSucceeded();
+    boolean completeRelationSucceeded = decoration.completeRelationSucceeded();
 
     if (LOG.isDebugEnabled()) {
       long relationDecorationNanos =
@@ -507,6 +422,141 @@ final class RelationBundleBuilder {
 
     builder.addAllColumns(columnResults);
     return builder.build();
+  }
+
+  /** Result of one decorator lifecycle, including the payload-cacheability gates it establishes. */
+  private record DecorationOutcome(
+      List<ColumnResult> columnResults,
+      long relationWarmHitCount,
+      boolean relationDecorationSucceeded,
+      boolean viewDecorationSucceeded,
+      boolean completeRelationSucceeded) {}
+
+  /**
+   * Run one decorator's complete per-relation callback lifecycle. When a decorator is present the
+   * caller holds that decorator's monitor from entry through {@code completeRelation}; expensive
+   * schema, pin, stats, and endpoint preparation has already completed.
+   */
+  private DecorationOutcome runDecoratorLifecycle(
+      UserObjectBundleService.ResolvedRelation relation,
+      RelationInfo.Builder builder,
+      ViewDefinition.Builder viewBuilder,
+      List<ColumnInfo> columns,
+      List<SchemaColumn> pruned,
+      RelationDecoration relationDecoration,
+      ViewDecoration viewDecoration,
+      Optional<EngineMetadataDecorator> decorator,
+      EngineContext ctx,
+      boolean decorationRequired,
+      UserObjectBundleService.TimingAccumulator timings) {
+    boolean relationDecorationSucceeded = true;
+    boolean viewDecorationSucceeded = true;
+    boolean completeRelationSucceeded = true;
+
+    if (relationDecoration != null) {
+      try {
+        long decorateRelationStartNs = System.nanoTime();
+        try {
+          decorator.orElseThrow().decorateRelation(ctx, relationDecoration);
+        } finally {
+          timings.addDecorateRelationNanos(System.nanoTime() - decorateRelationStartNs);
+        }
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
+      } catch (RuntimeException e) {
+        relationDecorationSucceeded = false;
+        LOG.debugf(
+            e,
+            "Decorator threw while decorating relation %s (engine=%s)",
+            relation.relationId(),
+            ctx.normalizedKind());
+      }
+
+      if (viewDecoration != null) {
+        try {
+          long decorateViewStartNs = System.nanoTime();
+          try {
+            decorator.orElseThrow().decorateView(ctx, viewDecoration);
+          } finally {
+            timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
+          }
+        } catch (java.util.concurrent.CancellationException e) {
+          throw e;
+        } catch (RuntimeException e) {
+          viewDecorationSucceeded = false;
+          LOG.debugf(
+              e,
+              "Decorator threw while decorating view %s (engine=%s)",
+              relation.relationId(),
+              ctx.normalizedKind());
+        }
+      }
+    }
+
+    if (viewBuilder != null) {
+      builder.setViewDefinition(viewBuilder);
+    }
+
+    List<ColumnResult> columnResults =
+        decorateColumns(
+            columns,
+            pruned,
+            relationDecoration,
+            decorator,
+            ctx,
+            decorationRequired,
+            relation.relationId(),
+            timings);
+    long relationWarmHitCount = decorationCounter(relationDecoration, COLUMN_WARM_HIT_COUNT_KEY);
+    timings.addDecorateColumnWarmHits(relationWarmHitCount);
+
+    if (relationDecoration != null) {
+      boolean commitRelationHints = relationDecorationSucceeded;
+      boolean commitColumnHints =
+          relationDecorationSucceeded && shouldCommitColumnDecorations(columnResults);
+      Set<Long> readyColumnIds = commitColumnHints ? readyColumnIds(columnResults) : Set.of();
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Decorator completion decisions relation=%s relation_succeeded=%s"
+                + " commit_relation_hints=%s commit_column_hints=%s ready_column_ids=%d",
+            relation.relationId(),
+            relationDecorationSucceeded,
+            commitRelationHints,
+            commitColumnHints,
+            readyColumnIds.size());
+      }
+      try {
+        long decorateCompleteStartNs = System.nanoTime();
+        try {
+          decorator
+              .orElseThrow()
+              .completeRelation(
+                  ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
+        } finally {
+          timings.addDecorateCompleteNanos(System.nanoTime() - decorateCompleteStartNs);
+          timings.addDecoratePersistRelationNanos(
+              decorationTimingNanos(relationDecoration, RELATION_HINT_PERSIST_NANOS_KEY));
+          timings.addDecoratePersistColumnsNanos(
+              decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
+        }
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
+      } catch (RuntimeException e) {
+        completeRelationSucceeded = false;
+        LOG.debugf(
+            e,
+            "Decorator threw while completing relation %s (engine=%s)",
+            relation.relationId(),
+            ctx == null ? "" : ctx.normalizedKind());
+      }
+    }
+
+    return new DecorationOutcome(
+        columnResults,
+        relationWarmHitCount,
+        relationDecorationSucceeded,
+        viewDecorationSucceeded,
+        completeRelationSucceeded);
   }
 
   /**

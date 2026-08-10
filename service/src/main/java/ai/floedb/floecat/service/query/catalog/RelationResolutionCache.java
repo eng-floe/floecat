@@ -18,10 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeKind;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -57,6 +54,7 @@ final class RelationResolutionCache {
       new ConcurrentHashMap<>();
   private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache =
       new ConcurrentHashMap<>();
+  private final Map<ResourceId, Optional<NameRef>> canonicalNameCache = new ConcurrentHashMap<>();
 
   RelationResolutionCache(
       CatalogOverlay overlay,
@@ -99,27 +97,19 @@ final class RelationResolutionCache {
     return m.value();
   }
 
-  /**
-   * The fully-qualified name for a relation, resolving its namespace and catalog ancestors through
-   * the same per-request node memo as everything else. A namespace shared by several relations is
-   * therefore resolved once, not once per relation: without this, each relation's name was built by
-   * a separate walk to the shared namespace/catalog that bypassed this memo, so the concurrent
-   * select/build fan-out raced them into one live pointer read apiece. Falls back to the bare
-   * display name when the relation is not a table/view or an ancestor cannot be resolved --
-   * matching the name the builder produced before.
-   */
+  /** Resolve and memoize the overlay-owned canonical name for one relation. */
   NameRef canonicalName(RelationNode node) {
     NameRef nameOnly = NameRef.newBuilder().setName(node.displayName()).build();
-    if (node.kind() != GraphNodeKind.TABLE && node.kind() != GraphNodeKind.VIEW) {
-      return nameOnly;
-    }
-    if (!(resolveNode(node.namespaceId()).orElse(null) instanceof NamespaceNode ns)) {
-      return nameOnly;
-    }
-    if (!(resolveNode(ns.catalogId()).orElse(null) instanceof CatalogNode catalog)) {
-      return nameOnly;
-    }
-    return ns.relationNameRef(node.displayName(), node.id(), catalog.displayName());
+    Optional<NameRef> canonical =
+        canonicalNameCache.computeIfAbsent(
+            node.id(),
+            id ->
+                switch (node.kind()) {
+                  case TABLE -> overlay.tableName(id, engineContext);
+                  case VIEW -> overlay.viewName(id, engineContext);
+                  default -> Optional.empty();
+                });
+    return canonical.orElse(nameOnly);
   }
 
   /** Live count of distinct names resolved so far; read at telemetry flush. */

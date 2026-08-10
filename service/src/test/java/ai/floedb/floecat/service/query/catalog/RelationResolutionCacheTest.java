@@ -21,9 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.GraphNodeKind;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.SummaryContext;
@@ -32,9 +29,9 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -132,111 +129,24 @@ class RelationResolutionCacheTest {
   }
 
   @Test
-  void canonicalNameResolvesSharedAncestorOncePerRequest() {
-    ResourceId tableY =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("TABLE_Y")
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    overlay.registerTable(
-        tableY,
-        UserObjectBundleTestSupport.schemaFor("id_y"),
-        NameRef.newBuilder().setCatalog("cat").setName("y").build());
-    RelationNode x = (RelationNode) overlay.resolve(TABLE).orElseThrow();
-    RelationNode y = (RelationNode) overlay.resolve(tableY).orElseThrow();
-
-    NameRef nameX = cache.canonicalName(x);
-    NameRef nameY = cache.canonicalName(y);
-
-    // Both tables share one namespace id; the concurrent select/build fan-out would otherwise walk
-    // to it once per relation. Routing the walk through the node memo resolves it exactly once --
-    // the second relation's name build is a pure hit.
-    ResourceId sharedNamespace = ResourceId.getDefaultInstance();
-    assertThat(overlay.resolveCount(sharedNamespace)).isEqualTo(1);
-    assertThat(cache.nodeEntries()).isEqualTo(1);
-    // This fake exposes no namespace/catalog node, so the name falls back to the bare display name
-    // -- exercising the same fallback the builder used before.
-    assertThat(nameX.getName()).isEqualTo("TABLE_X");
-    assertThat(nameY.getName()).isEqualTo("TABLE_Y");
-
-    Recording rec = flush();
-    assertThat(rec.get("node_cache_misses")).isEqualTo(1L);
-    assertThat(rec.get("node_cache_hits")).isEqualTo(1L);
-  }
-
-  @Test
-  void canonicalNameIncludesCatalogNamespacePathAndRelationId() {
-    ResourceId catalogId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("CAT_X")
-            .setKind(ResourceKind.RK_CATALOG)
-            .build();
-    ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("NS_X")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .build();
-    overlay.registerNode(
-        new NamespaceNode(
-            namespaceId,
-            "blob://test/ns-x",
-            catalogId,
-            List.of("parent"),
-            "child",
-            GraphNodeOrigin.USER,
-            Map.of(),
-            Map.of()));
-    overlay.registerCatalog(catalogId, "cat");
-    RelationNode relation =
-        new RelationNode() {
+  void canonicalNameUsesAndMemoizesTheOverlayNamingBoundary() {
+    AtomicInteger tableNameCalls = new AtomicInteger();
+    FakeCatalogOverlay namingOverlay =
+        new FakeCatalogOverlay() {
           @Override
-          public ResourceId id() {
-            return TABLE;
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public ResourceId namespaceId() {
-            return namespaceId;
-          }
-
-          @Override
-          public String displayName() {
-            return "orders";
-          }
-
-          @Override
-          public GraphNodeKind kind() {
-            return GraphNodeKind.TABLE;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.USER;
-          }
-
-          @Override
-          public Map<
-                  ai.floedb.floecat.metagraph.model.EngineHintKey,
-                  ai.floedb.floecat.metagraph.model.EngineHint>
-              engineHints() {
-            return Map.of();
+          public Optional<NameRef> tableName(ResourceId id) {
+            tableNameCalls.incrementAndGet();
+            return super.tableName(id);
           }
         };
+    namingOverlay.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
+    RelationResolutionCache namingCache =
+        new RelationResolutionCache(namingOverlay, CID, ENGINE, new TimingAccumulator());
+    RelationNode relation = (RelationNode) namingOverlay.resolve(TABLE).orElseThrow();
 
-    NameRef name = cache.canonicalName(relation);
-
-    assertThat(name.getCatalog()).isEqualTo("cat");
-    assertThat(name.getPathList()).containsExactly("parent", "child");
-    assertThat(name.getName()).isEqualTo("orders");
-    assertThat(name.getResourceId()).isEqualTo(TABLE);
+    assertThat(namingCache.canonicalName(relation)).isEqualTo(NAME);
+    assertThat(namingCache.canonicalName(relation)).isEqualTo(NAME);
+    assertThat(tableNameCalls).hasValue(1);
   }
 
   @Test

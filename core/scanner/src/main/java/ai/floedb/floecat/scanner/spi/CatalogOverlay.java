@@ -201,11 +201,11 @@ public interface CatalogOverlay {
    * resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code resolveName(s)}, and
    * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread, together with
    * overlay-owned schema/name callbacks used while assembling GetUserObjects relations ({@link
-   * #schemaFor}, {@link #tableSchema}, {@link #tableName}, and {@link #viewName}). It does not
-   * change the caller-thread contract of separately injected stats, pin-validation, or
-   * engine-decoration collaborators. Implementations opting in must make the listed overlay
-   * callbacks thread-safe and must not depend on custom caller-thread state that service context
-   * propagation does not capture.
+   * #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId, EngineContext)}, and {@link
+   * #viewName(ResourceId, EngineContext)}). It does not change the caller-thread contract of
+   * separately injected stats, pin-validation, or engine-decoration collaborators. Implementations
+   * opting in must make the listed overlay callbacks thread-safe and must not depend on custom
+   * caller-thread state that service context propagation does not capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;
@@ -258,7 +258,25 @@ public interface CatalogOverlay {
 
   Optional<NameRef> tableName(ResourceId id);
 
+  /**
+   * Resolves a table's canonical name with an explicit engine context. Implementations serving
+   * engine-specific names must override this overload; the compatibility default delegates to the
+   * ambient-context method.
+   */
+  default Optional<NameRef> tableName(ResourceId id, EngineContext engineContext) {
+    return tableName(id);
+  }
+
   Optional<NameRef> viewName(ResourceId id);
+
+  /**
+   * Resolves a view's canonical name with an explicit engine context. Implementations serving
+   * engine-specific names must override this overload; the compatibility default delegates to the
+   * ambient-context method.
+   */
+  default Optional<NameRef> viewName(ResourceId id, EngineContext engineContext) {
+    return viewName(id);
+  }
 
   Optional<CatalogNode> catalog(ResourceId id);
 

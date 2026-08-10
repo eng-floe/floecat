@@ -169,6 +169,11 @@ class RelationBundleBuilderTest {
 
   private RelationBundleBuilder.BuildResult build(
       RelationBundleBuilder builder, ResourceId tableId) {
+    return build(builder, tableId, StatsProvider.NONE);
+  }
+
+  private RelationBundleBuilder.BuildResult build(
+      RelationBundleBuilder builder, ResourceId tableId, StatsProvider stats) {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(tableId))
@@ -177,8 +182,8 @@ class RelationBundleBuilderTest {
         "cid",
         resolved(tableId, candidate),
         ctx,
-        resolutionContext(StatsProvider.NONE),
-        StatsProvider.NONE,
+        resolutionContext(stats),
+        stats,
         Optional.empty());
   }
 
@@ -422,6 +427,65 @@ class RelationBundleBuilderTest {
 
     assertThat(maximumCallbacks.get()).isEqualTo(1);
     assertThat(callbackThread.get()).isNotSameAs(Thread.currentThread()).matches(Thread::isVirtual);
+  }
+
+  @Test
+  void parallelDecoratedBuildsPrepareOutsideTheDecoratorMonitor() throws Exception {
+    ResourceId tableY =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("TABLE_Y")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    overlay.registerTable(
+        TABLE,
+        UserObjectBundleTestSupport.schemaFor("id_x"),
+        NameRef.newBuilder().setName("x").build());
+    overlay.registerTable(
+        tableY,
+        UserObjectBundleTestSupport.schemaFor("id_y"),
+        NameRef.newBuilder().setName("y").build());
+    CountDownLatch tasksReady = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch preparationsEntered = new CountDownLatch(2);
+    CountDownLatch releasePreparations = new CountDownLatch(1);
+    StatsProvider blockingStats =
+        new StatsProvider() {
+          @Override
+          public Optional<TableStatsView> tableStats(ResourceId tableId) {
+            preparationsEntered.countDown();
+            awaitUninterruptibly(releasePreparations);
+            return Optional.empty();
+          }
+        };
+    EngineMetadataDecorator sharedDecorator = new EngineMetadataDecorator() {};
+    RelationBundleBuilder builder = builder(ignored -> Optional.of(sharedDecorator), true);
+
+    boolean preparationsOverlapped;
+    try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+      var first =
+          workers.submit(
+              () -> {
+                tasksReady.countDown();
+                awaitUninterruptibly(start);
+                return build(builder, TABLE, blockingStats);
+              });
+      var second =
+          workers.submit(
+              () -> {
+                tasksReady.countDown();
+                awaitUninterruptibly(start);
+                return build(builder, tableY, blockingStats);
+              });
+      assertThat(tasksReady.await(5, TimeUnit.SECONDS)).isTrue();
+      start.countDown();
+      preparationsOverlapped = preparationsEntered.await(1, TimeUnit.SECONDS);
+      releasePreparations.countDown();
+      first.get(5, TimeUnit.SECONDS);
+      second.get(5, TimeUnit.SECONDS);
+    }
+
+    assertThat(preparationsOverlapped).isTrue();
   }
 
   @Test

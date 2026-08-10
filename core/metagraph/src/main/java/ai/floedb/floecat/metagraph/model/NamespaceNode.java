@@ -65,21 +65,6 @@ public record NamespaceNode(
     return b.build();
   }
 
-  /**
-   * The fully-qualified {@link NameRef} for a relation named {@code relName} (id {@code relId})
-   * that lives directly in this namespace under {@code catalogName}. The path carries this
-   * namespace's segments followed by its own display name, so the relation name sits one level
-   * below.
-   */
-  public NameRef relationNameRef(String relName, ResourceId relId, String catalogName) {
-    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalogName);
-    pathSegments.forEach(b::addPath);
-    b.addPath(displayName);
-    b.setName(relName);
-    b.setResourceId(relId);
-    return b.build();
-  }
-
   @Override
   public GraphNodeKind kind() {
     return GraphNodeKind.NAMESPACE;

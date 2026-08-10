@@ -203,30 +203,6 @@ public class QueryInputResolver {
     private CurrentSnapshotPinCache(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
       this.pins = pins;
     }
-
-    /**
-     * Return one pin for {@code tableId}, executing {@code resolver} at most once concurrently. The
-     * winning caller's failure reaches every waiter and removes the failed entry.
-     */
-    private Lookup resolve(ResourceId tableId, Supplier<TablePin> resolver) {
-      CompletableFuture<TablePin> holder = new CompletableFuture<>();
-      CompletableFuture<TablePin> inflight = pins.putIfAbsent(tableId, holder);
-      if (inflight != null) {
-        return new Lookup(Futures.join(inflight), false);
-      }
-      try {
-        TablePin pin = resolver.get();
-        holder.complete(pin);
-        return new Lookup(pin, true);
-      } catch (RuntimeException | Error e) {
-        pins.remove(tableId, holder);
-        holder.completeExceptionally(e);
-        throw e;
-      }
-    }
-
-    /** Result of one lookup, including whether this caller performed the table-pin read. */
-    private record Lookup(TablePin pin, boolean miss) {}
   }
 
   // =============================================================================
