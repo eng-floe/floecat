@@ -45,6 +45,10 @@ Databricks SQL execution, and custom file readers for S3.
   connector enumerates all Delta versions that Floecat has not already ingested. When
   `SnapshotEnumerationOptions.targetSnapshotIds` is supplied, enumeration is limited to that
   explicit version set even when `fullRescan=true`.
+- `planSnapshotFiles(...)` – Produces immutable data-file membership, on-disk deletion-vector
+  attachments, execution schema, and a physical content identity for every Delta add-file.
+- `capturePlannedFileGroup(...)` – Captures the missing stats and page-index outputs for an
+  immutable planned subset of the snapshot's data files.
 - `captureSnapshotTargetStats(...)` – Captures table/column/file stats for one snapshot and optional
   selector scope, optionally sampling Parquet files for NDV (`SamplingNdvProvider`,
   `ParquetNdvProvider`).
@@ -68,6 +72,10 @@ Databricks SQL execution, and custom file readers for S3.
   recursing into array/map/struct so element/key/value/field types and `containsNull` /
   `valueContainsNull` are preserved in the `LogicalType` tree (see `docs/types.md`,
   "Complex types").
+- **Reuse identity** – Delta data-file content identity is derived from add-file modification time,
+  base row ID, and default row commit version. It is computed from Delta log metadata without
+  reading the data file, stored stats, or page-index sidecars. Deletion-vector path, offset, size,
+  and cardinality are incorporated separately into the stats source fingerprint.
 - **Constraint mapping** – Snapshot constraints currently emit metadata that is reliably exposed by
   Delta snapshots/table metadata:
   - `CT_NOT_NULL` from non-nullable schema fields (including nested struct leaves).
@@ -97,10 +105,12 @@ ConnectorFactory.create(cfg)
   → describe via REST + Delta Kernel schema inspection
   → enumerateSnapshots
       → Delta Kernel snapshot lineage
+  → planSnapshotFiles
+      → DeltaPlanner traverses _delta_log → immutable data-file/deletion-vector plan
+  → capturePlannedFileGroup
+      → read only the planned data files needed for missing stats/index outputs
   → captureSnapshotTargetStats
       → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
-  → plan
-      → DeltaPlanner traverses _delta_log → ScanBundle entries for data/delete files
 ```
 
 Connector resources (HTTP clients, S3 client, Delta engine) are closed when `close()` is invoked.

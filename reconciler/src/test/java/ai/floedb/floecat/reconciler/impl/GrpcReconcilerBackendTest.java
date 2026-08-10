@@ -16,10 +16,13 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -37,6 +40,8 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
@@ -49,6 +54,7 @@ import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -98,6 +104,114 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
+  @Test
+  void latestReconciledSnapshotForReuseReadsLatestFinalizedSnapshotDirectly() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    SnapshotReuseManifestRef reuseManifest =
+        SnapshotReuseManifestRef.newBuilder().setUri("/reuse.pb").build();
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenReturn(
+            GetLatestFinalizedSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(7L)
+                        .setReuseManifestRef(reuseManifest))
+                .build());
+
+    Optional<Snapshot> selected =
+        backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L);
+
+    assertThat(selected).map(Snapshot::getSnapshotId).contains(7L);
+    ArgumentCaptor<GetLatestFinalizedSnapshotRequest> request =
+        ArgumentCaptor.forClass(GetLatestFinalizedSnapshotRequest.class);
+    verify(backend.snapshot).getLatestFinalizedSnapshot(request.capture());
+    assertThat(request.getValue().getTableId()).isEqualTo(tableId);
+    assertThat(request.getValue().getExcludedSnapshotId()).isEqualTo(55L);
+    verify(backend.snapshot, never()).getSnapshot(any());
+    verify(backend.snapshot, never()).listSnapshots(any());
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseReturnsEmptyBeforeTheFirstFinalization() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenReturn(GetLatestFinalizedSnapshotResponse.getDefaultInstance());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThat(backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isEmpty();
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseClassifiesStructuralFailureAsTerminal() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenThrow(Status.INTERNAL.withDescription("corrupt reuse candidate").asRuntimeException());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    ReconcileFailureException failure =
+        assertThrows(
+            ReconcileFailureException.class,
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L));
+
+    assertThat(failure.retryDisposition())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+    assertThat(failure.retryClass()).isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.NONE);
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseLeavesTransientFailureRetryable() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    StatusRuntimeException aborted =
+        Status.ABORTED
+            .withDescription("reuse candidate temporarily unavailable")
+            .asRuntimeException();
+    when(backend.snapshot.getLatestFinalizedSnapshot(any())).thenThrow(aborted);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThatThrownBy(
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isSameAs(aborted);
+  }
+
   @Test
   void indexCompletenessUsesOneSnapshotLevelRpc() {
     GrpcReconcilerBackend backend =

@@ -884,11 +884,13 @@ class ReconcileJobGcTest {
     System.setProperty("floecat.gc.reconcile-jobs.page-size", "2");
     System.setProperty("floecat.gc.reconcile-jobs.slice-millis", "1");
     java.util.ArrayList<String> markerKeys = new java.util.ArrayList<>();
+    java.util.Map<String, String> canonicalByMarker = new java.util.HashMap<>();
     for (int i = 0; i < 2; i++) {
       String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "retained-" + i);
       String markerKey =
           Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
       markerKeys.add(markerKey);
+      canonicalByMarker.put(markerKey, canonicalKey);
       pointers.compareAndSet(
           canonicalKey,
           0L,
@@ -896,9 +898,21 @@ class ReconcileJobGcTest {
       putQuarantineMarker(markerKey, canonicalKey, 1L, "inline:reconcile-job:not-valid");
     }
     java.util.Collections.sort(markerKeys);
-    java.util.concurrent.atomic.AtomicInteger clockCalls =
-        new java.util.concurrent.atomic.AtomicInteger();
-    gc.clock = () -> clockCalls.incrementAndGet() < 4 ? 0L : 1L;
+    java.util.concurrent.atomic.AtomicBoolean firstMarkerConsumed =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    ReconcileJobIndexBackend observedBackend = org.mockito.Mockito.spy(jobIndexBackend);
+    org.mockito.Mockito.doAnswer(
+            invocation -> {
+              var loaded = invocation.callRealMethod();
+              if (canonicalByMarker.get(markerKeys.getFirst()).equals(invocation.getArgument(0))) {
+                firstMarkerConsumed.set(true);
+              }
+              return loaded;
+            })
+        .when(observedBackend)
+        .loadIndexEntry(org.mockito.ArgumentMatchers.anyString());
+    gc.jobIndexBackend = observedBackend;
+    gc.clock = () -> firstMarkerConsumed.get() ? 1L : 0L;
 
     var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
@@ -906,7 +920,7 @@ class ReconcileJobGcTest {
     assertEquals(
         pointers.pageTokenAfterKey(markerKeys.getFirst()), first.nextCanonicalQuarantineToken());
     assertTrue(pointers.get(markerKeys.getFirst()).isPresent());
-    gc.clock = System::currentTimeMillis;
+    gc.clock = () -> 0L;
 
     var second = gc.runAccountSlice(ACCOUNT_ID, "", first.nextCanonicalQuarantineToken());
 

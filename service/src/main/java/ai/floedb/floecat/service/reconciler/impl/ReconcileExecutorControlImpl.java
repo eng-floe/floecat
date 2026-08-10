@@ -1190,7 +1190,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   public Uni<SubmitLeasedSnapshotFinalizeResultResponse> submitLeasedSnapshotFinalizeResult(
       SubmitLeasedSnapshotFinalizeResultRequest request) {
     return mapFailures(
-        run(
+        runWithRetry(
             () -> {
               var principalContext = principalProvider.get();
               requireExecutorControl(principalContext);

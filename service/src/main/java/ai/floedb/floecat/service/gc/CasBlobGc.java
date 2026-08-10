@@ -701,6 +701,10 @@ public class CasBlobGc {
             String statsRefUri = entry.getStatsGenerationRef().getUri();
             referenced.add(normalizeKey(statsRefUri));
           }
+          if (entry.hasReuseStatsGenerationRef()
+              && !entry.getReuseStatsGenerationRef().getUri().isBlank()) {
+            referenced.add(normalizeKey(entry.getReuseStatsGenerationRef().getUri()));
+          }
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
           }

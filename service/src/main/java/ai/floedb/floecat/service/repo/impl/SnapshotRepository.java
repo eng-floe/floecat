@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
@@ -212,6 +214,38 @@ public class SnapshotRepository {
   }
 
   /**
+   * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
+   * the exact snapshot revision written so callers do not need a racy follow-up read.
+   */
+  public Optional<Snapshot> recordReuseManifest(
+      ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
+    if (reuseManifestRef == null
+        || reuseManifestRef.getUri().isBlank()
+        || reuseManifestRef.getPayloadBytes() <= 0L
+        || reuseManifestRef.getPayloadSha256().size() != 32
+        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
+      throw new IllegalArgumentException("complete reuse manifest metadata is required");
+    }
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      MutationMeta meta = repo.pointerMetaForSafe(key);
+      Snapshot current = repo.getByKey(key).orElse(null);
+      if (current == null) {
+        return Optional.empty();
+      }
+      Snapshot next = current.toBuilder().setReuseManifestRef(reuseManifestRef).build();
+      if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
+        return Optional.of(next);
+      }
+      if (attempt < 7) {
+        backoffCurrentPointerAdvance(attempt);
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
+  }
+
+  /**
    * Loads a snapshot directly from its immutable blob URI, bypassing the (table, snapshot id)
    * pointer. Used to read the exact snapshot blob a query pinned: an in-place UpdateSnapshot on the
    * same id republishes the pointer to a new blob, so resolving by id could drift the scan to that
@@ -351,6 +385,81 @@ public class SnapshotRepository {
   /** The committed current snapshot selection, before query-readiness gating. */
   public Optional<Snapshot> getCommittedCurrentSnapshot(ResourceId tableId) {
     return rootCurrentSnapshot(tableId, false);
+  }
+
+  /** Returns the newest root-published reusable snapshot at or before committed current. */
+  public Optional<Snapshot> getLatestFinalizedSnapshotForReuse(
+      ResourceId tableId, Long excludedSnapshotId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()) {
+      return Optional.empty();
+    }
+    if (lookup.root() == null) {
+      throw new StorageAbortRetryableException(
+          "reusable snapshot root is temporarily unavailable: " + tableId.getId());
+    }
+    if (!lookup.root().hasCurrentSnapshotId()) {
+      if (lookup.root().getReusableSnapshotCandidatesCount() != 0) {
+        throw reusableCandidateCorruption(
+            "root publishes reusable snapshots without a committed current snapshot");
+      }
+      return Optional.empty();
+    }
+    if (!lookup.root().hasSnapshotManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root with a committed current snapshot has no snapshot manifest");
+    }
+    for (SnapshotManifestEntry entry : lookup.root().getReusableSnapshotCandidatesList()) {
+      if (excludedSnapshotId != null && entry.getSnapshotId() == excludedSnapshotId) {
+        continue;
+      }
+      return Optional.of(loadReusableCandidate(tableId, entry));
+    }
+    return Optional.empty();
+  }
+
+  private Snapshot loadReusableCandidate(ResourceId tableId, SnapshotManifestEntry entry) {
+    if (!entry.hasSnapshotRef()
+        || entry.getSnapshotRef().getUri().isBlank()
+        || !entry.hasReuseStatsGenerationRef()
+        || entry.getReuseStatsGenerationRef().getUri().isBlank()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate is structurally incomplete");
+    }
+    Snapshot candidate =
+        getByBlobUriLive(entry.getSnapshotRef().getUri())
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "root-published reusable snapshot is temporarily unavailable: "
+                            + entry.getSnapshotRef().getUri()));
+    if (!candidate.getTableId().equals(tableId)
+        || candidate.getSnapshotId() != entry.getSnapshotId()
+        || !candidate.hasReuseManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate does not match its snapshot");
+    }
+    SnapshotReuseManifestRef reuse = candidate.getReuseManifestRef();
+    if (reuse.getUri().isBlank()
+        || reuse.getPayloadBytes() <= 0L
+        || reuse.getPayloadSha256().size() != 32
+        || reuse.getStatsGenerationManifestUri().isBlank()
+        || !entry
+            .getReuseStatsGenerationRef()
+            .getUri()
+            .equals(reuse.getStatsGenerationManifestUri())) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot manifest reference is invalid");
+    }
+    return candidate;
+  }
+
+  private static BaseResourceRepository.CorruptionException reusableCandidateCorruption(
+      String message) {
+    return new BaseResourceRepository.CorruptionException(message);
   }
 
   private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {

@@ -23,6 +23,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
+import ai.floedb.floecat.storage.errors.StorageException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -178,13 +183,31 @@ public class SnapshotPlanBlobStore {
     if (effectiveSnapshotPlanUri.isBlank()) {
       throw new IllegalStateException("Missing snapshot plan blob URI");
     }
+    byte[] planBytes;
     try {
-      return mapper
-          .readValue(blobStore.get(effectiveSnapshotPlanUri), SnapshotPlanBlob.class)
-          .toPlannedFileGroupJobs();
-    } catch (Exception e) {
+      planBytes = blobStore.get(effectiveSnapshotPlanUri);
+    } catch (StorageAbortRetryableException e) {
+      throw e;
+    } catch (StorageConflictException
+        | StorageNotFoundException
+        | StoragePreconditionFailedException e) {
+      throw new StorageAbortRetryableException(
+          "Snapshot plan blob is temporarily unavailable " + effectiveSnapshotPlanUri, e);
+    } catch (StorageException e) {
       throw new IllegalStateException(
           "Failed to load snapshot plan blob " + effectiveSnapshotPlanUri, e);
+    } catch (RuntimeException e) {
+      throw new IllegalStateException(
+          "Failed to load snapshot plan blob " + effectiveSnapshotPlanUri, e);
+    }
+    if (planBytes == null) {
+      throw new StorageAbortRetryableException(
+          "Snapshot plan blob is not yet visible " + effectiveSnapshotPlanUri);
+    }
+    try {
+      return mapper.readValue(planBytes, SnapshotPlanBlob.class).toPlannedFileGroupJobs();
+    } catch (Exception e) {
+      throw new IllegalStateException("Invalid snapshot plan blob " + effectiveSnapshotPlanUri, e);
     }
   }
 

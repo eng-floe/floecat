@@ -20,7 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -36,6 +40,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +55,83 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class SnapshotPlanBlobStoreTest {
+
+  @Test
+  void loadPlanJobsTreatsMissingBlobAsRetryable() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    store.blobStore = mock(BlobStore.class);
+    store.mapper = new ObjectMapper();
+    when(store.blobStore.get("/snapshot-plan.json"))
+        .thenThrow(new StorageNotFoundException("not found"));
+
+    StorageAbortRetryableException failure =
+        assertThrows(
+            StorageAbortRetryableException.class, () -> store.loadPlanJobs("/snapshot-plan.json"));
+
+    assertEquals("not found", failure.getCause().getMessage());
+  }
+
+  @Test
+  void loadPlanJobsTreatsNullBlobAsRetryable() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    store.blobStore = mock(BlobStore.class);
+    store.mapper = new ObjectMapper();
+
+    StorageAbortRetryableException failure =
+        assertThrows(
+            StorageAbortRetryableException.class, () -> store.loadPlanJobs("/snapshot-plan.json"));
+
+    assertTrue(failure.getMessage().contains("not yet visible"));
+  }
+
+  @Test
+  void loadPlanJobsPreservesRetryableStorageFailure() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    store.blobStore = mock(BlobStore.class);
+    store.mapper = new ObjectMapper();
+    StorageAbortRetryableException expected =
+        new StorageAbortRetryableException("temporarily unavailable");
+    when(store.blobStore.get("/snapshot-plan.json")).thenThrow(expected);
+
+    assertSame(
+        expected,
+        assertThrows(
+            StorageAbortRetryableException.class, () -> store.loadPlanJobs("/snapshot-plan.json")));
+  }
+
+  @Test
+  void loadPlanJobsTreatsReadConflictsAsRetryable() {
+    for (RuntimeException storageFailure :
+        List.of(
+            new StorageConflictException("plan read conflict"),
+            new StoragePreconditionFailedException("plan read precondition failed"))) {
+      SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+      store.blobStore = mock(BlobStore.class);
+      store.mapper = new ObjectMapper();
+      when(store.blobStore.get("/snapshot-plan.json")).thenThrow(storageFailure);
+
+      StorageAbortRetryableException failure =
+          assertThrows(
+              StorageAbortRetryableException.class,
+              () -> store.loadPlanJobs("/snapshot-plan.json"));
+
+      assertSame(storageFailure, failure.getCause());
+    }
+  }
+
+  @Test
+  void loadPlanJobsTreatsMalformedBlobAsTerminalValidationFailure() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    store.blobStore = mock(BlobStore.class);
+    store.mapper = new ObjectMapper();
+    when(store.blobStore.get("/snapshot-plan.json"))
+        .thenReturn("not-json".getBytes(StandardCharsets.UTF_8));
+
+    IllegalStateException failure =
+        assertThrows(IllegalStateException.class, () -> store.loadPlanJobs("/snapshot-plan.json"));
+
+    assertTrue(failure.getMessage().contains("Invalid snapshot plan blob"));
+  }
 
   @Test
   void persistPlanRoundTripsScopedFileGroupJobs() {

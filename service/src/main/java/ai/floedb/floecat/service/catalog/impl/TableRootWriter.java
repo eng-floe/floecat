@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
@@ -77,24 +78,57 @@ public class TableRootWriter {
    * the same advance rule the current-snapshot pointer machinery used. Every snapshot write funnels
    * through the pointer advance, which calls this — the single point keeping the manifest in step.
    */
-  public void commitSnapshotEntry(ResourceId tableId, Snapshot candidate) {
-    MutationMeta snapMeta = snapshots.metaForSafe(tableId, candidate.getSnapshotId());
-    BlobRef snapshotRef = BlobRefs.refFrom(snapMeta);
-    if (snapshotRef == null) {
-      return; // snapshot blob not resolvable; nothing coherent to record
+  public void commitSnapshotEntry(ResourceId tableId, long snapshotId) {
+    boolean committed = false;
+    for (int attempt = 0; attempt < 8; attempt++) {
+      MutationMeta observedMeta = snapshots.metaForSafe(tableId, snapshotId);
+      BlobRef snapshotRef = BlobRefs.refFrom(observedMeta);
+      if (snapshotRef == null) {
+        if (committed) {
+          removeSnapshot(tableId, snapshotId);
+        }
+        return;
+      }
+      Snapshot candidate =
+          snapshots
+              .getById(tableId, snapshotId)
+              .orElseThrow(
+                  () ->
+                      new StorageAbortRetryableException(
+                          "snapshot blob is not yet readable: " + snapshotId));
+      if (!sameSnapshotRevision(observedMeta, snapshots.metaForSafe(tableId, snapshotId))) {
+        continue;
+      }
+      // Root currency tracks the committed current-snapshot selection immediately. Query readers
+      // still require the selected manifest entry to carry a stats generation before pinning it, so
+      // logical Iceberg metadata can move current without exposing an unfinalized scan.
+      boolean advanceAtRegistration = true;
+      committer.commit(
+          tableId,
+          TableRootMutations.upsertSnapshot(
+              roots,
+              tableId,
+              snapshotEntry(candidate, snapshotRef),
+              BlobRefs.refFrom(tables.metaForSafe(tableId)),
+              advanceAtRegistration));
+      committed = true;
+      MutationMeta afterCommit = snapshots.metaForSafe(tableId, snapshotId);
+      if (sameSnapshotRevision(observedMeta, afterCommit)) {
+        return;
+      }
+      if (BlobRefs.refFrom(afterCommit) == null) {
+        removeSnapshot(tableId, snapshotId);
+        return;
+      }
     }
-    // Root currency tracks the committed current-snapshot selection immediately. Query readers
-    // still require the selected manifest entry to carry a stats generation before pinning it, so
-    // logical Iceberg metadata can move current without exposing an unfinalized scan.
-    boolean advanceAtRegistration = true;
-    committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            snapshotEntry(candidate, snapshotRef),
-            BlobRefs.refFrom(tables.metaForSafe(tableId)),
-            advanceAtRegistration));
+    throw new StorageAbortRetryableException(
+        "snapshot changed repeatedly while publishing its table-root entry: " + snapshotId);
+  }
+
+  private static boolean sameSnapshotRevision(MutationMeta first, MutationMeta second) {
+    return first.getPointerVersion() == second.getPointerVersion()
+        && first.getBlobUri().equals(second.getBlobUri())
+        && first.getEtag().equals(second.getEtag());
   }
 
   private static SnapshotManifestEntry snapshotEntry(Snapshot candidate, BlobRef snapshotRef) {
@@ -107,6 +141,7 @@ public class TableRootWriter {
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
+    ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(entry, candidate);
     return entry.build();
   }
 
@@ -293,6 +328,8 @@ public class TableRootWriter {
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));
+              ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(
+                  builder, s);
             });
     // Attach the finalized aux refs the same way TableRootSynthesizer.entryFor does. A resync
     // creates a fresh entry (no prior entry for preserveAuxRefs to copy from), so without this a

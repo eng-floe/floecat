@@ -142,6 +142,15 @@ public class TableRootSynthesizer {
       // time, snapshot id as tiebreak) over the entries that actually made the manifest.
       newestEntry(manifestHead).ifPresent(e -> root.setCurrentSnapshotId(e.getSnapshotId()));
     }
+    if (root.hasCurrentSnapshotId() && manifestHead != null) {
+      SnapshotManifests.Chain indexed = SnapshotManifests.chain(roots, tableId, manifestHead);
+      indexed
+          .findEntry(root.getCurrentSnapshotId())
+          .ifPresent(
+              current ->
+                  root.addAllReusableSnapshotCandidates(
+                      SnapshotManifests.latestReusableCandidates(indexed, current)));
+    }
     return Optional.of(root.build());
   }
 
@@ -178,6 +187,7 @@ public class TableRootSynthesizer {
     if (snapshot.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
     }
+    ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(entry, snapshot);
     stats
         .activeStatsGeneration(tableId, snapshot.getSnapshotId())
         .ifPresent(uri -> entry.setStatsGenerationRef(BlobRef.newBuilder().setUri(uri)));

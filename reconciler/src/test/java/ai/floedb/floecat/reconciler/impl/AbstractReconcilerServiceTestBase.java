@@ -165,6 +165,12 @@ abstract class AbstractReconcilerServiceTestBase {
 
   protected abstract static class DefaultBackend implements ReconcilerBackend {
     @Override
+    public Optional<Snapshot> latestReconciledSnapshotForReuse(
+        ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
+      return Optional.empty();
+    }
+
+    @Override
     public ResourceId ensureNamespace(
         ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
       throw new UnsupportedOperationException();

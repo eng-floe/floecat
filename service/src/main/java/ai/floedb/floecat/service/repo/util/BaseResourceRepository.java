@@ -40,6 +40,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -442,27 +443,50 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         "list_by_prefix",
         () -> {
           var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
-          var uris = new ArrayList<String>(rows.size());
+          var ordinaryUris = new ArrayList<String>(rows.size());
+          var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
           for (var row : rows) {
-            uris.add(requireBlobReference(row, row.getKey()));
+            String blobUri = requireBlobReference(row, row.getKey());
+            if (ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+              projectionKeys.add(new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()));
+            } else {
+              ordinaryUris.add(blobUri);
+            }
           }
 
           // Serve immutable blobs from the decoded cache and batch-fetch only the misses; fetched
           // misses are decoded once and populated back for the next page/scan of this data.
-          Map<String, T> cached =
-              blobCacheable() ? blobCache.getAllPresent(uris) : Map.<String, T>of();
-          var missUris = new ArrayList<String>(uris.size() - cached.size());
-          for (var uri : uris) {
-            if (!cached.containsKey(uri)) {
-              missUris.add(uri);
+          Map<String, T> cachedBlobs =
+              blobCacheable() ? blobCache.getAllPresent(ordinaryUris) : Map.<String, T>of();
+          Map<ImmutableBlobCache.ProjectionKey, T> cachedProjections =
+              blobCacheable()
+                  ? blobCache.getAllProjectionsPresent(projectionKeys)
+                  : Map.<ImmutableBlobCache.ProjectionKey, T>of();
+          var missUris = new LinkedHashSet<String>();
+          for (var row : rows) {
+            String blobUri = requireBlobReference(row, row.getKey());
+            boolean cached =
+                ReusableArtifactBundleUris.isBundleUri(blobUri)
+                    ? cachedProjections.containsKey(
+                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
+                    : cachedBlobs.containsKey(blobUri);
+            if (!cached) {
+              missUris.add(blobUri);
             }
           }
           var blobsMap =
-              missUris.isEmpty() ? Map.<String, byte[]>of() : blobStore.getBatch(missUris);
+              missUris.isEmpty()
+                  ? Map.<String, byte[]>of()
+                  : blobStore.getBatch(new ArrayList<>(missUris));
           var blobs = new ArrayList<KeyedValue<T>>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
-            T hit = cached.get(blobUri);
+            boolean projected = ReusableArtifactBundleUris.isBundleUri(blobUri);
+            T hit =
+                projected
+                    ? cachedProjections.get(
+                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
+                    : cachedBlobs.get(blobUri);
             if (hit != null) {
               blobs.add(new KeyedValue<>(row.getKey(), hit));
               continue;
@@ -479,7 +503,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             try {
               T parsed = parseReferencedBlob(row.getKey(), blobUri, bytes);
               if (blobCacheable()) {
-                blobCache.put(blobUri, parsed);
+                if (projected) {
+                  blobCache.putProjection(blobUri, row.getKey(), parsed);
+                } else {
+                  blobCache.put(blobUri, parsed);
+                }
               }
               blobs.add(new KeyedValue<>(row.getKey(), parsed));
             } catch (Exception e) {

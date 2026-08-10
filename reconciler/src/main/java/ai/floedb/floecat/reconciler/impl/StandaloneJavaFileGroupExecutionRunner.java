@@ -24,6 +24,10 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageConflictException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -305,6 +309,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
         throwIfCancellationRequested(stop);
       } catch (java.util.concurrent.CancellationException error) {
         throw error;
+      } catch (StorageAbortRetryableException
+          | StorageConflictException
+          | StorageNotFoundException
+          | StoragePreconditionFailedException error) {
+        throw retryableReuseBundleRead(
+            "Failed to load reusable artifact bundle " + selection.payloadUri(), error);
       } catch (ReconcileFailureException error) {
         throw error;
       } catch (Exception error) {
@@ -320,6 +330,16 @@ public class StandaloneJavaFileGroupExecutionRunner {
         ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
         ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
         ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+        message,
+        cause);
+  }
+
+  private static ReconcileFailureException retryableReuseBundleRead(
+      String message, Throwable cause) {
+    return new ReconcileFailureException(
+        ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+        ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
         message,
         cause);
   }
@@ -357,7 +377,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
     }
     byte[] bytes = blobStore.get(uri);
     if (bytes == null) {
-      throw new IllegalStateException("Reusable artifact reference is missing: " + uri);
+      throw new StorageNotFoundException("Reusable artifact reference is missing: " + uri);
     }
     if (bytes.length != expectedBytes || !MessageDigest.isEqual(expectedSha256, sha256(bytes))) {
       throw new IllegalStateException("Reusable artifact reference validation failed: " + uri);
@@ -392,7 +412,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
       TargetStatsRecord record,
       Map<String, ReconcileFileExecutionPlan> plansByPath,
       List<String> realizedSelectors) {
-    String filePath = record.hasFile() ? record.getFile().getFilePath() : "";
+    String filePath = statsFilePath(record);
     ReconcileFileExecutionPlan owner = plansByPath.get(filePath);
     String fingerprint = owner == null ? "" : owner.sourceFingerprint();
     if (owner == null) {

@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
@@ -461,6 +462,34 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         return Optional.empty();
       }
       throw e;
+    }
+  }
+
+  @Override
+  public Optional<Snapshot> latestReconciledSnapshotForReuse(
+      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
+    try {
+      var response =
+          snapshot(ctx)
+              .getLatestFinalizedSnapshot(
+                  GetLatestFinalizedSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setExcludedSnapshotId(excludedSnapshotId)
+                      .build());
+      return response.hasSnapshot() ? Optional.of(response.getSnapshot()) : Optional.empty();
+    } catch (StatusRuntimeException error) {
+      if (error.getStatus().getCode() == Status.Code.INTERNAL
+          || error.getStatus().getCode() == Status.Code.DATA_LOSS
+          || error.getStatus().getCode() == Status.Code.FAILED_PRECONDITION
+          || error.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
+        throw new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            "invalid finalized snapshot reuse basis",
+            error);
+      }
+      throw error;
     }
   }
 

@@ -20,11 +20,15 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -33,10 +37,12 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -669,6 +675,207 @@ class SnapshotRepositoryTest {
     CurrentSnapshotPointer second = snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow();
     assertEquals(first, second, "polling the pointer must not observe a perpetual update");
     assertEquals(Timestamps.fromMillis(ingestedMs), first.getUpdatedAt());
+  }
+
+  @Test
+  void recordReuseManifestPreservesSnapshotAndIsIdempotent() {
+    var tableRid = newSeededTable();
+    Snapshot original =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .putSummary("existing", "value")
+            .build();
+    snapshotRepo.create(original);
+
+    byte[] digest = new byte[32];
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
+    Snapshot recorded =
+        snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).orElseThrow();
+    Snapshot updated = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+    Snapshot replayedRecord =
+        snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).orElseThrow();
+    Snapshot replayed = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+
+    assertEquals(updated, recorded);
+    assertEquals(updated, replayedRecord);
+    assertEquals("value", updated.getSummaryOrThrow("existing"));
+    assertEquals("/reuse/manifest.pb", updated.getReuseManifestRef().getUri());
+    assertEquals(123L, updated.getReuseManifestRef().getPayloadBytes());
+    assertArrayEquals(digest, updated.getReuseManifestRef().getPayloadSha256().toByteArray());
+    assertEquals(
+        "/stats/generation.pb", updated.getReuseManifestRef().getStatsGenerationManifestUri());
+    assertEquals(updated, replayed);
+    assertEquals(updated, snapshotRepo.getById(tableRid, 42L).orElseThrow());
+  }
+
+  @Test
+  void recordReuseManifestReturnsEmptyWhenSnapshotWasDeleted() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
+
+    assertTrue(snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef).isEmpty());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseIgnoresTheUnfinalizedCommittedCurrent() {
+    var tableRid = newSeededTable();
+    long now = clock.millis();
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      Snapshot.Builder snapshot =
+          Snapshot.newBuilder()
+              .setTableId(tableRid)
+              .setSnapshotId(snapshotId)
+              .setIngestedAt(Timestamps.fromMillis(now))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        snapshot.setReuseManifestRef(
+            ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef.newBuilder()
+                .setUri("/reuse/" + snapshotId + ".pb")
+                .setPayloadBytes(123L)
+                .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                .setStatsGenerationManifestUri("/reuse-stats/" + snapshotId));
+      }
+      snapshotRepo.create(snapshot.build());
+    }
+
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      var entry =
+          ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+              .setSnapshotId(snapshotId)
+              .setSnapshotRef(
+                  ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                      .setUri(snapshotRepo.metaForSafe(tableRid, snapshotId).getBlobUri()))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        entry.setReuseStatsGenerationRef(
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri("/reuse-stats/" + snapshotId));
+      }
+      committer.commit(
+          tableRid,
+          ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+              roots, tableRid, entry.build(), null, false));
+    }
+    var currentEntry =
+        SnapshotManifests.findEntry(
+                roots, roots.get(tableRid).orElseThrow().getSnapshotManifestRef(), 3L)
+            .orElseThrow();
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.resync(
+            roots, tableRid, null, currentEntry, java.util.Set.of(1L, 2L, 3L), null));
+
+    assertEquals(
+        2L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 3L)
+            .orElseThrow()
+            .getSnapshotId());
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseFailsClosedWhenSelectedCandidateIsUnusable() {
+    var tableRid = newSeededTable();
+    Snapshot newestWithoutReuseManifest =
+        Snapshot.newBuilder().setTableId(tableRid).setSnapshotId(2L).build();
+    Snapshot reusablePredecessor =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(1L)
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("/reuse/1.pb")
+                    .setPayloadBytes(123L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("/reuse-stats/1.pb"))
+            .build();
+    snapshotRepo.create(newestWithoutReuseManifest);
+    snapshotRepo.create(reusablePredecessor);
+
+    var roots = new TableRootRepository(ptr, blobs);
+    assertTrue(
+        roots.createIfAbsent(
+            TableRoot.newBuilder()
+                .setTableId(tableRid)
+                .setCurrentSnapshotId(2L)
+                .setSnapshotManifestRef(BlobRef.newBuilder().setUri("/manifest/head.pb"))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(2L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 2L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/2.pb")))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(1L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 1L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/1.pb")))
+                .build()));
+
+    BaseResourceRepository.CorruptionException failure =
+        assertThrows(
+            BaseResourceRepository.CorruptionException.class,
+            () -> snapshotRepo.getLatestFinalizedSnapshotForReuse(tableRid, null));
+    assertTrue(failure.getMessage().contains("does not match its snapshot"));
+
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseRetriesWhenSelectedSnapshotBlobIsMissing() {
+    var tableRid = newSeededTable();
+    var roots = new TableRootRepository(ptr, blobs);
+    assertTrue(
+        roots.createIfAbsent(
+            TableRoot.newBuilder()
+                .setTableId(tableRid)
+                .setCurrentSnapshotId(2L)
+                .setSnapshotManifestRef(BlobRef.newBuilder().setUri("/manifest/head.pb"))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(2L)
+                        .setSnapshotRef(BlobRef.newBuilder().setUri("/snapshots/missing.pb"))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/2.pb")))
+                .build()));
+
+    StorageAbortRetryableException failure =
+        assertThrows(
+            StorageAbortRetryableException.class,
+            () -> snapshotRepo.getLatestFinalizedSnapshotForReuse(tableRid, null));
+    assertTrue(failure.getMessage().contains("temporarily unavailable"));
   }
 
   private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {

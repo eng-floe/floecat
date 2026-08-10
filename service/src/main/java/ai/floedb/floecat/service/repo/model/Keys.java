@@ -1341,6 +1341,21 @@ public final class Keys {
         + "finalizer-outputs/";
   }
 
+  public static String reconcileSnapshotDurableCaptureManifestUri(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String parentJobId,
+      byte[] manifestSha256) {
+    if (manifestSha256 == null || manifestSha256.length != 32) {
+      throw new IllegalArgumentException("manifest_sha256 must contain 32 bytes");
+    }
+    return reconcileSnapshotFinalizeStatsObjectPrefix(accountId, tableId, snapshotId, parentJobId)
+        + "reuse-manifests/"
+        + HexFormat.of().formatHex(manifestSha256)
+        + ".pb";
+  }
+
   public static String reconcileSnapshotCaptureManifestUri(
       String accountId, String parentJobId, String jobId, String leaseEpoch) {
     String tid = req("account_id", accountId);

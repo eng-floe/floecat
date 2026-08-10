@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -51,6 +52,8 @@ public final class SnapshotManifests {
 
   /** Bounds a page so the common reads (current, recent AS_OF) touch one blob. */
   public static final int PAGE_ENTRY_BOUND = 256;
+
+  private static final int REUSABLE_CANDIDATE_BOUND = 2;
 
   /**
    * Sentinel fingerprint for a snapshot whose schema_json is blank: the read schema is then the
@@ -385,6 +388,34 @@ public final class SnapshotManifests {
   }
 
   /**
+   * Computes the newest reusable entries at or before committed current for publication on the
+   * table root. This is a write-path manifest walk; readers consume the bounded root index
+   * directly.
+   */
+  public static List<SnapshotManifestEntry> latestReusableCandidates(
+      Chain chain, SnapshotManifestEntry committedCurrent) {
+    if (chain == null || committedCurrent == null) {
+      return List.of();
+    }
+    List<SnapshotManifestEntry> best = new ArrayList<>(REUSABLE_CANDIDATE_BOUND);
+    chain.forEachEntry(
+        entry -> {
+          if (!entry.hasReuseStatsGenerationRef() || newer(entry, committedCurrent)) {
+            return;
+          }
+          int insertion = 0;
+          while (insertion < best.size() && newer(best.get(insertion), entry)) {
+            insertion++;
+          }
+          best.add(insertion, entry);
+          if (best.size() > REUSABLE_CANDIDATE_BOUND) {
+            best.removeLast();
+          }
+        });
+    return List.copyOf(best);
+  }
+
+  /**
    * The newest manifest entry at or before {@code asOfMs}, optionally requiring finalized stats.
    * This is the shared AS_OF ordering and visibility rule for query pins and public artifact APIs.
    */
@@ -429,5 +460,15 @@ public final class SnapshotManifests {
 
   private static boolean isPresent(BlobRef ref) {
     return ref != null && !ref.getUri().isEmpty();
+  }
+
+  public static void applyReuseGenerationRef(
+      SnapshotManifestEntry.Builder entry, Snapshot snapshot) {
+    if (snapshot.hasReuseManifestRef()
+        && !snapshot.getReuseManifestRef().getStatsGenerationManifestUri().isBlank()) {
+      entry.setReuseStatsGenerationRef(
+          BlobRef.newBuilder()
+              .setUri(snapshot.getReuseManifestRef().getStatsGenerationManifestUri()));
+    }
   }
 }

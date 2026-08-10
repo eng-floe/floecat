@@ -62,6 +62,12 @@ class TableRootMutationsTest {
         .build();
   }
 
+  private static SnapshotManifestEntry reusableEntry(long snapshotId, long upstreamMs) {
+    return entry(snapshotId, upstreamMs).toBuilder()
+        .setReuseStatsGenerationRef(ref("s3://t/reuse-stats-" + snapshotId + ".pb"))
+        .build();
+  }
+
   private TableRoot commit(TableRootCommitter.RootMutator mutator) {
     return committer.commit(TABLE, mutator).orElseThrow();
   }
@@ -276,6 +282,39 @@ class TableRootMutationsTest {
         ai.floedb.floecat.service.repo.impl.SnapshotManifests.findEntry(
                 roots, root.getSnapshotManifestRef(), 7)
             .isPresent());
+  }
+
+  @Test
+  void rootPublishesTwoReusableCandidatesForBoundedReplayLookup() {
+    commit(
+        TableRootMutations.upsertSnapshot(
+            roots, TABLE, reusableEntry(1, 1_000), ref("s3://t/def.pb"), true));
+    commit(TableRootMutations.upsertSnapshot(roots, TABLE, reusableEntry(2, 2_000), null, true));
+    TableRoot root =
+        commit(TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, true));
+
+    assertEquals(
+        java.util.List.of(2L, 1L),
+        root.getReusableSnapshotCandidatesList().stream()
+            .map(SnapshotManifestEntry::getSnapshotId)
+            .toList());
+  }
+
+  @Test
+  void reusableCandidatesFollowCommittedCurrentRollback() {
+    commit(
+        TableRootMutations.upsertSnapshot(
+            roots, TABLE, reusableEntry(3, 3_000), ref("s3://t/def.pb"), true));
+    commit(TableRootMutations.upsertSnapshot(roots, TABLE, reusableEntry(7, 7_000), null, true));
+
+    TableRoot rolledBack =
+        commit(
+            TableRootMutations.resync(
+                roots, TABLE, null, reusableEntry(3, 3_000), java.util.Set.of(3L, 7L), null));
+
+    assertEquals(3L, rolledBack.getCurrentSnapshotId());
+    assertEquals(1, rolledBack.getReusableSnapshotCandidatesCount());
+    assertEquals(3L, rolledBack.getReusableSnapshotCandidates(0).getSnapshotId());
   }
 
   @Test
