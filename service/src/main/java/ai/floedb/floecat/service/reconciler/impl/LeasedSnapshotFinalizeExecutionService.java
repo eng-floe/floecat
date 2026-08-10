@@ -610,12 +610,17 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       return;
     }
+    Set<String> required = policy.selectorsForStats();
     boolean defaultSelection =
-        policy.columns().stream().noneMatch(ReconcileCapturePolicy.Column::captureStats)
+        required.isEmpty()
             && policy.defaultColumnScope()
                 != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
     if (manifest.getSourceFileCount() == 0) {
       return;
+    }
+    if (!required.isEmpty() && !realized.containsAll(required)) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not cover explicitly requested stats selectors");
     }
     if (defaultSelection
         && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N

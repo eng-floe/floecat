@@ -783,7 +783,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void successRejectsMissingRealizedStatsCoverageBeforePublication() {
+  void successRejectsWrongRealizedStatsCoverageBeforePublication() {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(
             List.of(new ReconcileCapturePolicy.Column("customer_id", true, false)),
@@ -814,6 +814,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                             .setSelector("customer_id")
                             .setCaptureStats(true)))
             .setSourceFileCount(1)
+            .addRealizedStatsSelectors("region")
             .build()
             .toByteArray();
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
