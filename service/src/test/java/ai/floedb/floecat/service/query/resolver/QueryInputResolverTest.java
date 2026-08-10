@@ -51,7 +51,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -354,7 +356,8 @@ public class QueryInputResolverTest {
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
-    var failingGraph = new FailingAfterFastPinGraph();
+    var currentSnapshotPinCache = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
+    var failingGraph = new FailingAfterFastPinGraph(currentSnapshotPinCache);
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
     var withStore = new QueryInputResolver(failingGraph, store);
 
@@ -369,8 +372,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<
-                    ResourceId, CompletableFuture<TablePin>>(),
+                currentSnapshotPinCache,
                 null));
 
     org.mockito.Mockito.verify(store)
@@ -386,7 +388,8 @@ public class QueryInputResolverTest {
   /** Completed sibling work still contributes pin diagnostics when another parallel plan fails. */
   @Test
   void flushesParallelPinDiagnosticsWhenSiblingPlanningFails() {
-    var failingGraph = new FailingAfterFastPinGraph();
+    var currentSnapshotPinCache = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
+    var failingGraph = new FailingAfterFastPinGraph(currentSnapshotPinCache);
     var diagnostics = org.mockito.Mockito.mock(ai.floedb.floecat.telemetry.PhaseDiagnostics.class);
     var withStore = new QueryInputResolver(failingGraph);
 
@@ -401,8 +404,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAIL")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<
-                    ResourceId, CompletableFuture<TablePin>>(),
+                currentSnapshotPinCache,
                 diagnostics));
 
     org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
@@ -2130,9 +2132,16 @@ public class QueryInputResolverTest {
     }
   }
 
-  /** Fails one lookup only after the sibling's pin has been constructed. */
+  /** Fails one lookup only after the sibling has published its fully processed pin. */
   static final class FailingAfterFastPinGraph extends FakeGraph {
     private final CountDownLatch fastPinCompleted = new CountDownLatch(1);
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache;
+    private CompletableFuture<TablePin> fastPinHolder;
+
+    FailingAfterFastPinGraph(
+        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache) {
+      this.currentSnapshotPinCache = currentSnapshotPinCache;
+    }
 
     @Override
     public TablePin tablePinFor(
@@ -2145,14 +2154,21 @@ public class QueryInputResolverTest {
           if (!fastPinCompleted.await(1, TimeUnit.SECONDS)) {
             throw new AssertionError("fast pin lookup did not complete");
           }
+          fastPinHolder.get(1, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           throw new AssertionError("failing pin lookup interrupted", e);
+        } catch (ExecutionException | TimeoutException e) {
+          throw new AssertionError("fast pin lookup did not publish successfully", e);
         }
         throw new IllegalStateException("planned failure");
       }
       TablePin pin = super.tablePinFor(correlationId, tableId, override, asOfDefault);
       if ("FAST".equals(tableId.getId())) {
+        fastPinHolder = currentSnapshotPinCache.get(tableId);
+        if (fastPinHolder == null) {
+          throw new AssertionError("fast pin lookup did not publish a cache holder");
+        }
         fastPinCompleted.countDown();
       }
       return pin;
