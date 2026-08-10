@@ -156,7 +156,8 @@ public class UserObjectBundleService {
       PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
-      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "1")
+      // Epoch 2 covers the typed SchemaColumn payload migration and must never move backward.
+      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "2")
           String decorationEpoch,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightHost,
@@ -930,16 +931,51 @@ public class UserObjectBundleService {
         long decorationNanos,
         TimingAccumulator taskTimings) {}
 
+    /** One requested relation and the ordered response slot that receives its build result. */
+    private record BuildTarget(PendingFound found, int slot) {}
+
+    /** One unique full build and every response slot that can share its immutable result. */
+    private static final class BuildPlan {
+      private final List<BuildTarget> targets;
+      private final Optional<RelationBundleBuilder.BuildError> validationError;
+      private final Optional<RelationPinIdentity> scopedIdentity;
+
+      private BuildPlan(
+          PendingFound source,
+          int slot,
+          Optional<RelationBundleBuilder.BuildError> validationError,
+          Optional<RelationPinIdentity> scopedIdentity) {
+        this.targets = new ArrayList<>(List.of(new BuildTarget(source, slot)));
+        this.validationError = validationError;
+        this.scopedIdentity = scopedIdentity;
+      }
+
+      private void addDuplicate(PendingFound duplicate, int slot) {
+        targets.add(new BuildTarget(duplicate, slot));
+      }
+
+      private PendingFound source() {
+        return targets.getFirst().found();
+      }
+    }
+
     /**
      * Build one relation's full payload, timing into a task-local accumulator so parallel builds
      * need no shared-counter deltas. A build failure is isolated to this relation as an ERROR
      * resolution — one relation's decoration/schema/stats fault must not sink the whole bundle.
      */
     private BuildOutcome buildOne(
-        PendingFound found,
-        QueryContext liveCtx,
-        Optional<RelationPinIdentity> scopedIdentity,
-        Optional<StatsProvider.TableStatsView> tableStats) {
+        BuildPlan plan, QueryContext liveCtx, Optional<StatsProvider.TableStatsView> tableStats) {
+      PendingFound found = plan.source();
+      if (plan.validationError.isPresent()) {
+        return new BuildOutcome(
+            found,
+            null,
+            buildErrorResolution(found, plan.validationError.get()),
+            0L,
+            0L,
+            new TimingAccumulator());
+      }
       long buildStartNs = System.nanoTime();
       RelationBundleBuilder.BuildResult result =
           relationBuilder.build(
@@ -949,7 +985,7 @@ public class UserObjectBundleService {
               resolutionContext,
               decorationSelection,
               tableStats,
-              scopedIdentity);
+              plan.scopedIdentity);
       long buildNanos = System.nanoTime() - buildStartNs;
       TimingAccumulator taskTimings = result.timings();
       if (result.isSuccess()) {
@@ -1020,10 +1056,7 @@ public class UserObjectBundleService {
       // parallel stage; their pin identity, computed here for the slim check, is carried forward so
       // buildOne does not recompute it. slots keeps every resolution in chunk order.
       RelationResolution[] slots = new RelationResolution[chunkItems.size()];
-      List<PendingFound> toBuild = new ArrayList<>();
-      List<List<PendingFound>> buildFoundGroups = new ArrayList<>();
-      List<List<Integer>> buildSlotGroups = new ArrayList<>();
-      List<Optional<RelationPinIdentity>> buildIdentities = new ArrayList<>();
+      List<BuildPlan> buildPlans = new ArrayList<>();
       Map<RelationCacheKey, Integer> buildIndexByKey = new HashMap<>();
       for (int i = 0; i < chunkItems.size(); i++) {
         throwIfCancelled(this::isCancelled);
@@ -1043,8 +1076,7 @@ public class UserObjectBundleService {
         if (existingBuildIndex != null) {
           // The first full build produces an immutable payload that every same-key slot can share.
           // Keep all slots so the emitted response still mirrors the requested inputs exactly.
-          buildFoundGroups.get(existingBuildIndex).add(found);
-          buildSlotGroups.get(existingBuildIndex).add(i);
+          buildPlans.get(existingBuildIndex).addDuplicate(found, i);
           continue;
         }
         long statsBeforeNanos = timings.statsLookupNanos();
@@ -1077,27 +1109,24 @@ public class UserObjectBundleService {
           slots[i] = foundResolution(found.inputIndex(), slim);
           continue;
         }
-        toBuild.add(found);
-        buildFoundGroups.add(new ArrayList<>(List.of(found)));
-        buildSlotGroups.add(new ArrayList<>(List.of(i)));
-        buildIdentities.add(scopedIdentity);
-        buildIndexByKey.put(cacheKey, toBuild.size() - 1);
+        Optional<RelationBundleBuilder.BuildError> validationError =
+            relationBuilder.validatePin(correlationId, found.relation(), liveCtx);
+        buildPlans.add(new BuildPlan(found, i, validationError, scopedIdentity));
+        buildIndexByKey.put(cacheKey, buildPlans.size() - 1);
       }
 
       // Build the remaining relations concurrently; each task times itself into its own
       // accumulator so the summary math needs no shared-counter deltas.
-      List<Integer> indices = java.util.stream.IntStream.range(0, toBuild.size()).boxed().toList();
       long buildFanoutStartNs = System.nanoTime();
       List<BuildOutcome> outcomes =
           buildFanout.mapOrdered(
-              indices,
-              j ->
+              buildPlans,
+              plan ->
                   buildOne(
-                      toBuild.get(j),
+                      plan,
                       liveCtx,
-                      buildIdentities.get(j),
                       statsByTable.getOrDefault(
-                          toBuild.get(j).relation().relationId(), Optional.empty())),
+                          plan.source().relation().relationId(), Optional.empty())),
               this::isCancelled);
       timings.addBuildFanoutNanos(System.nanoTime() - buildFanoutStartNs);
 
@@ -1110,22 +1139,19 @@ public class UserObjectBundleService {
         timings.addRelationBuildNanos(outcome.relationBuildNanos());
         timings.addDecorationNanos(outcome.decorationNanos());
         PendingFound found = outcome.source();
-        List<PendingFound> groupedFound = buildFoundGroups.get(j);
-        List<Integer> groupedSlots = buildSlotGroups.get(j);
+        BuildPlan plan = buildPlans.get(j);
         if (outcome.info() != null) {
           relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
-          for (int k = 0; k < groupedFound.size(); k++) {
-            slots[groupedSlots.get(k)] =
-                foundResolution(groupedFound.get(k).inputIndex(), outcome.info());
+          for (BuildTarget target : plan.targets) {
+            slots[target.slot()] = foundResolution(target.found().inputIndex(), outcome.info());
           }
         } else {
-          for (int k = 0; k < groupedFound.size(); k++) {
-            PendingFound grouped = groupedFound.get(k);
-            if (grouped.isRequestedInput()) {
+          for (BuildTarget target : plan.targets) {
+            if (target.found().isRequestedInput()) {
               timings.unrecordFound();
             }
-            slots[groupedSlots.get(k)] =
-                outcome.error().toBuilder().setInputIndex(grouped.inputIndex()).build();
+            slots[target.slot()] =
+                outcome.error().toBuilder().setInputIndex(target.found().inputIndex()).build();
           }
         }
       }

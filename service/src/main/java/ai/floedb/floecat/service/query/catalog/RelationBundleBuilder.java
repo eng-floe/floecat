@@ -124,6 +124,30 @@ final class RelationBundleBuilder {
   }
 
   /**
+   * Validate the pinned root for a user-table build on the caller's thread. Returns the same
+   * per-relation error that {@link #build} uses for later assembly failures; cancellation still
+   * aborts the whole stream.
+   */
+  Optional<BuildError> validatePin(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+    if (!(relation.node() instanceof UserTableNode)) {
+      return Optional.empty();
+    }
+    Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
+    if (pin.isEmpty()) {
+      return Optional.empty();
+    }
+    try {
+      pinValidator.validate(correlationId, pin.get());
+      return Optional.empty();
+    } catch (java.util.concurrent.CancellationException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      return Optional.of(buildError(relation, e));
+    }
+  }
+
+  /**
    * Assemble one relation's full payload. Times the stats and decoration sub-phases into a fresh
    * per-task {@link TimingAccumulator}, and isolates a build fault to this relation as a {@link
    * BuildError} — one relation's decoration/schema/stats fault must not sink the whole bundle.
@@ -151,28 +175,25 @@ final class RelationBundleBuilder {
       return BuildResult.success(info, timings);
     } catch (java.util.concurrent.CancellationException e) {
       throw e;
-    } catch (StatusRuntimeException e) {
-      // A structured gRPC error carries a specific code and diagnostic fields — notably
-      // pinValidator.validate on genuine catalog-integrity breakage (QUERY_PINNED_ROOT_MISSING,
-      // QUERY_PINNED_BLOB_VERSION_MISMATCH, with table_id/pinned_version/found_version). Preserve
-      // that structured code and its params instead of flattening to build_failed, so a hard
-      // integrity fault is distinguishable from an ordinary decoration/schema fault in metrics and
-      // logs. Falls back to build_failed for a status without a structured payload.
+    } catch (RuntimeException e) {
+      return BuildResult.failure(buildError(relation, e), timings);
+    }
+  }
+
+  private static BuildError buildError(ResolvedRelation relation, RuntimeException failure) {
+    if (failure instanceof StatusRuntimeException e) {
+      // Preserve structured catalog-integrity codes and diagnostics instead of flattening them to
+      // build_failed. Statuses without structured payloads use the ordinary fallback below.
       FloecatStatus status = FloecatStatus.fromThrowable(e);
       if (status != null && !status.messageKey().isBlank()) {
         String message =
             status.params().isEmpty() ? status.message() : status.message() + " " + status.params();
-        return BuildResult.failure(
-            new BuildError(status.messageKey(), message, relation.relationId().getId()), timings);
+        return new BuildError(status.messageKey(), message, relation.relationId().getId());
       }
-      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-      return BuildResult.failure(
-          new BuildError(BUILD_FAILED_CODE, message, relation.relationId().getId()), timings);
-    } catch (RuntimeException e) {
-      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-      return BuildResult.failure(
-          new BuildError(BUILD_FAILED_CODE, message, relation.relationId().getId()), timings);
     }
+    String message =
+        failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+    return new BuildError(BUILD_FAILED_CODE, message, relation.relationId().getId());
   }
 
   /**
@@ -400,9 +421,8 @@ final class RelationBundleBuilder {
       // default schema.
       return logicalSchemaMapper.map(userTable);
     }
-    // Consume the pinned snapshot identity, validating the pinned blobs; a bad pinned blob fails
-    // hard rather than falling back to current catalog state.
-    pinValidator.validate(correlationId, pin.get());
+    // Consume the pinned snapshot identity. The stream's producer-thread pre-pass validated this
+    // pin before the relation entered worker fan-out.
     SnapshotRef snapshotRef =
         SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
     CatalogOverlay.SchemaResolution resolved =
