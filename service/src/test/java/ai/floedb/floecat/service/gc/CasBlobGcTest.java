@@ -1009,8 +1009,7 @@ class CasBlobGcTest {
             targetId,
             "sha-wrapper");
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(
-            ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
     var wrapperRecord =
         ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
             .setArtifactUri(sidecar)
@@ -1019,11 +1018,7 @@ class CasBlobGcTest {
     blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
     putPointer(
         Keys.snapshotIndexArtifactGenerationPointer(
-            ACCOUNT_ID,
-            TABLE_ID,
-            snapshotId,
-            Keys.INDEX_ARTIFACT_DIRECT_GENERATION,
-            targetId),
+            ACCOUNT_ID, TABLE_ID, snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION, targetId),
         wrapper);
 
     gc.runForAccount(ACCOUNT_ID);

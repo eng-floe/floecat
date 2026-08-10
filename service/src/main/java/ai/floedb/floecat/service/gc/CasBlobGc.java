@@ -20,8 +20,8 @@ import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -769,7 +769,9 @@ public class CasBlobGc {
               null,
               storageEstimate,
               true,
-              pointer -> rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
+              pointer ->
+                  rememberDirectIndexArtifactGeneration(
+                      accountId, tableId, snapshotsById, pointer));
 
       // The current table root and EVERYTHING it references are GC roots: the root blob, every
       // manifest page, and each entry's definition/snapshot/generation-manifest/constraints blobs.
@@ -1628,14 +1630,7 @@ public class CasBlobGc {
       StorageEstimate storageEstimate,
       boolean markBlobReferences) {
     return collectPointers(
-        prefix,
-        referenced,
-        tableIds,
-        pageSize,
-        filter,
-        storageEstimate,
-        markBlobReferences,
-        null);
+        prefix, referenced, tableIds, pageSize, filter, storageEstimate, markBlobReferences, null);
   }
 
   private int collectPointers(
@@ -1820,14 +1815,11 @@ public class CasBlobGc {
     }
     pointerStore
         .get(Keys.snapshotIndexArtifactActiveGenerationPointer(accountId, tableId, snapshotId))
-        .filter(
-            pointer ->
-                Keys.INDEX_ARTIFACT_DIRECT_GENERATION.equals(pointer.getBlobUri()))
+        .filter(pointer -> Keys.INDEX_ARTIFACT_DIRECT_GENERATION.equals(pointer.getBlobUri()))
         .ifPresent(
             ignored ->
                 continuation.addGenerationKey(
-                    new Keys.GenerationKey(
-                        snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
+                    new Keys.GenerationKey(snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
   }
 
   private static void addSharedArtifactReference(
@@ -2128,7 +2120,8 @@ public class CasBlobGc {
         null,
         null,
         true,
-        pointer -> rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
+        pointer ->
+            rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
     collectSharedIndexArtifactReferences(accountId, tableId, fresh, pageSize, null);
     collectPointers(
         Keys.snapshotConstraintsPointerPrefix(accountId, tableId), fresh, null, pageSize);

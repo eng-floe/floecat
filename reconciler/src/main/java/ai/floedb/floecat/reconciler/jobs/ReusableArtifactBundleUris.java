@@ -43,11 +43,7 @@ public final class ReusableArtifactBundleUris {
     }
     String separator = prefix.endsWith("/") ? "" : "/";
     return uri.equals(
-        prefix
-            + separator
-            + BUNDLE_DIRECTORY
-            + HexFormat.of().formatHex(payloadSha256)
-            + ".pb");
+        prefix + separator + BUNDLE_DIRECTORY + HexFormat.of().formatHex(payloadSha256) + ".pb");
   }
 
   public static boolean matchesPayload(String uri, byte[] payload) {

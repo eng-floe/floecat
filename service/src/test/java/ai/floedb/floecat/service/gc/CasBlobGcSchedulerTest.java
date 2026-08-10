@@ -119,8 +119,7 @@ class CasBlobGcSchedulerTest {
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
     when(accounts.getById(any()))
         .thenAnswer(
-            invocation ->
-                Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     CompletingContinuationGc gc = new CompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
@@ -149,8 +148,7 @@ class CasBlobGcSchedulerTest {
         .thenReturn(List.of(account("acct-a"), account("acct-b")));
     when(accounts.getById(any()))
         .thenAnswer(
-            invocation ->
-                Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
     scheduler.accounts = () -> accounts;
