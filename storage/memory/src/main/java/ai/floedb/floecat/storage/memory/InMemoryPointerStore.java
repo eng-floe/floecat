@@ -30,15 +30,17 @@ import java.util.concurrent.ConcurrentHashMap;
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class InMemoryPointerStore implements PointerStore {
+  // All map access is guarded by this store's monitor so batch operations are atomically visible,
+  // matching the transactional semantics of persistent PointerStore implementations.
   private final Map<String, Pointer> map = new ConcurrentHashMap<>();
 
   @Override
-  public Optional<Pointer> get(String key) {
+  public synchronized Optional<Pointer> get(String key) {
     return Optional.ofNullable(map.get(key));
   }
 
   @Override
-  public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+  public synchronized boolean compareAndSet(String key, long expectedVersion, Pointer next) {
     final boolean[] updated = {false};
     map.compute(
         key,
@@ -61,7 +63,7 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public List<Pointer> listPointersByPrefix(
+  public synchronized List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
     final String pfx = prefix == null ? "" : prefix;
     final int lim = Math.max(1, limit);
@@ -128,7 +130,7 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public int countByPrefix(String prefix) {
+  public synchronized int countByPrefix(String prefix) {
     final String pfx = prefix == null ? "" : prefix;
     int n = 0;
     for (String k : map.keySet()) {
@@ -141,12 +143,12 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public boolean delete(String key) {
+  public synchronized boolean delete(String key) {
     return map.remove(key) != null;
   }
 
   @Override
-  public int deleteByPrefix(String prefix) {
+  public synchronized int deleteByPrefix(String prefix) {
     final String pfx = (prefix == null) ? "" : prefix;
     if (pfx.isEmpty() || "/".equals(pfx)) {
       int n = map.size();
@@ -168,7 +170,7 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public boolean compareAndDelete(String key, long expectedVersion) {
+  public synchronized boolean compareAndDelete(String key, long expectedVersion) {
     final boolean[] deleted = {false};
     map.compute(
         key,
@@ -189,61 +191,59 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
-  public boolean compareAndSetBatch(List<CasOp> ops) {
+  public synchronized boolean compareAndSetBatch(List<CasOp> ops) {
     if (ops == null || ops.isEmpty()) {
       return true;
     }
-    synchronized (this) {
-      for (CasOp op : ops) {
-        if (op instanceof CasUpsert upsert) {
-          Pointer cur = map.get(upsert.key());
-          if (cur == null) {
-            if (upsert.expectedVersion() != 0L) {
-              return false;
-            }
-          } else if (cur.getVersion() != upsert.expectedVersion()) {
+    for (CasOp op : ops) {
+      if (op instanceof CasUpsert upsert) {
+        Pointer cur = map.get(upsert.key());
+        if (cur == null) {
+          if (upsert.expectedVersion() != 0L) {
             return false;
           }
-        } else if (op instanceof CasDelete delete) {
-          Pointer cur = map.get(delete.key());
-          if (cur == null || cur.getVersion() != delete.expectedVersion()) {
-            return false;
-          }
-        } else if (op instanceof CasCheck check) {
-          Pointer cur = map.get(check.key());
-          if (cur == null || cur.getVersion() != check.expectedVersion()) {
-            return false;
-          }
-        } else if (op instanceof CasCheckAbsent check) {
-          if (map.get(check.key()) != null) {
-            return false;
-          }
+        } else if (cur.getVersion() != upsert.expectedVersion()) {
+          return false;
+        }
+      } else if (op instanceof CasDelete delete) {
+        Pointer cur = map.get(delete.key());
+        if (cur == null || cur.getVersion() != delete.expectedVersion()) {
+          return false;
+        }
+      } else if (op instanceof CasCheck check) {
+        Pointer cur = map.get(check.key());
+        if (cur == null || cur.getVersion() != check.expectedVersion()) {
+          return false;
+        }
+      } else if (op instanceof CasCheckAbsent check) {
+        if (map.get(check.key()) != null) {
+          return false;
         }
       }
-
-      for (CasOp op : ops) {
-        if (op instanceof CasUpsert upsert) {
-          map.put(
-              upsert.key(),
-              upsert.next().toBuilder()
-                  .setKey(upsert.key())
-                  .setVersion(upsert.expectedVersion() + 1L)
-                  .build());
-        } else if (op instanceof CasDelete delete) {
-          map.remove(delete.key());
-        }
-      }
-      return true;
     }
+
+    for (CasOp op : ops) {
+      if (op instanceof CasUpsert upsert) {
+        map.put(
+            upsert.key(),
+            upsert.next().toBuilder()
+                .setKey(upsert.key())
+                .setVersion(upsert.expectedVersion() + 1L)
+                .build());
+      } else if (op instanceof CasDelete delete) {
+        map.remove(delete.key());
+      }
+    }
+    return true;
   }
 
   @Override
-  public boolean isEmpty() {
+  public synchronized boolean isEmpty() {
     return map.isEmpty();
   }
 
   @Override
-  public void dump(String header) {
+  public synchronized void dump(String header) {
     for (Map.Entry<String, Pointer> entry : map.entrySet()) {
       System.out.println("Key: " + entry.getKey() + ", Pointer: " + entry.getValue());
     }
