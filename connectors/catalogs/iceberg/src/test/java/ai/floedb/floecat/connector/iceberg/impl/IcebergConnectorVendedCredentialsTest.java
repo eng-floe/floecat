@@ -110,6 +110,139 @@ class IcebergConnectorVendedCredentialsTest {
         "uri", "https://polaris.example/api/catalog");
   }
 
+  /**
+   * A FileIO that supports Iceberg's credential channel, carrying vended credentials separately
+   * from its property map -- the shape a REST catalog that returns {@code storage-credentials}
+   * produces.
+   */
+  private static IcebergConnector connectorWithVendChannel(
+      List<org.apache.iceberg.io.StorageCredential> credentials,
+      Map<String, String> ioProperties,
+      String location) {
+    FileIO io =
+        (FileIO)
+            Proxy.newProxyInstance(
+                IcebergConnectorVendedCredentialsTest.class.getClassLoader(),
+                new Class<?>[] {
+                  FileIO.class, org.apache.iceberg.io.SupportsStorageCredentials.class
+                },
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "properties" -> ioProperties;
+                      case "credentials" -> credentials;
+                      case "toString" -> "fake-io";
+                      case "hashCode" -> System.identityHashCode(proxy);
+                      case "equals" -> proxy == args[0];
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                IcebergConnectorVendedCredentialsTest.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "io" -> io;
+                      case "location" -> location;
+                      case "name" -> "fake-table";
+                      case "toString" -> "fake-table";
+                      case "hashCode" -> System.identityHashCode(proxy);
+                      case "equals" -> proxy == args[0];
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    return new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+      @Override
+      public List<String> listNamespaces() {
+        return List.of();
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of();
+      }
+
+      @Override
+      protected Table loadTableFromSource(String namespaceFq, String tableName) {
+        return table;
+      }
+    };
+  }
+
+  @Test
+  void credentialChannelWinsOverFileIoProperties() {
+    // The point of the channel. IcebergConnectorFactory writes the connector's own configured s3.*
+    // into catalog properties and Iceberg merges them into every table's FileIO, so the property
+    // map cannot distinguish "the catalog vended this" from "we configured this ourselves".
+    // credentials() carries only what loadTable returned.
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connectorWithVendChannel(
+                List.of(
+                    org.apache.iceberg.io.StorageCredential.create(
+                        "s3://warehouse/tpch",
+                        Map.of(
+                            "s3.access-key-id", "ASIAVENDED",
+                            "s3.secret-access-key", "vended-secret",
+                            "s3.session-token", "vended-session",
+                            "s3.session-token-expires-at-ms", "1786000000000"))),
+                Map.of(
+                    "s3.access-key-id", "AKIACONFIGURED",
+                    "s3.secret-access-key", "configured-secret"),
+                "s3://warehouse/tpch/region")
+            .vendStorageCredentials("tpch", "region");
+
+    assertTrue(vended.isPresent());
+    assertEquals("ASIAVENDED", vended.get().properties().get("s3.access-key-id"));
+    assertEquals("vended-session", vended.get().properties().get("s3.session-token"));
+    assertEquals(Instant.ofEpochMilli(1786000000000L), vended.get().expiresAt());
+  }
+
+  @Test
+  void credentialChannelPicksTheLongestPrefixCoveringTheTable() {
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connectorWithVendChannel(
+                List.of(
+                    org.apache.iceberg.io.StorageCredential.create(
+                        "s3://warehouse", Map.of("s3.access-key-id", "BROAD")),
+                    org.apache.iceberg.io.StorageCredential.create(
+                        "s3://warehouse/tpch/region", Map.of("s3.access-key-id", "EXACT"))),
+                Map.of(),
+                "s3://warehouse/tpch/region")
+            .vendStorageCredentials("tpch", "region");
+
+    assertTrue(vended.isPresent());
+    assertEquals("EXACT", vended.get().properties().get("s3.access-key-id"));
+  }
+
+  @Test
+  void credentialsScopedToAnotherLocationAreIgnored() {
+    // A credential whose prefix does not cover this table says nothing about this table. With no
+    // usable entry and no credentials in the property map either, the catalog did not delegate.
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connectorWithVendChannel(
+                List.of(
+                    org.apache.iceberg.io.StorageCredential.create(
+                        "s3://other-bucket", Map.of("s3.access-key-id", "ELSEWHERE"))),
+                Map.of(),
+                "s3://warehouse/tpch/region")
+            .vendStorageCredentials("tpch", "region");
+
+    assertTrue(vended.isEmpty());
+  }
+
+  @Test
+  void anEmptyCredentialChannelFallsBackToThePropertyMap() {
+    // Polaris 1.6 returns its credentials in the loadTable config map rather than the newer
+    // storage-credentials field, so a modern FileIO can support the channel and still report
+    // nothing. Trusting an empty channel as proof of non-delegation would break exactly the
+    // catalog this feature was built and validated against.
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connectorWithVendChannel(List.of(), polarisDelegatedProperties(), "s3://warehouse/tpch")
+            .vendStorageCredentials("tpch", "region");
+
+    assertTrue(vended.isPresent());
+    assertEquals("ASIAVENDED", vended.get().properties().get("s3.access-key-id"));
+  }
+
   @Test
   void copiesVendedStorageCredentialsAndExpiry() {
     Optional<FloecatConnector.VendedStorageCredentials> vended =
