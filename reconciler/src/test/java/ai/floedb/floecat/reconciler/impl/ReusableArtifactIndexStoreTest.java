@@ -303,8 +303,7 @@ class ReusableArtifactIndexStoreTest {
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
 
-    assertThrows(
-        IllegalArgumentException.class, () -> store.append("/owned/", foreign, List.of()));
+    assertThrows(IllegalArgumentException.class, () -> store.append("/owned/", foreign, List.of()));
   }
 
   @Test

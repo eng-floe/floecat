@@ -880,10 +880,7 @@ public class CasBlobGc {
                     (isProtected, claim, restore) -> {
                       var guardedClaim =
                           claimGenerationIfUnprotected(
-                              reachabilityGuard,
-                              pass.generationGcProof,
-                              isProtected,
-                              claim);
+                              reachabilityGuard, pass.generationGcProof, isProtected, claim);
                       if (guardedClaim.changed()) {
                         generationProofChanged[0] = true;
                         return false;

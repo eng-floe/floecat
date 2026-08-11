@@ -6570,9 +6570,7 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
     assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
     assertTrue(
-        store
-            .getCompletionLeaseView(finalizerJobId, finalizerLease.leaseEpoch, true)
-            .isPresent());
+        store.getCompletionLeaseView(finalizerJobId, finalizerLease.leaseEpoch, true).isPresent());
 
     store.markFailed(
         finalizerJobId,

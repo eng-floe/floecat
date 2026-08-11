@@ -402,16 +402,16 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
     }
     int inheritedFileCount =
-        snapshotPlan.appendOnlyBase().map(SnapshotPlanBlobStore.AppendOnlyBase::sourceFileCount)
+        snapshotPlan
+            .appendOnlyBase()
+            .map(SnapshotPlanBlobStore.AppendOnlyBase::sourceFileCount)
             .orElse(0);
     validatePlannedFileCoverage(plannedGroups, inheritedFileCount, input.sourceFileCount());
     return groupsByKey;
   }
 
   static void validatePlannedFileCoverage(
-      List<ReconcileFileGroupTask> plannedGroups,
-      int inheritedFileCount,
-      int sourceFileCount) {
+      List<ReconcileFileGroupTask> plannedGroups, int inheritedFileCount, int sourceFileCount) {
     Set<String> plannedFilePaths = new HashSet<>();
     for (ReconcileFileGroupTask plannedGroup : plannedGroups) {
       for (String filePath : plannedGroup.filePaths()) {

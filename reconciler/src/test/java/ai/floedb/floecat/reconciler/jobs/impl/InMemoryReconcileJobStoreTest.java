@@ -682,10 +682,7 @@ class InMemoryReconcileJobStoreTest {
           store
               .leaseNext(
                   new ReconcileJobStore.LeaseRequest(
-                      null,
-                      null,
-                      null,
-                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+                      null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
               .orElseThrow();
       var intent =
           new ReconcileJobStore.SnapshotFinalizeCommitIntent(
@@ -751,10 +748,7 @@ class InMemoryReconcileJobStoreTest {
           store
               .leaseNext(
                   new ReconcileJobStore.LeaseRequest(
-                      null,
-                      null,
-                      null,
-                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+                      null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
               .orElseThrow();
       assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, lease.leaseEpoch));
       assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
@@ -772,10 +766,7 @@ class InMemoryReconcileJobStoreTest {
           store
               .leaseNext(
                   new ReconcileJobStore.LeaseRequest(
-                      null,
-                      null,
-                      null,
-                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+                      null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
               .orElseThrow();
       assertEquals(finalizerJobId, recovered.jobId);
       assertNotEquals(lease.leaseEpoch, recovered.leaseEpoch);

@@ -2536,8 +2536,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
     StoredEnvelope stored = loadByAnyAccount(jobId).orElse(null);
-    return Optional.ofNullable(
-        stored == null ? null : snapshotFinalizeCommitIntent(stored.record));
+    return Optional.ofNullable(stored == null ? null : snapshotFinalizeCommitIntent(stored.record));
   }
 
   @Override
@@ -4922,7 +4921,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 .equals(blankToEmpty(nextChild.snapshotFinalizeResultLeaseEpoch));
     if (!publishingAcceptedSnapshotFinalize
         && !leaseManager()
-            .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
+            .hasActiveLease(
+                jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
       return null;
     }
     if (isTerminalState(nextChild.state)) {

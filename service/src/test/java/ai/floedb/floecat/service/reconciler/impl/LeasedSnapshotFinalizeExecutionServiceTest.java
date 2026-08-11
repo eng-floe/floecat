@@ -439,7 +439,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
     when(blobs.get(manifestUri())).thenReturn(manifestBytes());
 
-    assertTrue(service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
+    assertTrue(
+        service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
     assertTrue(service.publishAcceptedSnapshotFinalize(FINALIZE_JOB_ID));
 
     verify(jobs, times(1)).renewLease(FINALIZE_JOB_ID, LEASE_EPOCH);
