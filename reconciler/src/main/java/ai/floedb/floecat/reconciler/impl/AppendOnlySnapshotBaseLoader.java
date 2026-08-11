@@ -12,6 +12,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.security.MessageDigest;
@@ -40,6 +41,10 @@ final class AppendOnlySnapshotBaseLoader {
       throw new IllegalArgumentException("append-only snapshot base is not an earlier subset");
     }
     byte[] bytes = blobStore.get(base.manifestUri());
+    if (bytes == null) {
+      throw new StorageNotFoundException(
+          "append-only snapshot base manifest is missing: " + base.manifestUri());
+    }
     if (bytes.length != base.manifestBytes()
         || !MessageDigest.isEqual(sha256(bytes), base.manifestSha256Bytes())) {
       throw new IllegalArgumentException("append-only snapshot base manifest metadata mismatch");
@@ -86,6 +91,10 @@ final class AppendOnlySnapshotBaseLoader {
     List<TargetStatsRecord> aggregates = new ArrayList<>();
     for (var descriptor : manifest.getFinalStatsList()) {
       byte[] recordBytes = blobStore.get(descriptor.getPayloadUri());
+      if (recordBytes == null) {
+        throw new StorageNotFoundException(
+            "append-only snapshot base aggregate is missing: " + descriptor.getPayloadUri());
+      }
       if (recordBytes.length != descriptor.getPayloadBytes()
           || descriptor.getPayloadSha256().size() != 32
           || !MessageDigest.isEqual(

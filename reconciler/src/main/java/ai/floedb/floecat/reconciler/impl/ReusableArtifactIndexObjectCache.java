@@ -60,7 +60,7 @@ final class ReusableArtifactIndexObjectCache {
         || !MessageDigest.isEqual(cached.sha256(), reference.getPayloadSha256().toByteArray())) {
       throw new IllegalArgumentException("reusable artifact index object metadata mismatch");
     }
-    return cached.bytes();
+    return cached.bytes().clone();
   }
 
   synchronized boolean contains(String uri) {

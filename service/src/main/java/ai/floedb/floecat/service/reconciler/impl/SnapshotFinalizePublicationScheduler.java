@@ -84,14 +84,15 @@ public class SnapshotFinalizePublicationScheduler {
     }
     ReconcileJobStore.SnapshotFinalizeCommitPage page =
         jobs.pendingSnapshotFinalizeCommits(pageSize, pageToken);
-    pageToken = page.nextPageToken();
-    if (pageToken.isBlank()) {
-      pageToken = "";
-    }
     long now = System.currentTimeMillis();
+    boolean consumedPage = true;
     for (ReconcileJobStore.SnapshotFinalizeCommitIntent intent : page.intents()) {
-      if (intent == null || inFlight.size() >= maxParallelism) {
+      if (inFlight.size() >= maxParallelism) {
+        consumedPage = false;
         break;
+      }
+      if (intent == null) {
+        continue;
       }
       RetryState retry = retries.get(intent.jobId());
       if (retry != null && retry.nextAttemptAtMs() > now) {
@@ -105,6 +106,12 @@ public class SnapshotFinalizePublicationScheduler {
       } catch (RuntimeException e) {
         inFlight.remove(intent.jobId());
         LOG.warnf(e, "Could not schedule snapshot finalizer publication jobId=%s", intent.jobId());
+      }
+    }
+    if (consumedPage) {
+      pageToken = page.nextPageToken();
+      if (pageToken.isBlank()) {
+        pageToken = "";
       }
     }
   }

@@ -416,34 +416,6 @@ public final class SnapshotManifests {
   }
 
   /**
-   * Computes the newest reusable entries at or before committed current for publication on the
-   * table root. This is a write-path manifest walk; readers consume the bounded root index
-   * directly.
-   */
-  public static List<SnapshotManifestEntry> latestReusableCandidates(
-      Chain chain, SnapshotManifestEntry committedCurrent) {
-    if (chain == null || committedCurrent == null) {
-      return List.of();
-    }
-    List<SnapshotManifestEntry> best = new ArrayList<>(REUSABLE_CANDIDATE_BOUND);
-    chain.forEachEntry(
-        entry -> {
-          if (!entry.hasReuseStatsGenerationRef() || newer(entry, committedCurrent)) {
-            return;
-          }
-          int insertion = 0;
-          while (insertion < best.size() && newer(best.get(insertion), entry)) {
-            insertion++;
-          }
-          best.add(insertion, entry);
-          if (best.size() > REUSABLE_CANDIDATE_BOUND) {
-            best.removeLast();
-          }
-        });
-    return List.copyOf(best);
-  }
-
-  /**
    * The newest manifest entry at or before {@code asOfMs}, optionally requiring finalized stats.
    * This is the shared AS_OF ordering and visibility rule for query pins and public artifact APIs.
    */

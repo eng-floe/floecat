@@ -91,6 +91,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -898,10 +899,41 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     long listedNanos = System.nanoTime();
 
-    List<DeltaChangeChunk> chunks;
+    List<DeltaChangeChunk> classification;
     int readerCount = deltaChangeReaderCount(commitFiles.size());
+    AtomicBoolean classificationNonAppend = new AtomicBoolean();
     try {
-      chunks = readDeltaChangeChunks(storageLocation, commitFiles, readerCount);
+      classification =
+          readDeltaChangeChunks(
+              storageLocation, commitFiles, readerCount, classificationNonAppend, false);
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Delta change planning failed (versions "
+              + baseSnapshotId
+              + ".."
+              + targetSnapshotId
+              + ")",
+          e);
+    }
+    long classifiedNanos = System.nanoTime();
+
+    for (DeltaChangeChunk chunk : classification) {
+      if (!chunk.appendOnly()) {
+        return Optional.of(
+            new SnapshotFileDelta(
+                List.of(),
+                List.copyOf(chunk.removals()),
+                chunk.deleteArtifactsChanged(),
+                DataTypeJsonSerDe.serializeStructType(target.getSchema())));
+      }
+    }
+
+    List<DeltaChangeChunk> chunks;
+    AtomicBoolean materializationNonAppend = new AtomicBoolean();
+    try {
+      chunks =
+          readDeltaChangeChunks(
+              storageLocation, commitFiles, readerCount, materializationNonAppend, true);
     } catch (Exception e) {
       throw new RuntimeException(
           "Delta change planning failed (versions "
@@ -914,43 +946,58 @@ abstract class DeltaConnector implements FloecatConnector {
     long completedNanos = System.nanoTime();
 
     LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
-    LinkedHashSet<String> removals = new LinkedHashSet<>();
-    boolean deleteArtifactsChanged = false;
     for (DeltaChangeChunk chunk : chunks) {
+      if (!chunk.appendOnly()) {
+        return Optional.of(
+            new SnapshotFileDelta(
+                List.of(),
+                List.copyOf(chunk.removals()),
+                chunk.deleteArtifactsChanged(),
+                DataTypeJsonSerDe.serializeStructType(target.getSchema())));
+      }
       chunk.additions().forEach(additions::put);
-      removals.addAll(chunk.removals());
-      deleteArtifactsChanged |= chunk.deleteArtifactsChanged();
     }
     LOG.infof(
         "Delta change planning timing versions=%d..%d commits=%d readers=%d"
-            + " snapshotMs=%d listMs=%d readMs=%d totalMs=%d",
+            + " snapshotMs=%d listMs=%d classifyMs=%d readMs=%d totalMs=%d",
         baseSnapshotId + 1,
         targetSnapshotId,
         commitFiles.size(),
         readerCount,
         TimeUnit.NANOSECONDS.toMillis(listingStartedNanos - startedNanos),
         TimeUnit.NANOSECONDS.toMillis(listedNanos - listingStartedNanos),
-        TimeUnit.NANOSECONDS.toMillis(completedNanos - listedNanos),
+        TimeUnit.NANOSECONDS.toMillis(classifiedNanos - listedNanos),
+        TimeUnit.NANOSECONDS.toMillis(completedNanos - classifiedNanos),
         TimeUnit.NANOSECONDS.toMillis(completedNanos - startedNanos));
 
     return Optional.of(
         new SnapshotFileDelta(
             List.copyOf(additions.values()),
-            List.copyOf(removals),
-            deleteArtifactsChanged,
+            List.of(),
+            false,
             DataTypeJsonSerDe.serializeStructType(target.getSchema())));
   }
 
   private List<DeltaChangeChunk> readDeltaChangeChunks(
-      String storageLocation, List<FileStatus> commitFiles, int readerCount) throws Exception {
+      String storageLocation,
+      List<FileStatus> commitFiles,
+      int readerCount,
+      AtomicBoolean nonAppend,
+      boolean materializeAdditions)
+      throws Exception {
     List<List<FileStatus>> partitions = partitionCommitFiles(commitFiles, readerCount);
     if (partitions.size() == 1) {
-      return List.of(readDeltaChangeChunk(storageLocation, partitions.getFirst()));
+      return List.of(
+          readDeltaChangeChunk(
+              storageLocation, partitions.getFirst(), nonAppend, materializeAdditions));
     }
     List<Callable<DeltaChangeChunk>> readers =
         partitions.stream()
             .<Callable<DeltaChangeChunk>>map(
-                partition -> () -> readDeltaChangeChunk(storageLocation, partition))
+                partition ->
+                    () ->
+                        readDeltaChangeChunk(
+                            storageLocation, partition, nonAppend, materializeAdditions))
             .toList();
     try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
       List<Future<DeltaChangeChunk>> futures;
@@ -983,39 +1030,53 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private DeltaChangeChunk readDeltaChangeChunk(
-      String storageLocation, List<FileStatus> commitFiles) throws Exception {
+      String storageLocation,
+      List<FileStatus> commitFiles,
+      AtomicBoolean nonAppend,
+      boolean materializeAdditions)
+      throws Exception {
     LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
-    LinkedHashSet<String> removals = new LinkedHashSet<>();
-    boolean deleteArtifactsChanged = false;
     try (var commits =
             DeltaLogActionUtils.getActionsFromCommitFilesWithProtocolValidation(
                 engine, storageLocation, commitFiles, Set.of(DeltaAction.ADD, DeltaAction.REMOVE));
         CloseableIterator<io.delta.kernel.data.ColumnarBatch> batches =
             TableChangesUtils.flattenCommitsAndAddMetadata(engine, commits)) {
       while (batches.hasNext()) {
+        if (nonAppend.get()) {
+          return DeltaChangeChunk.cancelled();
+        }
         var batch = batches.next();
         int addOrdinal = batch.getSchema().indexOf("add");
         int removeOrdinal = batch.getSchema().indexOf("remove");
         try (var rows = batch.getRows()) {
           while (rows.hasNext()) {
-            var row = rows.next();
-            if (addOrdinal >= 0 && !row.isNullAt(addOrdinal)) {
-              AddFile add = new AddFile(row.getStruct(addOrdinal));
-              String path = DeltaPlanner.absoluteDataPath(storageLocation, add.getPath());
-              DeletionVectorDescriptor deletionVector = add.getDeletionVector().orElse(null);
-              deleteArtifactsChanged |= deletionVector != null;
-              additions.put(path, toSnapshotDataFile(path, add, deletionVector));
+            if (nonAppend.get()) {
+              return DeltaChangeChunk.cancelled();
             }
+            var row = rows.next();
             if (removeOrdinal >= 0 && !row.isNullAt(removeOrdinal)) {
               RemoveFile remove = new RemoveFile(row.getStruct(removeOrdinal));
-              removals.add(DeltaPlanner.absoluteDataPath(storageLocation, remove.getPath()));
-              deleteArtifactsChanged |= remove.getDeletionVector().isPresent();
+              String path = DeltaPlanner.absoluteDataPath(storageLocation, remove.getPath());
+              nonAppend.set(true);
+              return DeltaChangeChunk.removal(path, remove.getDeletionVector().isPresent());
+            }
+            if (addOrdinal >= 0 && !row.isNullAt(addOrdinal)) {
+              AddFile add = new AddFile(row.getStruct(addOrdinal));
+              DeletionVectorDescriptor deletionVector = add.getDeletionVector().orElse(null);
+              if (deletionVector != null) {
+                nonAppend.set(true);
+                return DeltaChangeChunk.deleteArtifactChange();
+              }
+              if (materializeAdditions) {
+                String path = DeltaPlanner.absoluteDataPath(storageLocation, add.getPath());
+                additions.put(path, toSnapshotDataFile(path, add, null));
+              }
             }
           }
         }
       }
     }
-    return new DeltaChangeChunk(additions, removals, deleteArtifactsChanged);
+    return new DeltaChangeChunk(additions, Set.of(), false);
   }
 
   static int deltaChangeReaderCount(int commitCount) {
@@ -1045,7 +1106,23 @@ abstract class DeltaConnector implements FloecatConnector {
   private record DeltaChangeChunk(
       Map<String, SnapshotFileEntry> additions,
       Set<String> removals,
-      boolean deleteArtifactsChanged) {}
+      boolean deleteArtifactsChanged) {
+    boolean appendOnly() {
+      return removals.isEmpty() && !deleteArtifactsChanged;
+    }
+
+    static DeltaChangeChunk removal(String path, boolean deleteArtifactsChanged) {
+      return new DeltaChangeChunk(Map.of(), Set.of(path), deleteArtifactsChanged);
+    }
+
+    static DeltaChangeChunk deleteArtifactChange() {
+      return new DeltaChangeChunk(Map.of(), Set.of(), true);
+    }
+
+    static DeltaChangeChunk cancelled() {
+      return deleteArtifactChange();
+    }
+  }
 
   private static SnapshotFileEntry toSnapshotDataFile(
       String absolutePath, AddFile add, DeletionVectorDescriptor deletionVector) {

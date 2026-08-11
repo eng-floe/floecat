@@ -66,6 +66,7 @@ import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -811,29 +812,51 @@ public abstract class IcebergConnector implements FloecatConnector {
       return Optional.empty();
     }
 
-    LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
-    LinkedHashSet<String> removals = new LinkedHashSet<>();
-    boolean deleteArtifactsChanged = false;
     for (int i = lineage.size() - 1; i >= 0; i--) {
       Snapshot change = lineage.get(i);
-      for (DataFile dataFile : change.addedDataFiles(table.io())) {
+      if (hasDataFileRemovals(change, table.io()) || hasDeleteArtifactChanges(change, table.io())) {
+        return Optional.empty();
+      }
+    }
+
+    LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
+    for (int i = lineage.size() - 1; i >= 0; i--) {
+      for (DataFile dataFile : lineage.get(i).addedDataFiles(table.io())) {
         SnapshotFileEntry entry = toSnapshotDataFile(table, dataFile);
         additions.put(entry.filePath(), entry);
       }
-      for (DataFile dataFile : change.removedDataFiles(table.io())) {
-        removals.add(dataFile.location().toString());
-      }
-      deleteArtifactsChanged |=
-          hasAny(change.addedDeleteFiles(table.io()))
-              || hasAny(change.removedDeleteFiles(table.io()));
     }
 
     return Optional.of(
         new SnapshotFileDelta(
             List.copyOf(additions.values()),
-            List.copyOf(removals),
-            deleteArtifactsChanged,
+            List.of(),
+            false,
             SchemaParser.toJson(schemaForSnapshot(table, target))));
+  }
+
+  private static boolean hasDataFileRemovals(Snapshot snapshot, FileIO io) {
+    for (ManifestFile manifest : snapshot.dataManifests(io)) {
+      if (Objects.equals(manifest.snapshotId(), snapshot.snapshotId())
+          && hasFiles(manifest.deletedFilesCount())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasDeleteArtifactChanges(Snapshot snapshot, FileIO io) {
+    for (ManifestFile manifest : snapshot.deleteManifests(io)) {
+      if (Objects.equals(manifest.snapshotId(), snapshot.snapshotId())
+          && (hasFiles(manifest.addedFilesCount()) || hasFiles(manifest.deletedFilesCount()))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasFiles(Integer count) {
+    return count == null || count > 0;
   }
 
   private static SnapshotFileEntry toSnapshotDataFile(Table table, DataFile dataFile) {
