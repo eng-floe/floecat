@@ -33,7 +33,7 @@ final class SystemExecutionResolver {
     this.floecatFlightEndpoint = floecatFlightEndpoint;
   }
 
-  /** Routing fields served to a worker and folded into the relation possession token. */
+  /** Routing fields served to a worker and folded into the relation payload token. */
   record SystemExecution(String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
     String tokenMaterial() {
       String endpoint =

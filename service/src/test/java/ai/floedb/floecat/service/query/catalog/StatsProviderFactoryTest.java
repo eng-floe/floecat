@@ -89,7 +89,7 @@ class StatsProviderFactoryTest {
           .build();
 
   @Test
-  void statsWarmAdmissionIsSharedAcrossQueryProviders() throws Exception {
+  void statsWarmLimiterIsSharedAcrossQueryProviders() throws Exception {
     int processLimit = 16;
     int queryCount = processLimit + 1;
     var store = new UserObjectBundleTestSupport.TestQueryContextStore();
@@ -127,7 +127,7 @@ class StatsProviderFactoryTest {
             store,
             null,
             defaultSyncConfig(),
-            new StatsWarmAdmission(processLimit));
+            new StatsWarmLimiter(processLimit));
     var providers = new ArrayList<ai.floedb.floecat.scanner.spi.StatsProvider>(queryCount);
     for (int i = 0; i < queryCount; i++) {
       QueryContext query = queryContextWithPin("query-admission-" + i, 10L);

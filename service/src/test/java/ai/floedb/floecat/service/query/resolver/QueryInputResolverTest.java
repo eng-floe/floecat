@@ -36,7 +36,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinCache;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -119,7 +119,7 @@ public class QueryInputResolverTest {
         List.of(QueryInput.newBuilder().setName(n).build()),
         Optional.empty(),
         Optional.empty(),
-        new SnapshotPinCache(),
+        new SnapshotPinMemo(),
         null);
 
     // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
@@ -151,7 +151,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(fast).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new SnapshotPinCache(),
+                    new SnapshotPinMemo(),
                     null));
 
     try {
@@ -183,7 +183,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new SnapshotPinCache(),
+                    new SnapshotPinMemo(),
                     null,
                     cancelled::get));
 
@@ -229,7 +229,7 @@ public class QueryInputResolverTest {
             QueryInput.newBuilder().setTableId(rid("TWO")).build()),
         Optional.empty(),
         Optional.empty(),
-        new SnapshotPinCache(),
+        new SnapshotPinMemo(),
         null,
         () -> false);
 
@@ -256,7 +256,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new SnapshotPinCache(),
+                    new SnapshotPinMemo(),
                     null,
                     cancelled::get);
                 return null;
@@ -285,7 +285,7 @@ public class QueryInputResolverTest {
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
     var snapshotPins = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
-    var snapshotPinCache = new SnapshotPinCache(snapshotPins);
+    var snapshotPinMemo = new SnapshotPinMemo(snapshotPins);
     var failingGraph = new FailingAfterFastPinGraph(snapshotPins);
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
     var withStore = new QueryInputResolver(failingGraph, store);
@@ -301,7 +301,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                snapshotPinCache,
+                snapshotPinMemo,
                 null));
 
     org.mockito.Mockito.verify(store)
@@ -318,7 +318,7 @@ public class QueryInputResolverTest {
   @Test
   void flushesParallelPinDiagnosticsWhenSiblingPlanningFails() {
     var snapshotPins = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
-    var snapshotPinCache = new SnapshotPinCache(snapshotPins);
+    var snapshotPinMemo = new SnapshotPinMemo(snapshotPins);
     var failingGraph = new FailingAfterFastPinGraph(snapshotPins);
     var diagnostics = org.mockito.Mockito.mock(ai.floedb.floecat.telemetry.PhaseDiagnostics.class);
     var withStore = new QueryInputResolver(failingGraph);
@@ -334,7 +334,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAIL")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                snapshotPinCache,
+                snapshotPinMemo,
                 diagnostics));
 
     org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
@@ -565,7 +565,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new SnapshotPinCache(),
+                new SnapshotPinMemo(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -638,7 +638,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new SnapshotPinCache(),
+                new SnapshotPinMemo(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -693,7 +693,7 @@ public class QueryInputResolverTest {
             List.of(qi),
             Optional.<com.google.protobuf.Timestamp>empty(),
             Optional.<ResourceId>empty(),
-            new SnapshotPinCache(),
+            new SnapshotPinMemo(),
             null)
         .snapshotSet();
 
@@ -1335,11 +1335,11 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void snapshotPinCacheReusedAcrossResolveCalls() {
+  void snapshotPinMemoReusedAcrossResolveCalls() {
     ResourceId tableId = rid("CACHE_TABLE");
     metadataGraph.setCurrentSnapshot(tableId, 1234L);
     QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
-    SnapshotPinCache cache = new SnapshotPinCache();
+    SnapshotPinMemo cache = new SnapshotPinMemo();
 
     resolver.resolveInputs(
         "", "cid-a", List.of(input), Optional.empty(), Optional.empty(), cache, null);
@@ -1373,7 +1373,7 @@ public class QueryInputResolverTest {
     QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
     var withStore = new QueryInputResolver(graph, store);
     var cacheMap = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
-    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
+    SnapshotPinMemo cache = new SnapshotPinMemo(cacheMap);
     org.mockito.Mockito.doAnswer(
             invocation -> {
               assertEquals(10L, cacheMap.get(tableId).getNow(null).getSnapshotId());
@@ -1471,7 +1471,7 @@ public class QueryInputResolverTest {
             return replaced;
           }
         };
-    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
+    SnapshotPinMemo cache = new SnapshotPinMemo(cacheMap);
     QueryInput explicit =
         QueryInput.newBuilder()
             .setTableId(shared)
@@ -1532,7 +1532,7 @@ public class QueryInputResolverTest {
             return super.get(key);
           }
         };
-    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
+    SnapshotPinMemo cache = new SnapshotPinMemo(cacheMap);
     cacheMap.put(shared, CompletableFuture.completedFuture(retiredPin));
 
     QueryInputResolver.ResolutionResult result =
@@ -1560,7 +1560,7 @@ public class QueryInputResolverTest {
     graph.failPinFor(failing);
     var withStore =
         new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    SnapshotPinCache cache = new SnapshotPinCache();
+    SnapshotPinMemo cache = new SnapshotPinMemo();
 
     assertThrows(
         StatusRuntimeException.class,
@@ -1587,7 +1587,7 @@ public class QueryInputResolverTest {
     graph.failPinFor(failing);
     var withStore =
         new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    SnapshotPinCache cache = new SnapshotPinCache();
+    SnapshotPinMemo cache = new SnapshotPinMemo();
 
     withStore.resolveInputs(
         "q-concurrent-cache-existing",
@@ -1669,7 +1669,7 @@ public class QueryInputResolverTest {
         .releaseResolvingPinBlobs(
             org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
     var withStore = new QueryInputResolver(graph, store);
-    SnapshotPinCache cache = new SnapshotPinCache();
+    SnapshotPinMemo cache = new SnapshotPinMemo();
 
     CompletableFuture<Throwable> owner =
         resolveCancellable(

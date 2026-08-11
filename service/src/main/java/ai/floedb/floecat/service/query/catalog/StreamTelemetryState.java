@@ -21,8 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 /** Arbitrates the single terminal telemetry outcome against producer activity. */
-final class StreamTelemetryGate {
-  /** The terminal outcome whose sole telemetry publication a gate transition may grant. */
+final class StreamTelemetryState {
+  /** The terminal outcome whose sole telemetry publication a state transition may grant. */
   enum Publication {
     NONE,
     COMPLETION,

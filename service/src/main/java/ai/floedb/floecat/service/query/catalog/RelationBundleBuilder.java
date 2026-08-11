@@ -54,8 +54,8 @@ import org.jboss.logging.Logger;
  * collaborators and config the assembly reads.
  *
  * <p>The driver ({@link UserObjectBundleService}) keeps the pin-identity orchestration and the
- * {@code knownBlobVersions} slim-payload DECISION; this builder only assembles payloads. It exposes
- * {@link #build} (full payload) and {@link #buildIdentityOnly} (slim payload).
+ * {@code knownPayloadTokens} slim-payload DECISION; this builder only assembles payloads. It
+ * exposes {@link #build} (full payload) and {@link #buildIdentityOnly} (slim payload).
  */
 final class RelationBundleBuilder {
 
@@ -159,7 +159,7 @@ final class RelationBundleBuilder {
       MetadataResolutionContext resolutionContext,
       EngineRelationDecorator.Selection decorationSelection,
       Optional<StatsProvider.TableStatsView> tableStats,
-      Optional<RelationPinIdentity> scopedIdentity) {
+      Optional<RelationPinIdentity> payloadIdentity) {
     TimingAccumulator timings = new TimingAccumulator();
     try {
       RelationInfo info =
@@ -171,7 +171,7 @@ final class RelationBundleBuilder {
               decorationSelection,
               tableStats,
               timings,
-              scopedIdentity);
+              payloadIdentity);
       return BuildResult.success(info, timings);
     } catch (java.util.concurrent.CancellationException e) {
       throw e;
@@ -198,16 +198,16 @@ final class RelationBundleBuilder {
 
   /**
    * The slim identity-only payload: identity fields, table stats, and the pin identity, with no
-   * columns. The driver keeps the {@code knownBlobVersions} decision and calls this only when
+   * columns. The driver keeps the {@code knownPayloadTokens} decision and calls this only when
    * serving slim. Stats were resolved on the producer thread before assembly.
    */
   RelationInfo buildIdentityOnly(
       ResolvedRelation relation,
-      Optional<RelationPinIdentity> scopedIdentity,
+      Optional<RelationPinIdentity> payloadIdentity,
       Optional<StatsProvider.TableStatsView> tableStats,
       TimingAccumulator timings) {
     RelationInfo.Builder slim = baseRelationInfo(relation);
-    scopedIdentity.ifPresent(slim::setPinIdentity);
+    payloadIdentity.ifPresent(slim::setPinIdentity);
     long statsLookupStartNs = System.nanoTime();
     attachTableStats(slim, tableStats);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
@@ -222,7 +222,7 @@ final class RelationBundleBuilder {
       EngineRelationDecorator.Selection decorationSelection,
       Optional<StatsProvider.TableStatsView> tableStats,
       TimingAccumulator timings,
-      Optional<RelationPinIdentity> scopedIdentity) {
+      Optional<RelationPinIdentity> payloadIdentity) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -324,7 +324,8 @@ final class RelationBundleBuilder {
           relationDecorationNanos / 1_000_000.0);
     }
 
-    // Stamp the pin identity. Two distinct concerns share the message and must NOT share a gate:
+    // Stamp the pin identity. Two distinct concerns share the message and must NOT share a
+    // condition:
     //
     //   - The DATA identity (pin_fingerprint, snapshot id, AS-OF provenance,
     // constraints_ref_version)
@@ -333,7 +334,7 @@ final class RelationBundleBuilder {
     //     stamped UNCONDITIONALLY whenever the relation is pinned, including on projected or
     //     decoration-incomplete replies.
     //
-    //   - The possession token (table_blob_version) is payload-scoped: a client that advertises it
+    //   - The payload token (table_blob_version) is payload-scoped: a client that advertises it
     //     is later served identity-only and reuses its cached payload verbatim. It is kept only
     // when
     //     the served payload is complete and cacheable, and blanked otherwise:
@@ -342,9 +343,10 @@ final class RelationBundleBuilder {
     //       * every payload-decoration phase succeeded (relation, view, completion) and no column
     //         ended up FAILED — else a transient decoration failure would lock into a caching
     //         client instead of self-healing next query;
-    //       * non-blank — a blank version can never prove possession (the match path rejects it).
+    //       * non-blank — a blank version cannot prove the client already has the payload (the
+    //         match path rejects it).
     //
-    // scopedIdentity is computed once by the caller and threaded into both the identity-only match
+    // payloadIdentity is computed once by the caller and threaded into both the identity-only match
     // and this stamp, so a cache miss under a populated hint set does not hash the relation twice.
     boolean payloadCacheable =
         servesFullSchema(relation.candidate())
@@ -352,7 +354,7 @@ final class RelationBundleBuilder {
             && viewDecorationSucceeded
             && completeRelationSucceeded
             && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0;
-    scopedIdentity.ifPresent(
+    payloadIdentity.ifPresent(
         id ->
             builder.setPinIdentity(
                 payloadCacheable && !id.getTableBlobVersion().isBlank()

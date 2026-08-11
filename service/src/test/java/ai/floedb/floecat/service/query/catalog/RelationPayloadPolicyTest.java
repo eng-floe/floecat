@@ -42,12 +42,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Direct tests of {@link PossessionGate}: the pin-identity minting and the identity-only DECISION
- * the {@link UserObjectBundleService} driver delegates to. Exercises {@code scopedIdentity}
- * (deterministic and schema-scoped) and {@code identityOnly} (slim only when the client proved
- * possession) with a real {@link RelationBundleBuilder} over the shared fakes.
+ * Direct tests of {@link RelationPayloadPolicy}: the pin-identity minting and the identity-only
+ * DECISION the {@link UserObjectBundleService} driver delegates to. Exercises {@code
+ * payloadIdentity} (deterministic and schema-scoped) and {@code identityOnly} (slim only when the
+ * client proved the payload) with a real {@link RelationBundleBuilder} over the shared fakes.
  */
-class PossessionGateTest {
+class RelationPayloadPolicyTest {
 
   private static final ResourceId CATALOG =
       ResourceId.newBuilder()
@@ -77,7 +77,7 @@ class PossessionGateTest {
         }
       };
 
-  private PossessionGate gate;
+  private RelationPayloadPolicy policy;
 
   @BeforeEach
   void setUp() {
@@ -95,7 +95,8 @@ class PossessionGateTest {
     RelationBundleBuilder builder =
         new RelationBundleBuilder(
             overlay, engineRelationDecorator, systemExecutionResolver, throwingPinValidator);
-    gate = new PossessionGate(builder, systemExecutionResolver, engineRelationDecorator, "1");
+    policy =
+        new RelationPayloadPolicy(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }
 
   private ResolvedRelation resolved() {
@@ -129,37 +130,37 @@ class PossessionGateTest {
   }
 
   @Test
-  void scopedIdentityIsDeterministicForSameRelationAndContext() {
+  void payloadIdentityIsDeterministicForSameRelationAndContext() {
     QueryContext ctx = pinnedWith(SnapshotTestSupport.blobBackedPin(TABLE, 1L, "fp-1"));
 
-    Optional<RelationPinIdentity> first = gate.scopedIdentity("cid", resolved(), ctx, ENGINE);
-    Optional<RelationPinIdentity> second = gate.scopedIdentity("cid", resolved(), ctx, ENGINE);
+    Optional<RelationPinIdentity> first = policy.payloadIdentity("cid", resolved(), ctx, ENGINE);
+    Optional<RelationPinIdentity> second = policy.payloadIdentity("cid", resolved(), ctx, ENGINE);
 
     assertThat(first).isPresent();
     assertThat(first.get().getTableBlobVersion()).isNotEmpty();
-    // Same relation + same context → byte-identical identity and possession token.
+    // Same relation + same context → byte-identical identity and payload token.
     assertThat(second).isPresent();
     assertThat(second.get()).isEqualTo(first.get());
     assertThat(second.get().getTableBlobVersion()).isEqualTo(first.get().getTableBlobVersion());
   }
 
   @Test
-  void scopedIdentityTokenIsSchemaScoped() {
+  void payloadIdentityTokenIsSchemaScoped() {
     // Same table, same definition ref (blobBackedPin fixes table_blob_version), but two different
-    // read-schema fingerprints — the shape of a snapshot-backed schema change. The possession token
+    // read-schema fingerprints — the shape of a snapshot-backed schema change. The payload token
     // must move with the schema scope, or a client would be served identity-only for a new schema.
     QueryContext ctxFp1 = pinnedWith(SnapshotTestSupport.blobBackedPin(TABLE, 1L, "fp-1"));
     QueryContext ctxFp2 = pinnedWith(SnapshotTestSupport.blobBackedPin(TABLE, 1L, "fp-2"));
 
     String token1 =
-        gate.scopedIdentity("cid", resolved(), ctxFp1, ENGINE).get().getTableBlobVersion();
+        policy.payloadIdentity("cid", resolved(), ctxFp1, ENGINE).get().getTableBlobVersion();
     String token2 =
-        gate.scopedIdentity("cid", resolved(), ctxFp2, ENGINE).get().getTableBlobVersion();
+        policy.payloadIdentity("cid", resolved(), ctxFp2, ENGINE).get().getTableBlobVersion();
 
     assertThat(token1).isNotEmpty();
     assertThat(token2).isNotEmpty();
     assertThat(token2)
-        .as("a different read-schema fingerprint must move the possession token")
+        .as("a different read-schema fingerprint must move the payload token")
         .isNotEqualTo(token1);
   }
 
@@ -170,7 +171,7 @@ class PossessionGateTest {
     TimingAccumulator timings = new TimingAccumulator();
 
     RelationInfo slim =
-        gate.identityOnly(
+        policy.identityOnly(
             resolved(), Optional.of(identity), Optional.empty(), Set.of("v-token"), timings);
 
     assertThat(slim).isNotNull();
@@ -186,7 +187,7 @@ class PossessionGateTest {
         RelationPinIdentity.newBuilder().setTableBlobVersion("v-token").build();
 
     assertThat(
-            gate.identityOnly(
+            policy.identityOnly(
                 resolved(),
                 Optional.of(identity),
                 Optional.empty(),
@@ -197,11 +198,11 @@ class PossessionGateTest {
 
   @Test
   void identityOnlyIsNullWhenTokenIsBlank() {
-    // A blank token can never prove possession, even if the client advertises the empty string.
+    // A blank token cannot prove the client has a payload, even if it advertises the empty string.
     RelationPinIdentity blank = RelationPinIdentity.newBuilder().setTableBlobVersion("").build();
 
     assertThat(
-            gate.identityOnly(
+            policy.identityOnly(
                 resolved(),
                 Optional.of(blank),
                 Optional.empty(),
@@ -216,7 +217,7 @@ class PossessionGateTest {
         RelationPinIdentity.newBuilder().setTableBlobVersion("v-token").build();
 
     assertThat(
-            gate.identityOnly(
+            policy.identityOnly(
                 resolved(),
                 Optional.of(identity),
                 Optional.empty(),
@@ -228,7 +229,7 @@ class PossessionGateTest {
   @Test
   void identityOnlyIsNullWhenScopedIdentityAbsent() {
     assertThat(
-            gate.identityOnly(
+            policy.identityOnly(
                 resolved(),
                 Optional.empty(),
                 Optional.empty(),

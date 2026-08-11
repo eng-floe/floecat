@@ -34,13 +34,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Direct tests of {@link RelationResolutionCache}: the per-request name/node memo the {@link
+ * Direct tests of {@link RelationResolutionMemo}: the per-request name/node memo the {@link
  * UserObjectBundleService} driver resolves through. Verifies single-flight memoization (present and
  * empty-negative), name normalization collapsing to one key, and that every hit/miss and
  * resolve-nanos lands in the shared {@link TimingAccumulator}. A counting {@link
  * FakeCatalogOverlay} proves the resolve ran at most once per key.
  */
-class RelationResolutionCacheTest {
+class RelationResolutionMemoTest {
 
   private static final String CID = "corr-1";
   private static final EngineContext ENGINE = EngineContext.of("pg", "16.0");
@@ -56,26 +56,26 @@ class RelationResolutionCacheTest {
 
   private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
   private TimingAccumulator timings;
-  private RelationResolutionCache cache;
+  private RelationResolutionMemo memo;
 
   @BeforeEach
   void setUp() {
     overlay.clear();
     overlay.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
     timings = new TimingAccumulator();
-    cache = new RelationResolutionCache(overlay, CID, ENGINE, timings);
+    memo = new RelationResolutionMemo(overlay, CID, ENGINE, timings);
   }
 
   @Test
   void resolveNameMemoizesPresentResult() {
-    Optional<ResourceId> first = cache.resolveName(NAME);
-    Optional<ResourceId> second = cache.resolveName(NAME);
+    Optional<ResourceId> first = memo.resolveName(NAME);
+    Optional<ResourceId> second = memo.resolveName(NAME);
 
     assertThat(first).contains(TABLE);
     assertThat(second).contains(TABLE);
     // Resolved once, then served from the memo.
     assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
-    assertThat(cache.nameEntries()).isEqualTo(1);
+    assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();
     assertThat(rec.get("name_cache_misses")).isEqualTo(1L);
@@ -87,14 +87,14 @@ class RelationResolutionCacheTest {
   void resolveNameMemoizesEmptyNegative() {
     NameRef unknown = NameRef.newBuilder().setCatalog("cat").setName("missing").build();
 
-    Optional<ResourceId> first = cache.resolveName(unknown);
-    Optional<ResourceId> second = cache.resolveName(unknown);
+    Optional<ResourceId> first = memo.resolveName(unknown);
+    Optional<ResourceId> second = memo.resolveName(unknown);
 
     assertThat(first).isEmpty();
     assertThat(second).isEmpty();
     // A negative result is cached too: the overlay is not re-queried on the second miss-key lookup.
     assertThat(overlay.resolveNameCount(unknown)).isEqualTo(1);
-    assertThat(cache.nameEntries()).isEqualTo(1);
+    assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();
     assertThat(rec.get("name_cache_misses")).isEqualTo(1L);
@@ -110,15 +110,15 @@ class RelationResolutionCacheTest {
             .setKind(ResourceKind.RK_TABLE)
             .build();
 
-    assertThat(cache.resolveNode(TABLE)).isPresent();
-    assertThat(cache.resolveNode(TABLE)).isPresent();
-    assertThat(cache.resolveNode(unknown)).isEmpty();
-    assertThat(cache.resolveNode(unknown)).isEmpty();
+    assertThat(memo.resolveNode(TABLE)).isPresent();
+    assertThat(memo.resolveNode(TABLE)).isPresent();
+    assertThat(memo.resolveNode(unknown)).isEmpty();
+    assertThat(memo.resolveNode(unknown)).isEmpty();
 
     // Each distinct id resolves through the overlay exactly once.
     assertThat(overlay.resolveCount(TABLE)).isEqualTo(1);
     assertThat(overlay.resolveCount(unknown)).isEqualTo(1);
-    assertThat(cache.nodeEntries()).isEqualTo(2);
+    assertThat(memo.nodeEntries()).isEqualTo(2);
 
     Recording rec = flush();
     assertThat(rec.get("node_cache_misses")).isEqualTo(2L);
@@ -138,12 +138,12 @@ class RelationResolutionCacheTest {
           }
         };
     namingOverlay.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
-    RelationResolutionCache namingCache =
-        new RelationResolutionCache(namingOverlay, CID, ENGINE, new TimingAccumulator());
+    RelationResolutionMemo nameMemo =
+        new RelationResolutionMemo(namingOverlay, CID, ENGINE, new TimingAccumulator());
     RelationNode relation = (RelationNode) namingOverlay.resolve(TABLE).orElseThrow();
 
-    assertThat(namingCache.canonicalName(relation)).isEqualTo(NAME);
-    assertThat(namingCache.canonicalName(relation)).isEqualTo(NAME);
+    assertThat(nameMemo.canonicalName(relation)).isEqualTo(NAME);
+    assertThat(nameMemo.canonicalName(relation)).isEqualTo(NAME);
     assertThat(tableNameCalls).hasValue(1);
   }
 
@@ -151,15 +151,15 @@ class RelationResolutionCacheTest {
   void normalizationCollapsesWhitespaceVariantsToOneKey() {
     NameRef padded = NameRef.newBuilder().setCatalog("  cat  ").setName("  x  ").build();
 
-    Optional<ResourceId> exact = cache.resolveName(NAME); // miss: hits the overlay
-    Optional<ResourceId> whitespace = cache.resolveName(padded); // hit: same normalized key
+    Optional<ResourceId> exact = memo.resolveName(NAME); // miss: hits the overlay
+    Optional<ResourceId> whitespace = memo.resolveName(padded); // hit: same normalized key
 
     assertThat(exact).contains(TABLE);
     assertThat(whitespace).contains(TABLE);
     // Only the first (exact) ref reached the overlay; the padded variant collapsed onto its key.
     assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
     assertThat(overlay.resolveNameCount(padded)).isEqualTo(0);
-    assertThat(cache.nameEntries()).isEqualTo(1);
+    assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();
     assertThat(rec.get("name_cache_misses")).isEqualTo(1L);

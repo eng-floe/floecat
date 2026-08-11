@@ -31,24 +31,24 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Mints the possession identity a resolved relation advertises and decides whether the client has
- * already proved possession of the served payload (identity-only fast path). Stateless per call and
- * used on the driver thread: it holds a {@link RelationBundleBuilder} for slim assembly, the system
- * execution resolver whose routing the token covers, and the decoration epoch. The possession-token
- * cacheable/blank stamp for a FULL payload stays in the builder; this gate owns the minting and the
- * identity-only DECISION.
+ * Computes the payload identity a resolved relation advertises and decides whether the client
+ * already has the served payload (identity-only fast path). Stateless per call and used on the
+ * driver thread: it holds a {@link RelationBundleBuilder} for slim assembly, the system execution
+ * resolver whose routing the token covers, and the decoration epoch. The cacheable/blank payload
+ * stamp for a FULL payload stays in the builder; this policy owns identity creation and the
+ * identity-only decision.
  */
-final class PossessionGate {
+final class RelationPayloadPolicy {
 
   private final RelationBundleBuilder relationBuilder;
   private final SystemExecutionResolver systemExecutionResolver;
   private final EngineRelationDecorator engineRelationDecorator;
 
   // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
-  // into the identity-only possession token so a decorator change invalidates cached decoration.
+  // into the identity-only payload token so a decorator change invalidates cached decoration.
   private final String decorationEpoch;
 
-  PossessionGate(
+  RelationPayloadPolicy(
       RelationBundleBuilder relationBuilder,
       SystemExecutionResolver systemExecutionResolver,
       EngineRelationDecorator engineRelationDecorator,
@@ -132,15 +132,15 @@ final class PossessionGate {
   }
 
   /**
-   * A wire-facing pin identity plus the server-side schema-scope material its possession token
-   * folds in. The scope stays OFF the identity (RelationPinIdentity is planner-facing; the
-   * fingerprint is internal pin state) — this pair is how it travels from pinIdentityFor to
-   * possessionToken without widening the wire message.
+   * A wire-facing pin identity plus the server-side schema-scope material its payload token folds
+   * in. The scope stays OFF the identity (RelationPinIdentity is planner-facing; the fingerprint is
+   * internal pin state) — this pair is how it travels from pinIdentityFor to payloadToken without
+   * widening the wire message.
    */
   private record PinIdentitySource(RelationPinIdentity identity, String schemaScope) {}
 
   /**
-   * The schema-scope material a table pin contributes to the possession token: the read-schema
+   * The schema-scope material a table pin contributes to the payload token: the read-schema
    * fingerprint stamped on the pinned manifest entry, or — for pins built from pre-fingerprint
    * entries — the snapshot blob version (correct but coarser: it also moves on data-only ingests,
    * so legacy entries run cold on ingest until their next snapshot write stamps a fingerprint).
@@ -153,11 +153,11 @@ final class PossessionGate {
 
   /**
    * The pin identity as stamped on the wire, with its {@code table_blob_version} scoped to the
-   * SERVED PAYLOAD rather than the bare content version (see {@link #possessionToken}). Both the
+   * SERVED PAYLOAD rather than the bare content version (see {@link #payloadToken}). Both the
    * full-response stamp and the identity-only match go through here, so the token a client
-   * advertises and the token the gate compares can never drift.
+   * advertises and the token this policy compares can never drift.
    */
-  Optional<RelationPinIdentity> scopedIdentity(
+  Optional<RelationPinIdentity> payloadIdentity(
       String correlationId,
       ResolvedRelation relation,
       QueryContext queryContext,
@@ -167,22 +167,20 @@ final class PossessionGate {
             src ->
                 src.identity().toBuilder()
                     .setTableBlobVersion(
-                        possessionToken(
-                            src.identity().getTableBlobVersion(), src.schemaScope(), ctx))
+                        payloadToken(src.identity().getTableBlobVersion(), src.schemaScope(), ctx))
                     .build());
   }
 
   /**
-   * The possession token a caching client advertises
-   * (GetUserObjectsRequest.known_table_blob_versions) and the identity-only gate matches on. It
-   * must identify the WITHHELD PAYLOAD, not merely the content version: withheld columns carry
-   * engine-keyed payload (decorateColumns / hasRequiredEnginePayload), so a bare content version
-   * would let a client that shares one catalog cache across engines — or that spans an
-   * engine-version or decorator upgrade — advertise a version decorated for engine A, be served
-   * identity-only under engine B, and reuse engine-A decoration for an engine-B query. The
-   * requesting engine is already on the wire (EngineContext), so we fold it in server-side at both
-   * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
-   * own cache by engine.
+   * The payload token a caching client advertises (GetUserObjectsRequest.known_table_blob_versions)
+   * and this policy matches on. It must identify the WITHHELD PAYLOAD, not merely the content
+   * version: withheld columns carry engine-keyed payload (decorateColumns /
+   * hasRequiredEnginePayload), so a bare content version would let a client that shares one catalog
+   * cache across engines — or that spans an engine-version or decorator upgrade — advertise a
+   * version decorated for engine A, be served identity-only under engine B, and reuse engine-A
+   * decoration for an engine-B query. The requesting engine is already on the wire (EngineContext),
+   * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
+   * correctness no longer depends on it keying its own cache by engine.
    *
    * <p>The token folds in a SCHEMA scope ({@code schemaScope}), because the served column schema is
    * read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change
@@ -201,7 +199,7 @@ final class PossessionGate {
    * schema scope (views/system) AND no engine decoration — the token IS the content version,
    * byte-identical to the unscoped behavior.
    */
-  private String possessionToken(String contentVersion, String schemaScope, EngineContext ctx) {
+  private String payloadToken(String contentVersion, String schemaScope, EngineContext ctx) {
     if (contentVersion == null || contentVersion.isBlank()) {
       return contentVersion;
     }
@@ -224,8 +222,8 @@ final class PossessionGate {
   }
 
   /*
-   * Identity-only response when the request proved possession of the exact
-   * content version this resolution serves: the payload (schema, columns,
+   * Identity-only response when the request already has the exact content version
+   * this resolution serves: the payload (schema, columns,
    * view definition, decoration) is omitted — the identity plus the
    * lightweight stats are all a caching client needs, and the omitted bytes
    * are provably identical to what it holds. A generic conditional-request
@@ -235,26 +233,28 @@ final class PossessionGate {
    */
   RelationInfo identityOnly(
       ResolvedRelation relation,
-      Optional<RelationPinIdentity> scopedIdentity,
+      Optional<RelationPinIdentity> payloadIdentity,
       Optional<StatsProvider.TableStatsView> tableStats,
-      Set<String> knownBlobVersions,
+      Set<String> knownPayloadTokens,
       TimingAccumulator timings) {
-    // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
-    // so a client that proved possession under a different engine cannot be served identity-only.
-    // A blank version can never prove possession: a user table whose definition blob had no etag
+    // The token is the engine-scoped payload token (payloadIdentity), not the bare content version,
+    // so a client that proved it has the payload under a different engine cannot be served
+    // identity-only. A blank version can never prove the client has a payload: a user table whose
+    // definition blob had no etag
     // resolves to table_blob_version="" (the repository defaults a missing etag to empty), and
     // every such table would otherwise share that key — one cached, the rest served the wrong
     // schema identity-only. Force the full payload rather than match on the empty string.
-    if (knownBlobVersions.isEmpty()
-        || scopedIdentity.isEmpty()
-        || scopedIdentity.get().getTableBlobVersion().isBlank()
-        || !knownBlobVersions.contains(scopedIdentity.get().getTableBlobVersion())) {
+    if (knownPayloadTokens.isEmpty()
+        || payloadIdentity.isEmpty()
+        || payloadIdentity.get().getTableBlobVersion().isBlank()
+        || !knownPayloadTokens.contains(payloadIdentity.get().getTableBlobVersion())) {
       return null;
     }
     // The slim payload assembly (baseRelationInfo + attachTableStats + setPinIdentity, no columns)
-    // lives in the builder; the gate keeps only the possession DECISION above. Its stats lookup
+    // lives in the builder; this policy keeps only the payload-reuse decision above. Its stats
+    // lookup
     // is timed into the passed accumulator there, exactly as the full build path times it.
-    return relationBuilder.buildIdentityOnly(relation, scopedIdentity, tableStats, timings);
+    return relationBuilder.buildIdentityOnly(relation, payloadIdentity, tableStats, timings);
   }
 
   private static String safe(String value) {

@@ -34,12 +34,12 @@ import java.util.function.Supplier;
  * Per-request memo for name-to-id and id-to-node resolution during one GetUserObjects stream. Both
  * maps resolve each key at most once: a repeated lookup returns the stored {@link Optional}
  * (present or empty). {@link ConcurrentHashMap#computeIfAbsent} gives single-flight — the resolve
- * runs once per key even under the concurrent select stage that shares this cache across its
- * fan-out tasks — and first-touch semantics: the first caller resolves, later callers read. Every
- * resolve's elapsed time plus its hit/miss verdict is recorded into the shared request {@link
+ * runs once per key even under the concurrent select stage that shares this memo across its fan-out
+ * tasks — and first-touch semantics: the first caller resolves, later callers read. Every resolve's
+ * elapsed time plus its hit/miss verdict is recorded into the shared request {@link
  * TimingAccumulator}.
  */
-final class RelationResolutionCache {
+final class RelationResolutionMemo {
 
   private final CatalogOverlay overlay;
   private final String correlationId;
@@ -55,7 +55,7 @@ final class RelationResolutionCache {
       new ConcurrentHashMap<>();
   private final Map<ResourceId, Optional<NameRef>> canonicalNameCache = new ConcurrentHashMap<>();
 
-  RelationResolutionCache(
+  RelationResolutionMemo(
       CatalogOverlay overlay,
       String correlationId,
       EngineContext engineContext,

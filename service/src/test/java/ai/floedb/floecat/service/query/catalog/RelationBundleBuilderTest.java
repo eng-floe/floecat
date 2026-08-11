@@ -70,7 +70,7 @@ import org.junit.jupiter.api.Test;
  * Direct tests of {@link RelationBundleBuilder}: the "ResolvedRelation + config → RelationInfo"
  * assembly the {@link UserObjectBundleService} driver delegates to. Exercises what the driver-level
  * characterization suite could only reach indirectly — the column-failure taxonomy, the build-error
- * mapping, and the possession-token stamp — without a full stream.
+ * mapping, and the payload-token stamp — without a full stream.
  */
 class RelationBundleBuilderTest {
 
@@ -134,7 +134,7 @@ class RelationBundleBuilderTest {
         QueryContext queryContext,
         MetadataResolutionContext resolutionContext,
         Optional<StatsProvider.TableStatsView> tableStats,
-        Optional<RelationPinIdentity> scopedIdentity) {
+        Optional<RelationPinIdentity> payloadIdentity) {
       return delegate.build(
           correlationId,
           relation,
@@ -142,15 +142,15 @@ class RelationBundleBuilderTest {
           resolutionContext,
           engineRelationDecorator.select(resolutionContext.engineContext()),
           tableStats,
-          scopedIdentity);
+          payloadIdentity);
     }
 
     RelationInfo buildIdentityOnly(
         ResolvedRelation relation,
-        Optional<RelationPinIdentity> scopedIdentity,
+        Optional<RelationPinIdentity> payloadIdentity,
         Optional<StatsProvider.TableStatsView> tableStats,
         TimingAccumulator timings) {
-      return delegate.buildIdentityOnly(relation, scopedIdentity, tableStats, timings);
+      return delegate.buildIdentityOnly(relation, payloadIdentity, tableStats, timings);
     }
   }
 
@@ -733,7 +733,7 @@ class RelationBundleBuilderTest {
   }
 
   @Test
-  void possessionTokenStampedForFullCacheablePayload() {
+  void payloadTokenStampedForFullCacheablePayload() {
     overlay.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
@@ -758,12 +758,12 @@ class RelationBundleBuilderTest {
     assertThat(info.hasPinIdentity()).isTrue();
     assertThat(info.getPinIdentity().getPinFingerprint()).isEqualTo("fp");
     assertThat(info.getPinIdentity().getTableBlobVersion())
-        .as("a full, fully-decorated payload keeps the possession token")
+        .as("a full, fully-decorated payload keeps the payload token")
         .isEqualTo("v-token");
   }
 
   @Test
-  void possessionTokenBlankedForProjectedPayloadButIdentityPreserved() {
+  void payloadTokenBlankedForProjectedPayloadButIdentityPreserved() {
     overlay.registerTable(
         TABLE,
         List.of(
@@ -797,12 +797,12 @@ class RelationBundleBuilderTest {
     assertThat(info.hasPinIdentity()).isTrue();
     assertThat(info.getPinIdentity().getPinFingerprint()).isEqualTo("fp");
     assertThat(info.getPinIdentity().getTableBlobVersion())
-        .as("a projected payload must not advertise the full-schema possession token")
+        .as("a projected payload must not advertise the full-schema payload token")
         .isEmpty();
   }
 
   @Test
-  void possessionTokenBlankedWhenColumnDecorationFails() {
+  void payloadTokenBlankedWhenColumnDecorationFails() {
     overlay.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),

@@ -26,9 +26,9 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 
-/** Application-generation facade over the JVM-lifetime gate for query-driven stats warms. */
+/** Application-generation facade over the JVM-lifetime limiter for query-driven stats warms. */
 @ApplicationScoped
-final class StatsWarmAdmission {
+final class StatsWarmLimiter {
 
   static final String MAX_PARALLEL_STATS_WARMS = "floecat.catalog.bundle.max_parallel_stats_warms";
   private static final int DEFAULT_CAPACITY = 16;
@@ -38,18 +38,18 @@ final class StatsWarmAdmission {
   private final Semaphore permits;
 
   @Inject
-  StatsWarmAdmission() {
+  StatsWarmLimiter() {
     this(
         ProcessWideAdmission.resolve(ProcessWideAdmission.Domain.STATS_WARM, configuredCapacity()));
   }
 
-  /** Build an isolated gate for focused same-package tests. */
-  StatsWarmAdmission(int capacity) {
+  /** Build an isolated limiter for focused same-package tests. */
+  StatsWarmLimiter(int capacity) {
     this.capacity = Math.max(1, capacity);
     this.permits = new Semaphore(this.capacity, true);
   }
 
-  private StatsWarmAdmission(ProcessWideAdmission.State admission) {
+  private StatsWarmLimiter(ProcessWideAdmission.State admission) {
     this.capacity = admission.capacity();
     this.permits = admission.permits();
   }

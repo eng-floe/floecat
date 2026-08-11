@@ -98,17 +98,17 @@ public class UserObjectBundleService {
   private final QueryContextStore queryStore;
   private final EngineContextProvider engineContext;
   // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
-  // into the identity-only possession token so a decorator change invalidates cached decoration.
+  // into the identity-only payload token so a decorator change invalidates cached decoration.
   private final String decorationEpoch;
   private final StatsProviderFactory statsFactory;
   private final long slowRpcMs;
   private final RelationBundleBuilder relationBuilder;
   private final EngineRelationDecorator engineRelationDecorator;
-  private final CancellationRootReleaser cancellationRootReleaser;
+  private final CancelledQueryPinCleanup cancelledQueryPinCleanup;
 
-  // Mints the pin identity/possession token and serves the identity-only decision. Stateless per
+  // Mints the pin identity/payload token and serves the identity-only decision. Stateless per
   // call; reused on the driver thread across every chunk.
-  private final PossessionGate possessionGate;
+  private final RelationPayloadPolicy relationPayloadPolicy;
 
   @Inject Observability observability;
 
@@ -149,7 +149,7 @@ public class UserObjectBundleService {
       CatalogOverlay overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
-      CancellationRootReleaser cancellationRootReleaser,
+      CancelledQueryPinCleanup cancelledQueryPinCleanup,
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
@@ -171,7 +171,7 @@ public class UserObjectBundleService {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
-    this.cancellationRootReleaser = cancellationRootReleaser;
+    this.cancelledQueryPinCleanup = cancelledQueryPinCleanup;
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
@@ -202,8 +202,8 @@ public class UserObjectBundleService {
     this.relationBuilder =
         new RelationBundleBuilder(
             overlay, engineRelationDecorator, systemExecutionResolver, pinValidator);
-    this.possessionGate =
-        new PossessionGate(
+    this.relationPayloadPolicy =
+        new RelationPayloadPolicy(
             relationBuilder,
             systemExecutionResolver,
             engineRelationDecorator,
@@ -229,7 +229,7 @@ public class UserObjectBundleService {
         overlay,
         inputResolver,
         queryStore,
-        new CancellationRootReleaser(queryStore, Runnable::run),
+        new CancelledQueryPinCleanup(queryStore, Runnable::run),
         statsFactory,
         decoratorProvider,
         engineContext,
@@ -251,7 +251,7 @@ public class UserObjectBundleService {
         8);
   }
 
-  /** {@link #stream(String, QueryContext, List, Set)} with no possession hint. */
+  /** {@link #stream(String, QueryContext, List, Set)} with no payload hint. */
   public Multi<UserObjectsBundleChunk> stream(
       String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
     return stream(correlationId, ctx, tables, Set.of());
@@ -261,7 +261,7 @@ public class UserObjectBundleService {
       String correlationId,
       QueryContext ctx,
       List<TableReferenceCandidate> tables,
-      Set<String> knownBlobVersions) {
+      Set<String> knownPayloadTokens) {
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
@@ -276,7 +276,7 @@ public class UserObjectBundleService {
         .<UserObjectsBundleChunk>deferred(
             () -> {
               UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownBlobVersions);
+                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownPayloadTokens);
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
@@ -416,14 +416,14 @@ public class UserObjectBundleService {
     private final String engineKind;
     private final String engineVersion;
     /* Content versions the request proved it holds; relations resolving to
-     * one of these get an identity-only response (see PossessionGate#identityOnly). */
-    private final Set<String> knownBlobVersions;
+     * one of these get an identity-only response (see RelationPayloadPolicy#identityOnly). */
+    private final Set<String> knownPayloadTokens;
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
     // Per-request name/node resolution memo, shared (thread-safe) across the concurrent select
     // stage; records its hit/miss and resolve-nanos into the request tally below.
-    private final RelationResolutionCache resolutionCache;
+    private final RelationResolutionMemo resolutionMemo;
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
@@ -439,12 +439,12 @@ public class UserObjectBundleService {
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
     // Owns the per-request pin state and drives the collect→commit pin-durability transaction.
-    private final ChunkPinBarrier pinBarrier;
+    private final QueryPinCommitter pinCommitter;
     // A teardown may publish only after the active next() call has finished mutating iterator
     // diagnostics and caches; a real failure wins when cancellation races that final step.
-    private final StreamTelemetryGate telemetryGate = new StreamTelemetryGate();
+    private final StreamTelemetryState telemetryState = new StreamTelemetryState();
 
-    private final BundleChunkStream stream;
+    private final BundleStreamFramer framer;
     private int nextInputIndex = 0;
     private int emittedResolutionChunks = 0;
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -455,14 +455,14 @@ public class UserObjectBundleService {
         String correlationId,
         QueryContext ctx,
         List<TableReferenceCandidate> tables,
-        Set<String> knownBlobVersions) {
+        Set<String> knownPayloadTokens) {
       this.correlationId = correlationId;
       this.ctx = ctx;
-      this.stream = new BundleChunkStream(ctx.getQueryId(), MAX_RESOLUTIONS_PER_CHUNK);
+      this.framer = new BundleStreamFramer(ctx.getQueryId(), MAX_RESOLUTIONS_PER_CHUNK);
       this.tables = tables;
       // Read-only for the life of the iterator (consulted by the identity-only fast path); copy so
       // that stays true regardless of what the caller does with its set afterwards.
-      this.knownBlobVersions = Set.copyOf(knownBlobVersions);
+      this.knownPayloadTokens = Set.copyOf(knownPayloadTokens);
       this.resolutionCount = tables.size();
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
@@ -477,9 +477,10 @@ public class UserObjectBundleService {
               statsProvider);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
-      this.resolutionCache =
-          new RelationResolutionCache(overlay, correlationId, requestEngine, timings);
-      this.pinBarrier = new ChunkPinBarrier(inputResolver, queryStore, ctx, correlationId, timings);
+      this.resolutionMemo =
+          new RelationResolutionMemo(overlay, correlationId, requestEngine, timings);
+      this.pinCommitter =
+          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -491,25 +492,25 @@ public class UserObjectBundleService {
 
     @Override
     public boolean hasNext() {
-      return stream.isOpen();
+      return framer.isOpen();
     }
 
     @Override
     public UserObjectsBundleChunk next() {
       beginProducerStep();
-      StreamTelemetryGate.Publication terminalOutcome = StreamTelemetryGate.Publication.NONE;
+      StreamTelemetryState.Publication terminalOutcome = StreamTelemetryState.Publication.NONE;
       try (var cancellationScope = PropagatedContext.bindCancellation(this::isCancelled)) {
         throwIfCancelled(this::isCancelled);
-        if (stream.headerPending()) {
+        if (framer.headerPending()) {
           if (LOG.isDebugEnabled()) {
-            LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), stream.seq());
+            LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), framer.seq());
           }
-          return stream.header();
+          return framer.header();
         }
 
         // Pump the pipeline into the framer only when it has nothing left to slice, so a batch's
-        // pin/stats/build barrier stays aligned with the chunk it produces.
-        if (!stream.hasBufferedResolutions()) {
+        // pin commit and stats/build work stay aligned with the chunk it produces.
+        if (!framer.hasBufferedResolutions()) {
 
           if (pending.isEmpty()
               && (nextInputIndex < resolutionCount
@@ -522,29 +523,29 @@ public class UserObjectBundleService {
           }
         }
 
-        if (stream.hasBufferedResolutions()) {
+        if (framer.hasBufferedResolutions()) {
           emittedResolutionChunks++;
-          return stream.nextResolutionChunk();
+          return framer.nextResolutionChunk();
         }
 
-        if (stream.isOpen()) {
-          terminalOutcome = StreamTelemetryGate.Publication.COMPLETION;
+        if (framer.isOpen()) {
+          terminalOutcome = StreamTelemetryState.Publication.COMPLETION;
           if (LOG.isDebugEnabled()) {
             LOG.debugf(
                 "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
                 ctx.getQueryId(),
-                stream.seq(),
+                framer.seq(),
                 resolutionCount,
                 timings.found(),
                 timings.notFound());
           }
-          return stream.end(resolutionCount, timings.found(), timings.notFound());
+          return framer.end(resolutionCount, timings.found(), timings.notFound());
         }
 
         throw new NoSuchElementException();
       } catch (RuntimeException | Error failure) {
         if (!(failure instanceof CancellationException)) {
-          terminalOutcome = StreamTelemetryGate.Publication.FAILURE;
+          terminalOutcome = StreamTelemetryState.Publication.FAILURE;
         }
         throw failure;
       } finally {
@@ -601,7 +602,7 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        pinBarrier.accumulate(toPin, diagnostics, this::isCancelled);
+        pinCommitter.accumulate(toPin, diagnostics, this::isCancelled);
       }
     }
 
@@ -610,15 +611,15 @@ public class UserObjectBundleService {
     }
 
     private Optional<ResourceId> resolveNameCached(NameRef ref) {
-      return resolutionCache.resolveName(ref);
+      return resolutionMemo.resolveName(ref);
     }
 
     private Optional<GraphNode> resolveNodeCached(ResourceId id) {
-      return resolutionCache.resolveNode(id);
+      return resolutionMemo.resolveNode(id);
     }
 
     private NameRef canonicalNameCached(RelationNode relation) {
-      return resolutionCache.canonicalName(relation);
+      return resolutionMemo.canonicalName(relation);
     }
 
     /**
@@ -626,10 +627,10 @@ public class UserObjectBundleService {
      * root release so a transport/event-loop termination callback never performs store I/O.
      */
     private void cancel() {
-      StreamTelemetryGate.CancellationDecision cancellation = telemetryGate.cancel(cancelled);
-      if (cancellation != StreamTelemetryGate.CancellationDecision.IGNORED) {
-        RelationPinSet toRelease = pinBarrier.detachPendingPins();
-        if (cancellation == StreamTelemetryGate.CancellationDecision.PUBLISH) {
+      StreamTelemetryState.CancellationDecision cancellation = telemetryState.cancel(cancelled);
+      if (cancellation != StreamTelemetryState.CancellationDecision.IGNORED) {
+        RelationPinSet toRelease = pinCommitter.detachPendingPins();
+        if (cancellation == StreamTelemetryState.CancellationDecision.PUBLISH) {
           // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
           // this termination callback returns. Emit while it is still recording.
           publishClaimedTelemetrySafely("cancelled");
@@ -637,21 +638,21 @@ public class UserObjectBundleService {
         // onTermination may run on a transport/event-loop thread. Root release can perform store
         // I/O, so teardown runs on a managed executor. Telemetry is published only after the
         // producer reports that no mutable iterator state remains active.
-        cancellationRootReleaser.release(ctx.getQueryId(), toRelease);
+        cancelledQueryPinCleanup.release(ctx.getQueryId(), toRelease);
       }
     }
 
     /** Claim mutable iterator state for one producer step unless cancellation already won. */
     private void beginProducerStep() {
-      telemetryGate.begin(this::isCancelled);
+      telemetryState.begin(this::isCancelled);
     }
 
     /**
      * Release producer ownership and publish exactly one terminal outcome, giving a real failure
      * precedence over cancellation that raced the active step.
      */
-    private void finishProducerStep(StreamTelemetryGate.Publication terminalOutcome) {
-      StreamTelemetryGate.Publication publication = telemetryGate.finish(terminalOutcome);
+    private void finishProducerStep(StreamTelemetryState.Publication terminalOutcome) {
+      StreamTelemetryState.Publication publication = telemetryState.finish(terminalOutcome);
       switch (publication) {
         case COMPLETION -> publishClaimedTelemetrySafely("completed");
         case FAILURE -> publishClaimedTelemetrySafely("failed");
@@ -878,7 +879,7 @@ public class UserObjectBundleService {
 
     /**
      * Warm the pinned table stats for this chunk's FOUND tables in one batched, parallel read after
-     * the pin barrier. The returned immutable lookup is carried into relation assembly so worker
+     * the pin committer. The returned immutable lookup is carried into relation assembly so worker
      * tasks never re-enter the request-affine stats provider. Views carry no table stats and are
      * skipped. A batch failure is best-effort and leaves stats absent for this chunk.
      */
@@ -938,16 +939,16 @@ public class UserObjectBundleService {
     private static final class BuildPlan {
       private final List<BuildTarget> targets;
       private final Optional<RelationBundleBuilder.BuildError> validationError;
-      private final Optional<RelationPinIdentity> scopedIdentity;
+      private final Optional<RelationPinIdentity> payloadIdentity;
 
       private BuildPlan(
           PendingFound source,
           int slot,
           Optional<RelationBundleBuilder.BuildError> validationError,
-          Optional<RelationPinIdentity> scopedIdentity) {
+          Optional<RelationPinIdentity> payloadIdentity) {
         this.targets = new ArrayList<>(List.of(new BuildTarget(source, slot)));
         this.validationError = validationError;
-        this.scopedIdentity = scopedIdentity;
+        this.payloadIdentity = payloadIdentity;
       }
 
       private void addDuplicate(PendingFound duplicate, int slot) {
@@ -985,7 +986,7 @@ public class UserObjectBundleService {
               resolutionContext,
               decorationSelection,
               tableStats,
-              plan.scopedIdentity);
+              plan.payloadIdentity);
       long buildNanos = System.nanoTime() - buildStartNs;
       TimingAccumulator taskTimings = result.timings();
       if (result.isSuccess()) {
@@ -1037,11 +1038,11 @@ public class UserObjectBundleService {
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), stream.seq(), chunkItems.size(), pinBarrier.pendingPinCount());
+            ctx.getQueryId(), framer.seq(), chunkItems.size(), pinCommitter.pendingPinCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
-      pinBarrier.commit(this::isCancelled);
+      pinCommitter.commit(this::isCancelled);
       throwIfCancelled(this::isCancelled);
 
       Map<ResourceId, Optional<StatsProvider.TableStatsView>> statsByTable =
@@ -1052,7 +1053,7 @@ public class UserObjectBundleService {
 
       // Driver pre-pass: everything cheap and order/state-sensitive stays here — passthrough
       // resolutions, cache hits, and the identity-only fast path (which reads the shared
-      // knownBlobVersions and timings). Relations needing a full build are collected for the
+      // knownPayloadTokens and timings). Relations needing a full build are collected for the
       // parallel stage; their pin identity, computed here for the slim check, is carried forward so
       // buildOne does not recompute it. slots keeps every resolution in chunk order.
       RelationResolution[] slots = new RelationResolution[chunkItems.size()];
@@ -1085,18 +1086,19 @@ public class UserObjectBundleService {
         // when the client sent hints, and the full-build stamp reuses it — so a cache miss under a
         // populated hint set does not hash the relation twice. Computed for EVERY pinned relation
         // (not only full-schema ones): the stamp preserves the data identity even on a projected
-        // reply, merely blanking the possession token there.
-        Optional<RelationPinIdentity> scopedIdentity =
-            possessionGate.scopedIdentity(
+        // reply, merely blanking the payload token there.
+        Optional<RelationPinIdentity> payloadIdentity =
+            relationPayloadPolicy.payloadIdentity(
                 correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
         // Identity-only fast path: never cached — the info cache must only ever hold full payloads,
-        // or a later request that did NOT prove possession would be served a payload-less relation.
+        // or a later request that does not already have the payload would be served a payload-less
+        // relation.
         RelationInfo slim =
-            possessionGate.identityOnly(
+            relationPayloadPolicy.identityOnly(
                 found.relation(),
-                scopedIdentity,
+                payloadIdentity,
                 statsByTable.getOrDefault(found.relation().relationId(), Optional.empty()),
-                knownBlobVersions,
+                knownPayloadTokens,
                 timings);
         throwIfCancelled(this::isCancelled);
 
@@ -1111,7 +1113,7 @@ public class UserObjectBundleService {
         }
         Optional<RelationBundleBuilder.BuildError> validationError =
             relationBuilder.validatePin(correlationId, found.relation(), liveCtx);
-        buildPlans.add(new BuildPlan(found, i, validationError, scopedIdentity));
+        buildPlans.add(new BuildPlan(found, i, validationError, payloadIdentity));
         buildIndexByKey.put(cacheKey, buildPlans.size() - 1);
       }
 
@@ -1172,13 +1174,13 @@ public class UserObjectBundleService {
         LOG.debugf(
             "Resolved chunk query_id=%s seq=%d items=%d found=%d not_found=%d error=%d",
             ctx.getQueryId(),
-            stream.seq(),
+            framer.seq(),
             resolutions.size(),
             chunkFound,
             chunkNotFound,
             chunkError);
       }
-      stream.offer(resolutions);
+      framer.offer(resolutions);
     }
 
     // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
@@ -1186,13 +1188,13 @@ public class UserObjectBundleService {
     // timings are attached as one summary event on the GetUserObjects RPC span (the single tally's
     // flushInto), so Jaeger stays readable for small catalog lookups.
     private void publishStreamTelemetry(String outcome) {
-      if (!telemetryGate.claim()) {
+      if (!telemetryState.claim()) {
         return;
       }
       publishClaimedStreamTelemetry(outcome);
     }
 
-    /** Publish after the telemetry gate has atomically selected this terminal outcome. */
+    /** Publish after telemetry state has atomically selected this terminal outcome. */
     private void publishClaimedStreamTelemetry(String outcome) {
       long totalNanos = System.nanoTime() - streamStartNs;
       long schedulingNanos = timings.schedulingNanos(totalNanos);
@@ -1209,8 +1211,8 @@ public class UserObjectBundleService {
               totalMs,
               pinMs,
               schedulingMs,
-              resolutionCache.nameEntries(),
-              resolutionCache.nodeEntries(),
+              resolutionMemo.nameEntries(),
+              resolutionMemo.nodeEntries(),
               relationInfoCache.size(),
               safe(outcome)));
       updateParentSpanSummary(outcome, totalMs);

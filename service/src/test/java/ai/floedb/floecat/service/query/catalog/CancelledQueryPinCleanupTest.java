@@ -43,21 +43,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-class CancellationRootReleaserTest {
+class CancelledQueryPinCleanupTest {
 
   @Test
   void emptyPinSetDoesNotDispatchCleanup() {
     QueryContextStore queryStore = mock(QueryContextStore.class);
     AtomicInteger dispatches = new AtomicInteger();
-    CancellationRootReleaser releaser =
-        new CancellationRootReleaser(
+    CancelledQueryPinCleanup cleanup =
+        new CancelledQueryPinCleanup(
             queryStore,
             task -> {
               dispatches.incrementAndGet();
               task.run();
             });
 
-    releaser.release("query", RelationPinSet.getDefaultInstance());
+    cleanup.release("query", RelationPinSet.getDefaultInstance());
 
     assertThat(dispatches).hasValue(0);
     verifyNoInteractions(queryStore);
@@ -69,8 +69,8 @@ class CancellationRootReleaserTest {
     RelationPinSet pins = pins();
     AtomicInteger attempts = new AtomicInteger();
     AtomicBoolean accepting = new AtomicBoolean();
-    CancellationRootReleaser releaser =
-        new CancellationRootReleaser(
+    CancelledQueryPinCleanup cleanup =
+        new CancelledQueryPinCleanup(
             queryStore,
             cleanup -> {
               attempts.incrementAndGet();
@@ -80,13 +80,13 @@ class CancellationRootReleaserTest {
               cleanup.run();
             });
 
-    releaser.release("query", pins);
+    cleanup.release("query", pins);
 
     verifyNoInteractions(queryStore);
     assertThat(attempts).hasValue(1);
 
     accepting.set(true);
-    releaser.retryPending();
+    cleanup.retryPending();
 
     verify(queryStore).releaseResolvingPinBlobs("query", roots());
     assertThat(attempts).hasValue(2);
@@ -97,11 +97,11 @@ class CancellationRootReleaserTest {
     QueryContextStore queryStore = mock(QueryContextStore.class);
     RelationPinSet pins = pins();
     List<Runnable> drainers = new ArrayList<>();
-    CancellationRootReleaser releaser = new CancellationRootReleaser(queryStore, drainers::add);
+    CancelledQueryPinCleanup cleanup = new CancelledQueryPinCleanup(queryStore, drainers::add);
 
-    int cancellations = CancellationRootReleaser.MAX_RETAINED_RELEASES + 44;
+    int cancellations = CancelledQueryPinCleanup.MAX_RETAINED_RELEASES + 44;
     for (int cancellation = 0; cancellation < cancellations; cancellation++) {
-      releaser.release("query", pins);
+      cleanup.release("query", pins);
     }
 
     List<String> roots = roots();
@@ -116,19 +116,19 @@ class CancellationRootReleaserTest {
   void shutdownDrainsRetainedRootsAndRejectsUseAfterClose() {
     QueryContextStore queryStore = mock(QueryContextStore.class);
     RelationPinSet pins = pins();
-    CancellationRootReleaser releaser =
-        new CancellationRootReleaser(
+    CancelledQueryPinCleanup cleanup =
+        new CancelledQueryPinCleanup(
             queryStore,
             ignored -> {
               throw new RejectedExecutionException("stopping");
             });
 
-    releaser.release("before-shutdown", pins);
-    releaser.drainOnShutdown();
+    cleanup.release("before-shutdown", pins);
+    cleanup.drainOnShutdown();
 
     List<String> roots = roots();
     verify(queryStore).releaseResolvingPinBlobs("before-shutdown", roots);
-    assertThatThrownBy(() -> releaser.release("after-shutdown", pins))
+    assertThatThrownBy(() -> cleanup.release("after-shutdown", pins))
         .isInstanceOf(IllegalStateException.class);
   }
 
@@ -156,15 +156,15 @@ class CancellationRootReleaserTest {
         .releaseResolvingPinBlobs(any(), any());
 
     try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
-      CancellationRootReleaser releaser = new CancellationRootReleaser(queryStore, executor);
-      releaser.release("claimed", pins);
+      CancelledQueryPinCleanup cleanup = new CancelledQueryPinCleanup(queryStore, executor);
+      cleanup.release("claimed", pins);
       assertThat(claimedStarted.await(5, TimeUnit.SECONDS)).isTrue();
 
-      CompletableFuture<Void> shutdown = CompletableFuture.runAsync(releaser::drainOnShutdown);
+      CompletableFuture<Void> shutdown = CompletableFuture.runAsync(cleanup::drainOnShutdown);
       assertFutureIncomplete(shutdown);
 
       CompletableFuture<Void> inline =
-          CompletableFuture.runAsync(() -> releaser.release("inline", pins));
+          CompletableFuture.runAsync(() -> cleanup.release("inline", pins));
       assertThat(inlineStarted.await(5, TimeUnit.SECONDS)).isTrue();
 
       allowClaimed.countDown();
@@ -191,7 +191,7 @@ class CancellationRootReleaserTest {
     return List.of("s3://table/table.pb", "s3://table/snap-7.pb");
   }
 
-  /** Assert that an ownership barrier does not complete while a release remains blocked. */
+  /** Assert that cleanup does not complete while a release remains blocked. */
   private static void assertFutureIncomplete(CompletableFuture<Void> future) {
     assertThatThrownBy(() -> future.get(200, TimeUnit.MILLISECONDS))
         .isInstanceOf(TimeoutException.class);

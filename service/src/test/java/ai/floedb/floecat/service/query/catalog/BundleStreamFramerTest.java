@@ -26,7 +26,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** Direct tests for the GetUserObjects wire-protocol framer. */
-class BundleChunkStreamTest {
+class BundleStreamFramerTest {
 
   private static final int MAX = 25;
 
@@ -40,38 +40,38 @@ class BundleChunkStreamTest {
 
   @Test
   void rejectsNonPositiveResolutionChunkLimits() {
-    assertThatThrownBy(() -> new BundleChunkStream("q-1", 0))
+    assertThatThrownBy(() -> new BundleStreamFramer("q-1", 0))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("maxResolutionsPerChunk must be positive");
-    assertThatThrownBy(() -> new BundleChunkStream("q-1", -1))
+    assertThatThrownBy(() -> new BundleStreamFramer("q-1", -1))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("maxResolutionsPerChunk must be positive");
   }
 
   @Test
   void headerIsFirstAndCarriesSeqOne() {
-    BundleChunkStream stream = new BundleChunkStream("q-1", MAX);
-    assertThat(stream.headerPending()).isTrue();
-    assertThat(stream.isOpen()).isTrue();
+    BundleStreamFramer framer = new BundleStreamFramer("q-1", MAX);
+    assertThat(framer.headerPending()).isTrue();
+    assertThat(framer.isOpen()).isTrue();
 
-    UserObjectsBundleChunk header = stream.header();
+    UserObjectsBundleChunk header = framer.header();
     assertThat(header.hasHeader()).isTrue();
     assertThat(header.getQueryId()).isEqualTo("q-1");
     assertThat(header.getSeq()).isEqualTo(1);
-    assertThat(stream.headerPending()).isFalse();
+    assertThat(framer.headerPending()).isFalse();
   }
 
   @Test
   void slicesBufferedResolutionsIntoMaxSizedChunksInOrderWithMonotonicSeq() {
-    BundleChunkStream stream = new BundleChunkStream("q-1", MAX);
-    stream.header(); // seq 1
-    stream.offer(resolutions(0, 60));
+    BundleStreamFramer framer = new BundleStreamFramer("q-1", MAX);
+    framer.header(); // seq 1
+    framer.offer(resolutions(0, 60));
 
     List<Integer> chunkSizes = new ArrayList<>();
     List<Long> seqs = new ArrayList<>();
     int expectedIndex = 0;
-    while (stream.hasBufferedResolutions()) {
-      UserObjectsBundleChunk c = stream.nextResolutionChunk();
+    while (framer.hasBufferedResolutions()) {
+      UserObjectsBundleChunk c = framer.nextResolutionChunk();
       assertThat(c.hasResolutions()).isTrue();
       chunkSizes.add(c.getResolutions().getItemsCount());
       seqs.add(c.getSeq());
@@ -86,47 +86,47 @@ class BundleChunkStreamTest {
 
   @Test
   void buffersRemainderAcrossOffers() {
-    BundleChunkStream stream = new BundleChunkStream("q-1", MAX);
-    stream.header();
-    stream.offer(resolutions(0, 10));
-    stream.offer(resolutions(10, 20)); // 30 buffered total
+    BundleStreamFramer framer = new BundleStreamFramer("q-1", MAX);
+    framer.header();
+    framer.offer(resolutions(0, 10));
+    framer.offer(resolutions(10, 20)); // 30 buffered total
 
-    UserObjectsBundleChunk first = stream.nextResolutionChunk();
+    UserObjectsBundleChunk first = framer.nextResolutionChunk();
     assertThat(first.getResolutions().getItemsCount()).isEqualTo(25);
-    assertThat(stream.hasBufferedResolutions()).isTrue();
+    assertThat(framer.hasBufferedResolutions()).isTrue();
 
-    UserObjectsBundleChunk second = stream.nextResolutionChunk();
+    UserObjectsBundleChunk second = framer.nextResolutionChunk();
     assertThat(second.getResolutions().getItemsCount()).isEqualTo(5);
-    assertThat(stream.hasBufferedResolutions()).isFalse();
+    assertThat(framer.hasBufferedResolutions()).isFalse();
   }
 
   @Test
   void endIsEmittedOnceWithCountsAndClosesTheStream() {
-    BundleChunkStream stream = new BundleChunkStream("q-1", MAX);
-    stream.header();
-    stream.offer(resolutions(0, 3));
-    stream.nextResolutionChunk(); // seq 2
+    BundleStreamFramer framer = new BundleStreamFramer("q-1", MAX);
+    framer.header();
+    framer.offer(resolutions(0, 3));
+    framer.nextResolutionChunk(); // seq 2
 
-    UserObjectsBundleChunk end = stream.end(3, 2, 1);
+    UserObjectsBundleChunk end = framer.end(3, 2, 1);
     assertThat(end.hasEnd()).isTrue();
     assertThat(end.getSeq()).isEqualTo(3);
     assertThat(end.getEnd().getResolutionCount()).isEqualTo(3);
     assertThat(end.getEnd().getFoundCount()).isEqualTo(2);
     assertThat(end.getEnd().getNotFoundCount()).isEqualTo(1);
-    assertThat(stream.isOpen()).isFalse();
+    assertThat(framer.isOpen()).isFalse();
   }
 
   @Test
   void emptyStreamIsHeaderThenEndOnly() {
-    BundleChunkStream stream = new BundleChunkStream("q-1", MAX);
-    UserObjectsBundleChunk header = stream.header();
+    BundleStreamFramer framer = new BundleStreamFramer("q-1", MAX);
+    UserObjectsBundleChunk header = framer.header();
     assertThat(header.hasHeader()).isTrue();
-    assertThat(stream.hasBufferedResolutions()).isFalse();
+    assertThat(framer.hasBufferedResolutions()).isFalse();
 
-    UserObjectsBundleChunk end = stream.end(0, 0, 0);
+    UserObjectsBundleChunk end = framer.end(0, 0, 0);
     assertThat(end.hasEnd()).isTrue();
     assertThat(end.getSeq()).isEqualTo(2);
     assertThat(end.getEnd().getResolutionCount()).isZero();
-    assertThat(stream.isOpen()).isFalse();
+    assertThat(framer.isOpen()).isFalse();
   }
 }

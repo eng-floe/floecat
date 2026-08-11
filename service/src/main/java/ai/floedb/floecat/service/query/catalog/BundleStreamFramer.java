@@ -35,12 +35,12 @@ import java.util.List;
  * {@link #offer}; the framer only frames the sequence it is given — it never reorders. It owns the
  * protocol invariants (header once and first, end once and last, monotonic seq, chunk-size cap) so
  * the iterator driving it does not track any of them. It knows nothing of pins, stats, building, or
- * telemetry; the driver decides the batch boundary (which governs the pin/stats/build barrier) and
- * passes the final counts to {@link #end}.
+ * telemetry; the driver decides the batch boundary (which governs the pin commit and stats/build
+ * work) and passes the final counts to {@link #end}.
  *
  * <p>Not thread-safe: one stream drives one request from a single iterator.
  */
-final class BundleChunkStream {
+final class BundleStreamFramer {
 
   private final String queryId;
   private final int maxResolutionsPerChunk;
@@ -49,7 +49,7 @@ final class BundleChunkStream {
   private boolean headerEmitted = false;
   private boolean endEmitted = false;
 
-  BundleChunkStream(String queryId, int maxResolutionsPerChunk) {
+  BundleStreamFramer(String queryId, int maxResolutionsPerChunk) {
     if (maxResolutionsPerChunk < 1) {
       throw new IllegalArgumentException("maxResolutionsPerChunk must be positive");
     }

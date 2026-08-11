@@ -344,7 +344,7 @@ class UserObjectBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    // First resolution: full payload, and the identity to prove possession of.
+    // First resolution: full payload, and the identity proving the client has it.
     RelationInfo full =
         service.stream("cid", ctx, List.of(candidate))
             .collect()
@@ -359,7 +359,7 @@ class UserObjectBundleServiceTest {
     String version = full.getPinIdentity().getTableBlobVersion();
     assertThat(version).isNotEmpty();
 
-    // Proving possession omits the payload: identity returns, columns do not.
+    // Proving the client has the payload omits the payload: identity returns, columns do not.
     RelationInfo slim =
         service.stream("cid", ctx, List.of(candidate), Set.of(version))
             .collect()
@@ -377,11 +377,11 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void snapshotSchemaChangeMovesThePossessionToken() {
+  void snapshotSchemaChangeMovesThePayloadToken() {
     // Same table, same definition ref (blobBackedPin fixes table_blob_version), but two different
     // pinned snapshots (etag-s123 vs etag-s456): the shape of a CreateSnapshot/UpdateSnapshot that
     // changes the read schema (schema-on-read from the snapshot) without moving the definition ref.
-    // The possession token must move with the snapshot, or a client holding the old snapshot's
+    // The payload token must move with the snapshot, or a client holding the old snapshot's
     // token would be served identity-only for the new schema and reuse stale columns/types.
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -397,13 +397,13 @@ class UserObjectBundleServiceTest {
     RelationInfo full456 = firstRelation(ctx456, candidate, Set.of());
     assertThat(full456.getColumnsCount()).isPositive();
     assertThat(full456.getPinIdentity().getTableBlobVersion())
-        .as("a new snapshot (new read schema, same definition ref) must move the possession token")
+        .as("a new snapshot (new read schema, same definition ref) must move the payload token")
         .isNotEqualTo(token123);
 
     // Advertising the OLD snapshot's token under the new pin must NOT be honored identity-only.
     RelationInfo underStaleToken = firstRelation(ctx456, candidate, Set.of(token123));
     assertThat(underStaleToken.getColumnsCount())
-        .as("a stale possession token must not gate an identity-only reply for the new schema")
+        .as("a stale payload token must not allow an identity-only reply for the new schema")
         .isPositive();
   }
 
@@ -435,9 +435,9 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void dataOnlyIngestKeepsThePossessionTokenAndSchemaWarm() {
+  void dataOnlyIngestKeepsThePayloadTokenAndSchemaWarm() {
     // Two pins at DIFFERENT snapshots (an ingest moved the snapshot) whose manifest entries carry
-    // the SAME read-schema fingerprint: the served schema is unchanged, so the possession token
+    // the SAME read-schema fingerprint: the served schema is unchanged, so the payload token
     // must be stable — this is what keeps a hot-ingest table's schema warm across ingests.
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -453,10 +453,10 @@ class UserObjectBundleServiceTest {
     queryStore.seed(ctx2);
     RelationInfo warm = firstRelation(ctx2, candidate, Set.of(token1));
     assertThat(warm.getPinIdentity().getTableBlobVersion())
-        .as("a data-only ingest (same read schema) keeps the possession token stable")
+        .as("a data-only ingest (same read schema) keeps the payload token stable")
         .isEqualTo(token1);
     assertThat(warm.getColumnsCount())
-        .as("the client's proof of possession is honored identity-only across the ingest")
+        .as("the client's payload proof is honored identity-only across the ingest")
         .isZero();
     assertThat(warm.getPinIdentity().getSnapshotId())
         .as("the slim reply still carries the NEW pin's data identity")
@@ -486,7 +486,7 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void identityOnlyPossessionIsScopedToTheRequestingEngine() {
+  void identityOnlyPayloadReuseIsScopedToTheRequestingEngine() {
     // With engine-specific decoration in play the withheld columns are engine-keyed, so a version
     // proved under one engine must NOT be honored identity-only under another — otherwise a client
     // sharing one cache across engines would reuse engine-A decoration for an engine-B query.
@@ -514,7 +514,7 @@ class UserObjectBundleServiceTest {
     EngineContext engineA = EngineContext.of("pg", "16.0");
     EngineContext engineB = EngineContext.of("pg", "17.0");
 
-    // Full payload under engine A; capture the possession token it mints.
+    // Full payload under engine A; capture the payload token it mints.
     RelationInfo fullA = firstRelationUnderEngine(decorated, candidate, Set.of(), engineA);
     String tokenA = fullA.getPinIdentity().getTableBlobVersion();
     assertThat(fullA.getColumnsCount()).isPositive();
@@ -557,7 +557,7 @@ class UserObjectBundleServiceTest {
   @Test
   void failedColumnDecorationIsNotStampedAsCacheable() {
     // A full payload whose columns FAILED decoration (engine payload missing) is incomplete, so it
-    // must not carry the possession token — otherwise a client caches it, is served identity-only
+    // must not carry the payload token — otherwise a client caches it, is served identity-only
     // later, and reuses the incomplete payload, locking in a transient failure instead of
     // re-fetching until decoration succeeds.
     EngineMetadataDecoratorProvider missingPayload =
@@ -584,7 +584,7 @@ class UserObjectBundleServiceTest {
     RelationInfo failed = firstRelationUnderEngine(failing, candidate, Set.of(), engine);
     assertThat(failed.getColumnsList())
         .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED);
-    // The data identity survives; only the possession token is withheld, so the incomplete payload
+    // The data identity survives; only the payload token is withheld, so the incomplete payload
     // is never cacheable while provenance is still reported.
     assertThat(failed.hasPinIdentity()).isTrue();
     assertThat(failed.getPinIdentity().getPinFingerprint()).isNotEmpty();
@@ -610,12 +610,12 @@ class UserObjectBundleServiceTest {
     assertThat(ok.getColumnsList()).allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK);
     assertThat(ok.hasPinIdentity()).isTrue();
     assertThat(ok.getPinIdentity().getTableBlobVersion())
-        .as("a fully-decorated full payload carries the possession token")
+        .as("a fully-decorated full payload carries the payload token")
         .isNotEmpty();
   }
 
   @Test
-  void projectedResponsePreservesIdentityButBlanksThePossessionToken() {
+  void projectedResponsePreservesIdentityButBlanksThePayloadToken() {
     // A two-column table so a single-column projection is a genuine strict subset.
     overlay.registerTable(
         TABLE_A,
@@ -668,7 +668,7 @@ class UserObjectBundleServiceTest {
         .as("the pin identity (data provenance) is preserved on a projected relation")
         .isTrue();
     assertThat(projRel.getPinIdentity().getPinFingerprint()).isNotEmpty();
-    // Only the possession token is payload-scoped: blanked, so a projected (partial) payload can
+    // Only the payload token is payload-scoped: blanked, so a projected (partial) payload can
     // never advertise "I hold every column".
     assertThat(projRel.getPinIdentity().getTableBlobVersion())
         .as("a projected payload is not cacheable as the full-schema version")
@@ -1325,36 +1325,39 @@ class UserObjectBundleServiceTest {
 
   @Test
   void terminalFailureClaimWinsBeforeProducerBecomesIdle() {
-    var gate = new StreamTelemetryGate();
+    var telemetryState = new StreamTelemetryState();
     AtomicBoolean cancelled = new AtomicBoolean();
-    gate.begin(() -> false);
+    telemetryState.begin(() -> false);
 
-    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
-    assertThat(gate.finish(StreamTelemetryGate.Publication.FAILURE))
-        .isEqualTo(StreamTelemetryGate.Publication.FAILURE);
+    assertThat(telemetryState.cancel(cancelled))
+        .isEqualTo(StreamTelemetryState.CancellationDecision.ACCEPTED);
+    assertThat(telemetryState.finish(StreamTelemetryState.Publication.FAILURE))
+        .isEqualTo(StreamTelemetryState.Publication.FAILURE);
   }
 
   @Test
   void cancellationClaimWinsWhenItRacesFinalCompletion() {
-    var gate = new StreamTelemetryGate();
+    var telemetryState = new StreamTelemetryState();
     AtomicBoolean cancelled = new AtomicBoolean();
-    gate.begin(() -> false);
+    telemetryState.begin(() -> false);
 
-    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(telemetryState.cancel(cancelled))
+        .isEqualTo(StreamTelemetryState.CancellationDecision.ACCEPTED);
     assertThat(cancelled).isTrue();
-    assertThat(gate.finish(StreamTelemetryGate.Publication.COMPLETION))
-        .isEqualTo(StreamTelemetryGate.Publication.CANCELLATION);
+    assertThat(telemetryState.finish(StreamTelemetryState.Publication.COMPLETION))
+        .isEqualTo(StreamTelemetryState.Publication.CANCELLATION);
   }
 
   @Test
   void completionClaimWinsWhenTheProducerFinishesBeforeCancellation() {
-    var gate = new StreamTelemetryGate();
+    var telemetryState = new StreamTelemetryState();
     AtomicBoolean cancelled = new AtomicBoolean();
-    gate.begin(() -> false);
+    telemetryState.begin(() -> false);
 
-    assertThat(gate.finish(StreamTelemetryGate.Publication.COMPLETION))
-        .isEqualTo(StreamTelemetryGate.Publication.COMPLETION);
-    assertThat(gate.cancel(cancelled)).isEqualTo(StreamTelemetryGate.CancellationDecision.ACCEPTED);
+    assertThat(telemetryState.finish(StreamTelemetryState.Publication.COMPLETION))
+        .isEqualTo(StreamTelemetryState.Publication.COMPLETION);
+    assertThat(telemetryState.cancel(cancelled))
+        .isEqualTo(StreamTelemetryState.CancellationDecision.ACCEPTED);
   }
 
   @Test
@@ -1472,7 +1475,7 @@ class UserObjectBundleServiceTest {
             concurrentOverlay,
             resolver,
             queryStore,
-            new CancellationRootReleaser(queryStore, Runnable::run),
+            new CancelledQueryPinCleanup(queryStore, Runnable::run),
             statsFactory,
             decoratorProvider,
             engineContextProvider,

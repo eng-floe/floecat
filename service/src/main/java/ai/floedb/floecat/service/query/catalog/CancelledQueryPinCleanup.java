@@ -38,15 +38,16 @@ import org.eclipse.microprofile.context.ThreadContext;
 import org.jboss.logging.Logger;
 
 /**
- * Releases cancelled streams' transient pin roots away from transport threads. Cancellation
- * callbacks coalesce work by query while at most four container-owned drainers perform cleanup and
- * at most 256 releases await a drainer. At that retained-work ceiling, synchronous cleanup is the
- * bounded fail-safe that preserves root ownership without allocating more teardown state. Request
- * context is cleared because cleanup needs only the explicit query id and pin set.
+ * Releases cancelled streams' transient pin roots (GC protections for referenced blobs) away from
+ * transport threads. Cancellation callbacks coalesce work by query while at most four
+ * container-owned drainers perform cleanup and at most 256 releases await a drainer. At that
+ * retained-work ceiling, synchronous cleanup is the bounded fail-safe that preserves root ownership
+ * without allocating more teardown state. Request context is cleared because cleanup needs only the
+ * explicit query id and pin set.
  */
 @ApplicationScoped
-final class CancellationRootReleaser {
-  private static final Logger LOG = Logger.getLogger(CancellationRootReleaser.class);
+final class CancelledQueryPinCleanup {
+  private static final Logger LOG = Logger.getLogger(CancelledQueryPinCleanup.class);
   private static final int MAX_CONCURRENT_RELEASES = 4;
   static final int MAX_RETAINED_RELEASES = 256;
 
@@ -62,9 +63,9 @@ final class CancellationRootReleaser {
   private boolean closed;
 
   @Inject
-  CancellationRootReleaser(
+  CancelledQueryPinCleanup(
       QueryContextStore queryStore,
-      @NamedInstance("bundle-cancellation-root-release")
+      @NamedInstance("bundle-cancelled-query-pin-cleanup")
           @ManagedExecutorConfig(
               maxAsync = MAX_CONCURRENT_RELEASES,
               maxQueued = MAX_CONCURRENT_RELEASES,
@@ -75,7 +76,7 @@ final class CancellationRootReleaser {
     this.executor = executor;
   }
 
-  CancellationRootReleaser(QueryContextStore queryStore, Executor executor) {
+  CancelledQueryPinCleanup(QueryContextStore queryStore, Executor executor) {
     this.queryStore = queryStore;
     this.executor = executor;
   }
@@ -94,7 +95,7 @@ final class CancellationRootReleaser {
     }
     synchronized (lifecycleHandoff) {
       if (closed) {
-        throw new IllegalStateException("Cancellation root releaser is closed");
+        throw new IllegalStateException("Cancelled-query pin cleanup is closed");
       }
       releaseCallsInFlight++;
     }

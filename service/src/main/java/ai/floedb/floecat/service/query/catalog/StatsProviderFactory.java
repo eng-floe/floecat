@@ -65,7 +65,7 @@ public final class StatsProviderFactory {
   private final boolean syncEnabled;
   // One setting supplies both the per-query fan-out width and the process-wide warm ceiling.
   private final int maxParallelStatsWarms;
-  private final StatsWarmAdmission statsWarmAdmission;
+  private final StatsWarmLimiter statsWarmLimiter;
 
   @Inject
   public StatsProviderFactory(
@@ -74,7 +74,7 @@ public final class StatsProviderFactory {
       QueryContextStore queryStore,
       SnapshotRepository snapshotRepository,
       StatsProviderFactoryConfig config,
-      StatsWarmAdmission statsWarmAdmission) {
+      StatsWarmLimiter statsWarmLimiter) {
     this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
     this.queryStore = queryStore;
@@ -82,8 +82,8 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
-    this.statsWarmAdmission = statsWarmAdmission;
-    this.maxParallelStatsWarms = statsWarmAdmission.capacity();
+    this.statsWarmLimiter = statsWarmLimiter;
+    this.maxParallelStatsWarms = statsWarmLimiter.capacity();
   }
 
   StatsProviderFactory(
@@ -98,7 +98,7 @@ public final class StatsProviderFactory {
         queryStore,
         snapshotRepository,
         config,
-        new StatsWarmAdmission());
+        new StatsWarmLimiter());
   }
 
   public StatsProviderFactory(
@@ -120,7 +120,7 @@ public final class StatsProviderFactory {
         syncLatencyBudget,
         syncEnabled,
         maxParallelStatsWarms,
-        statsWarmAdmission);
+        statsWarmLimiter);
   }
 
   public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
@@ -135,7 +135,7 @@ public final class StatsProviderFactory {
         syncLatencyBudget,
         syncEnabled,
         maxParallelStatsWarms,
-        statsWarmAdmission);
+        statsWarmLimiter);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -143,9 +143,9 @@ public final class StatsProviderFactory {
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
-    // Per-request fan-out stays fair while StatsWarmAdmission caps all providers together.
+    // Per-request fan-out stays fair while StatsWarmLimiter caps all providers together.
     private final MetadataFanout statsFanout;
-    private final StatsWarmAdmission statsWarmAdmission;
+    private final StatsWarmLimiter statsWarmLimiter;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -171,7 +171,7 @@ public final class StatsProviderFactory {
         Duration syncLatencyBudget,
         boolean syncEnabled,
         int maxParallelStatsWarms,
-        StatsWarmAdmission statsWarmAdmission) {
+        StatsWarmLimiter statsWarmLimiter) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.snapshotRepository = snapshotRepository;
@@ -179,7 +179,7 @@ public final class StatsProviderFactory {
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
       this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
-      this.statsWarmAdmission = statsWarmAdmission;
+      this.statsWarmLimiter = statsWarmLimiter;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -224,7 +224,7 @@ public final class StatsProviderFactory {
               ids,
               id -> {
                 try {
-                  return statsWarmAdmission.call(cancelled, () -> tableStats(id));
+                  return statsWarmLimiter.call(cancelled, () -> tableStats(id));
                 } catch (java.util.concurrent.CancellationException e) {
                   throw e;
                 } catch (RuntimeException e) {

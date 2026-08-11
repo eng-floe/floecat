@@ -51,14 +51,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Direct tests of {@link ChunkPinBarrier}: the collect→commit pin-durability transaction the {@link
- * UserObjectBundleService} conductor drives per chunk. {@code accumulate} folds the resolver's pins
- * into the pending set; {@code commit} writes them durably to the QueryContext exactly once and, on
- * any failure arm, releases the transient GC roots the resolver registered at resolution. Uses the
- * shared {@link TestQueryInputResolver} + {@link TestQueryContextStore} fakes over a real {@link
- * TimingAccumulator}.
+ * Direct tests of {@link QueryPinCommitter}: the collect→commit pin-durability transaction the
+ * {@link UserObjectBundleService} conductor drives per chunk. {@code accumulate} folds the
+ * resolver's pins into the pending set; {@code commit} writes them durably to the QueryContext
+ * exactly once and, on any failure arm, releases the transient GC roots the resolver registered at
+ * resolution. Uses the shared {@link TestQueryInputResolver} + {@link TestQueryContextStore} fakes
+ * over a real {@link TimingAccumulator}.
  */
-class ChunkPinBarrierTest {
+class QueryPinCommitterTest {
 
   private static final String QID = "q-1";
   private static final String CID = "cid";
@@ -108,29 +108,29 @@ class ChunkPinBarrierTest {
   @Test
   void accumulateGrowsPendingPinCountAcrossRelations() {
     TestQueryContextStore store = seededStore();
-    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
 
-    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(committer.pendingPinCount()).isZero();
 
-    barrier.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
+    committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
     // The fake resolver mints one pin per TABLE_ID input.
-    assertThat(barrier.pendingPinCount()).isEqualTo(2);
+    assertThat(committer.pendingPinCount()).isEqualTo(2);
 
-    barrier.accumulate(List.of(resolved(TABLE_C)), PhaseDiagnostics.NOOP);
-    assertThat(barrier.pendingPinCount()).isEqualTo(3);
+    committer.accumulate(List.of(resolved(TABLE_C)), PhaseDiagnostics.NOOP);
+    assertThat(committer.pendingPinCount()).isEqualTo(3);
   }
 
   @Test
   void commitWritesToQueryContextExactlyOnceAndIsDurable() {
     TestQueryContextStore store = seededStore();
-    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
 
-    barrier.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
-    barrier.commit();
+    committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
+    committer.commit();
 
     // One durable write; the pending set is drained.
     assertThat(store.updateCount()).isEqualTo(1);
-    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(committer.pendingPinCount()).isZero();
 
     // The pins are durable on the stored context.
     QueryContext durable = store.get(QID).orElseThrow();
@@ -138,7 +138,7 @@ class ChunkPinBarrierTest {
     assertThat(persisted.getPinsCount()).isEqualTo(2);
 
     // A second commit with nothing pending does no further work.
-    barrier.commit();
+    committer.commit();
     assertThat(store.updateCount()).isEqualTo(1);
   }
 
@@ -147,11 +147,11 @@ class ChunkPinBarrierTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
-    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
 
-    barrier.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
+    committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
 
-    assertThatThrownBy(barrier::commit).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(committer::commit).isInstanceOf(IllegalStateException.class);
     // The transient GC roots registered at resolution are released on the failure arm.
     assertThat(store.releasedQueryIds()).containsExactly(QID);
     assertThat(store.releasedBlobUris()).isNotEmpty();
@@ -161,16 +161,16 @@ class ChunkPinBarrierTest {
   void cancellationBeforeCommitReleasesPendingRootsWithoutUpdatingContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
     AtomicBoolean cancelled = new AtomicBoolean();
 
-    barrier.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
+    committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
     cancelled.set(true);
 
-    assertThatThrownBy(() -> barrier.commit(cancelled::get))
+    assertThatThrownBy(() -> committer.commit(cancelled::get))
         .isInstanceOf(CancellationException.class);
     assertThat(store.updateCount()).isZero();
-    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(committer.pendingPinCount()).isZero();
     assertThat(store.releasedQueryIds()).containsExactly(QID);
     assertThat(store.releasedBlobUris()).isNotEmpty();
   }
@@ -179,18 +179,18 @@ class ChunkPinBarrierTest {
   void accumulateMergeFailureReleasesPriorAndIncomingPinBlobs() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    ChunkPinBarrier barrier =
-        new ChunkPinBarrier(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
 
-    barrier.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
+    committer.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
 
     assertThatThrownBy(
             () ->
-                barrier.accumulate(
+                committer.accumulate(
                     List.of(resolved(TABLE_A, selected(TABLE_A, 2L))), PhaseDiagnostics.NOOP))
         .isInstanceOf(RuntimeException.class);
 
-    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(committer.pendingPinCount()).isZero();
     assertThat(store.releasedQueryIds()).containsExactly(QID);
     assertThat(store.releasedBlobUris())
         .contains("s3://TABLE_A/snap-1.pb", "s3://TABLE_A/snap-2.pb");
@@ -200,12 +200,12 @@ class ChunkPinBarrierTest {
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
 
-    barrier.accumulate(List.of(), PhaseDiagnostics.NOOP);
-    assertThat(barrier.pendingPinCount()).isZero();
+    committer.accumulate(List.of(), PhaseDiagnostics.NOOP);
+    assertThat(committer.pendingPinCount()).isZero();
 
-    barrier.commit();
+    committer.commit();
     assertThat(store.updateCount()).isZero();
     assertThat(store.releasedQueryIds()).isEmpty();
   }

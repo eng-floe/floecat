@@ -27,7 +27,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinCache;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,9 +50,9 @@ import org.jboss.logging.Logger;
  * turns the QueryContext into a durable root, and every failure arm releases those transient roots
  * so a failed transaction cannot pin blobs forever.
  */
-final class ChunkPinBarrier {
+final class QueryPinCommitter {
 
-  private static final Logger LOG = Logger.getLogger(ChunkPinBarrier.class);
+  private static final Logger LOG = Logger.getLogger(QueryPinCommitter.class);
 
   private final QueryInputResolver inputResolver;
   private final QueryContextStore queryStore;
@@ -62,13 +62,13 @@ final class ChunkPinBarrier {
 
   // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
   // snapshot for the life of the request.
-  private final SnapshotPinCache snapshotPinCache = new SnapshotPinCache();
+  private final SnapshotPinMemo snapshotPinMemo = new SnapshotPinMemo();
   private final Object pendingPinsLock = new Object();
 
   // Pins gathered but not yet made durable; folded across chunks, drained by commit().
   private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
-  ChunkPinBarrier(
+  QueryPinCommitter(
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       QueryContext ctx,
@@ -106,7 +106,8 @@ final class ChunkPinBarrier {
       long accumulateStartNs = System.nanoTime();
       boolean accumulated;
       try {
-        // From this point the barrier owns the incoming roots on every outcome: a successful merge
+        // From this point the committer owns the incoming roots on every outcome: a successful
+        // merge
         // keeps them pending, cancellation releases them, and a failed merge releases them together
         // with the previously pending roots in one store call.
         handedOff = true;
@@ -191,7 +192,7 @@ final class ChunkPinBarrier {
             inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
-            snapshotPinCache,
+            snapshotPinMemo,
             diagnostics,
             cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);

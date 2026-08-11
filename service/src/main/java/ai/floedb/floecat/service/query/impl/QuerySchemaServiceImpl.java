@@ -119,7 +119,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                     request.getInputsList(),
                                     asOfDefault,
                                     Optional.of(ctx.getQueryDefaultCatalogId()),
-                                    new QueryInputResolver.SnapshotPinCache(),
+                                    new QueryInputResolver.SnapshotPinMemo(),
                                     diagnostics));
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 
