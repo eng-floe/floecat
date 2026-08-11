@@ -42,7 +42,6 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -54,7 +53,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.BooleanSupplier;
@@ -80,8 +78,10 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
     private final Set<String> schemaFailures = new HashSet<>();
+    private final Set<String> nullSchemas = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
     private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
+    private final Map<ResourceId, Integer> tableSchemaCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -90,8 +90,10 @@ public final class UserObjectBundleTestSupport {
       catalogs.clear();
       hidden.clear();
       schemaFailures.clear();
+      nullSchemas.clear();
       resolveCalls.clear();
       resolveNameCalls.clear();
+      tableSchemaCalls.clear();
     }
 
     /**
@@ -99,6 +101,11 @@ public final class UserObjectBundleTestSupport {
      */
     public void failSchemaFor(ResourceId id) {
       schemaFailures.add(id.getId());
+    }
+
+    /** Make {@link #tableSchema(ResourceId)} return null for this relation. */
+    public void returnNullSchemaFor(ResourceId id) {
+      nullSchemas.add(id.getId());
     }
 
     public void registerTable(
@@ -138,6 +145,11 @@ public final class UserObjectBundleTestSupport {
               Optional.empty(),
               Map.of());
       catalogs.put(id.getId(), node);
+      nodes.put(id.getId(), node);
+    }
+
+    public void registerNode(GraphNode node) {
+      nodes.put(node.id().getId(), node);
     }
 
     public void hideNode(ResourceId id) {
@@ -227,6 +239,11 @@ public final class UserObjectBundleTestSupport {
     /** How many times {@link #resolveName} ran for the exact ref (batch loop included). */
     public int resolveNameCount(NameRef ref) {
       return resolveNameCalls.getOrDefault(ref, 0);
+    }
+
+    /** How many times {@link #tableSchema(ResourceId)} ran for this relation. */
+    public int tableSchemaCount(ResourceId id) {
+      return tableSchemaCalls.getOrDefault(id, 0);
     }
 
     @Override
@@ -335,8 +352,12 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(ResourceId tableId) {
+      tableSchemaCalls.merge(tableId, 1, Integer::sum);
       if (schemaFailures.contains(tableId.getId())) {
         throw new RuntimeException("schema unavailable for " + tableId.getId());
+      }
+      if (nullSchemas.contains(tableId.getId())) {
+        return null;
       }
       return schemas.getOrDefault(tableId.getId(), List.of());
     }
@@ -405,35 +426,24 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public ResolutionResult resolveInputs(
+    protected ResolutionResult resolveInputsAttempt(
         String queryId,
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, TablePin> currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
-      return resolveInputs(inputs);
+        QueryInputResolver.ResolutionAttempt attempt) {
+      return resolveInputs(inputs, attempt.cancelled());
     }
 
-    @Override
-    public ResolutionResult resolveInputs(
-        String queryId,
-        String correlationId,
-        List<QueryInput> inputs,
-        Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId,
-        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics,
-        BooleanSupplier cancelled) {
-      return resolveInputs(
-          queryId, correlationId, inputs, asOfDefault, defaultCatalogId, Map.of(), diagnostics);
-    }
+    private ResolutionResult resolveInputs(List<QueryInput> inputs, BooleanSupplier cancelled) {
 
-    private ResolutionResult resolveInputs(List<QueryInput> inputs) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       for (QueryInput input : inputs) {
+        if (cancelled.getAsBoolean()) {
+          throw new java.util.concurrent.CancellationException("input resolution cancelled");
+        }
         calls.add(List.of(input));
         switch (input.getTargetCase()) {
           case TABLE_ID -> {

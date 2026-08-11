@@ -27,6 +27,17 @@ import org.junit.jupiter.api.Test;
 class ProcessWideAdmissionTest {
 
   @Test
+  void statsWarmGateRetainsItsFirstCapacity() {
+    ProcessWideAdmission.State first =
+        ProcessWideAdmission.resolve(ProcessWideAdmission.Domain.STATS_WARM, 2);
+    ProcessWideAdmission.State same =
+        ProcessWideAdmission.resolve(ProcessWideAdmission.Domain.STATS_WARM, 7);
+
+    assertThat(same).isSameAs(first);
+    assertThat(first.capacity()).isEqualTo(2);
+  }
+
+  @Test
   void reloadedCallerUsesTheExistingGateAndCapacity() throws Exception {
     ProcessWideAdmission.State original = ProcessWideAdmission.resolve(1);
     assertThat(original.permits().tryAcquire(1, TimeUnit.SECONDS)).isTrue();

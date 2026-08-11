@@ -638,12 +638,16 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   @Override
   public Optional<NameRef> tableName(ResourceId id) {
+    return tableName(id, engineContext());
+  }
+
+  @Override
+  public Optional<NameRef> tableName(ResourceId id, EngineContext context) {
     Optional<NameRef> user = userGraph.tableName(id);
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engineContext();
-    return systemGraph.tableName(id, ctx);
+    return systemGraph.tableName(id, context);
   }
 
   /**
@@ -656,12 +660,16 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   @Override
   public Optional<NameRef> viewName(ResourceId id) {
+    return viewName(id, engineContext());
+  }
+
+  @Override
+  public Optional<NameRef> viewName(ResourceId id, EngineContext context) {
     Optional<NameRef> user = userGraph.viewName(id);
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engineContext();
-    return systemGraph.viewName(id, ctx);
+    return systemGraph.viewName(id, context);
   }
 
   /**

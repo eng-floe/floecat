@@ -295,7 +295,7 @@ public class SnapshotHelper {
             .setTableBlobVersion(root.getDefinitionRef().getVersion())
             .setSnapshotBlobUri(entry.getSnapshotRef().getUri())
             .setSnapshotBlobVersion(entry.getSnapshotRef().getVersion())
-            // Read-schema fingerprint for the possession token; empty on pre-fingerprint manifest
+            // Read-schema fingerprint for the payload token; empty on pre-fingerprint manifest
             // entries (the token then falls back to snapshot_blob_version — correct, cold on
             // ingest).
             .setSchemaFingerprint(entry.getSchemaFingerprint());

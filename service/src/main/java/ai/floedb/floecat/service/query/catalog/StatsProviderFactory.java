@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -39,6 +40,10 @@ import io.smallrye.config.WithDefault;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -58,6 +63,9 @@ public final class StatsProviderFactory {
   private final Duration syncLatencyBudget;
   private final Duration syncMaxLatencyBudget;
   private final boolean syncEnabled;
+  // One setting supplies both the per-query fan-out width and the process-wide warm ceiling.
+  private final int maxParallelStatsWarms;
+  private final StatsWarmLimiter statsWarmLimiter;
 
   @Inject
   public StatsProviderFactory(
@@ -65,7 +73,8 @@ public final class StatsProviderFactory {
       TableRepository tableRepository,
       QueryContextStore queryStore,
       SnapshotRepository snapshotRepository,
-      StatsProviderFactoryConfig config) {
+      StatsProviderFactoryConfig config,
+      StatsWarmLimiter statsWarmLimiter) {
     this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
     this.queryStore = queryStore;
@@ -73,6 +82,23 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
+    this.statsWarmLimiter = statsWarmLimiter;
+    this.maxParallelStatsWarms = statsWarmLimiter.capacity();
+  }
+
+  StatsProviderFactory(
+      StatsOrchestrator statsOrchestrator,
+      TableRepository tableRepository,
+      QueryContextStore queryStore,
+      SnapshotRepository snapshotRepository,
+      StatsProviderFactoryConfig config) {
+    this(
+        statsOrchestrator,
+        tableRepository,
+        queryStore,
+        snapshotRepository,
+        config,
+        new StatsWarmLimiter());
   }
 
   public StatsProviderFactory(
@@ -92,7 +118,9 @@ public final class StatsProviderFactory {
         correlationId,
         false,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms,
+        statsWarmLimiter);
   }
 
   public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
@@ -105,7 +133,9 @@ public final class StatsProviderFactory {
         correlationId,
         true,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms,
+        statsWarmLimiter);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -113,6 +143,9 @@ public final class StatsProviderFactory {
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
+    // Per-request fan-out stays fair while StatsWarmLimiter caps all providers together.
+    private final MetadataFanout statsFanout;
+    private final StatsWarmLimiter statsWarmLimiter;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -136,13 +169,17 @@ public final class StatsProviderFactory {
         String correlationId,
         boolean allowUnpinnedLatestSnapshotFallback,
         Duration syncLatencyBudget,
-        boolean syncEnabled) {
+        boolean syncEnabled,
+        int maxParallelStatsWarms,
+        StatsWarmLimiter statsWarmLimiter) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.snapshotRepository = snapshotRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
+      this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
+      this.statsWarmLimiter = statsWarmLimiter;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -170,6 +207,35 @@ public final class StatsProviderFactory {
         return pinnedStats;
       }
       return Optional.empty();
+    }
+
+    @Override
+    public Map<ResourceId, Optional<StatsProvider.TableStatsView>> tableStatsBatch(
+        Collection<ResourceId> tableIds, java.util.function.BooleanSupplier cancelled) {
+      List<ResourceId> ids = tableIds.stream().distinct().toList();
+      Map<ResourceId, Optional<StatsProvider.TableStatsView>> out = new LinkedHashMap<>();
+      // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
+      // (on cheap virtual threads); these reads are thread-safe, and each call populates the shared
+      // tableCache so the subsequent per-relation tableStats() is a hit. A single table's failure
+      // yields empty, never aborts the batch. The fan-out limits one query; the shared admission
+      // prevents concurrent queries from multiplying backing-store work.
+      List<Optional<StatsProvider.TableStatsView>> results =
+          statsFanout.mapOrdered(
+              ids,
+              id -> {
+                try {
+                  return statsWarmLimiter.call(cancelled, () -> tableStats(id));
+                } catch (java.util.concurrent.CancellationException e) {
+                  throw e;
+                } catch (RuntimeException e) {
+                  return Optional.<StatsProvider.TableStatsView>empty();
+                }
+              },
+              cancelled);
+      for (int i = 0; i < ids.size(); i++) {
+        out.put(ids.get(i), results.get(i));
+      }
+      return out;
     }
 
     private Optional<StatsProvider.TableStatsView> latestSnapshotTableStats(ResourceId tableId) {

@@ -24,24 +24,24 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Owns the single-flight cache entries inserted by one input-resolution attempt. Failure evicts
- * only this attempt's entries, while terminal cleanup prevents late workers from publishing an
- * unrooted pin after the attempt has ended.
+ * Owns the table-pin memo entries inserted by one input-resolution attempt. Failure evicts only
+ * this attempt's entries, while terminal cleanup prevents late workers from publishing an unrooted
+ * pin after the attempt has ended.
  */
-final class CurrentSnapshotCacheOwnership {
-  private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache;
+final class SnapshotPinMemoOwnership {
+  private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries;
   private final Map<ResourceId, CompletableFuture<TablePin>> owned = new LinkedHashMap<>();
   private boolean terminal;
 
-  CurrentSnapshotCacheOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache) {
-    this.cache = cache;
+  SnapshotPinMemoOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries) {
+    this.memoEntries = memoEntries;
   }
 
   /** Claim a newly inserted holder, or discard it when terminal cleanup already won. */
   synchronized boolean claim(ResourceId tableId, CompletableFuture<TablePin> holder) {
     if (terminal) {
       synchronized (holder) {
-        cache.remove(tableId, holder);
+        memoEntries.remove(tableId, holder);
         holder.completeExceptionally(
             new CancellationException("input resolution no longer active"));
       }
@@ -51,21 +51,19 @@ final class CurrentSnapshotCacheOwnership {
     return true;
   }
 
-  /** Forget a holder that its lookup failure already evicted from the shared cache. */
+  /** Forget a holder that its lookup failure already evicted from the shared memo. */
   synchronized void forget(ResourceId tableId, CompletableFuture<TablePin> holder) {
     owned.remove(tableId, holder);
   }
 
   /**
-   * Replace a compatible losing CURRENT holder with the pin retained by ordered first-touch. A
-   * waiter that observed the old holder retries against the replacement before using the loser.
+   * Replace a compatible losing entry with the retained first-touch pin before the losing pin
+   * relinquishes transient-root ownership. The holder lock makes replacement atomic with a waiter's
+   * published-entry check.
    */
   synchronized void replaceCompatiblePin(TablePin losingPin, TablePin retainedPin) {
-    if (terminal) {
-      return;
-    }
     ResourceId tableId = losingPin.getTableId();
-    CompletableFuture<TablePin> holder = cache.get(tableId);
+    CompletableFuture<TablePin> holder = memoEntries.get(tableId);
     if (holder == null
         || !holder.isDone()
         || holder.isCompletedExceptionally()
@@ -73,13 +71,12 @@ final class CurrentSnapshotCacheOwnership {
       return;
     }
     synchronized (holder) {
-      if (cache.get(tableId) != holder || holder.getNow(null) != losingPin) {
-        return;
-      }
-      CompletableFuture<TablePin> replacement = CompletableFuture.completedFuture(retainedPin);
-      if (cache.replace(tableId, holder, replacement)) {
-        owned.remove(tableId, holder);
-        owned.put(tableId, replacement);
+      if (memoEntries.get(tableId) == holder && holder.getNow(null) == losingPin) {
+        CompletableFuture<TablePin> replacement = CompletableFuture.completedFuture(retainedPin);
+        if (memoEntries.replace(tableId, holder, replacement)) {
+          owned.remove(tableId, holder);
+          owned.put(tableId, replacement);
+        }
       }
     }
   }
@@ -90,7 +87,7 @@ final class CurrentSnapshotCacheOwnership {
     owned.forEach(
         (tableId, holder) -> {
           synchronized (holder) {
-            cache.remove(tableId, holder);
+            memoEntries.remove(tableId, holder);
             holder.completeExceptionally(new CancellationException("input resolution failed"));
           }
         });

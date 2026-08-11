@@ -31,12 +31,12 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -97,7 +97,7 @@ class QueryInputResolverAdmissionTest {
                       List.of(QueryInput.newBuilder().setTableId(tableId).build()),
                       Optional.empty(),
                       Optional.empty(),
-                      new ConcurrentHashMap<>(),
+                      new SnapshotPinMemo(),
                       null,
                       () -> false),
               workers);

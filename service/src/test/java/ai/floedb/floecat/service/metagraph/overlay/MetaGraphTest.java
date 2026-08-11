@@ -235,6 +235,19 @@ class MetaGraphTest {
   }
 
   @Test
+  void tableName_usesExplicitEngineContextForSystemFallback() {
+    EngineContext explicit = EngineContext.of("other-engine", "2");
+    NameRef expected = NameRef.newBuilder().setCatalog("other-engine").setName("sys").build();
+    when(system.tableName(sysTable, explicit)).thenReturn(Optional.of(expected));
+
+    Optional<NameRef> name = meta.tableName(sysTable, explicit);
+
+    assertThat(name).contains(expected);
+    verify(system).tableName(sysTable, explicit);
+    verify(system, never()).tableName(sysTable, context);
+  }
+
+  @Test
   void resolveTable_returnsSystemMatchWithoutUserProbe() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));

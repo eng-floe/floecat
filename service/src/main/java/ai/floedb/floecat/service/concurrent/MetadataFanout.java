@@ -36,11 +36,22 @@ public final class MetadataFanout {
 
   private static final Executor DIRECT = Runnable::run;
   private static final Executor VIRTUAL_THREADS =
-      command ->
-          Thread.ofVirtual()
-              .inheritInheritableThreadLocals(false)
-              .name("floecat-metadata-fanout")
-              .start(command);
+      command -> {
+        ClassLoader applicationClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.ofVirtual()
+            .inheritInheritableThreadLocals(false)
+            .name("floecat-metadata-fanout")
+            .start(
+                () -> {
+                  Thread worker = Thread.currentThread();
+                  worker.setContextClassLoader(applicationClassLoader);
+                  try {
+                    command.run();
+                  } finally {
+                    worker.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+                  }
+                });
+      };
 
   private final int permits;
   private final Executor executor;
