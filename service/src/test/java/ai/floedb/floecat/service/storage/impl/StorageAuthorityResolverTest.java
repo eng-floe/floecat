@@ -139,7 +139,7 @@ class StorageAuthorityResolverTest {
                     "acct",
                     false));
     assertTrue(
-        ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+        ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
             .isNoMatchingStorageAuthority(error),
         "must carry the structured no-matching-authority reason, not a bare INVALID_ARGUMENT");
   }

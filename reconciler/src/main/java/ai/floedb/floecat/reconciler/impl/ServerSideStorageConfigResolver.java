@@ -22,7 +22,9 @@ import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
@@ -76,16 +78,6 @@ public class ServerSideStorageConfigResolver {
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
-
-  /**
-   * Iceberg REST access-delegation header, as it appears in connector properties.
-   *
-   * <p>Set on a connector with {@code --props
-   * header.X-Iceberg-Access-Delegation=vended-credentials}. Read here rather than from the derived
-   * catalog properties because this runs before the connector factory builds them; {@code
-   * IcebergConnectorFactory} reads the same key downstream.
-   */
-  private static final String ICEBERG_ACCESS_DELEGATION_PROP = "header.X-Iceberg-Access-Delegation";
 
   private final Optional<String> headerName;
 
@@ -299,7 +291,7 @@ public class ServerSideStorageConfigResolver {
       // Only "no authority covers this location" is recoverable by delegation: the catalog client
       // holds vended credentials of its own, so the untouched config is what it needs.
       if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
-          && declaresDelegation(config)) {
+          && IcebergAccessDelegation.declaresVendedCredentials(config)) {
         return config;
       }
       throw e;
@@ -567,55 +559,6 @@ public class ServerSideStorageConfigResolver {
 
   private static String normalize(String value) {
     return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-  }
-
-  /**
-   * Whether the connector asks the catalog to vend credentials.
-   *
-   * <p>Both configuration routes count. Options carry {@code header.X-Iceberg-Access-Delegation}
-   * directly, while {@code auth().headerHints()} is turned into the same {@code header.<name>}
-   * catalog property by IcebergConnectorFactory -- so reading options alone misses a connector
-   * configured through header hints, which then falls through to storage-authority vending despite
-   * having asked for delegation.
-   */
-  private static boolean declaresDelegation(ConnectorConfig config) {
-    if (config == null) {
-      return false;
-    }
-    if (declaresVendedCredentials(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
-      return true;
-    }
-    if (config.auth() == null) {
-      return false;
-    }
-    // Header hints are keyed by bare header name; the factory prefixes them with "header.".
-    return config.auth().headerHints().entrySet().stream()
-        .anyMatch(
-            e ->
-                ICEBERG_ACCESS_DELEGATION_PROP.equalsIgnoreCase("header." + e.getKey())
-                    && declaresVendedCredentials(e.getValue()));
-  }
-
-  /**
-   * Whether the header asks specifically for <em>vended credentials</em>.
-   *
-   * <p>The value is not a boolean. {@code remote-signing} is equally valid and means the catalog
-   * signs requests rather than returning credentials, so treating any non-blank value as
-   * "credentials are coming" would swallow a genuine missing-authority failure and leave the
-   * client's FileIO with nothing -- surfacing later as a far less diagnostic read error. The spec
-   * also permits a comma-separated list, so each token is examined.
-   */
-  private static boolean declaresVendedCredentials(String headerValue) {
-    if (!isNonBlank(headerValue)) {
-      return false;
-    }
-    for (String token : headerValue.split(",")) {
-      String normalized = token.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
-      if ("vended-credentials".equals(normalized)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private static boolean isNonBlank(String value) {

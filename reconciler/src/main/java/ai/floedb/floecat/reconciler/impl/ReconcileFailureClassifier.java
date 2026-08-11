@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashSet;

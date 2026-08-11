@@ -43,6 +43,7 @@ public class ServerSideFileIoPropertiesResolver {
   @Inject StorageAuthorityRepository repo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject StorageAuthorityResolver resolver;
+  @Inject SourceCatalogCredentialVendor sourceCatalogVendor;
 
   public Map<String, String> resolve(Table table, String location) {
     String locationPrefix =
@@ -58,6 +59,20 @@ public class ServerSideFileIoPropertiesResolver {
         "storage_authority", System.nanoTime() - storageAuthorityStartedNanos);
     StoreOperationSummary.put("storage_authority_source", "load");
     var authority = StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
+    if (authority == null) {
+      // No authority covers this location. Before failing, ask the source catalog -- exactly as the
+      // vend RPC does, and for the same reason: a table captured through a delegating Iceberg REST
+      // catalog has no authority to configure, because the catalog vends its own credentials. This
+      // path is what lets such a table be *read back*. Without it capture succeeds through
+      // delegation and every scan of the result dies on NO_MATCHING_STORAGE_AUTHORITY.
+      ResolveStorageAuthorityResponse vended =
+          sourceCatalogVendor.vendForTable(table, locationPrefix);
+      if (vended != null) {
+        return mergeStorageAuthorityFileIoConfig(vended);
+      }
+      // Nothing vended either: fall through so buildResponse raises the structured
+      // no-matching-authority error rather than silently returning no credentials.
+    }
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(
             authority,

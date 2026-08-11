@@ -141,6 +141,8 @@ class StorageAuthorityServiceImplTest {
     service.connectorRepo = connectorRepo;
     service.snapshotRepo = snapshotRepo;
     service.reconcileJobs = reconcileJobs;
+    service.sourceCatalogVendor = new SourceCatalogCredentialVendor();
+    service.sourceCatalogVendor.connectorRepo = connectorRepo;
     service.blobStoreType = "s3";
     service.blobBucket = "floecat-dev";
     service.storageAwsRegion = "us-east-1";
@@ -548,6 +550,45 @@ class StorageAuthorityServiceImplTest {
   }
 
   /**
+   * The normal capture path sends both a lease and a matching table_id --
+   * JavaConnectorCaptureEngine passes request.tableId() alongside the execution job, and both
+   * derive from the same fileGroupTask. The guard above must not fire there, or it blocks capture
+   * outright.
+   */
+  @Test
+  void matchingExplicitTableIdIsAccepted() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            // same table the lease binds
+                            .setTableId(TABLE_ID)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    // Reached source-catalog vending, i.e. was NOT rejected as a table mismatch.
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(connectorRepo).getById(CONNECTOR_ID);
+  }
+
+  /**
    * Credentials with no expiry are refused rather than installed.
    *
    * <p>The reconcile worker only registers a refresh provider when it can see an expiry; without
@@ -595,13 +636,13 @@ class StorageAuthorityServiceImplTest {
           assertThrows(
               StatusRuntimeException.class,
               () ->
-                  StorageAuthorityServiceImpl.requireRefreshableCredentials(
+                  SourceCatalogCredentialVendor.requireRefreshableCredentials(
                       vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()), "tpch_10", "customer"),
               c.name());
       assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode(), c.name());
       // Terminal by structured reason, so the reconciler stops instead of retrying forever.
       assertTrue(
-          ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+          ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
               .isVendedCredentialsNotRefreshable(error),
           c.name());
     }
@@ -609,7 +650,7 @@ class StorageAuthorityServiceImplTest {
 
   @Test
   void completeVendedCredentialsAreAccepted() {
-    StorageAuthorityServiceImpl.requireRefreshableCredentials(
+    SourceCatalogCredentialVendor.requireRefreshableCredentials(
         vendedTuple("ASIA", "secret", "token", EXPIRY), "tpch_10", "customer");
   }
 
@@ -622,13 +663,13 @@ class StorageAuthorityServiceImplTest {
   @Test
   void connectorDeclaresVendedDelegationOnlyForVendedCredentialsHeader() {
     assertTrue(
-        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(
             delegationConnector("vended-credentials")));
     assertFalse(
-        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(
             delegationConnector("remote-signing")));
     assertFalse(
-        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(discoveryConnector()));
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(discoveryConnector()));
   }
 
   private static Connector delegationConnector(String delegationValue) {
@@ -645,7 +686,7 @@ class StorageAuthorityServiceImplTest {
   @Test
   void clientSafeRoutingPropertiesKeepsOnlyNonSecretRoutingKeys() {
     var routing =
-        StorageAuthorityServiceImpl.clientSafeRoutingProperties(
+        SourceCatalogCredentialVendor.clientSafeRoutingProperties(
             java.util.Map.of(
                 "s3.access-key-id", "ASIA",
                 "s3.secret-access-key", "secret",

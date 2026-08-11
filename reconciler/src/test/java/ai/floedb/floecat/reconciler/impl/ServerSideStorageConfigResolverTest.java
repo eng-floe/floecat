@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshExceptio
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;

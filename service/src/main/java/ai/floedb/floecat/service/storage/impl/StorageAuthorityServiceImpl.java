@@ -17,26 +17,19 @@
 package ai.floedb.floecat.service.storage.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
-import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
-import ai.floedb.floecat.connector.spi.ConnectorFactory;
-import ai.floedb.floecat.connector.spi.CredentialResolver;
-import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.MutationOps;
-import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -67,19 +60,14 @@ import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
-import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -114,7 +102,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject ReconcileJobStore reconcileJobs;
-  @Inject CredentialResolver credentialResolver;
+  @Inject SourceCatalogCredentialVendor sourceCatalogVendor;
 
   @ConfigProperty(name = "floecat.blob")
   String blobStoreType;
@@ -750,272 +738,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           requestedTableId.getId(), e.getStatus());
       return null;
     }
-    UpstreamRef upstream = table.getUpstream();
-    if (!upstream.hasConnectorId() || upstream.getTableDisplayName().isBlank()) {
-      LOG.infof(
-          "source-catalog vending skipped: table %s has no upstream connector reference",
-          requestedTableId.getId());
-      return null;
-    }
-    Connector connector = connectorRepo.getById(upstream.getConnectorId()).orElse(null);
-    if (connector == null) {
-      LOG.infof(
-          "source-catalog vending skipped: upstream connector %s of table %s not found",
-          upstream.getConnectorId().getId(), requestedTableId.getId());
-      return null;
-    }
-
-    // Only a connector that actually asked the catalog to vend can produce vended credentials.
-    // Presence of s3.* on a table's FileIO is not a reliable signal: a Glue or S3 Tables connector
-    // authenticated with static aws credentials writes s3.access-key-id into the same property map
-    // for its own storage access, and those catalogs do not delegate at all. Gate on the declared
-    // delegation intent so their own credentials are never mistaken for vended ones -- they keep
-    // falling back to a storage authority. This also skips a needless connector build and OAuth
-    // exchange for the non-delegating case.
-    if (!connectorDeclaresVendedDelegation(connector)) {
-      LOG.infof(
-          "source-catalog vending skipped: connector %s did not declare vended-credentials"
-              + " delegation",
-          connector.getResourceId().getId());
-      return null;
-    }
-
-    ConnectorConfig resolvedConfig = resolveConnectorCredentials(connector);
-    String configuredAccessKey = resolvedConfig.options().get("s3.access-key-id");
-
-    String namespaceFq = String.join(".", upstream.getNamespacePathList());
-    Optional<FloecatConnector.VendedStorageCredentials> vended;
-    try (FloecatConnector source = ConnectorFactory.create(resolvedConfig)) {
-      vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
-    } catch (StatusRuntimeException e) {
-      throw e;
-    } catch (RuntimeException e) {
-      // A catalog that refuses us is a permanent condition: bad credentials, a revoked grant, a
-      // principal without TABLE_READ_DATA. Letting it escape as INTERNAL makes the reconciler treat
-      // it as transient and retry the job forever, so classify it terminally. Anything that is not
-      // recognisably an authorization refusal stays retryable.
-      throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName());
-    }
-    if (vended.isEmpty() || vended.get().isEmpty()) {
-      LOG.infof(
-          "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
-              + " (catalog does not delegate)",
-          connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
-      return null;
-    }
-
-    // Delegation was declared, but a catalog that silently ignored the header leaves only the
-    // connector's own configured credentials on the FileIO. If what came back is exactly what we
-    // configured the connector with, nothing was vended -- fall back rather than pass the
-    // connector's static credentials down the vend path as if they were catalog-scoped.
-    String vendedAccessKey = vended.get().properties().get("s3.access-key-id");
-    if (configuredAccessKey != null && configuredAccessKey.equals(vendedAccessKey)) {
-      LOG.infof(
-          "source-catalog vending skipped: connector %s returned its own configured credentials"
-              + " for %s.%s (catalog did not delegate)",
-          connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
-      return null;
-    }
-
-    requireRefreshableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName());
-
-    LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
-    storageConfig.put("type", "s3");
-    storageConfig.putAll(vended.get().properties());
-    VendedStorageCredential.Builder credential =
-        VendedStorageCredential.newBuilder()
-            .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
-            .putAllConfig(Map.copyOf(storageConfig));
-    Instant expiresAt = vended.get().expiresAt();
-    if (expiresAt != null) {
-      credential.setExpiresAt(Timestamps.fromMillis(expiresAt.toEpochMilli()));
-    }
-    LOG.infof(
-        "vended storage credentials from source catalog connector=%s table=%s.%s expiresAt=%s",
-        connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName(), expiresAt);
-    // Non-secret routing properties must also travel in client_safe_config. The reconcile worker's
-    // execution-bound (refreshable) merge path applies client_safe_config plus the refreshed
-    // credential triple and never reads storage_credentials[0].config, so region and endpoint
-    // placed only there are silently dropped on the path that matters -- leaving the worker to
-    // guess the endpoint for any non-default region or custom-endpoint bucket. Authority-backed
-    // responses carry routing in client-safe config for exactly this reason.
-    return ResolveStorageAuthorityResponse.newBuilder()
-        .putAllClientSafeConfig(clientSafeRoutingProperties(vended.get().properties()))
-        .addStorageCredentials(credential)
-        .build();
-  }
-
-  /**
-   * Non-secret S3 routing keys a vended credential carries, safe to expose in client_safe_config.
-   */
-  private static final List<String> VENDED_ROUTING_KEYS =
-      List.of("s3.region", "s3.endpoint", "s3.path-style-access");
-
-  static Map<String, String> clientSafeRoutingProperties(Map<String, String> props) {
-    LinkedHashMap<String, String> routing = new LinkedHashMap<>();
-    for (String key : VENDED_ROUTING_KEYS) {
-      String value = props.get(key);
-      if (value != null && !value.isBlank()) {
-        routing.put(key, value);
-      }
-    }
-    return routing;
-  }
-
-  private static final String ICEBERG_ACCESS_DELEGATION_PROP = "header.X-Iceberg-Access-Delegation";
-
-  /**
-   * Whether the connector asked its catalog to vend credentials. Mirrors {@code
-   * ServerSideStorageConfigResolver.declaresDelegation}: the header can arrive either directly in
-   * options as {@code header.X-Iceberg-Access-Delegation} or via {@code auth().headerHints()},
-   * which IcebergConnectorFactory turns into the same catalog property.
-   */
-  static boolean connectorDeclaresVendedDelegation(Connector connector) {
-    ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
-    if (declaresVendedCredentials(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
-      return true;
-    }
-    if (config.auth() == null) {
-      return false;
-    }
-    return config.auth().headerHints().entrySet().stream()
-        .anyMatch(
-            e ->
-                ICEBERG_ACCESS_DELEGATION_PROP.equalsIgnoreCase("header." + e.getKey())
-                    && declaresVendedCredentials(e.getValue()));
-  }
-
-  /**
-   * Whether the delegation header value asks specifically for vended credentials. {@code
-   * remote-signing} is a valid value that returns no credentials, so any non-blank value will not
-   * do. Mirrors the reconciler's parser: comma-separated, case-insensitive, {@code _}/{@code -}
-   * interchangeable.
-   */
-  private static boolean declaresVendedCredentials(String headerValue) {
-    if (headerValue == null || headerValue.isBlank()) {
-      return false;
-    }
-    for (String token : headerValue.split(",")) {
-      if ("vended-credentials"
-          .equals(token.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-'))) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Refuses vended credentials that carry no usable expiry.
-   *
-   * <p>The reconcile worker registers a refresh provider only when it can see one -- its {@code
-   * is_refreshable()} is exactly {@code expires_at.is_some()} -- and without it embeds the
-   * credentials statically and never re-vends, so they expire mid-read with no recovery. Client
-   * usage carries the same invariant. Failing at vend time makes that visible here instead of as an
-   * opaque 403 partway through a file group.
-   */
-  static void requireRefreshableCredentials(
-      FloecatConnector.VendedStorageCredentials vended, String namespaceFq, String tableName) {
-    Map<String, String> props = vended.properties();
-    List<String> missing = new java.util.ArrayList<>();
-    for (String key : List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token")) {
-      String value = props.get(key);
-      if (value == null || value.isBlank()) {
-        missing.add(key);
-      }
-    }
-    if (vended.expiresAt() == null) {
-      missing.add("s3.session-token-expires-at-ms");
-    }
-    if (missing.isEmpty()) {
-      return;
-    }
-    // The whole tuple, not just the expiry. An access key and secret with an expiry but no session
-    // token satisfies isExecutionBoundStorageCredential yet fails isRefreshableExecutionCredential,
-    // so the reconciler embeds it statically and never renews -- recreating exactly the defect the
-    // expiry check was added to close.
-    //
-    // Structured and terminal: a catalog that omits a field will keep omitting it, and a bare
-    // FAILED_PRECONDITION is classified retryable, so the job would loop forever rather than fail
-    // mid-read.
-    throw ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
-        .vendedCredentialsNotRefreshable(
-            "source catalog vended unusable storage credentials for "
-                + namespaceFq
-                + "."
-                + tableName
-                + "; missing "
-                + String.join(", ", missing));
-  }
-
-  /**
-   * Classifies a source-catalog failure so the reconciler can stop retrying what will never
-   * succeed.
-   *
-   * <p>Only recognisable authentication and authorization refusals become terminal. Anything else
-   * -- a connection reset, a 5xx, a timeout -- is genuinely transient and keeps INTERNAL so the
-   * existing retry behaviour still applies.
-   */
-  private static StatusRuntimeException catalogFailureStatus(
-      RuntimeException cause, Connector connector, String namespaceFq, String tableName) {
-    String detail =
-        String.format(
-            "source catalog %s refused credentials for %s.%s: %s",
-            connector.getResourceId().getId(), namespaceFq, tableName, cause);
-
-    // Typed exceptions only. Substring-matching the cause chain for 401/403/"access denied" gets
-    // the risk backwards: a transient failure whose text merely contains one of those tokens -- a
-    // gateway page echoing "Access Denied", an S3 denial during IAM propagation lag, a URL with 403
-    // in it -- would be classified terminal and stop the reconciler retrying a job that would have
-    // recovered. Iceberg's REST client raises NotAuthorizedException for 401 and ForbiddenException
-    // for 403, so classification uses those and nothing else.
-    for (Throwable c = cause; c != null; c = c.getCause()) {
-      if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
-        return io.grpc.Status.UNAUTHENTICATED
-            .withDescription(detail)
-            .withCause(cause)
-            .asRuntimeException();
-      }
-      if (c instanceof org.apache.iceberg.exceptions.ForbiddenException) {
-        return io.grpc.Status.PERMISSION_DENIED
-            .withDescription(detail)
-            .withCause(cause)
-            .asRuntimeException();
-      }
-      if (c.getCause() == c) {
-        break;
-      }
-    }
-    // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager
-    // retry only costs time.
-    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
-  }
-
-  /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */
-  private ConnectorConfig resolveConnectorCredentials(Connector connector) {
-    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
-    AuthConfig auth = connector.getAuth();
-    if (auth.hasCredentials()
-        && auth.getCredentials().getCredentialCase()
-            != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
-      return CredentialResolverSupport.apply(base, auth.getCredentials());
-    }
-    if (!connector.hasResourceId()
-        || auth.getScheme().isBlank()
-        || "none".equalsIgnoreCase(auth.getScheme())) {
-      return base;
-    }
-    // Carry the inbound request context, not an empty one. Token-exchange schemes
-    // (RFC8693/AZURE/GCP) need the caller's subject token to mint connector credentials; with an
-    // empty context CredentialResolverSupport cannot resolve them, so a delegating catalog on any
-    // of those auth modes would fail to build before it could vend. The storage RPC has the
-    // inbound authorization/session headers available here, same as the normal connector path.
-    return credentialResolver
-        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
-        .map(
-            c ->
-                CredentialResolverSupport.apply(
-                    base, c, AuthResolutionContexts.fromInboundContext()))
-        .orElse(base);
+    return sourceCatalogVendor.vendForTable(table, responseLocationPrefix);
   }
 
   private CredentialScope resolvePlannerBootstrapLocation(

@@ -71,7 +71,7 @@ public class StorageAuthorityResolver {
       // INVALID_ARGUMENT, but so do account_id, execution_binding and location_prefix validation
       // failures -- and a delegating connector must fall back to its catalog for *this* condition
       // only, not for every request error.
-      throw ai.floedb.floecat.reconciler.impl.SourceCatalogVendingGrpcStatus
+      throw ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
           .noMatchingStorageAuthority(
               "Credential vending was requested but no storage credential authority is configured"
                   + " for this table");

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.reconciler.impl;
+package ai.floedb.floecat.storage.errors;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
@@ -36,8 +36,10 @@ import java.util.HashSet;
  * FAILED_PRECONDITION} is shared with lease-precondition failures, which have their own retry
  * semantics, so it cannot simply be classified terminal.
  *
- * <p>Same shape as {@link ReconcileLeaseGrpcStatus}: an ErrorInfo detail carrying a stable domain
- * and reason, plus a matching predicate.
+ * <p>Same shape as {@code ReconcileLeaseGrpcStatus} in the reconciler: an ErrorInfo detail carrying
+ * a stable domain and reason, plus a matching predicate. Lives here, beside the other storage
+ * errors, because the domain it declares is {@code ai.floedb.floecat.storage} and the conditions
+ * are raised by the storage service -- the reconciler is a consumer, not the owner.
  */
 public final class SourceCatalogVendingGrpcStatus {
   public static final String ERROR_DOMAIN = "ai.floedb.floecat.storage";
