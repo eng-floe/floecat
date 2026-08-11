@@ -27,7 +27,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.CurrentSnapshotPinCache;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinCache;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.ArrayList;
 import java.util.List;
@@ -62,7 +62,7 @@ final class ChunkPinBarrier {
 
   // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
   // snapshot for the life of the request.
-  private final CurrentSnapshotPinCache currentSnapshotPinCache = new CurrentSnapshotPinCache();
+  private final SnapshotPinCache snapshotPinCache = new SnapshotPinCache();
   private final Object pendingPinsLock = new Object();
 
   // Pins gathered but not yet made durable; folded across chunks, drained by commit().
@@ -191,7 +191,7 @@ final class ChunkPinBarrier {
             inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
-            currentSnapshotPinCache,
+            snapshotPinCache,
             diagnostics,
             cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);

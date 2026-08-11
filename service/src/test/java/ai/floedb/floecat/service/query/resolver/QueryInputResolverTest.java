@@ -36,6 +36,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinCache;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -46,7 +47,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -69,27 +69,6 @@ public class QueryInputResolverTest {
   void init() {
     metadataGraph = new FakeGraph();
     resolver = new QueryInputResolver(metadataGraph);
-  }
-
-  @Test
-  void legacyMapOverloadDoesNotRewriteAnExistingCacheHit() {
-    ResourceId tableId = rid("CACHED");
-    TablePin cachedPin =
-        metadataGraph.tablePinFor(
-            "cid", tableId, SnapshotRef.getDefaultInstance(), Optional.empty());
-
-    var result =
-        resolver.resolveInputs(
-            "",
-            "cid",
-            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
-            Optional.empty(),
-            Optional.empty(),
-            Map.of(tableId, cachedPin),
-            null);
-
-    assertEquals(tableId, result.resolved().getFirst());
-    assertEquals(cachedPin, result.relationPinSet().getPins(0).getTablePin());
   }
 
   NameRef name(String cat, String... parts) {
@@ -122,65 +101,6 @@ public class QueryInputResolverTest {
         });
   }
 
-  /** Verifies cancellation returns promptly even when the active metadata operation ignores it. */
-  private static void assertCancellationReturnsWhileBlocked(
-      CompletableFuture<Throwable> resolution,
-      java.util.concurrent.atomic.AtomicBoolean cancelled,
-      UninterruptibleBlocker blocker)
-      throws Exception {
-    try {
-      assertTrue(blocker.started.await(1, TimeUnit.SECONDS));
-      cancelled.set(true);
-      assertTrue(
-          resolution.get(250, TimeUnit.MILLISECONDS)
-              instanceof java.util.concurrent.CancellationException);
-    } finally {
-      blocker.release.countDown();
-    }
-  }
-
-  @Test
-  void typedCancellableOverloadDoesNotDispatchThroughLegacyMapOverride() {
-    AtomicBoolean legacyOverrideCalled = new AtomicBoolean();
-    QueryInputResolver legacySubclass =
-        new QueryInputResolver(metadataGraph) {
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, TablePin> currentSnapshotPinCache,
-              ai.floedb.floecat.telemetry.PhaseDiagnostics diagnostics) {
-            legacyOverrideCalled.set(true);
-            return super.resolveInputs(
-                queryId,
-                correlationId,
-                inputs,
-                asOfDefault,
-                defaultCatalogId,
-                currentSnapshotPinCache,
-                diagnostics);
-          }
-        };
-    ResourceId tableId = rid("legacy-dispatch");
-
-    var result =
-        legacySubclass.resolveInputs(
-            "q-legacy-dispatch",
-            "cid",
-            List.of(QueryInput.newBuilder().setTableId(tableId).build()),
-            Optional.empty(),
-            Optional.empty(),
-            new ConcurrentHashMap<>(),
-            null,
-            () -> false);
-
-    assertFalse(legacyOverrideCalled.get());
-    assertEquals(tableId, result.resolved().getFirst());
-  }
-
   /**
    * As each pin is constructed, the resolver registers its blobs as transient GC roots — the single
    * transparent seam that protects a resolved-but-not-yet-persisted blob on every resolve path.
@@ -199,7 +119,7 @@ public class QueryInputResolverTest {
         List.of(QueryInput.newBuilder().setName(n).build()),
         Optional.empty(),
         Optional.empty(),
-        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        new SnapshotPinCache(),
         null);
 
     // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
@@ -207,42 +127,8 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q1"),
-            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
-  }
-
-  @Test
-  void registersPinRootsOnTheMetadataWorkerBeforeResultHandoff() {
-    var store = org.mockito.Mockito.mock(QueryContextStore.class);
-    var withStore = new QueryInputResolver(metadataGraph, store);
-    List<Thread> registrationThreads = java.util.Collections.synchronizedList(new ArrayList<>());
-    org.mockito.Mockito.doAnswer(
-            ignored -> {
-              registrationThreads.add(Thread.currentThread());
-              return null;
-            })
-        .when(store)
-        .registerResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.anyString(),
-            org.mockito.ArgumentMatchers.any(ResourceId.class),
-            org.mockito.ArgumentMatchers.anyCollection());
-
-    withStore.resolveInputs(
-        "q-worker-registration",
-        "cid",
-        List.of(QueryInput.newBuilder().setTableId(rid("T1")).build()),
-        Optional.empty(),
-        Optional.empty(),
-        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
-        null);
-
-    // Concurrent fan-out roots each pin on its off-request worker before handing the plan back to
-    // the caller for ordered merge, rather than inline on the request thread after the fact. Those
-    // workers are the shared virtual-thread fan-out pool, so registration runs off the caller.
-    assertEquals(1, registrationThreads.size());
-    assertTrue(registrationThreads.get(0).isVirtual());
-    assertTrue(registrationThreads.get(0) != Thread.currentThread());
   }
 
   /** A completed parallel input roots its pin while another input is still resolving. */
@@ -265,8 +151,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(fast).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new java.util.concurrent.ConcurrentHashMap<
-                        ResourceId, CompletableFuture<TablePin>>(),
+                    new SnapshotPinCache(),
                     null));
 
     try {
@@ -274,7 +159,6 @@ public class QueryInputResolverTest {
       org.mockito.Mockito.verify(store, org.mockito.Mockito.timeout(1_000))
           .registerResolvingPinBlobs(
               org.mockito.ArgumentMatchers.eq("q-parallel"),
-              org.mockito.ArgumentMatchers.eq(fast),
               org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
     } finally {
       blockingGraph.allowSlowPin.countDown();
@@ -299,7 +183,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    new SnapshotPinCache(),
                     null,
                     cancelled::get));
 
@@ -312,53 +196,6 @@ public class QueryInputResolverTest {
     } finally {
       blockingGraph.allowSlowPin.countDown();
     }
-  }
-
-  @Test
-  void cancellationReturnsWhileSingleInputPinLookupIgnoresInterrupts() throws Exception {
-    var blockingGraph = new BlockingPinGraph("SLOW");
-    var withStore = new QueryInputResolver(blockingGraph);
-    var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
-
-    CompletableFuture<Throwable> resolution =
-        resolveCancellable(
-            () ->
-                withStore.resolveInputs(
-                    "q-cancel-single-pin",
-                    "cid",
-                    List.of(QueryInput.newBuilder().setTableId(rid("SLOW")).build()),
-                    Optional.empty(),
-                    Optional.empty(),
-                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
-                    null,
-                    cancelled::get));
-
-    assertCancellationReturnsWhileBlocked(resolution, cancelled, blockingGraph.slowPinBlocker);
-  }
-
-  @Test
-  void cancellationAfterFinalThreadConfinedPinLookupDoesNotReturnSuccess() throws Exception {
-    var blockingGraph = new BlockingThreadConfinedPinGraph();
-    var withStore = new QueryInputResolver(blockingGraph);
-    var cancelled = new AtomicBoolean();
-
-    CompletableFuture<Throwable> resolution =
-        resolveCancellable(
-            () ->
-                withStore.resolveInputs(
-                    "q-cancel-thread-confined-pin",
-                    "cid",
-                    List.of(QueryInput.newBuilder().setTableId(rid("SLOW")).build()),
-                    Optional.empty(),
-                    Optional.empty(),
-                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
-                    null,
-                    cancelled::get));
-
-    assertTrue(blockingGraph.pinBlocker.started.await(1, TimeUnit.SECONDS));
-    cancelled.set(true);
-    blockingGraph.pinBlocker.release.countDown();
-    assertTrue(resolution.get(250, TimeUnit.MILLISECONDS) instanceof CancellationException);
   }
 
   @Test
@@ -392,18 +229,64 @@ public class QueryInputResolverTest {
             QueryInput.newBuilder().setTableId(rid("TWO")).build()),
         Optional.empty(),
         Optional.empty(),
-        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        new SnapshotPinCache(),
         null,
         () -> false);
 
     assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
   }
 
+  /** A late non-interruptible lookup cannot register a root after cancellation cleanup. */
+  @Test
+  void cancellationDoesNotRegisterRootsFromLatePinLookup() throws Exception {
+    var blockingGraph = new NonInterruptiblePinGraph("SLOW");
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(blockingGraph, store);
+    AtomicBoolean cancelled = new AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                withStore.resolveInputs(
+                    "q-cancel-late-pin",
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(rid("SLOW")).build(),
+                        QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new SnapshotPinCache(),
+                    null,
+                    cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+    cancelled.set(true);
+    try {
+      assertTrue(
+          resolution.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+    } finally {
+      blockingGraph.allowSlowPin.countDown();
+    }
+    assertTrue(blockingGraph.slowPinCompleted.await(1, TimeUnit.SECONDS));
+    org.mockito.Mockito.verify(store, org.mockito.Mockito.never())
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-cancel-late-pin"),
+            org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://SLOW/table.pb")));
+  }
+
   /** A failed parallel plan releases every provisional root it constructed. */
   @Test
   void releasesCompletedParallelPinWhenSiblingPlanningFails() {
-    var currentSnapshotPinCache = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
-    var failingGraph = new FailingAfterFastPinGraph(currentSnapshotPinCache);
+    var snapshotPins = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
+    var snapshotPinCache = new SnapshotPinCache(snapshotPins);
+    var failingGraph = new FailingAfterFastPinGraph(snapshotPins);
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
     var withStore = new QueryInputResolver(failingGraph, store);
 
@@ -418,13 +301,12 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                currentSnapshotPinCache,
+                snapshotPinCache,
                 null));
 
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-failure"),
-            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
     org.mockito.Mockito.verify(store)
         .releaseResolvingPinBlobs(
@@ -435,8 +317,9 @@ public class QueryInputResolverTest {
   /** Completed sibling work still contributes pin diagnostics when another parallel plan fails. */
   @Test
   void flushesParallelPinDiagnosticsWhenSiblingPlanningFails() {
-    var currentSnapshotPinCache = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
-    var failingGraph = new FailingAfterFastPinGraph(currentSnapshotPinCache);
+    var snapshotPins = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
+    var snapshotPinCache = new SnapshotPinCache(snapshotPins);
+    var failingGraph = new FailingAfterFastPinGraph(snapshotPins);
     var diagnostics = org.mockito.Mockito.mock(ai.floedb.floecat.telemetry.PhaseDiagnostics.class);
     var withStore = new QueryInputResolver(failingGraph);
 
@@ -451,7 +334,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAIL")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                currentSnapshotPinCache,
+                snapshotPinCache,
                 diagnostics));
 
     org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
@@ -682,7 +565,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                new SnapshotPinCache(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -694,7 +577,6 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-reuse"),
-            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris ->
                     uris.contains("s3://T2/pinned-table.pb")
@@ -756,7 +638,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                new SnapshotPinCache(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -811,7 +693,7 @@ public class QueryInputResolverTest {
             List.of(qi),
             Optional.<com.google.protobuf.Timestamp>empty(),
             Optional.<ResourceId>empty(),
-            new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+            new SnapshotPinCache(),
             null)
         .snapshotSet();
 
@@ -1453,11 +1335,11 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void currentSnapshotPinCacheReusedAcrossResolveCalls() {
+  void snapshotPinCacheReusedAcrossResolveCalls() {
     ResourceId tableId = rid("CACHE_TABLE");
     metadataGraph.setCurrentSnapshot(tableId, 1234L);
     QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    SnapshotPinCache cache = new SnapshotPinCache();
 
     resolver.resolveInputs(
         "", "cid-a", List.of(input), Optional.empty(), Optional.empty(), cache, null);
@@ -1467,7 +1349,6 @@ public class QueryInputResolverTest {
     long tablePinCalls =
         metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(tableId)).count();
     assertEquals(1L, tablePinCalls);
-    assertEquals(1, cache.size());
   }
 
   @Test
@@ -1491,11 +1372,11 @@ public class QueryInputResolverTest {
     graph.setCurrentSnapshot(tableId, 20L);
     QueryContextStore store = org.mockito.Mockito.mock(QueryContextStore.class);
     var withStore = new QueryInputResolver(graph, store);
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    var cacheMap = new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>();
+    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
     org.mockito.Mockito.doAnswer(
             invocation -> {
-              assertTrue(cache.containsKey(tableId), "stream cache must outlive one resolution");
-              assertEquals(10L, cache.get(tableId).join().getSnapshotId());
+              assertEquals(10L, cacheMap.get(tableId).getNow(null).getSnapshotId());
               return null;
             })
         .when(store)
@@ -1519,8 +1400,7 @@ public class QueryInputResolverTest {
         cache,
         null);
 
-    assertTrue(cache.containsKey(tableId));
-    assertEquals(10L, cache.get(tableId).join().getSnapshotId());
+    assertEquals(10L, cacheMap.get(tableId).getNow(null).getSnapshotId());
     org.mockito.Mockito.verify(store)
         .releaseResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-discarded-current"),
@@ -1577,7 +1457,7 @@ public class QueryInputResolverTest {
         });
 
     CountDownLatch rebound = new CountDownLatch(1);
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache =
+    var cacheMap =
         new ConcurrentHashMap<>() {
           @Override
           public boolean replace(
@@ -1591,6 +1471,7 @@ public class QueryInputResolverTest {
             return replaced;
           }
         };
+    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
     QueryInput explicit =
         QueryInput.newBuilder()
             .setTableId(shared)
@@ -1622,7 +1503,7 @@ public class QueryInputResolverTest {
     QueryInputResolver.ResolutionResult result = resolution.get(2, TimeUnit.SECONDS);
 
     assertTrue(rebound.await(2, TimeUnit.SECONDS));
-    assertEquals(10L, cache.get(shared).join().getSnapshotId());
+    assertEquals(10L, cacheMap.get(shared).join().getSnapshotId());
     assertEquals(List.of(shared, shared, shared, blocked), result.resolved());
     assertEquals(2, result.relationPinSet().getPinsCount());
   }
@@ -1640,7 +1521,7 @@ public class QueryInputResolverTest {
             .setSnapshotBlobUri("s3://RETIRED_CURRENT_WAITER/snapshot-20.pb")
             .build();
     AtomicBoolean retireBeforeValidation = new AtomicBoolean(true);
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache =
+    var cacheMap =
         new ConcurrentHashMap<>() {
           @Override
           public CompletableFuture<TablePin> get(Object key) {
@@ -1651,7 +1532,8 @@ public class QueryInputResolverTest {
             return super.get(key);
           }
         };
-    cache.put(shared, CompletableFuture.completedFuture(retiredPin));
+    SnapshotPinCache cache = new SnapshotPinCache(cacheMap);
+    cacheMap.put(shared, CompletableFuture.completedFuture(retiredPin));
 
     QueryInputResolver.ResolutionResult result =
         resolver.resolveInputs(
@@ -1667,7 +1549,7 @@ public class QueryInputResolverTest {
     assertEquals(
         1L,
         metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(shared)).count());
-    assertTrue(cache.containsKey(shared));
+    assertTrue(cacheMap.containsKey(shared));
   }
 
   @Test
@@ -1678,7 +1560,7 @@ public class QueryInputResolverTest {
     graph.failPinFor(failing);
     var withStore =
         new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    SnapshotPinCache cache = new SnapshotPinCache();
 
     assertThrows(
         StatusRuntimeException.class,
@@ -1694,40 +1576,7 @@ public class QueryInputResolverTest {
                 cache,
                 null));
 
-    assertTrue(cache.isEmpty());
-  }
-
-  @Test
-  void failedResolutionEvictsFirstTouchReplacementFromSharedCurrentCache() {
-    ResourceId shared = rid("FAILED_REPLACEMENT_CURRENT");
-    ResourceId failing = rid("FAILED_REPLACEMENT_ERROR");
-    var graph = new FakeGraph();
-    graph.setCurrentSnapshot(shared, 20L);
-    graph.failPinFor(failing);
-    var withStore =
-        new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
-    QueryInput explicit =
-        QueryInput.newBuilder()
-            .setTableId(shared)
-            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(10L))
-            .build();
-    QueryInput current = QueryInput.newBuilder().setTableId(shared).build();
-    QueryInput failure = QueryInput.newBuilder().setTableId(failing).build();
-
-    assertThrows(
-        StatusRuntimeException.class,
-        () ->
-            withStore.resolveInputs(
-                "q-failed-replacement",
-                "cid",
-                List.of(explicit, current, failure),
-                Optional.empty(),
-                Optional.empty(),
-                cache,
-                null));
-
-    assertFalse(cache.containsKey(shared));
+    assertTrue(cache.entries().isEmpty());
   }
 
   @Test
@@ -1738,7 +1587,7 @@ public class QueryInputResolverTest {
     graph.failPinFor(failing);
     var withStore =
         new QueryInputResolver(graph, org.mockito.Mockito.mock(QueryContextStore.class));
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    SnapshotPinCache cache = new SnapshotPinCache();
 
     withStore.resolveInputs(
         "q-concurrent-cache-existing",
@@ -1748,7 +1597,7 @@ public class QueryInputResolverTest {
         Optional.empty(),
         cache,
         null);
-    CompletableFuture<TablePin> existing = cache.get(cached);
+    CompletableFuture<TablePin> existing = cache.entries().get(cached);
 
     assertThrows(
         StatusRuntimeException.class,
@@ -1764,8 +1613,8 @@ public class QueryInputResolverTest {
                 cache,
                 null));
 
-    assertSame(existing, cache.get(cached));
-    assertEquals(Set.of(cached), cache.keySet());
+    assertSame(existing, cache.entries().get(cached));
+    assertEquals(Set.of(cached), cache.entries().keySet());
   }
 
   @Test
@@ -1796,7 +1645,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.doAnswer(
             invocation -> {
               @SuppressWarnings("unchecked")
-              java.util.Collection<String> roots = invocation.getArgument(2);
+              java.util.Collection<String> roots = invocation.getArgument(1);
               if (roots.contains("s3://CONCURRENT_CACHE_HANDOFF/table.pb")
                   && sharedRegistrations.incrementAndGet() == 2) {
                 waiterRegistrationStarted.countDown();
@@ -1806,9 +1655,7 @@ public class QueryInputResolverTest {
             })
         .when(store)
         .registerResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.anyString(),
-            org.mockito.ArgumentMatchers.any(ResourceId.class),
-            org.mockito.ArgumentMatchers.any());
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
     org.mockito.Mockito.doAnswer(
             invocation -> {
               @SuppressWarnings("unchecked")
@@ -1822,7 +1669,7 @@ public class QueryInputResolverTest {
         .releaseResolvingPinBlobs(
             org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
     var withStore = new QueryInputResolver(graph, store);
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    SnapshotPinCache cache = new SnapshotPinCache();
 
     CompletableFuture<Throwable> owner =
         resolveCancellable(
@@ -1840,11 +1687,12 @@ public class QueryInputResolverTest {
     try {
       assertTrue(failingLookupStarted.await(1, TimeUnit.SECONDS));
       for (int attempt = 0;
-          attempt < 100 && (cache.get(shared) == null || !cache.get(shared).isDone());
+          attempt < 100
+              && (cache.entries().get(shared) == null || !cache.entries().get(shared).isDone());
           attempt++) {
         Thread.sleep(10);
       }
-      assertTrue(cache.get(shared).isDone());
+      assertTrue(cache.entries().get(shared).isDone());
 
       CompletableFuture<QueryInputResolver.ResolutionResult> waiter =
           CompletableFuture.supplyAsync(
@@ -2136,26 +1984,6 @@ public class QueryInputResolverTest {
     }
   }
 
-  /** Blocks the final caller-thread pin callback so cancellation can race its return. */
-  static final class BlockingThreadConfinedPinGraph extends FakeGraph {
-    final UninterruptibleBlocker pinBlocker = new UninterruptibleBlocker();
-
-    @Override
-    public boolean supportsConcurrentResolution() {
-      return false;
-    }
-
-    @Override
-    public TablePin tablePinFor(
-        String correlationId,
-        ResourceId tableId,
-        SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
-      pinBlocker.await();
-      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
-    }
-  }
-
   /** Fails if a planning callback runs off the thread that began the request. */
   static final class CallerThreadOnlyGraph extends FakeGraph {
     private final Thread callerThread;
@@ -2188,15 +2016,55 @@ public class QueryInputResolverTest {
     }
   }
 
+  /** Completes its blocked lookup after interruption so cancellation cleanup runs first. */
+  static final class NonInterruptiblePinGraph extends FakeGraph {
+    private final String blockedTableId;
+    final CountDownLatch slowPinStarted = new CountDownLatch(1);
+    final CountDownLatch allowSlowPin = new CountDownLatch(1);
+    final CountDownLatch slowPinCompleted = new CountDownLatch(1);
+
+    NonInterruptiblePinGraph(String blockedTableId) {
+      this.blockedTableId = blockedTableId;
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if (blockedTableId.equals(tableId.getId())) {
+        slowPinStarted.countDown();
+        awaitUninterruptibly(allowSlowPin);
+        slowPinCompleted.countDown();
+      }
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+      boolean interrupted = false;
+      while (true) {
+        try {
+          latch.await();
+          break;
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
   /** Fails one lookup only after the sibling has published its fully processed pin. */
   static final class FailingAfterFastPinGraph extends FakeGraph {
     private final CountDownLatch fastPinCompleted = new CountDownLatch(1);
-    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache;
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> snapshotPins;
     private CompletableFuture<TablePin> fastPinHolder;
 
-    FailingAfterFastPinGraph(
-        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache) {
-      this.currentSnapshotPinCache = currentSnapshotPinCache;
+    FailingAfterFastPinGraph(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> snapshotPins) {
+      this.snapshotPins = snapshotPins;
     }
 
     @Override
@@ -2221,7 +2089,7 @@ public class QueryInputResolverTest {
       }
       TablePin pin = super.tablePinFor(correlationId, tableId, override, asOfDefault);
       if ("FAST".equals(tableId.getId())) {
-        fastPinHolder = currentSnapshotPinCache.get(tableId);
+        fastPinHolder = snapshotPins.get(tableId);
         if (fastPinHolder == null) {
           throw new AssertionError("fast pin lookup did not publish a cache holder");
         }
