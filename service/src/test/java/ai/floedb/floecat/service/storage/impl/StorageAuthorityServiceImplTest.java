@@ -637,8 +637,11 @@ class StorageAuthorityServiceImplTest {
           assertThrows(
               StatusRuntimeException.class,
               () ->
-                  SourceCatalogCredentialVendor.requireRefreshableCredentials(
-                      vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()), "tpch_10", "customer"),
+                  SourceCatalogCredentialVendor.requireUsableCredentials(
+                      vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()),
+                      "tpch_10",
+                      "customer",
+                      SourceCatalogCredentialVendor.CredentialUse.RECONCILE),
               c.name());
       assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode(), c.name());
       // Terminal by structured reason, so the reconciler stops instead of retrying forever.
@@ -651,8 +654,48 @@ class StorageAuthorityServiceImplTest {
 
   @Test
   void completeVendedCredentialsAreAccepted() {
-    SourceCatalogCredentialVendor.requireRefreshableCredentials(
-        vendedTuple("ASIA", "secret", "token", EXPIRY), "tpch_10", "customer");
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("ASIA", "secret", "token", EXPIRY),
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+  }
+
+  @Test
+  void queryUseAcceptsCredentialsThatCannotBeRenewed() {
+    // The renewal requirement is the reconcile worker's: it registers a refresh provider only when
+    // it can see an expiry, and otherwise embeds credentials statically and never re-vends. The
+    // query path hands them to the scan engine for reads that happen now and registers no provider,
+    // so a missing session token or expiry says nothing about whether the read will work. Enforcing
+    // it there would reject perfectly readable credentials -- with a terminal classification, on a
+    // path where nothing retries and there is no job to fail.
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("AKIA", "secret", null, null),
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY);
+  }
+
+  @Test
+  void queryUseStillRequiresACompleteKeyPair() {
+    // Relaxing renewal does not relax usability: without both halves of the key pair there is
+    // nothing to read with, and the failure would otherwise surface as an opaque 403 mid-scan.
+    record Missing(String name, String ak, String sk) {}
+    for (var c :
+        java.util.List.of(
+            new Missing("no secret", "AKIA", null),
+            new Missing("no access key", null, "secret"),
+            new Missing("blank secret", "AKIA", "   "))) {
+      assertThrows(
+          StatusRuntimeException.class,
+          () ->
+              SourceCatalogCredentialVendor.requireUsableCredentials(
+                  vendedTuple(c.ak(), c.sk(), null, null),
+                  "tpch_10",
+                  "customer",
+                  SourceCatalogCredentialVendor.CredentialUse.QUERY),
+          c.name());
+    }
   }
 
   /**

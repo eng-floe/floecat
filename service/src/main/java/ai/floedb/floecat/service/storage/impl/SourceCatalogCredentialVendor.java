@@ -74,6 +74,17 @@ public class SourceCatalogCredentialVendor {
   /** Region aliases, matching what {@code StorageAuthorityResolver.putRegionConfig} writes. */
   private static final List<String> REGION_KEYS = List.of("s3.region", "region", "client.region");
 
+  /**
+   * What the caller will do with the credentials. Selects how strictly they are validated: only the
+   * reconcile path renews them, so only it requires a renewable session tuple.
+   */
+  enum CredentialUse {
+    /** Execution-bound capture. A refresh provider is registered, so renewal must be possible. */
+    RECONCILE,
+    /** Query read-back. Handed to the scan engine's FileIO for immediate reads; never renewed. */
+    QUERY
+  }
+
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
 
@@ -86,8 +97,10 @@ public class SourceCatalogCredentialVendor {
    *
    * @param table a persisted table, carrying the upstream connector reference
    * @param responseLocationPrefix prefix to stamp on the returned credential
+   * @param use how the caller will use the credentials, which sets how strictly they are validated
    */
-  ResolveStorageAuthorityResponse vendForTable(Table table, String responseLocationPrefix) {
+  ResolveStorageAuthorityResponse vendForTable(
+      Table table, String responseLocationPrefix, CredentialUse use) {
     if (table == null) {
       return null;
     }
@@ -158,7 +171,7 @@ public class SourceCatalogCredentialVendor {
       return null;
     }
 
-    requireRefreshableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName());
+    requireUsableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName(), use);
 
     // A delegating catalog vends credentials, not routing. Polaris returns the session triple and
     // no region at all, which left every consumer to supply its own: the reconcile worker has a
@@ -262,25 +275,39 @@ public class SourceCatalogCredentialVendor {
   }
 
   /**
-   * Refuses vended credentials that carry no usable expiry.
+   * Refuses vended credentials the caller cannot actually use.
    *
-   * <p>The reconcile worker registers a refresh provider only when it can see one -- its {@code
-   * is_refreshable()} is exactly {@code expires_at.is_some()} -- and without it embeds the
-   * credentials statically and never re-vends, so they expire mid-read with no recovery. Client
-   * usage carries the same invariant. Failing at vend time makes that visible here instead of as an
-   * opaque 403 partway through a file group.
+   * <p>Two requirements, and only one of them is universal. Any reader needs a complete key pair.
+   * Beyond that, {@link CredentialUse#RECONCILE} additionally needs a session token and an expiry,
+   * because the reconcile worker registers a refresh provider only when it can see one -- its
+   * {@code is_refreshable()} is exactly {@code expires_at.is_some()} -- and without it embeds the
+   * credentials statically and never re-vends, so they expire mid-read with no recovery. Failing at
+   * vend time makes that visible here instead of as an opaque 403 partway through a file group.
+   *
+   * <p>{@link CredentialUse#QUERY} hands credentials straight to the scan engine's FileIO for reads
+   * that happen now, and registers no refresh provider, so the renewal requirement has no meaning
+   * there. Enforcing it anyway would reject credentials that read perfectly well -- and reject them
+   * with a terminal classification, on a path where nothing is retrying and there is no job to fail
+   * terminally.
    */
-  static void requireRefreshableCredentials(
-      FloecatConnector.VendedStorageCredentials vended, String namespaceFq, String tableName) {
+  static void requireUsableCredentials(
+      FloecatConnector.VendedStorageCredentials vended,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use) {
     Map<String, String> props = vended.properties();
+    List<String> required =
+        use == CredentialUse.RECONCILE
+            ? List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token")
+            : List.of("s3.access-key-id", "s3.secret-access-key");
     List<String> missing = new java.util.ArrayList<>();
-    for (String key : List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token")) {
+    for (String key : required) {
       String value = props.get(key);
       if (value == null || value.isBlank()) {
         missing.add(key);
       }
     }
-    if (vended.expiresAt() == null) {
+    if (use == CredentialUse.RECONCILE && vended.expiresAt() == null) {
       missing.add("s3.session-token-expires-at-ms");
     }
     if (missing.isEmpty()) {

@@ -72,7 +72,8 @@ public class ServerSideFileIoPropertiesResolver {
       // credential expiry -- has to cover this call site too, or queries against a delegated
       // table keep paying a catalog round-trip per scan.
       ResolveStorageAuthorityResponse vended =
-          sourceCatalogVendor.vendForTable(table, locationPrefix);
+          sourceCatalogVendor.vendForTable(
+              table, locationPrefix, SourceCatalogCredentialVendor.CredentialUse.QUERY);
       if (vended != null) {
         return mergeStorageAuthorityFileIoConfig(vended);
       }

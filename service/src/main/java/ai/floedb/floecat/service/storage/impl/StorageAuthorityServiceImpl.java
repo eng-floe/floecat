@@ -756,7 +756,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           requestedTableId.getId(), e.getStatus());
       return null;
     }
-    return sourceCatalogVendor.vendForTable(table, responseLocationPrefix);
+    return sourceCatalogVendor.vendForTable(
+        table, responseLocationPrefix, SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
   }
 
   private CredentialScope resolvePlannerBootstrapLocation(

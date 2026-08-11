@@ -191,7 +191,10 @@ class ServerSideFileIoPropertiesResolverTest {
     }
 
     @Override
-    ResolveStorageAuthorityResponse vendForTable(Table table, String responseLocationPrefix) {
+    ResolveStorageAuthorityResponse vendForTable(
+        Table table,
+        String responseLocationPrefix,
+        SourceCatalogCredentialVendor.CredentialUse use) {
       calls++;
       return response;
     }
