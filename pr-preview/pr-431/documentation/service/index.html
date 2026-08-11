@@ -2178,6 +2178,14 @@ rows upserted after all batches have been consumed.</p>
 <td>Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use <code>64</code>; present malformed, blank, or out-of-range values fail startup.</td>
 </tr>
 <tr>
+<td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
+<td>Per-chunk relation-build fan-out for GetUserObjects. Defaults to <code>8</code>.</td>
+</tr>
+<tr>
+<td><code>floecat.catalog.bundle.max_parallel_stats_warms</code></td>
+<td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
+</tr>
+<tr>
 <td><code>floecat.gc.idempotency.*</code></td>
 <td>Cadence, page size, batch limit, slice duration for idempotency GC.</td>
 </tr>
