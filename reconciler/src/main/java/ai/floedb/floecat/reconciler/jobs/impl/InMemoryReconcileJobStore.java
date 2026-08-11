@@ -879,10 +879,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       return existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
           && completion.equals(snapshotFinalizeCompletions.get(jobId));
     }
+    boolean acceptedSnapshotFinalize =
+        existing != null
+            && existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && hasAcceptedSnapshotFinalizeIntent(jobId, leaseEpoch);
     if (existing == null
         || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-        || !renewLease(jobId, leaseEpoch)) {
+        || (!acceptedSnapshotFinalize && !renewLease(jobId, leaseEpoch))) {
       return false;
+    }
+    if (acceptedSnapshotFinalize && !hasActiveLease(jobId, leaseEpoch)) {
+      // The accepted result, not the worker lease lifetime, owns publication. Extend the internal
+      // lease only while this synchronized completion reuses the normal terminal transition.
+      leaseExpiresAtMs.put(jobId, System.currentTimeMillis() + leaseMs);
     }
     snapshotFinalizeCompletions.put(jobId, completion);
     markSucceeded(
@@ -1128,7 +1137,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         || expiry == null) {
       return Optional.empty();
     }
-    if (expiry <= now && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
+    boolean acceptedSnapshotFinalize =
+        job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(job.state)
+            && hasAcceptedSnapshotFinalizeIntent(jobId, leaseEpoch);
+    if (!acceptedSnapshotFinalize
+        && expiry <= now
+        && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
       return Optional.empty();
     }
     return Optional.of(
@@ -1420,7 +1435,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
-          if (!hasActiveLease(id, leaseEpoch)) {
+          if (!hasActiveLease(id, leaseEpoch)
+              && !hasAcceptedSnapshotFinalizeIntent(id, leaseEpoch)) {
             return job;
           }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
@@ -1575,7 +1591,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
-          if (!hasActiveLease(id, leaseEpoch)) {
+          if (!hasActiveLease(id, leaseEpoch)
+              && !hasAcceptedSnapshotFinalizeIntent(id, leaseEpoch)) {
             return job;
           }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
@@ -1806,6 +1823,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis());
   }
 
+  private boolean hasAcceptedSnapshotFinalizeIntent(String jobId, String leaseEpoch) {
+    SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntents.get(jobId);
+    return snapshotFinalizeCommits.contains(jobId)
+        && intent != null
+        && leaseEpoch != null
+        && leaseEpoch.equals(leaseEpochs.get(jobId))
+        && leaseEpoch.equals(intent.leaseEpoch());
+  }
+
   private synchronized void reclaimExpiredLeasesIfDue(long nowMs) {
     if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
       return;
@@ -1819,6 +1845,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       jobs.computeIfPresent(
           jobId,
           (id, job) -> {
+            if ("JS_RUNNING".equals(job.state)
+                && hasAcceptedSnapshotFinalizeIntent(id, leaseEpochs.get(id))) {
+              return job;
+            }
             if (!leased.remove(id)) {
               return job;
             }

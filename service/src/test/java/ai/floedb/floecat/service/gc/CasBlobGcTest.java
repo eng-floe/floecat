@@ -469,15 +469,14 @@ class CasBlobGcTest {
     gc.reachabilityGuard =
         new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
           @Override
-          public <T> T exclusive(
-              ai.floedb.floecat.common.rpc.ResourceId tableId,
-              java.util.function.Supplier<T> action) {
-            return super.exclusive(
-                tableId,
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            return super.deleteIfUnchanged(
+                proof,
                 () -> {
                   insideGuard.set(true);
                   try {
-                    return action.get();
+                    return deletion.get();
                   } finally {
                     insideGuard.set(false);
                   }
@@ -498,6 +497,45 @@ class CasBlobGcTest {
 
     assertTrue(result.blobsDeleted() > 0, "the superseded generation was reclaimed");
     assertFalse(guardedBlobIo.get(), "remote generation blob I/O must run outside the guard");
+  }
+
+  @Test
+  void generationProtectionScanRunsBeforeThePublicationWriteLock() {
+    var insideGuard = new java.util.concurrent.atomic.AtomicBoolean();
+    var protectionCheckedInsideGuard = new java.util.concurrent.atomic.AtomicBoolean();
+    var guard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            return super.deleteIfUnchanged(
+                proof,
+                () -> {
+                  insideGuard.set(true);
+                  try {
+                    return deletion.get();
+                  } finally {
+                    insideGuard.set(false);
+                  }
+                });
+          }
+        };
+
+    try (var proof = guard.beginProof(ACCOUNT_ID, TABLE_ID)) {
+      var result =
+          CasBlobGc.claimGenerationIfUnprotected(
+              guard,
+              proof,
+              () -> {
+                protectionCheckedInsideGuard.set(insideGuard.get());
+                return false;
+              },
+              () -> true);
+
+      assertFalse(result.changed());
+      assertTrue(result.value());
+      assertFalse(protectionCheckedInsideGuard.get());
+    }
   }
 
   @Test

@@ -880,10 +880,6 @@ public abstract class IcebergConnector implements FloecatConnector {
         IcebergPlanner.dataContentIdentity(sequenceNumber, dataFile.recordCount()));
   }
 
-  private static boolean hasAny(Iterable<?> values) {
-    return values != null && values.iterator().hasNext();
-  }
-
   private List<TargetStatsRecord> buildTargetStats(
       Table table,
       ResourceId destinationTableId,

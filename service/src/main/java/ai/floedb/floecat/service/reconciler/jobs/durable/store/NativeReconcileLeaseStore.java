@@ -1052,6 +1052,12 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                       && !repairingWaitingPlanner) {
                     return null;
                   }
+                  // An accepted snapshot-finalize result is past the point of no return. Its
+                  // publication scheduler owns completion even after the worker lease expires.
+                  if ("JS_RUNNING".equals(record.state)
+                      && record.hasPublishableSnapshotFinalizeIntent()) {
+                    return null;
+                  }
                   StoredJobLease currentLease = loadLease(record).orElse(null);
                   if (currentLease == null
                       || blank(currentLease.epoch)
@@ -1062,7 +1068,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                   }
                   expiredEpoch.set(currentLease.epoch);
                   boolean wasCancelling = "JS_CANCELLING".equals(record.state);
-                  record.snapshotFinalizeCommitStarted = false;
+                  record.clearSnapshotFinalizeIntent();
                   if (wasCancelling) {
                     record.state = "JS_CANCELLED";
                     record.message =

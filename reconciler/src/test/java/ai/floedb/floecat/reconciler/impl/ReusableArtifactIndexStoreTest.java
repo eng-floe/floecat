@@ -291,6 +291,23 @@ class ReusableArtifactIndexStoreTest {
   }
 
   @Test
+  void appendRejectsBaseWhoseInlineManifestReferencesForeignPacks() {
+    List<String> paths = new ArrayList<>();
+    String padding = "x".repeat(3_000);
+    for (int index = 0; index < 400; index++) {
+      paths.add("s3://bucket/" + padding + index + ".parquet");
+    }
+    ReusableArtifactIndexReference foreign =
+        store.append(
+            "/foreign/",
+            ReusableArtifactIndexStore.emptyReference(),
+            List.of(statsBundle("packed", paths)));
+
+    assertThrows(
+        IllegalArgumentException.class, () -> store.append("/owned/", foreign, List.of()));
+  }
+
+  @Test
   void readableReferenceRejectsOversizedPackBeforeReadingIt() throws Exception {
     List<String> paths = new ArrayList<>();
     String padding = "x".repeat(3_000);

@@ -157,6 +157,25 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void rejectsDuplicateFilesAcrossPlannedGroupsEvenWhenCountsMatch() {
+    List<ReconcileFileGroupTask> plannedGroups =
+        List.of(
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/a.parquet")),
+            ReconcileFileGroupTask.of(
+                "plan-1", "group-2", "table-1", 55L, List.of("s3://bucket/a.parquet")));
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                RemoteSnapshotFinalizeReconcileExecutor.validatePlannedFileCoverage(
+                    plannedGroups, 0, 2));
+
+    assertTrue(error.getMessage().contains("more than one group"));
+  }
+
+  @Test
   void appendOnlyDefaultIndexSelectorsCompareByStableFieldIdentity() {
     Set<String> inherited =
         RemoteSnapshotFinalizeReconcileExecutor.defaultIndexSelectorIdentities(
@@ -573,7 +592,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             tableId(),
             55L,
             true,
-            0,
+            2,
             "/snapshot-plan.json",
             2,
             "/final-stats.pb",

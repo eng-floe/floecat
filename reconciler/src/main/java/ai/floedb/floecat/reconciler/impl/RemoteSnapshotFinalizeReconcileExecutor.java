@@ -401,7 +401,30 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                 + plannedGroup.groupId());
       }
     }
+    int inheritedFileCount =
+        snapshotPlan.appendOnlyBase().map(SnapshotPlanBlobStore.AppendOnlyBase::sourceFileCount)
+            .orElse(0);
+    validatePlannedFileCoverage(plannedGroups, inheritedFileCount, input.sourceFileCount());
     return groupsByKey;
+  }
+
+  static void validatePlannedFileCoverage(
+      List<ReconcileFileGroupTask> plannedGroups,
+      int inheritedFileCount,
+      int sourceFileCount) {
+    Set<String> plannedFilePaths = new HashSet<>();
+    for (ReconcileFileGroupTask plannedGroup : plannedGroups) {
+      for (String filePath : plannedGroup.filePaths()) {
+        if (!plannedFilePaths.add(filePath)) {
+          throw new IllegalStateException(
+              "snapshot plan assigns a file to more than one group: " + filePath);
+        }
+      }
+    }
+    if (Math.addExact(plannedFilePaths.size(), inheritedFileCount) != sourceFileCount) {
+      throw new IllegalStateException(
+          "snapshot plan file identities do not cover the declared source files");
+    }
   }
 
   private ValidatedFileGroupArtifacts loadValidatedArtifacts(

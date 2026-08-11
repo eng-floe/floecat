@@ -918,6 +918,9 @@ abstract class DeltaConnector implements FloecatConnector {
     long classifiedNanos = System.nanoTime();
 
     for (DeltaChangeChunk chunk : classification) {
+      if (chunk.cancelled()) {
+        return Optional.empty();
+      }
       if (!chunk.appendOnly()) {
         return Optional.of(
             new SnapshotFileDelta(
@@ -947,6 +950,9 @@ abstract class DeltaConnector implements FloecatConnector {
 
     LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
     for (DeltaChangeChunk chunk : chunks) {
+      if (chunk.cancelled()) {
+        return Optional.empty();
+      }
       if (!chunk.appendOnly()) {
         return Optional.of(
             new SnapshotFileDelta(
@@ -1043,7 +1049,7 @@ abstract class DeltaConnector implements FloecatConnector {
             TableChangesUtils.flattenCommitsAndAddMetadata(engine, commits)) {
       while (batches.hasNext()) {
         if (nonAppend.get()) {
-          return DeltaChangeChunk.cancelled();
+          return DeltaChangeChunk.cancelledChunk();
         }
         var batch = batches.next();
         int addOrdinal = batch.getSchema().indexOf("add");
@@ -1051,7 +1057,7 @@ abstract class DeltaConnector implements FloecatConnector {
         try (var rows = batch.getRows()) {
           while (rows.hasNext()) {
             if (nonAppend.get()) {
-              return DeltaChangeChunk.cancelled();
+              return DeltaChangeChunk.cancelledChunk();
             }
             var row = rows.next();
             if (removeOrdinal >= 0 && !row.isNullAt(removeOrdinal)) {
@@ -1076,7 +1082,7 @@ abstract class DeltaConnector implements FloecatConnector {
         }
       }
     }
-    return new DeltaChangeChunk(additions, Set.of(), false);
+    return new DeltaChangeChunk(additions, Set.of(), false, false);
   }
 
   static int deltaChangeReaderCount(int commitCount) {
@@ -1103,24 +1109,25 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(partitions);
   }
 
-  private record DeltaChangeChunk(
+  record DeltaChangeChunk(
       Map<String, SnapshotFileEntry> additions,
       Set<String> removals,
-      boolean deleteArtifactsChanged) {
+      boolean deleteArtifactsChanged,
+      boolean cancelled) {
     boolean appendOnly() {
       return removals.isEmpty() && !deleteArtifactsChanged;
     }
 
     static DeltaChangeChunk removal(String path, boolean deleteArtifactsChanged) {
-      return new DeltaChangeChunk(Map.of(), Set.of(path), deleteArtifactsChanged);
+      return new DeltaChangeChunk(Map.of(), Set.of(path), deleteArtifactsChanged, false);
     }
 
     static DeltaChangeChunk deleteArtifactChange() {
-      return new DeltaChangeChunk(Map.of(), Set.of(), true);
+      return new DeltaChangeChunk(Map.of(), Set.of(), true, false);
     }
 
-    static DeltaChangeChunk cancelled() {
-      return deleteArtifactChange();
+    static DeltaChangeChunk cancelledChunk() {
+      return new DeltaChangeChunk(Map.of(), Set.of(), false, true);
     }
   }
 

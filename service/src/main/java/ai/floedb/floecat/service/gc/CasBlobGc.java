@@ -879,18 +879,11 @@ public class CasBlobGc {
                     pass.generationGcContinuation,
                     (isProtected, claim, restore) -> {
                       var guardedClaim =
-                          reachabilityGuard.deleteIfUnchanged(
+                          claimGenerationIfUnprotected(
+                              reachabilityGuard,
                               pass.generationGcProof,
-                              () -> {
-                                if (isProtected.getAsBoolean() || !claim.getAsBoolean()) {
-                                  return false;
-                                }
-                                if (isProtected.getAsBoolean()) {
-                                  restore.run();
-                                  return false;
-                                }
-                                return true;
-                              });
+                              isProtected,
+                              claim);
                       if (guardedClaim.changed()) {
                         generationProofChanged[0] = true;
                         return false;
@@ -1121,6 +1114,20 @@ public class CasBlobGc {
         walkFailures[0] > 0 || pass.poisoned,
         false,
         pass.generationCleanupPending);
+  }
+
+  static TableBlobReachabilityGuard.GuardedResult<Boolean> claimGenerationIfUnprotected(
+      TableBlobReachabilityGuard guard,
+      TableBlobReachabilityGuard.Proof proof,
+      java.util.function.BooleanSupplier isProtected,
+      java.util.function.BooleanSupplier claim) {
+    // Protection can expand a newly registered pin's root chain through remote blob reads. Do
+    // that while retaining the epoch proof but before taking the table write lock. If publication
+    // overlaps the scan, the guarded epoch check rejects the claim and the caller re-marks.
+    if (isProtected.getAsBoolean()) {
+      return new TableBlobReachabilityGuard.GuardedResult<>(false, false);
+    }
+    return guard.deleteIfUnchanged(proof, claim::getAsBoolean);
   }
 
   /**

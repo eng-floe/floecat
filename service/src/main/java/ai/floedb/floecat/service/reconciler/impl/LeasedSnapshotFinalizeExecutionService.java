@@ -212,7 +212,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     long startedNanos = System.nanoTime();
     ReconcileJobStore.LeasedJob lease =
-        requireLeasedSnapshotFinalizeJob(jobId, jobId, intent.leaseEpoch());
+        jobs.getCompletionLeaseView(jobId, intent.leaseEpoch(), true)
+            .filter(value -> value.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .orElseThrow(
+                () ->
+                    Status.FAILED_PRECONDITION
+                        .withDescription("accepted snapshot finalizer is no longer publishable")
+                        .asRuntimeException());
     ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
     ResourceId tableId = tableId(lease, snapshotTask);
     byte[] manifestDigest;

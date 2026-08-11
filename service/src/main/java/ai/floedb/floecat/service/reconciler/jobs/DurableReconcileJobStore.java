@@ -1793,7 +1793,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             && !blankToEmpty(existing.plannerOutcomeFingerprint).isBlank()
             && !blankToEmpty(leaseEpoch).isBlank()
             && blankToEmpty(leaseEpoch).equals(blankToEmpty(existing.plannerOutcomeLeaseEpoch));
+    boolean publishingAcceptedSnapshotFinalize =
+        existing.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(existing.state)
+            && existing.hasPublishableSnapshotFinalizeIntent()
+            && !blankToEmpty(leaseEpoch).isBlank()
+            && blankToEmpty(leaseEpoch)
+                .equals(blankToEmpty(existing.snapshotFinalizeResultLeaseEpoch));
     if (!replayingCommittedWaitingOutcome
+        && !publishingAcceptedSnapshotFinalize
         && !leaseManager()
             .hasActiveLease(
                 jobId,
@@ -2529,9 +2537,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
     StoredEnvelope stored = loadByAnyAccount(jobId).orElse(null);
     return Optional.ofNullable(
-        stored == null || !stored.record.snapshotFinalizeCommitStarted
-            ? null
-            : snapshotFinalizeCommitIntent(stored.record));
+        stored == null ? null : snapshotFinalizeCommitIntent(stored.record));
   }
 
   @Override
@@ -2543,7 +2549,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     for (StoredReconcileJob record : page.records()) {
       if (record == null
           || record.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-          || !record.snapshotFinalizeCommitStarted) {
+          || !record.hasPublishableSnapshotFinalizeIntent()) {
         continue;
       }
       SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);
@@ -2556,13 +2562,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private static SnapshotFinalizeCommitIntent snapshotFinalizeCommitIntent(
       StoredReconcileJob record) {
-    if (record == null
-        || blank(record.jobId)
-        || blank(record.snapshotFinalizeResultLeaseEpoch)
-        || blank(record.snapshotFinalizeResultId)
-        || blank(record.snapshotFinalizeManifestUri)
-        || record.snapshotFinalizeManifestBytes <= 0L
-        || blank(record.snapshotFinalizeManifestSha256)) {
+    if (record == null || !record.hasPublishableSnapshotFinalizeIntent()) {
       return null;
     }
     return new SnapshotFinalizeCommitIntent(
@@ -4913,8 +4913,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         completionKind == CompletionKind.SUCCEEDED_WAITING
             || completionKind == CompletionKind.SUCCEEDED
             || completionKind == CompletionKind.FAILED_TERMINAL;
-    if (!leaseManager()
-        .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
+    boolean publishingAcceptedSnapshotFinalize =
+        nextChild.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(nextChild.state)
+            && nextChild.hasPublishableSnapshotFinalizeIntent()
+            && !blankToEmpty(leaseEpoch).isBlank()
+            && blankToEmpty(leaseEpoch)
+                .equals(blankToEmpty(nextChild.snapshotFinalizeResultLeaseEpoch));
+    if (!publishingAcceptedSnapshotFinalize
+        && !leaseManager()
+            .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
       return null;
     }
     if (isTerminalState(nextChild.state)) {
@@ -5141,7 +5149,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.indexesProcessed = Math.max(existing.indexesProcessed, indexesProcessed);
     existing.lastError = message == null ? "Failed" : message;
     existing.childrenFinalized = false;
-    existing.snapshotFinalizeCommitStarted = false;
+    existing.clearSnapshotFinalizeIntent();
 
     if (existing.attempt >= maxAttempts) {
       existing.state = "JS_FAILED";

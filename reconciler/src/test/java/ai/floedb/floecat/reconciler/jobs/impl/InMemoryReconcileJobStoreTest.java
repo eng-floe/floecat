@@ -658,6 +658,134 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void acceptedSnapshotFinalizePublishesAfterWorkerLeaseAndGraceExpire() throws Exception {
+    String leaseKey = "floecat.reconciler.job-store.lease-ms";
+    String reclaimKey = "floecat.reconciler.job-store.reclaim-interval-ms";
+    String previousLease = System.getProperty(leaseKey);
+    String previousReclaim = System.getProperty(reclaimKey);
+    try {
+      System.setProperty(leaseKey, "1000");
+      System.setProperty(reclaimKey, "1000");
+      var store = new InMemoryReconcileJobStore();
+      String finalizerJobId =
+          store.enqueueSnapshotFinalization(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+              ReconcileExecutionPolicy.defaults(),
+              "snapshot-job",
+              "");
+      var lease =
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null,
+                      null,
+                      null,
+                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+              .orElseThrow();
+      var intent =
+          new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+              finalizerJobId,
+              lease.leaseEpoch,
+              "result-1",
+              "/capture-manifest.pb",
+              100L,
+              "sha256",
+              0,
+              0,
+              0L,
+              0L);
+      assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, lease.leaseEpoch, intent));
+
+      Thread.sleep(1150L);
+
+      assertTrue(store.getCompletionLeaseView(finalizerJobId, lease.leaseEpoch, true).isPresent());
+      assertTrue(
+          store.completeSnapshotFinalizeSuccess(
+              finalizerJobId,
+              lease.leaseEpoch,
+              "result-1",
+              "/capture-manifest.pb",
+              100L,
+              "sha256",
+              0,
+              0,
+              0L,
+              0L,
+              List.of(),
+              System.currentTimeMillis(),
+              "published"));
+      assertEquals("JS_SUCCEEDED", store.get(finalizerJobId).orElseThrow().state);
+    } finally {
+      restoreProperty(leaseKey, previousLease);
+      restoreProperty(reclaimKey, previousReclaim);
+    }
+  }
+
+  @Test
+  void snapshotFinalizeOwnershipWithoutIntentIsReclaimedAfterLeaseExpiry() throws Exception {
+    String leaseKey = "floecat.reconciler.job-store.lease-ms";
+    String reclaimKey = "floecat.reconciler.job-store.reclaim-interval-ms";
+    String previousLease = System.getProperty(leaseKey);
+    String previousReclaim = System.getProperty(reclaimKey);
+    try {
+      System.setProperty(leaseKey, "1000");
+      System.setProperty(reclaimKey, "1000");
+      var store = new InMemoryReconcileJobStore();
+      String finalizerJobId =
+          store.enqueueSnapshotFinalization(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+              ReconcileExecutionPolicy.defaults(),
+              "snapshot-job",
+              "");
+      var lease =
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null,
+                      null,
+                      null,
+                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+              .orElseThrow();
+      assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, lease.leaseEpoch));
+      assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+
+      Thread.sleep(1150L);
+
+      assertTrue(
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null, null, null, EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR)))
+              .isEmpty());
+      assertEquals("JS_QUEUED", store.get(finalizerJobId).orElseThrow().state);
+      var recovered =
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null,
+                      null,
+                      null,
+                      EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+              .orElseThrow();
+      assertEquals(finalizerJobId, recovered.jobId);
+      assertNotEquals(lease.leaseEpoch, recovered.leaseEpoch);
+    } finally {
+      restoreProperty(leaseKey, previousLease);
+      restoreProperty(reclaimKey, previousReclaim);
+    }
+  }
+
+  @Test
   void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
     var store = new InMemoryReconcileJobStore();
 

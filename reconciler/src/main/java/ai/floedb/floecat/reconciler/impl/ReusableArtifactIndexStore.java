@@ -135,8 +135,7 @@ public final class ReusableArtifactIndexStore {
       List<ReusableArtifactBundleReference> bundles) {
     String prefix = normalizePrefix(objectPrefix);
     ReusableArtifactIndexReference effectiveBase = effectiveReference(base);
-    validateReference(effectiveBase);
-    validateOwnedRuns(prefix, effectiveBase);
+    validateReferenceObjects(effectiveBase, prefix, false);
 
     DeltaRunAccumulator accumulator = new DeltaRunAccumulator(prefix, effectiveBase);
     for (ReusableArtifactBundleReference bundle :
@@ -1141,16 +1140,6 @@ public final class ReusableArtifactIndexStore {
   private static BlockIdentity blockIdentity(ReusableArtifactIndexBlockReference reference) {
     return new BlockIdentity(
         objectIdentity(reference.getObject()), reference.getOffset(), reference.getLength());
-  }
-
-  private static void validateOwnedRuns(String prefix, ReusableArtifactIndexReference reference) {
-    for (ReusableArtifactIndexRunReference run : reference.getRunsList()) {
-      if ((!run.getManifest().getUri().isEmpty() && !run.getManifest().getUri().startsWith(prefix))
-          || (!run.getFilter().getUri().isEmpty()
-              && !run.getFilter().getUri().startsWith(prefix))) {
-        throw new IllegalArgumentException("reusable artifact run belongs to another table");
-      }
-    }
   }
 
   private static void validateOwnedObject(

@@ -408,6 +408,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
     `floecat.reconciler.job-store.max-attempts`, `base-backoff-ms`, `max-backoff-ms`, `lease-ms`,
     `reclaim-interval-ms`, and `ready-scan-limit`.
   - `floecat.reconciler.job-store=memory` uses the in-memory queue implementation.
+- Accepted snapshot-finalize results are published independently of the originating worker lease.
+  Publication recovery and throughput are tuned with
+  `floecat.reconciler.snapshot-finalize-publication.tick-every`, `page-size`, and
+  `max-parallelism`.
 - Executor toggles:
   - `floecat.reconciler.executor.remote-default.enabled`
   - `floecat.reconciler.executor.remote-planner.enabled`

@@ -6564,6 +6564,16 @@ class DurableReconcileJobStoreTest {
     assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
 
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
+    assertTrue(
+        store
+            .getCompletionLeaseView(finalizerJobId, finalizerLease.leaseEpoch, true)
+            .isPresent());
+
     store.markFailed(
         finalizerJobId,
         finalizerLease.leaseEpoch,
@@ -6577,6 +6587,145 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    assertSnapshotFinalizeIntentCleared(
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId)));
+  }
+
+  @Test
+  void snapshotFinalizeOwnershipWithoutIntentIsReclaimedAfterLeaseExpiry() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+
+    assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.snapshotFinalizeResultLeaseEpoch = finalizerLease.leaseEpoch;
+          record.snapshotFinalizeResultId = "partial-result";
+          record.snapshotFinalizeManifestUri = "/partial-capture-manifest.pb";
+          record.snapshotFinalizeManifestBytes = 123L;
+          return record;
+        });
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    StoredReconcileJob reclaimed =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    assertEquals("JS_QUEUED", reclaimed.state);
+    assertSnapshotFinalizeIntentCleared(reclaimed);
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+  }
+
+  @Test
+  void cancellingAcceptedSnapshotFinalizeIsReclaimedToCancelled() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            123L,
+            "abcdef",
+            1,
+            3,
+            4L,
+            2L);
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.state = "JS_CANCELLING";
+          record.message = "Cancelling";
+          return record;
+        });
+
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    assertEquals("JS_CANCELLED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
     assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
     assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
   }
@@ -7551,8 +7700,27 @@ class DurableReconcileJobStoreTest {
   }
 
   private void configureLeaseRenewGraceMs(long leaseRenewGraceMs) {
+    long effective = Math.max(0L, leaseRenewGraceMs);
     assertDoesNotThrow(
-        () -> setPrivateField(store, "leaseRenewGraceMs", Math.max(0L, leaseRenewGraceMs)));
+        () -> {
+          setPrivateField(store, "leaseRenewGraceMs", effective);
+          if (store.leaseStore != null) {
+            setPrivateField(store.leaseStore, "leaseRenewGraceMs", effective);
+          }
+        });
+  }
+
+  private static void assertSnapshotFinalizeIntentCleared(StoredReconcileJob record) {
+    assertFalse(record.snapshotFinalizeCommitStarted);
+    assertEquals("", record.snapshotFinalizeResultLeaseEpoch);
+    assertEquals("", record.snapshotFinalizeResultId);
+    assertEquals("", record.snapshotFinalizeManifestUri);
+    assertEquals(0L, record.snapshotFinalizeManifestBytes);
+    assertEquals("", record.snapshotFinalizeManifestSha256);
+    assertEquals(0, record.snapshotFinalizeFileGroupCount);
+    assertEquals(0, record.snapshotFinalizeSourceFileCount);
+    assertEquals(0L, record.snapshotFinalizeStatsRecordCount);
+    assertEquals(0L, record.snapshotFinalizeIndexArtifactCount);
   }
 
   private static final class DirtyParentFailingPointerStore implements PointerStore {

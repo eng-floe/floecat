@@ -379,6 +379,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             any(), anyLong(), anyString(), any(), any(), any()))
         .thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
+    when(jobs.getCompletionLeaseView(FINALIZE_JOB_ID, LEASE_EPOCH, true))
+        .thenAnswer(
+            ignored ->
+                jobs.getCompactLeaseView(FINALIZE_JOB_ID)
+                    .filter(job -> "JS_RUNNING".equals(job.state))
+                    .map(LeasedSnapshotFinalizeExecutionServiceTest::publicationLeaseView));
     when(jobs.childFileGroupResultDescriptorsPage(anyString(), anyString(), anyInt(), anyString()))
         .thenReturn(new ReconcileJobStore.FileGroupResultDescriptorPage(List.of(), ""));
     when(jobs.completeSnapshotFinalizeSuccess(
@@ -426,6 +432,18 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             any(),
             anyLong(),
             anyString());
+  }
+
+  @Test
+  void acceptedPublicationUsesDurableCompletionViewWithoutRenewingWorkerLease() {
+    SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes());
+
+    assertTrue(service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
+    assertTrue(service.publishAcceptedSnapshotFinalize(FINALIZE_JOB_ID));
+
+    verify(jobs, times(1)).renewLease(FINALIZE_JOB_ID, LEASE_EPOCH);
+    verify(jobs).getCompletionLeaseView(FINALIZE_JOB_ID, LEASE_EPOCH, true);
   }
 
   @Test
@@ -1429,5 +1447,27 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-job");
+  }
+
+  private static ReconcileJobStore.LeasedJob publicationLeaseView(
+      ReconcileJobStore.ReconcileJob job) {
+    return new ReconcileJobStore.LeasedJob(
+        job.jobId,
+        job.accountId,
+        job.connectorId,
+        job.fullRescan,
+        job.captureMode,
+        job.scope,
+        job.executionPolicy,
+        LEASE_EPOCH,
+        "",
+        job.executorId,
+        job.jobKind,
+        job.tableTask,
+        job.viewTask,
+        job.snapshotTask,
+        job.fileGroupTask,
+        job.parentJobId,
+        "");
   }
 }

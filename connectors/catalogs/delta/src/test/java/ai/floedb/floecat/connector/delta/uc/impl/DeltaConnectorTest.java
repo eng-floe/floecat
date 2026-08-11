@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -76,6 +77,15 @@ class DeltaConnectorTest {
     assertTrue(partitions.stream().allMatch(partition -> partition.size() == 63));
     assertEquals(commits, partitions.stream().flatMap(List::stream).toList());
     assertEquals(1, DeltaConnector.deltaChangeReaderCount(1));
+  }
+
+  @Test
+  void cancelledDeltaChunkDoesNotFabricateDeleteArtifactChanges() {
+    DeltaConnector.DeltaChangeChunk cancelled = DeltaConnector.DeltaChangeChunk.cancelledChunk();
+
+    assertTrue(cancelled.cancelled());
+    assertTrue(cancelled.removals().isEmpty());
+    assertFalse(cancelled.deleteArtifactsChanged());
   }
 
   @Test
