@@ -325,7 +325,11 @@ public class SourceCatalogCredentialVendor {
     // in it -- would be classified terminal and stop the reconciler retrying a job that would have
     // recovered. Iceberg's REST client raises NotAuthorizedException for 401 and ForbiddenException
     // for 403, so classification uses those and nothing else.
-    for (Throwable c = cause; c != null; c = c.getCause()) {
+    // Membership, not self-reference: `c.getCause() == c` catches only a one-node loop, so a chain
+    // where A causes B and B causes A spins here forever. SourceCatalogVendingGrpcStatus.hasReason
+    // walks a cause chain the same way and already guards it this way.
+    java.util.Set<Throwable> seen = new java.util.HashSet<>();
+    for (Throwable c = cause; c != null && seen.add(c); c = c.getCause()) {
       if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
         return io.grpc.Status.UNAUTHENTICATED
             .withDescription(detail)
@@ -337,9 +341,6 @@ public class SourceCatalogCredentialVendor {
             .withDescription(detail)
             .withCause(cause)
             .asRuntimeException();
-      }
-      if (c.getCause() == c) {
-        break;
       }
     }
     // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager
