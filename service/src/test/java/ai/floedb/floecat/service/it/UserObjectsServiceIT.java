@@ -47,6 +47,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.FieldMask;
 import io.grpc.Channel;
 import io.grpc.stub.StreamObserver;
@@ -85,6 +86,9 @@ class UserObjectsServiceIT {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub stats;
+
+  @GrpcClient("floecat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
 
   @GrpcClient("floecat")
@@ -118,8 +122,8 @@ class UserObjectsServiceIT {
             "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":true}]}",
             "table for catalog bundle test");
 
-    TestSupport.createSnapshot(
-        snapshot, tbl.getResourceId(), 1001L, System.currentTimeMillis() - 1000L);
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tbl.getResourceId(), 1001L, System.currentTimeMillis() - 1000L);
 
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "table");
     attachConnectorToTable(tbl.getResourceId(), connector);
@@ -281,8 +285,8 @@ class UserObjectsServiceIT {
             "s3://bucket/view_orders",
             "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":true}]}",
             "view backing table");
-    TestSupport.createSnapshot(
-        snapshot, tbl.getResourceId(), 2002L, System.currentTimeMillis() - 5000L);
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tbl.getResourceId(), 2002L, System.currentTimeMillis() - 5000L);
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "view");
     attachConnectorToTable(tbl.getResourceId(), connector);
 
@@ -457,8 +461,8 @@ class UserObjectsServiceIT {
             "s3://bucket/base_orders",
             "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"order_id\",\"type\":\"int\",\"required\":true}]}",
             "base table for eager test");
-    TestSupport.createSnapshot(
-        snapshot, tbl.getResourceId(), 3001L, System.currentTimeMillis() - 5000L);
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tbl.getResourceId(), 3001L, System.currentTimeMillis() - 5000L);
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "eager");
     attachConnectorToTable(tbl.getResourceId(), connector);
 
@@ -468,7 +472,7 @@ class UserObjectsServiceIT {
         SchemaColumn.newBuilder()
             .setName("order_id")
             .setNullable(false)
-            .setLogicalType("INT")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
             .build();
     var createdView =
         view.createView(
@@ -544,8 +548,8 @@ class UserObjectsServiceIT {
             "s3://bucket/enrich_orders",
             "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"order_id\",\"type\":\"int\",\"required\":true}]}",
             "base table for enrichment test");
-    TestSupport.createSnapshot(
-        snapshot, tbl.getResourceId(), 4001L, System.currentTimeMillis() - 5000L);
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tbl.getResourceId(), 4001L, System.currentTimeMillis() - 5000L);
     var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "enrich");
     attachConnectorToTable(tbl.getResourceId(), connector);
 
@@ -558,7 +562,7 @@ class UserObjectsServiceIT {
         SchemaColumn.newBuilder()
             .setName("order_id")
             .setNullable(false)
-            .setLogicalType("INT")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
             .build();
 
     // base_relations stores the bare table name only (no catalog, no schema).

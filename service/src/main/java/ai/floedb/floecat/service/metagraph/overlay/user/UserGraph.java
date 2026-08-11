@@ -24,7 +24,6 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
-import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
@@ -106,7 +105,6 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       TableRootRepository tableRootRepo,
-      TableRootCommitter rootCommitter,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
@@ -127,8 +125,7 @@ public final class UserGraph {
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.pinValidator = pinValidator;
-    this.snapshots =
-        new SnapshotHelper(snapshotRepo, tableRootRepo, rootCommitter, statsStore, pinValidator);
+    this.snapshots = new SnapshotHelper(snapshotRepo, tableRootRepo, statsStore, pinValidator);
     this.hints = engineHints;
     this.principal = principal;
   }
@@ -152,7 +149,6 @@ public final class UserGraph {
         tableRepo,
         viewRepo,
         tableRootRepo,
-        new TableRootCommitter(tableRootRepo),
         observability,
         principal,
         cacheMaxSize,
@@ -183,7 +179,6 @@ public final class UserGraph {
         tableRepo,
         viewRepo,
         tableRootRepo,
-        new TableRootCommitter(tableRootRepo),
         observability,
         new PrincipalProvider() {
           @Override

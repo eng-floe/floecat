@@ -94,7 +94,8 @@ class GenericStatsEngineTest {
             Map.of(1, (Object) 99), // upperBounds: int only
             null,
             0,
-            null);
+            null,
+            "");
 
     var engine =
         new GenericStatsEngine<>(
@@ -153,7 +154,8 @@ class GenericStatsEngineTest {
             Map.of(1, (Object) 99, 2, (Object) 999L),
             null,
             0,
-            null);
+            null,
+            "");
 
     var engine =
         new GenericStatsEngine<>(
@@ -197,7 +199,8 @@ class GenericStatsEngineTest {
             null,
             null,
             0,
-            null);
+            null,
+            "");
 
     var result =
         new GenericStatsEngine<>(
@@ -240,7 +243,8 @@ class GenericStatsEngineTest {
             null,
             null,
             0,
-            null);
+            null,
+            "");
 
     var result =
         new GenericStatsEngine<>(
@@ -283,7 +287,8 @@ class GenericStatsEngineTest {
             null,
             null,
             0,
-            null);
+            null,
+            "");
 
     var result =
         new GenericStatsEngine<>(
@@ -323,7 +328,8 @@ class GenericStatsEngineTest {
             null,
             null,
             0,
-            null);
+            null,
+            "");
 
     new GenericStatsEngine<>(
             planner(cols, names, types, List.of(orcFile)), null, null, avgWidth, names, types)

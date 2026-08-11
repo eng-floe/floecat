@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -53,8 +54,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -68,9 +67,10 @@ import org.jboss.logging.Logger;
  *   <li>explicit capture execution via {@link #triggerBatch(StatsCaptureBatchRequest)}
  * </ul>
  *
- * <p>Resolution is sync-first when {@code floecat.stats.sync.enabled=true} (default): on a store
- * miss the orchestrator attempts a bounded synchronous capture before falling back to async
- * enqueue. The outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
+ * <p>Resolution is query-capture enabled only when {@code floecat.stats.sync.enabled=true}: on a
+ * store miss the orchestrator attempts a bounded synchronous capture before falling back to async
+ * enqueue. When disabled, query-time resolution is store-only and never enqueues capture work. The
+ * outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
  *
  * <p>Planner-facing store resolution — generation ordering, the fallback ladder, and the planner
  * stats cache — lives in {@link PlannerStatsResolver}; capture policy stays here.
@@ -88,7 +88,6 @@ public class StatsOrchestrator {
   private final ConnectorRepository connectorRepository;
   private final StatsSyncCapture statsSyncCapture;
   private final boolean syncEnabled;
-  private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
   private final PlannerStatsResolver plannerResolver;
 
@@ -99,7 +98,7 @@ public class StatsOrchestrator {
       TableRepository tableRepository,
       ConnectorRepository connectorRepository,
       StatsSyncCapture statsSyncCapture,
-      @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
+      @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "false")
           boolean syncEnabled,
       Instance<Observability> observability) {
     this.statsStore = statsStore;
@@ -126,7 +125,7 @@ public class StatsOrchestrator {
         tableRepository,
         connectorRepository,
         new StatsSyncCapture(reconcileJobStore, connectorRepository),
-        true,
+        false,
         null);
   }
 
@@ -185,9 +184,11 @@ public class StatsOrchestrator {
 
   /** Bounded sync capture, then async-enqueue fallback, for a store miss. */
   private StatsResolutionResult captureAndResolve(StatsCaptureRequest request, long startNanos) {
-    if (syncEnabled
-        && request.executionMode() == StatsExecutionMode.SYNC
-        && request.latencyBudget().isPresent()) {
+    if (!syncEnabled) {
+      observeSyncOutcome(StatsSyncOutcome.SKIPPED, startNanos);
+      return StatsResolutionResult.skipped("query_capture_disabled");
+    }
+    if (request.executionMode() == StatsExecutionMode.SYNC && request.latencyBudget().isPresent()) {
       StatsSyncOutcome syncOutcome = attemptSyncCapture(request);
       observeSyncOutcome(syncOutcome, startNanos);
 
@@ -216,7 +217,7 @@ public class StatsOrchestrator {
           : StatsResolutionResult.failed(detail);
     }
 
-    enqueueAsyncCaptureBatch(List.of(request));
+    enqueueAsyncCaptureBatch(List.of(request), true);
     String skipReason =
         request.executionMode() != StatsExecutionMode.SYNC
             ? "async_mode"
@@ -225,50 +226,39 @@ public class StatsOrchestrator {
     return StatsResolutionResult.skipped(skipReason);
   }
 
-  /** Returns the newest available stats at or before the requested snapshot, if any. */
-  public Optional<TargetStatsRecord> resolveStale(StatsCaptureRequest request) {
-    return statsStore.getStaleTargetStats(
-        request.tableId(), request.snapshotId(), request.target());
-  }
-
   /**
-   * Planner-optimised batch resolution with <em>stale-before-sync</em> ordering.
+   * Planner-optimised batch resolution.
    *
    * <p>For each request:
    *
    * <ol>
    *   <li>Batch read all targets from the store in a single call (eliminates N×1 store round-trips
    *       from the old per-target resolve loop).
-   *   <li>Stale fallback for misses — if {@code staleOk}, check the stale store <em>before</em>
-   *       attempting sync capture. This lets the planner use existing (possibly older) stats rather
-   *       than blocking on a sync capture that may timeout.
    *   <li>Sync capture for targets still missing, per-target, while {@code deadlineNanos} allows.
    *   <li>Async enqueue for remaining misses.
    * </ol>
    *
    * @param requests one request per target, all for the same table/snapshot
-   * @param staleOk whether to return stats from a prior snapshot when exact stats are absent
    * @param deadlineNanos absolute deadline (from {@link System#nanoTime()}) for sync captures
    * @return map from {@code StatsTargetIdentity.storageId} to resolution result, in request order
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatch(
-      java.util.List<StatsCaptureRequest> requests, boolean staleOk, long deadlineNanos) {
-    return resolvePlannerBatchInGeneration(requests, Optional.empty(), staleOk, deadlineNanos);
+      java.util.List<StatsCaptureRequest> requests, long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(requests, Optional.empty(), deadlineNanos);
   }
 
   /**
    * Planner batch resolution that honors the query's pinned stats generation, with presence-only
    * completeness: a target that exists in the pinned generation is a hit. Delegates to {@link
-   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, boolean, long)} with
-   * no per-target completeness predicates.
+   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, long)} with no
+   * per-target completeness predicates.
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
       java.util.List<StatsCaptureRequest> requests,
       Optional<String> pinnedGenerationToken,
-      boolean staleOk,
       long deadlineNanos) {
     return resolvePlannerBatchInGeneration(
-        requests, pinnedGenerationToken, java.util.Map.of(), staleOk, deadlineNanos);
+        requests, pinnedGenerationToken, java.util.Map.of(), deadlineNanos);
   }
 
   /**
@@ -292,9 +282,7 @@ public class StatsOrchestrator {
    *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
    *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
    *       it wins; if not, the pinned partial is served (consistency prefers the pin between
-   *       equally incomplete records) — partial records never fall through to stale or capture;
-   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk}), for targets
-   *       with no record at the pinned snapshot at all;
+   *       equally incomplete records) — partial records never fall through to capture;
    *   <li>sync/async capture.
    * </ol>
    *
@@ -317,18 +305,16 @@ public class StatsOrchestrator {
       Optional<String> pinnedGenerationToken,
       java.util.Map<String, java.util.function.Predicate<TargetStatsRecord>>
           completenessByStorageId,
-      boolean staleOk,
       long deadlineNanos) {
     if (requests == null || requests.isEmpty()) {
       return java.util.Map.of();
     }
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
-    // Store rungs (cache → pinned/primary → newest gap-fill → stale) live in the resolver; only
+    // Store rungs (cache → pinned/primary → newest gap-fill) live in the resolver; only
     // capture policy remains here.
     PlannerStatsResolver.Resolution resolution =
-        plannerResolver.resolveFromStore(
-            requests, pinnedGenerationToken, completenessByStorageId, staleOk);
+        plannerResolver.resolveFromStore(requests, pinnedGenerationToken, completenessByStorageId);
     PlannerLookupDiagnostics diagnostics = resolution.diagnostics();
     java.util.Map<String, StatsResolutionResult> out =
         new java.util.LinkedHashMap<>(resolution.resolved());
@@ -337,7 +323,12 @@ public class StatsOrchestrator {
     java.util.List<StatsCaptureRequest> asyncQueue = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : resolution.stillMissing()) {
       String key = PlannerStatsResolver.storageId(req);
-      if (!syncEnabled || req.executionMode() != StatsExecutionMode.SYNC) {
+      if (!syncEnabled) {
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
+        out.put(key, StatsResolutionResult.skipped("query_capture_disabled"));
+        continue;
+      }
+      if (req.executionMode() != StatsExecutionMode.SYNC) {
         asyncQueue.add(req);
         diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.skipped("async_mode"));
@@ -391,7 +382,7 @@ public class StatsOrchestrator {
 
     // 6. Enqueue async captures for all misses that didn't sync.
     if (!asyncQueue.isEmpty()) {
-      enqueueAsyncCaptureBatch(asyncQueue);
+      enqueueAsyncCaptureBatch(asyncQueue, true);
     }
 
     diagnostics.emit(
@@ -421,8 +412,12 @@ public class StatsOrchestrator {
       }
       // Sync is not attempted in batch mode — individual sync would serialize all requests.
       // Callers needing sync semantics should use the single-item resolve().
-      unresolvedForAsync.add(request);
-      resolved.add(StatsResolutionResult.skipped("batch_async_fallback"));
+      if (syncEnabled) {
+        unresolvedForAsync.add(request);
+        resolved.add(StatsResolutionResult.skipped("batch_async_fallback"));
+      } else {
+        resolved.add(StatsResolutionResult.skipped("query_capture_disabled"));
+      }
     }
 
     if (!unresolvedForAsync.isEmpty()) {
@@ -431,7 +426,7 @@ public class StatsOrchestrator {
           1,
           Tag.of(TagKey.TRIGGER, "async_followup"),
           Tag.of(TagKey.SCOPE, "orchestrator"));
-      enqueueAsyncCaptureBatch(unresolvedForAsync);
+      enqueueAsyncCaptureBatch(unresolvedForAsync, true);
     }
     return List.copyOf(resolved);
   }
@@ -459,7 +454,7 @@ public class StatsOrchestrator {
               request.snapshotId(),
               ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(request.target()),
               List.copyOf(request.columnSelectors()));
-      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request));
+      ReconcileCapturePolicy policy = capturePolicyFor(List.of(request), true);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(), table.get().getResourceId().getId(), List.of(scopedReq), policy);
@@ -481,7 +476,7 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.TRIGGER, reason),
         Tag.of(TagKey.SCOPE, "orchestrator"));
-    enqueueAsyncCaptureBatch(List.of(request));
+    enqueueAsyncCaptureBatch(List.of(request), true);
   }
 
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
@@ -498,7 +493,7 @@ public class StatsOrchestrator {
   }
 
   private List<StatsCaptureBatchItemResult> enqueueAsyncCaptureBatch(
-      List<StatsCaptureRequest> requests) {
+      List<StatsCaptureRequest> requests, boolean queryDriven) {
     if (requests == null || requests.isEmpty()) {
       return List.of();
     }
@@ -526,7 +521,7 @@ public class StatsOrchestrator {
           .add(new IndexedRequest(i, toAsyncRequest(request)));
     }
     for (List<IndexedRequest> groupedRequests : groupedByTable.values()) {
-      for (IndexedResult result : enqueueAsyncGroup(groupedRequests)) {
+      for (IndexedResult result : enqueueAsyncGroup(groupedRequests, queryDriven)) {
         results.set(result.index(), result.result());
       }
     }
@@ -561,7 +556,8 @@ public class StatsOrchestrator {
     };
   }
 
-  private List<IndexedResult> enqueueAsyncGroup(List<IndexedRequest> groupedRequests) {
+  private List<IndexedResult> enqueueAsyncGroup(
+      List<IndexedRequest> groupedRequests, boolean queryDriven) {
     if (groupedRequests == null || groupedRequests.isEmpty()) {
       return List.of();
     }
@@ -593,11 +589,18 @@ public class StatsOrchestrator {
       ResourceId connectorId =
           connectorResourceId(
               first.tableId().getAccountId(), table.get().getUpstream().getConnectorId().getId());
-      if (!connectorRepository.existsById(connectorId)) {
+      Optional<Connector> connector = connectorRepository.getById(connectorId);
+      if (connector.isEmpty()) {
         return recordAsyncSkipGroup(
             groupedRequests,
             "missing_connector",
             "Skipping async enqueue because canonical connector lookup failed");
+      }
+      if (connector.get().hasPolicy() && !connector.get().getPolicy().getEnabled()) {
+        return recordAsyncSkipGroup(
+            groupedRequests,
+            "policy_disabled",
+            "Skipping async enqueue because connector reconcile policy is disabled");
       }
       LinkedHashSet<ReconcileScope.ScopedCaptureRequest> captureRequests = new LinkedHashSet<>();
       for (IndexedRequest indexedRequest : groupedRequests) {
@@ -610,7 +613,8 @@ public class StatsOrchestrator {
                 List.copyOf(request.columnSelectors())));
       }
       ReconcileCapturePolicy capturePolicy =
-          capturePolicyFor(groupedRequests.stream().map(IndexedRequest::request).toList());
+          capturePolicyFor(
+              groupedRequests.stream().map(IndexedRequest::request).toList(), queryDriven);
       ReconcileScope scope =
           ReconcileScope.of(
               List.of(),
@@ -624,7 +628,6 @@ public class StatsOrchestrator {
               false,
               ReconcilerService.CaptureMode.CAPTURE_ONLY,
               scope);
-      lastEnqueuedJobByTable.put(tableKey(first), jobId);
       LOG.infof(
           "stats_enqueue outcome=QUEUED table=%s snapshots=%d targets=%d reason=%s group_size=%d job=%s",
           first.tableId(),
@@ -725,7 +728,8 @@ public class StatsOrchestrator {
    * through the removed stats-engine framework.
    */
   public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
-    List<StatsCaptureBatchItemResult> items = enqueueAsyncCaptureBatch(batchRequest.requests());
+    List<StatsCaptureBatchItemResult> items =
+        enqueueAsyncCaptureBatch(batchRequest.requests(), false);
     for (StatsCaptureBatchItemResult item : items) {
       incrementCounter(
           ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
@@ -786,7 +790,8 @@ public class StatsOrchestrator {
     observability.counter(metric, amount, merged);
   }
 
-  private static ReconcileCapturePolicy capturePolicyFor(List<StatsCaptureRequest> requests) {
+  private static ReconcileCapturePolicy capturePolicyFor(
+      List<StatsCaptureRequest> requests, boolean queryDriven) {
     LinkedHashSet<ReconcileCapturePolicy.Output> outputs = new LinkedHashSet<>();
     LinkedHashMap<String, ReconcileCapturePolicy.Column> columns = new LinkedHashMap<>();
     for (StatsCaptureRequest request : requests) {
@@ -797,10 +802,13 @@ public class StatsOrchestrator {
         case TABLE -> outputs.add(ReconcileCapturePolicy.Output.TABLE_STATS);
         case COLUMN -> {
           outputs.add(ReconcileCapturePolicy.Output.COLUMN_STATS);
+          if (!queryDriven) {
+            outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+          }
           columns.put(
               "#" + request.target().getColumn().getColumnId(),
               new ReconcileCapturePolicy.Column(
-                  "#" + request.target().getColumn().getColumnId(), true, false));
+                  "#" + request.target().getColumn().getColumnId(), true, !queryDriven));
         }
         case FILE -> outputs.add(ReconcileCapturePolicy.Output.FILE_STATS);
         case TARGET_NOT_SET, EXPRESSION -> {}
@@ -809,10 +817,19 @@ public class StatsOrchestrator {
         if (selector == null || selector.isBlank()) {
           continue;
         }
-        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, false));
+        if (queryDriven) {
+          outputs.add(ReconcileCapturePolicy.Output.COLUMN_STATS);
+        } else {
+          outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+        }
+        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, !queryDriven));
       }
     }
-    return ReconcileCapturePolicy.of(List.copyOf(columns.values()), Set.copyOf(outputs));
+    return ReconcileCapturePolicy.of(
+        List.copyOf(columns.values()),
+        Set.copyOf(outputs),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
   }
 
   private record IndexedRequest(int index, StatsCaptureRequest request) {}

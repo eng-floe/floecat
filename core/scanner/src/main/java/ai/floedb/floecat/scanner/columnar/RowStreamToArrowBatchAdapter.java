@@ -22,6 +22,9 @@ import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.utils.ArrowConversion;
+import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -60,13 +63,15 @@ public final class RowStreamToArrowBatchAdapter {
     List<SchemaColumn> arrowSchemaColumns = new ArrayList<>(schema.size());
     for (int i = 0; i < schema.size(); i++) {
       SchemaColumn column = schema.get(i);
-      boolean arrayType = isArrayType(column.getLogicalType());
+      boolean arrayType = isArrayType(column);
       stringifyArrays[i] = arrayType;
       if (arrayType) {
         hasArray = true;
-      }
-      if (arrayType) {
-        arrowSchemaColumns.add(SchemaColumn.newBuilder(column).setLogicalType("STRING").build());
+        // Array values are stringified below, so the Arrow schema sees a STRING column.
+        arrowSchemaColumns.add(
+            SchemaColumn.newBuilder(column)
+                .setType(LogicalTypeProtoAdapter.toProto(LogicalType.of(LogicalKind.STRING)))
+                .build());
       } else {
         arrowSchemaColumns.add(column);
       }
@@ -168,10 +173,8 @@ public final class RowStreamToArrowBatchAdapter {
     return Arrays.deepToString((Object[]) value);
   }
 
-  private static boolean isArrayType(String logicalType) {
-    if (logicalType == null) {
-      return false;
-    }
-    return logicalType.contains("[]");
+  private static boolean isArrayType(SchemaColumn column) {
+    return column.hasType()
+        && column.getType().getKind() == ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_ARRAY;
   }
 }

@@ -827,6 +827,32 @@ class CredentialResolverSupportTest {
   }
 
   @Test
+  void staticAwsCredentialsAreScopedToIcebergCatalogAndStorage() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret")
+                    .setSessionToken("session"))
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            Map.of("iceberg.source", "glue"),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("akid", applied.options().get("s3.access-key-id"));
+    assertEquals("akid", applied.options().get("rest.access-key-id"));
+    assertEquals("secret", applied.options().get("rest.secret-access-key"));
+    assertEquals("session", applied.options().get("rest.session-token"));
+  }
+
+  @Test
   void assumeRoleCredentialsRegisterRefreshingProvider() {
     var creds =
         AuthCredentials.newBuilder()
@@ -866,11 +892,16 @@ class CredentialResolverSupportTest {
 
       ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
 
-      assertEquals("AKIA", applied.options().get("s3.access-key-id"));
-      assertEquals("secret", applied.options().get("s3.secret-access-key"));
-      assertEquals("token", applied.options().get("s3.session-token"));
-      assertNotNull(
-          applied.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+      assertNull(applied.options().get("s3.access-key-id"));
+      assertNull(applied.options().get("rest.access-key-id"));
+      String providerId =
+          applied.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+      assertNotNull(providerId);
+      assertEquals(
+          providerId,
+          applied
+              .options()
+              .get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
       verify(builder).region(Region.of("us-east-1"));
     }
   }

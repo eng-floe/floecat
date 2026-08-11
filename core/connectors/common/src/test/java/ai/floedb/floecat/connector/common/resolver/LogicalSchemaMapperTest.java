@@ -67,7 +67,7 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn c0 = desc.getColumns(0);
     assertEquals("id", c0.getName());
-    assertEquals("INT", c0.getLogicalType());
+    assertEquals("INT", typeTag(c0));
     assertEquals("id", c0.getPhysicalPath());
     assertTrue(c0.getLeaf());
     assertEquals(1, c0.getOrdinal());
@@ -75,11 +75,43 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn c1 = desc.getColumns(1);
     assertEquals("name", c1.getName());
-    assertEquals("STRING", c1.getLogicalType());
+    assertEquals("STRING", typeTag(c1));
     assertTrue(c1.getLeaf());
     assertEquals(2, c1.getOrdinal());
     assertNotEquals(0L, c1.getId());
     assertNotEquals(c0.getId(), c1.getId());
+  }
+
+  @Test
+  void genericContainerColumnsAreNotLeaf() {
+    String json =
+        """
+            {"cols":[
+                {"name":"tags","type":"ARRAY<STRING>"},
+                {"name":"bare","type":"ARRAY"},
+                {"name":"v","type":"VARIANT"}
+            ]}
+        """;
+
+    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
+    SchemaDescriptor desc = mapper.map(baseTable(json, upstream), json);
+
+    SchemaColumn tags = desc.getColumns(0);
+    assertEquals("ARRAY", typeTag(tags));
+    assertEquals("ARRAY<STRING>", typeString(tags));
+    // Containers are not stats-capable; a leaf=true container would be sent into min/max
+    // encoding, which rejects complex kinds.
+    assertFalse(tags.getLeaf());
+
+    SchemaColumn bare = desc.getColumns(1);
+    assertEquals("ARRAY", typeTag(bare));
+    // A bare legacy tag has no nested tree; its full string is just the tag.
+    assertEquals("ARRAY", typeString(bare));
+    assertFalse(hasTypeTree(bare));
+    assertFalse(bare.getLeaf());
+
+    // VARIANT is self-describing and stays leaf, matching the Iceberg/Delta mappers.
+    assertTrue(desc.getColumns(2).getLeaf());
   }
 
   @Test
@@ -96,7 +128,7 @@ class LogicalSchemaMapperTest {
 
     SchemaDescriptor desc = mapper.map(t, json);
     assertEquals(1, desc.getColumnsCount());
-    assertEquals("DECIMAL(39,0)", desc.getColumns(0).getLogicalType());
+    assertEquals("DECIMAL(39,0)", typeTag(desc.getColumns(0)));
   }
 
   // -------------------------------------------------------------------------
@@ -213,14 +245,15 @@ class LogicalSchemaMapperTest {
     assertEquals("lat", lat.getName());
     assertEquals("location.lat", lat.getPhysicalPath());
     assertEquals(0, lat.getFieldId());
-    assertEquals(3, lat.getOrdinal());
+    // Ordinals are 1-based within the parent (matching Iceberg semantics).
+    assertEquals(1, lat.getOrdinal());
     assertTrue(lat.getLeaf());
 
     SchemaColumn lon = desc.getColumns(3);
     assertEquals("lon", lon.getName());
     assertEquals("location.lon", lon.getPhysicalPath());
     assertEquals(0, lon.getFieldId());
-    assertEquals(4, lon.getOrdinal());
+    assertEquals(2, lon.getOrdinal());
     assertTrue(lon.getLeaf());
 
     assertNotEquals(lat.getId(), lon.getId());
@@ -249,14 +282,14 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn id = desc.getColumns(0);
     assertEquals("id", id.getName());
-    assertEquals("INT", id.getLogicalType());
+    assertEquals("INT", typeTag(id));
     assertTrue(id.getLeaf());
     assertEquals(1, id.getOrdinal());
     assertNotEquals(0L, id.getId());
 
     SchemaColumn name = desc.getColumns(1);
     assertEquals("name", name.getName());
-    assertEquals("STRING", name.getLogicalType());
+    assertEquals("STRING", typeTag(name));
     assertTrue(name.getLeaf());
     assertEquals(2, name.getOrdinal());
     assertNotEquals(0L, name.getId());
@@ -299,13 +332,17 @@ class LogicalSchemaMapperTest {
     Table t = baseTable(icebergJson, upstream);
     SchemaDescriptor desc = mapper.map(t, icebergJson);
 
-    assertEquals(2, desc.getColumnsCount()); // arr, arr[].x (no explicit element container node)
+    assertEquals(3, desc.getColumnsCount()); // arr, arr[] (element node), arr[].x
     SchemaColumn arr = desc.getColumns(0);
     assertEquals("arr", arr.getPhysicalPath());
     assertFalse(arr.getLeaf());
     assertEquals(1, arr.getOrdinal());
 
-    SchemaColumn x = desc.getColumns(1);
+    SchemaColumn element = desc.getColumns(1);
+    assertEquals("arr[]", element.getPhysicalPath());
+    assertFalse(element.getLeaf());
+
+    SchemaColumn x = desc.getColumns(2);
 
     // Depending on mapper style it may be "arr[].x" or "arr.element.x"
     String p = x.getPhysicalPath();
@@ -384,8 +421,9 @@ class LogicalSchemaMapperTest {
 
     assertEquals(1, ordinals.get("id"));
     assertEquals(2, ordinals.get("location"));
-    assertEquals(3, ordinals.get("location.lat"));
-    assertEquals(4, ordinals.get("location.lon"));
+    // Nested ordinals are 1-based within the parent (matching Iceberg semantics).
+    assertEquals(1, ordinals.get("location.lat"));
+    assertEquals(2, ordinals.get("location.lon"));
   }
 
   @Test
@@ -439,5 +477,18 @@ class LogicalSchemaMapperTest {
         ColumnIdComputer.compute(ColumnIdAlgorithm.CID_FIELD_ID, c1),
         ColumnIdComputer.compute(ColumnIdAlgorithm.CID_FIELD_ID, c2));
     assertEquals(42L, ColumnIdComputer.compute(ColumnIdAlgorithm.CID_FIELD_ID, c1));
+  }
+
+  private static String typeTag(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeFormat.formatTag(
+        ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column));
+  }
+
+  private static String typeString(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(column);
+  }
+
+  private static boolean hasTypeTree(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column).hasTypeTree();
   }
 }

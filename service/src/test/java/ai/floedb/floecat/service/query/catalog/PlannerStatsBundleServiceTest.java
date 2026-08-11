@@ -48,8 +48,6 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -58,6 +56,8 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport {
@@ -448,6 +448,32 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(0L, end.getReturnedTargets());
     assertEquals(0L, end.getNotFoundTargets());
     assertEquals(1L, end.getErrorTargets());
+  }
+
+  @Test
+  void cancellationTerminatesTargetStream() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore()) {
+          @Override
+          public Optional<TargetStatsRecord> getTargetStats(
+              ResourceId tableId, long snapshotId, StatsTarget target) {
+            throw new CancellationException("request cancelled");
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-cancelled", 108L);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+
+    assertThrows(
+        CancellationException.class,
+        () ->
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
   }
 
   @Test
@@ -1080,63 +1106,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   @Test
-  void staleStats_viaRealOrchestrator_returnsHitStaleBeforeSyncCapture() {
-    // Integration test: verifies that StatsOrchestrator.resolvePlannerBatch() correctly applies
-    // stale-before-sync ordering and that resolveStale() is actually called (not the test stub).
-    // Uses forTestingWithRealLookup() so the full production path is exercised.
-    UserObjectBundleTestSupport.TestQueryContextStore store =
-        new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsRepository repository = createRepository();
-    TableRepository tableRepository = org.mockito.Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator =
-        new StatsOrchestrator(
-            repository,
-            org.mockito.Mockito.mock(ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.class),
-            tableRepository,
-            org.mockito.Mockito.mock(
-                ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
-    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
-
-    PlannerStatsBundleService service =
-        PlannerStatsBundleService.forTestingWithRealLookup(
-            orchestrator,
-            tableRepository,
-            factory,
-            /* maxTables= */ 5,
-            /* maxTargets= */ 10,
-            /* maxResultsPerChunk= */ 5);
-
-    // Put stats at snapshot 480L; pin the context to snapshot 481L (miss on exact).
-    // resolvePlannerBatch should find the stale record at 480L BEFORE attempting sync capture.
-    repository.putTargetStats(
-        TargetStatsRecords.columnRecord(TABLE, 480L, 1L, sampleStats(TABLE, 480L, 1L), null));
-    QueryContext ctx = queryContextWithPin("real-orchestrator-stale", 481L);
-    store.seed(ctx);
-
-    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-
-    List<TargetStatsResult> results = flatten(chunks);
-    assertEquals(1, results.size(), "one column must produce a result");
-    assertEquals(
-        StatsResultStatus.STATS_RESULT_HIT_STALE,
-        results.get(0).getStatus(),
-        "stale stats at snapshot 480 must be returned with HIT_STALE status");
-    assertEquals(480L, results.get(0).getSnapshotId(), "returned snapshot must be 480 (stale)");
-    // The divergent pinned-snapshot stamp is the whole reason the field exists: served 480, pin
-    // 481.
-    assertEquals(
-        481L,
-        results.get(0).getPinnedSnapshotId(),
-        "result must stamp the pinned snapshot (481) so the planner sees the served stats are stale");
-
-    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
-    assertEquals(1L, end.getStaleTargets(), "one stale target must be counted in end chunk");
-    assertEquals(0L, end.getNotFoundTargets(), "no NOT_FOUND — stale hit found before sync");
-  }
-
-  @Test
   void realPlannerLookupReadsTheStatsGenerationFrozenOnThePin() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
@@ -1292,65 +1261,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(0L, end.getPartialTargets());
   }
 
-  @Test
-  void staleStatsAreReturnedByDefault() {
-    UserObjectBundleTestSupport.TestQueryContextStore store =
-        new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsRepository repository = createRepository();
-    PlannerStatsBundleService service =
-        createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
-    repository.putTargetStats(
-        TargetStatsRecords.columnRecord(TABLE, 460L, 1L, sampleStats(TABLE, 460L, 1L), null));
-    QueryContext ctx = queryContextWithPin("query-stale-default", 461L);
-    store.seed(ctx);
-
-    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-
-    List<TargetStatsResult> results = flatten(chunks);
-    assertEquals(1, results.size());
-    assertEquals(StatsResultStatus.STATS_RESULT_HIT_STALE, results.get(0).getStatus());
-    assertEquals(460L, results.get(0).getSnapshotId());
-    assertEquals(461L, results.get(0).getPinnedSnapshotId(), "served 460 is stale against pin 461");
-    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
-    assertEquals(1L, end.getReturnedTargets());
-    assertEquals(1L, end.getStaleTargets());
-    assertEquals(0L, end.getNotFoundTargets());
-  }
-
-  @Test
-  void staleStatsCanBeDisabled() {
-    UserObjectBundleTestSupport.TestQueryContextStore store =
-        new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsRepository repository = createRepository();
-    PlannerStatsBundleService service =
-        createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
-    repository.putTargetStats(
-        TargetStatsRecords.columnRecord(TABLE, 470L, 1L, sampleStats(TABLE, 470L, 1L), null));
-    QueryContext ctx = queryContextWithPin("query-stale-disabled", 471L);
-    store.seed(ctx);
-
-    FetchTargetStatsRequest request =
-        FetchTargetStatsRequest.newBuilder()
-            .setQueryId(ctx.getQueryId())
-            .setOptions(StatsServingOptions.newBuilder().setStaleOk(false))
-            .addTables(tableRequest(TABLE, List.of(1L)))
-            .build();
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-
-    List<TargetStatsResult> results = flatten(chunks);
-    assertEquals(1, results.size());
-    assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.get(0).getStatus());
-    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
-    assertEquals(0L, end.getReturnedTargets());
-    assertEquals(0L, end.getStaleTargets());
-    assertEquals(1L, end.getNotFoundTargets());
-  }
-
   /** Publishes one column record as a full replacement (a new live generation) of the snapshot. */
   private static void publishColumn(
       StatsRepository repository, long snapshotId, long columnId, ScalarStats scalar) {
@@ -1471,36 +1381,6 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(5L, end.getRequestedTargets(), "requestedTargets must include omitted-by-budget");
     assertEquals(3L, end.getOmittedByBudget(), "3 of 5 targets must be omitted by budget");
-  }
-
-  @Test
-  void servingOptionsWithoutStaleOkDefaultsToStaleEnabled() {
-    // Sending options with only maxResponseBytes set (stale_ok field absent) must default to
-    // staleOk=true.  This tests the three-way logic in ServingPolicy.from().
-    UserObjectBundleTestSupport.TestQueryContextStore store =
-        new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsRepository repository = createRepository();
-    PlannerStatsBundleService service =
-        createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
-    QueryContext ctx = queryContextWithPin("stale-default", 470L);
-    store.seed(ctx);
-
-    // No stale_ok field set explicitly — must default to true (accept stale)
-    FetchTargetStatsRequest request =
-        FetchTargetStatsRequest.newBuilder()
-            .setQueryId(ctx.getQueryId())
-            .setOptions(StatsServingOptions.newBuilder().setMaxResponseBytes(1024 * 1024))
-            .addTables(tableRequest(TABLE, List.of(99L)))
-            .build();
-    // Should not throw — serves NOT_FOUND gracefully (stale_ok=true, no stale available)
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-    assertFalse(chunks.isEmpty(), "request with options-but-no-stale_ok must succeed");
-    List<TargetStatsResult> results = flatten(chunks);
-    assertEquals(1, results.size());
-    // staleOk=true with no stale stats → NOT_FOUND (not an error)
-    assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.get(0).getStatus());
   }
 
   /**

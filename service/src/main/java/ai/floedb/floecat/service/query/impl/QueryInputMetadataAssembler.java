@@ -25,6 +25,7 @@ import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -32,7 +33,6 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 
@@ -81,7 +81,7 @@ public class QueryInputMetadataAssembler {
                       inputs,
                       asOfDefault,
                       Optional.of(defaultCatalogId),
-                      new LinkedHashMap<>(),
+                      new SnapshotPinMemo(),
                       diagnostics));
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();

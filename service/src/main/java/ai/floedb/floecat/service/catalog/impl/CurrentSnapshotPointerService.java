@@ -26,9 +26,11 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CurrentSnapshotPointerService {
+  private static final Logger LOG = Logger.getLogger(CurrentSnapshotPointerService.class);
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRootWriter rootWriter;
@@ -67,7 +69,7 @@ public class CurrentSnapshotPointerService {
       case CONFLICT -> throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
       default -> {}
     }
-    rootWriter.commitSnapshotEntry(tableId, candidate);
+    rootWriter.commitSnapshotEntry(tableId, candidate.getSnapshotId());
     if (result == SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED) {
       // The committed current pointer just moved onto `candidate`. commitSnapshotEntry advances the
       // root's current_snapshot_id at registration; what the finalize gate defers is query-time

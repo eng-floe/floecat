@@ -250,7 +250,7 @@ class SnapshotManifestsTest {
 
   /* Canonicalization: a client that re-serializes an UNCHANGED schema with different object-key
    * order or whitespace must still share the fingerprint, or a data-only ingest would churn the
-   * possession token every write and the warm path would silently die for that table. */
+   * payload token every write and the warm path would silently die for that table. */
   @Test
   void schemaFingerprintIsStableAcrossKeyOrderAndWhitespace() {
     String a = "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"x\",\"type\":\"long\"}]}";

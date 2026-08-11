@@ -37,11 +37,11 @@ import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
-import ai.floedb.floecat.service.catalog.impl.TableRootSynthesizer;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -72,13 +72,13 @@ class SnapshotHelperTest {
             MutationMeta.newBuilder().setBlobUri("s3://tbl/table.pb").setEtag("etag-t").build());
     when(tableRepo.blobEtag("s3://tbl/table.pb")).thenReturn("etag-t");
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    committer = new TableRootCommitter(roots);
+    committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     // A real repair pipeline over its own in-memory store, so tests can assert which broken-root
     // observations durably enqueue the table for the resync re-drive and which do not.
     repairPointers = new InMemoryPointerStore();
     validator =
         new PinValidator(roots, new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    helper = new SnapshotHelper(repository, roots, committer, null, validator);
+    helper = new SnapshotHelper(repository, roots, null, validator);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -243,44 +243,6 @@ class SnapshotHelperTest {
     // The pinned root is the immutable object every read follows refs out of.
     TableRoot pinnedRoot = roots.getByBlobUri(pin.getRootUri()).orElseThrow();
     assertThat(pinnedRoot.getCurrentSnapshotId()).isEqualTo(142);
-  }
-
-  @Test
-  void tablePinCurrentMaterializesALegacyTableAtFirstTouch() {
-    // A table with pre-existing (legacy family) data but no root yet: pin construction runs the
-    // committer's ensureRoot, which persists the synthesized history, then pins through it.
-    ResourceId tableId = tableId("tbl");
-    seedSnapshot(tableId, 142, "2024-05-01T00:00:00Z");
-    TableRoot synthesized =
-        TableRoot.newBuilder()
-            .setTableId(tableId)
-            .setDefinitionRef(BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t"))
-            .setSnapshotManifestRef(
-                ai.floedb.floecat.service.repo.impl.SnapshotManifests.upsert(
-                    roots,
-                    tableId,
-                    null,
-                    SnapshotManifestEntry.newBuilder()
-                        .setSnapshotId(142)
-                        .setSnapshotRef(
-                            BlobRef.newBuilder()
-                                .setUri("s3://tbl/snap-142.pb")
-                                .setVersion("etag-s142"))
-                        .setUpstreamCreatedAt(ts("2024-05-01T00:00:00Z"))
-                        .build()))
-            .setCurrentSnapshotId(142)
-            .build();
-    TableRootSynthesizer synthesizer = mock(TableRootSynthesizer.class);
-    when(synthesizer.synthesize(tableId)).thenReturn(Optional.of(synthesized));
-    helper =
-        new SnapshotHelper(
-            repository, roots, new TableRootCommitter(roots, synthesizer), null, validator);
-
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
-
-    assertThat(pin.getSnapshotId()).isEqualTo(142);
-    // The synthesized root was persisted: the table is migrated, not re-synthesized per read.
-    assertThat(roots.get(tableId)).isPresent();
   }
 
   @Test
@@ -580,7 +542,7 @@ class SnapshotHelperTest {
     // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -612,7 +574,7 @@ class SnapshotHelperTest {
     // among finalized entries only; CURRENT never points at it (currency advances at finalize).
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -698,7 +660,7 @@ class SnapshotHelperTest {
           }
         };
     ResourceId table = tableId("tbl-refollow");
-    var flakyCommitter = new TableRootCommitter(flakyRoots);
+    var flakyCommitter = new TableRootCommitter(flakyRoots, new TableBlobReachabilityGuard());
     flakyCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(
@@ -712,7 +674,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var flakyHelper = new SnapshotHelper(repository, flakyRoots, flakyCommitter, null, validator);
+    var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, validator);
 
     TablePin pin = flakyHelper.tablePinFor("corr", table, null, Optional.empty());
 
@@ -737,7 +699,7 @@ class SnapshotHelperTest {
           }
         };
     ResourceId table = tableId("tbl-dead-root");
-    var deadCommitter = new TableRootCommitter(deadRoots);
+    var deadCommitter = new TableRootCommitter(deadRoots, new TableBlobReachabilityGuard());
     deadCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(
@@ -751,7 +713,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var deadHelper = new SnapshotHelper(repository, deadRoots, deadCommitter, null, validator);
+    var deadHelper = new SnapshotHelper(repository, deadRoots, null, validator);
 
     assertThatThrownBy(() -> deadHelper.tablePinFor("corr", table, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class);
@@ -764,7 +726,7 @@ class SnapshotHelperTest {
     // pin must fail naming that, not construct an empty-URI pin a downstream validator reports
     // as a generic internal error.
     ResourceId table = tableId("tbl-no-snap-ref");
-    var localCommitter = new TableRootCommitter(roots);
+    var localCommitter = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     localCommitter.commit(
         table,
         TableRootMutations.upsertSnapshot(
@@ -777,7 +739,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var localHelper = new SnapshotHelper(repository, roots, localCommitter, null, validator);
+    var localHelper = new SnapshotHelper(repository, roots, null, validator);
 
     assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
@@ -792,7 +754,7 @@ class SnapshotHelperTest {
     // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
@@ -815,7 +777,7 @@ class SnapshotHelperTest {
     // not be rejected. The gate keys on presence, not on the generation being non-empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
     // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just

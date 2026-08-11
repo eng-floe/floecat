@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.AttrWriteRules;
 import ai.floedb.floecat.storage.kv.KvAttributes;
@@ -30,6 +31,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -244,6 +246,86 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     return dynamo(client -> client.getItem(req))
         .map(resp -> resp.hasItem() ? Optional.of(avToRecord(resp.item())) : Optional.empty());
+  }
+
+  @Override
+  public Uni<Map<Key, Record>> getBatch(List<Key> keys) {
+    List<Key> stable = keys == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(keys));
+    if (stable.isEmpty()) {
+      return Uni.createFrom().item(Map.of());
+    }
+    List<Uni<Map<Key, Record>>> chunks = new ArrayList<>();
+    for (int from = 0; from < stable.size(); from += 100) {
+      List<Key> chunk = stable.subList(from, Math.min(from + 100, stable.size()));
+      chunks.add(
+          dynamo(
+              client ->
+                  batchGetAll(
+                      client,
+                      chunk.stream().map(DynamoDbKvStore::keyMap).toList(),
+                      new LinkedHashMap<>(),
+                      0)));
+    }
+    return Uni.combine()
+        .all()
+        .unis(chunks)
+        .with(
+            values -> {
+              Map<Key, Record> out = new LinkedHashMap<>();
+              for (Object value : values) {
+                @SuppressWarnings("unchecked")
+                Map<Key, Record> records = (Map<Key, Record>) value;
+                out.putAll(records);
+              }
+              return Map.copyOf(out);
+            });
+  }
+
+  private CompletionStage<Map<Key, Record>> batchGetAll(
+      DynamoDbAsyncClient client,
+      List<Map<String, AttributeValue>> keys,
+      Map<Key, Record> accumulated,
+      int attempt) {
+    if (keys.isEmpty()) {
+      return CompletableFuture.completedFuture(Map.copyOf(accumulated));
+    }
+    if (attempt >= 8) {
+      return CompletableFuture.failedFuture(
+          new StorageAbortRetryableException(
+              "DynamoDB batch get left unprocessed keys after repeated retries"));
+    }
+    KeysAndAttributes requestKeys =
+        KeysAndAttributes.builder().keys(keys).consistentRead(true).build();
+    BatchGetItemRequest request =
+        BatchGetItemRequest.builder().requestItems(Map.of(table, requestKeys)).build();
+    return client
+        .batchGetItem(request)
+        .thenCompose(
+            response -> {
+              for (Map<String, AttributeValue> item :
+                  response.responses().getOrDefault(table, List.of())) {
+                Record record = avToRecord(item);
+                accumulated.put(record.key(), record);
+              }
+              KeysAndAttributes unprocessed = response.unprocessedKeys().get(table);
+              List<Map<String, AttributeValue>> remaining =
+                  unprocessed == null ? List.of() : unprocessed.keys();
+              if (remaining.isEmpty()) {
+                return CompletableFuture.completedFuture(Map.copyOf(accumulated));
+              }
+              long delayMs = batchGetRetryDelayMs(attempt);
+              return CompletableFuture.runAsync(
+                      () -> {}, CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS))
+                  .thenCompose(ignored -> batchGetAll(client, remaining, accumulated, attempt + 1));
+            });
+  }
+
+  static long batchGetRetryDelayMs(int attempt) {
+    long baseMs = 25L;
+    long maxMs = 1000L;
+    long expMs = Math.min(maxMs, baseMs * (1L << Math.min(Math.max(0, attempt), 6)));
+    long jitterFloorMs = Math.max(1L, expMs / 2L);
+    return ThreadLocalRandom.current().nextLong(jitterFloorMs, expMs + 1L);
   }
 
   // ---- KvStore (CAS writes)
@@ -546,6 +628,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
         tx.add(TransactWriteItem.builder().put(put.build()).build());
 
+      } else if (op instanceof TxnPutUnconditional p) {
+        tx.add(
+            TransactWriteItem.builder()
+                .put(Put.builder().tableName(table).item(recordToAv(p.record())).build())
+                .build());
       } else if (op instanceof TxnDelete d) {
         var del =
             Delete.builder()

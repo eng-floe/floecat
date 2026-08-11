@@ -162,7 +162,6 @@ public interface ReconcileJobIndexStore {
       List<String> readyKeys,
       List<String> stateKeys,
       String connectorIndexKey,
-      String resultBlobUri,
       StoredReconcileJob record) {}
 
   final class BulkEnqueueCommitException extends RuntimeException {
@@ -223,6 +222,8 @@ public interface ReconcileJobIndexStore {
 
   StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken);
 
+  StoredJobPage listStoredJobsPendingStatsCleanup(int pageSize, String pageToken);
+
   StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken);
 
@@ -241,13 +242,10 @@ public interface ReconcileJobIndexStore {
 
   JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
 
-  JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
-
-  JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest);
-
   IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey);
+
+  IndexBackfillResult backfillStoredJobIndexes(
+      CanonicalPointerSnapshot snapshot, StoredReconcileJob record);
 
   int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
 

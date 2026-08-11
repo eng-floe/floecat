@@ -165,6 +165,12 @@ abstract class AbstractReconcilerServiceTestBase {
 
   protected abstract static class DefaultBackend implements ReconcilerBackend {
     @Override
+    public Optional<Snapshot> latestReconciledSnapshotForReuse(
+        ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
+      return Optional.empty();
+    }
+
+    @Override
     public ResourceId ensureNamespace(
         ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
       throw new UnsupportedOperationException();
@@ -308,12 +314,8 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public boolean indexArtifactsCapturedForFilePaths(
-        ReconcileContext ctx,
-        ResourceId tableId,
-        long snapshotId,
-        List<String> filePaths,
-        Set<String> selectors) {
+    public boolean indexCaptureComplete(
+        ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
       return false;
     }
 

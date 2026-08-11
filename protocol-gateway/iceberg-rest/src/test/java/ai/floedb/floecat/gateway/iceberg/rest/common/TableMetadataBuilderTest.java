@@ -125,4 +125,89 @@ class TableMetadataBuilderTest {
     assertFalse(metadata.properties().containsKey("metadata-location"));
     assertEquals("s3://warehouse/orders", metadata.properties().get("location"));
   }
+
+  @Test
+  void fromCatalogIncludesCurrentTableSchemaWhenCurrentSnapshotUsesOlderSchema() {
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(100L)
+            .setSequenceNumber(1L)
+            .setSchemaId(0)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":0,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"},
+                  {"id":2,"name":"v","required":false,"type":"string"}
+                ]}
+                """)
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":1,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"},
+                  {"id":2,"name":"v","required":false,"type":"string"},
+                  {"id":3,"name":"note","required":false,"type":"string"}
+                ]}
+                """)
+            .build();
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("current-schema-id", "1");
+    props.put("last-column-id", "3");
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            table,
+            props,
+            List.of(snapshot),
+            "s3://warehouse/orders/metadata/00002.metadata.json",
+            100L);
+
+    assertEquals(1, metadata.currentSchemaId());
+    assertEquals(2, metadata.schemas().size());
+    assertEquals(List.of(0, 1), metadata.schemas().stream().map(s -> s.get("schema-id")).toList());
+    assertEquals(0, metadata.snapshots().get(0).get("schema-id"));
+  }
+
+  @Test
+  void fromCatalogChoosesHighestSchemaIdWhenCurrentSchemaCannotBeResolved() {
+    Snapshot schemaFive =
+        Snapshot.newBuilder()
+            .setSnapshotId(100L)
+            .setSequenceNumber(1L)
+            .setSchemaId(5)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":5,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"}
+                ]}
+                """)
+            .build();
+    Snapshot schemaTwo =
+        Snapshot.newBuilder()
+            .setSnapshotId(200L)
+            .setSequenceNumber(2L)
+            .setSchemaId(2)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":2,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"}
+                ]}
+                """)
+            .build();
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            Table.newBuilder().setDisplayName("orders").build(),
+            new LinkedHashMap<>(),
+            List.of(schemaFive, schemaTwo),
+            "s3://warehouse/orders/metadata/00001.metadata.json",
+            999L);
+
+    assertEquals(5, metadata.currentSchemaId());
+  }
 }

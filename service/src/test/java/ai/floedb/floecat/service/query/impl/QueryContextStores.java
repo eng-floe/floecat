@@ -28,6 +28,7 @@ public final class QueryContextStores {
     store.maxSize = 100L;
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
+    store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
     store.init();
     return store;
   }
@@ -40,6 +41,7 @@ public final class QueryContextStores {
     store.maxSize = maxSize;
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
+    store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
     store.init();
     return store;
   }

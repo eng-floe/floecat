@@ -236,4 +236,22 @@ class ServiceTelemetryContributorTest {
     assertThat(partialState.allowedTags())
         .containsExactlyInAnyOrder(TagKey.OPERATION, TagKey.RESOURCE);
   }
+
+  @Test
+  void registersGcStorageEstimateMetricContractsWithExpectedTags() {
+    TelemetryRegistry registry = new TelemetryRegistry();
+    registry.register(new ServiceTelemetryContributor());
+
+    MetricDef accountBytes =
+        registry.metric(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_BYTES.name());
+    MetricDef sizeCoverage =
+        registry.metric(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE.name());
+
+    assertThat(accountBytes).isNotNull();
+    assertThat(accountBytes.requiredTags()).containsExactly(TagKey.ACCOUNT);
+    assertThat(accountBytes.allowedTags()).containsExactly(TagKey.ACCOUNT);
+    assertThat(sizeCoverage).isNotNull();
+    assertThat(sizeCoverage.requiredTags()).containsExactly(TagKey.ACCOUNT);
+    assertThat(sizeCoverage.allowedTags()).containsExactly(TagKey.ACCOUNT);
+  }
 }

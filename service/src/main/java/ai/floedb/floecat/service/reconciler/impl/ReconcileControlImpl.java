@@ -29,8 +29,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
-import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -1164,7 +1162,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setTableTask(toProtoTableTask(job.tableTask))
         .setViewTask(toProtoViewTask(job.viewTask))
         .setSnapshotTask(toProtoSnapshotTask(job.snapshotTask))
-        .setFileGroupTask(toProtoFileGroupTask(job.fileGroupTask))
+        .setFileGroupTask(
+            toProtoFileGroupTask(
+                job.fileGroupTask == null
+                    ? ReconcileFileGroupTask.empty()
+                    : job.fileGroupTask.asReference()))
         .setFileGroupsTotal(fileGroupCounts.totalGroups)
         .setFileGroupsCompleted(fileGroupCounts.completedGroups)
         .setFileGroupsFailed(fileGroupCounts.failedGroups)
@@ -1246,31 +1248,41 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    return ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
-        .setTableId(effective.tableId())
-        .setSnapshotId(effective.snapshotId())
-        .setSourceNamespace(effective.sourceNamespace())
-        .setSourceTable(effective.sourceTable())
-        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
-        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
-        .setFileGroupCount(effective.fileGroupCount())
-        .setSourceFileCount(effective.sourceFileCount())
-        .setDirectStatsBlobUri(effective.directStatsBlobUri())
-        .setDirectStatsRecordCount(effective.directStatsRecordCount())
-        .setCompletionMode(
-            switch (effective.completionMode()) {
-              case DIRECT_STATS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_DIRECT_STATS;
-              case FILE_GROUPS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_FILE_GROUPS;
-            })
-        .addAllFileGroups(
-            effective.fileGroups().stream()
-                .map(ReconcileControlImpl::toProtoFileGroupTask)
-                .toList())
-        .build();
+    ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.Builder builder =
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
+            .setTableId(effective.tableId())
+            .setSnapshotId(effective.snapshotId())
+            .setSourceNamespace(effective.sourceNamespace())
+            .setSourceTable(effective.sourceTable())
+            .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+            .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+            .setFileGroupCount(effective.fileGroupCount())
+            .setSourceFileCount(effective.sourceFileCount())
+            .setDirectStatsBlobUri(effective.directStatsBlobUri())
+            .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setSourceRevision(effective.sourceRevision())
+            .setMetadataFingerprint(effective.metadataFingerprint())
+            .addAllRequestedCoverage(effective.requestedCoverage())
+            .setCompletionMode(
+                switch (effective.completionMode()) {
+                  case DIRECT_STATS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_DIRECT_STATS;
+                  case FILE_GROUPS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_FILE_GROUPS;
+                });
+    if (effective.indexPredecessor() != null) {
+      var predecessor = effective.indexPredecessor();
+      builder.setIndexPredecessor(
+          ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+              .setGenerationId(predecessor.generationId())
+              .setActivePointerVersion(predecessor.activePointerVersion())
+              .setCaptureManifestUri(predecessor.captureManifestUri())
+              .setCaptureManifestPointerVersion(predecessor.captureManifestPointerVersion())
+              .build());
+    }
+    return builder.build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask toProtoFileGroupTask(
@@ -1283,42 +1295,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setTableId(effective.tableId())
         .setSnapshotId(effective.snapshotId())
         .addAllFilePaths(effective.filePaths())
-        .addAllFileResults(
-            effective.fileResults().stream().map(ReconcileControlImpl::toProtoFileResult).toList())
-        .addAllPartialAggregateRecords(effective.partialAggregateRecords())
-        .build();
-  }
-
-  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(
-      ReconcileFileResult fileResult) {
-    ReconcileFileResult effective = fileResult == null ? ReconcileFileResult.empty() : fileResult;
-    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
-        .setFilePath(effective.filePath())
-        .setState(
-            switch (effective.state()) {
-              case SUCCEEDED ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED;
-              case FAILED -> ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_FAILED;
-              case SKIPPED ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SKIPPED;
-              case UNSPECIFIED ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_UNSPECIFIED;
-            })
-        .setStatsProcessed(effective.statsProcessed())
-        .setMessage(effective.message())
-        .setIndexArtifact(toProtoIndexArtifact(effective.indexArtifact()))
-        .build();
-  }
-
-  private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
-      toProtoIndexArtifact(ReconcileIndexArtifactResult indexArtifact) {
-    ReconcileIndexArtifactResult effective =
-        indexArtifact == null ? ReconcileIndexArtifactResult.empty() : indexArtifact;
-    return ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
-        .newBuilder()
-        .setArtifactUri(effective.artifactUri())
-        .setArtifactFormat(effective.artifactFormat())
-        .setArtifactFormatVersion(effective.artifactFormatVersion())
         .build();
   }
 

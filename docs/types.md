@@ -29,9 +29,9 @@ Delta, etc.) and SQL-facing components.
 | `DECIMAL`        | 12                 | Fixed-precision decimal (precision, scale)        |
 | `INTERVAL`       | 14                 | Duration / period                                 |
 | `JSON`           | 15                 | Semi-structured JSON text                         |
-| `ARRAY`          | 16                 | Ordered collection (non-parameterised in v1)      |
-| `MAP`            | 17                 | Key-value map (non-parameterised in v1)           |
-| `STRUCT`         | 18                 | Named-field record (non-parameterised in v1)      |
+| `ARRAY`          | 16                 | Ordered collection (carries an element type tree) |
+| `MAP`            | 17                 | Key-value map (carries key/value type trees)      |
+| `STRUCT`         | 18                 | Named-field record (carries an ordered field list)|
 | `VARIANT`        | 19                 | Schema-flexible semi-structured value             |
 
 ### Integer collapsing
@@ -82,14 +82,52 @@ Leading precision is non‑negative and connector‑defined; fractional precisio
   When enabled, zoned timestamps are converted into that session zone and stored as local
   `TIMESTAMP` values.
 
-### Complex types (v1)
-`ARRAY`, `MAP`, `STRUCT`, and `VARIANT` are non-parameterised in v1. The logical kind captures
-only the container category; element/value/field types are captured by child `SchemaColumn` rows
-carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
+### Complex types
+`ARRAY`, `MAP`, and `STRUCT` carry a recursive type tree on `LogicalType`: `element()` +
+`elementNullable()` for ARRAY, `key()`/`value()` + `valueNullable()` for MAP, and ordered
+`LogicalField` entries (`name`, `nullable`, `type`) for STRUCT. `VARIANT` is self-describing and
+never carries a tree. A bare container tag (`LogicalType.of(LogicalKind.ARRAY)`) remains valid and
+represents the legacy non-parameterised form; use `hasTypeTree()` to distinguish the two.
+
+The string grammar mirrors the tree:
+
+```
+type   ::= scalar
+         | ARRAY "<" type ">"
+         | STRUCT "<" field ("," field)* ">"
+         | MAP "<" type "," type ">"
+field  ::= name ":" type
+```
+
+e.g. `ARRAY<INT>`, `MAP<STRING, DOUBLE>`, `ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>`.
+Struct field names are case-preserved; names that are not simple identifiers are double-quoted
+with `""` escaping. Nullability is not part of the grammar (parsing defaults to nullable).
+
+On the wire, `SchemaColumn.type` is the single authoritative semantic type: a recursive
+`floecat.types.LogicalType` message that preserves the full nested shape *including*
+element/value/field nullability, which the string grammar cannot carry. (The former flat
+`logical_type` string field is reserved; persisted columns written before the change are
+re-reconciled from upstream metadata where an upstream exists, and view output columns with no
+upstream are upgraded transparently on load via
+`LogicalTypeProtoAdapter.upgradeLegacyColumn`, which recovers the legacy string from protobuf
+unknown fields.) `LogicalTypeProtoAdapter.toProto`/`fromProto` convert
+between the JVM model and the wire message; the string grammar remains for textual inputs
+(generic schema declarations), docs, and debugging via `LogicalTypeFormat`.
+
+Nested fields additionally surface as child `SchemaColumn` rows with their own canonical paths —
+struct children as `parent.child`, list elements as `parent[]`, map keys as `parent.key`, map
+values as `parent{}` (e.g. `address.city`, `items[].sku`, `tags{}.v`). Schema construction and
+the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
+set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.
+
+`ScalarStats.logical_type` remains a flat canonical string: stats rows exist only for leaves, and
+leaf types are never parameterised containers.
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`.
+  stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`
+  plus the nested type tree for complex kinds (`element`/`elementNullable`, `key`/`value`/`valueNullable`,
+  `fields`).
   `temporalPrecision` is optional (unset means default microsecond precision). Interval fields are
   optional and only apply to `INTERVAL`. Canonical `DECIMAL` semantics are
   `precision ≥ 1` and `0 ≤ scale ≤ precision` with no global precision ceiling in the core model.
@@ -97,7 +135,8 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
   sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
   precision (0..6). All other kinds reject parameters.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
-  wire message and the JVM `LogicalType`, preserving kind/precision/scale/interval range metadata.
+  wire message and the JVM `LogicalType`, preserving scalar parameters, recursive shape, and nested
+  requiredness.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
   any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP` (timezone‑naive policy),
   string → `Instant` for `TIMESTAMPTZ`).
@@ -141,17 +180,18 @@ LogicalType t = LogicalType.decimal(38, 4);
 String logicalType = LogicalTypeFormat.format(t);
 String encoded = MinMaxCodec.encode(t, BigDecimal.valueOf(42));
 ```
-`LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)` and
-`.encodeLogicalType(LogicalType logicalType)` convert between canonical logical type strings and
-runtime objects.
+`LogicalTypeFormat.parse(String)` and `.format(LogicalType)` convert between canonical logical type
+strings and runtime objects. `LogicalTypeProtoAdapter` converts the runtime type to and from the
+typed protobuf payload.
 
 ## Arrow Mapping Contract
 
 `core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over Floecat logical types, not over
 arbitrary engine-native type systems.
 
-- Input is `SchemaColumn.logical_type` and should be a Floecat canonical logical type string (or an
-  accepted alias handled by `LogicalKind.fromName` semantics).
+- Input is `SchemaColumn.type`, a recursive `floecat.types.LogicalType` message; decode it with
+  `LogicalTypeProtoAdapter.columnType`. Textual entry points (generic schema declarations) still
+  accept canonical names and aliases via `LogicalKind.fromName` semantics.
 - Integer aliases (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `INT2/4/8`, `UINT2/4/8`) all map to
   Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
 - Unknown, null, or blank logical types fail fast with `IllegalArgumentException`; they are not
@@ -215,8 +255,8 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
 ## Data Flow & Lifecycle
 ```
 Connector reads Parquet/Delta/Iceberg schema
-  → schema mapper emits canonical LogicalKind strings (e.g. "INT", "TIMESTAMPTZ", "ARRAY")
-  → SchemaColumn.logical_type stores the canonical string
+  → schema mapper emits recursive LogicalType trees (e.g. INT, TIMESTAMPTZ, ARRAY<STRUCT<...>>)
+  → SchemaColumn.type stores the typed tree; nested nodes also surface as child rows by path
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
   → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
@@ -233,15 +273,16 @@ The module is pure Java; no configuration is required. Extending the type system
    canonical name.
 
 ## Examples & Scenarios
-- **Iceberg schema parsing** – `IcebergSchemaMapper.toCanonical(Type)` converts Iceberg types to
-  canonical strings (e.g. `TimestampType.withZone()` → `"TIMESTAMPTZ"`), storing them in
-  `SchemaColumn.logical_type`. This avoids the historic ambiguity where `"timestamp"` meant
-  UTC-stored in Delta but non-UTC in Iceberg. Iceberg `TimestampNanoType` is mapped with the same
-  timezone semantics (`withZone()` → `"TIMESTAMPTZ"`, `withoutZone()` → `"TIMESTAMP"`), and
-  Iceberg `VariantType` maps to canonical `"VARIANT"`.
-- **Delta schema parsing** – `DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)` applies Delta-
-  specific semantics: `"timestamp"` → `"TIMESTAMPTZ"` (UTC-stored), `"timestamp_ntz"` → `"TIMESTAMP"`
-  (timezone-naive).
+- **Iceberg schema parsing** – `IcebergTypeMappings.toLogical(Type)` converts Iceberg types to
+  `LogicalType`, recursing into LIST/MAP/STRUCT and preserving element/key/value types and
+  nullability; `IcebergSchemaMapper` stores the result in `SchemaColumn.type`. This avoids the
+  historic ambiguity where `"timestamp"` meant UTC-stored in Delta but non-UTC in Iceberg.
+  Iceberg `TimestampNanoType` uses the same timezone semantics (`withZone()` → `TIMESTAMPTZ`,
+  `withoutZone()` → `TIMESTAMP`), and Iceberg `VariantType` maps to `VARIANT`.
+- **Delta schema parsing** – `DeltaSchemaMapper.toLogicalType(DataType)` (kernel path) and
+  `fallbackLogicalType(JsonNode)` (JSON fallback) apply Delta-specific semantics: `"timestamp"` →
+  `TIMESTAMPTZ` (UTC-stored), `"timestamp_ntz"` → `TIMESTAMP` (timezone-naive). Both recurse into
+  arrays/maps/structs, preserving `containsNull` / `valueContainsNull`.
 - **Statistics ingestion** – NDV providers convert Parquet min/max values using `MinMaxCodec` before
   storing them in `ScalarStats`, ensuring planners can compare them without deserialising actual
   binary payloads. Connector planners canonicalize connector-native numeric temporal bounds to

@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
@@ -77,6 +78,9 @@ class IndexArtifactsIT {
   @GrpcClient("floecat")
   MutinyTableIndexServiceGrpc.MutinyTableIndexServiceStub indexesMutiny;
 
+  @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub stats;
+
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -107,9 +111,10 @@ class IndexArtifactsIT {
 
     long oldSnapshotId = 101L;
     long currentSnapshotId = 202L;
-    TestSupport.createSnapshot(
-        snapshot, tableId, oldSnapshotId, System.currentTimeMillis() - 1_000L);
-    TestSupport.createSnapshot(snapshot, tableId, currentSnapshotId, System.currentTimeMillis());
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tableId, oldSnapshotId, System.currentTimeMillis() - 1_000L);
+    TestSupport.createFinalizedSnapshot(
+        snapshot, stats, tableId, currentSnapshotId, System.currentTimeMillis());
 
     IndexArtifactRecord oldRecord =
         artifactRecord(

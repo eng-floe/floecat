@@ -37,6 +37,8 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -183,8 +185,9 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
+        orchestrator(statsStore, jobStore, tableRepository, syncCapture);
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
@@ -209,11 +212,38 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationTableId()).isEqualTo(request.tableId().getId());
     assertThat(scope.destinationCaptureRequests()).hasSize(1);
     assertThat(scope.capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.TABLE_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
     assertThat(scope.capturePolicy().columns())
         .extracting(ReconcileCapturePolicy.Column::selector)
         .containsExactlyInAnyOrder("id", "region");
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
+    assertThat(scope.capturePolicy().selectorsForIndex()).isEmpty();
+    assertThat(scope.capturePolicy().properties()).isEmpty();
+  }
+
+  @Test
+  void queryCaptureDisabledByDefaultDoesNotEnqueueSyncAsyncOrBatchWork() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
+    StatsCaptureRequest request =
+        tableRequest(StatsExecutionMode.SYNC, Optional.of(Duration.ofSeconds(1)));
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+
+    StatsResolutionResult single = orchestrator.resolve(request);
+    List<StatsResolutionResult> batch =
+        orchestrator.resolveBatch(StatsCaptureBatchRequest.of(List.of(request)));
+
+    assertThat(single.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(single.outcomeDetail()).isEqualTo("query_capture_disabled");
+    assertThat(batch)
+        .singleElement()
+        .matches(result -> result.outcomeDetail().equals("query_capture_disabled"));
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
 
   @Test
@@ -221,8 +251,16 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryMissing());
+        new StatsOrchestrator(
+            statsStore,
+            jobStore,
+            tableRepository,
+            connectorRepositoryMissing(),
+            syncCapture,
+            true,
+            null);
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
@@ -233,6 +271,34 @@ class StatsOrchestratorTest {
 
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
     assertThat(result.stats()).isEmpty();
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  void plannerMissDoesNotEnqueueWhenConnectorPolicyIsDisabled() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore,
+            jobStore,
+            tableRepository,
+            connectorRepositoryDisabled(),
+            syncCapture,
+            true,
+            null);
+
+    StatsCaptureRequest request = columnRequest(42L, 7L);
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+
+    Map<String, StatsResolutionResult> result =
+        orchestrator.resolvePlannerBatch(List.of(request), Long.MAX_VALUE);
+
+    assertThat(result.get(StatsTargetIdentity.storageId(request.target())).outcome())
+        .isEqualTo(StatsSyncOutcome.SKIPPED);
+    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
     verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
 
@@ -283,7 +349,9 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationCaptureRequests()).hasSize(2);
     assertThat(scope.capturePolicy().outputs())
         .containsExactlyInAnyOrder(
-            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scope.capturePolicy().selectorsForStats())
         .containsExactlyInAnyOrder("id", "region", "#9");
   }
@@ -322,8 +390,11 @@ class StatsOrchestratorTest {
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
             scopeCaptor.capture());
     assertThat(scopeCaptor.getValue().capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.COLUMN_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats()).containsExactly("#9");
+    assertThat(scopeCaptor.getValue().capturePolicy().selectorsForIndex()).containsExactly("#9");
   }
 
   @Test
@@ -588,13 +659,22 @@ class StatsOrchestratorTest {
 
   private static ConnectorRepository connectorRepositoryWith() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(true);
+    when(connectorRepository.getById(any()))
+        .thenReturn(Optional.of(Connector.getDefaultInstance()));
     return connectorRepository;
   }
 
   private static ConnectorRepository connectorRepositoryMissing() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(false);
+    when(connectorRepository.getById(any())).thenReturn(Optional.empty());
+    return connectorRepository;
+  }
+
+  private static ConnectorRepository connectorRepositoryDisabled() {
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    Connector connector =
+        Connector.newBuilder().setPolicy(ReconcilePolicy.newBuilder().setEnabled(false)).build();
+    when(connectorRepository.getById(any())).thenReturn(Optional.of(connector));
     return connectorRepository;
   }
 
@@ -645,6 +725,27 @@ class StatsOrchestratorTest {
   // ---------------------------------------------------------------------------
 
   @Test
+  void queryCaptureDisabledDoesNotEnqueuePlannerMiss() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            store, jobStore, Mockito.mock(TableRepository.class), connectorRepositoryWith());
+    StatsCaptureRequest request = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(request.target());
+    when(store.getTargetStatsBatch(
+            request.tableId(), request.snapshotId(), List.of(request.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+
+    Map<String, StatsResolutionResult> result =
+        orchestrator.resolvePlannerBatch(List.of(request), Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(result.get(storageId).outcomeDetail()).isEqualTo("query_capture_disabled");
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
   void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
@@ -660,13 +761,13 @@ class StatsOrchestratorTest {
     when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(rec)));
     Map<String, StatsResolutionResult> result1 =
-        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+        o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result1.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any());
 
     // Second call (same snapshot): served from cache, store NOT called again.
     Map<String, StatsResolutionResult> result2 =
-        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+        o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result2.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any()); // still 1
   }
@@ -694,11 +795,11 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(recSnap99)));
 
     // Prime cache with snapshot 42.
-    o.resolvePlannerBatch(List.of(reqSnap42), false, Long.MAX_VALUE);
+    o.resolvePlannerBatch(List.of(reqSnap42), Long.MAX_VALUE);
 
     // Query snapshot 99 — must NOT return snapshot-42 data.
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatch(List.of(reqSnap99), false, Long.MAX_VALUE);
+        o.resolvePlannerBatch(List.of(reqSnap99), Long.MAX_VALUE);
     assertThat(result.get(storageId).stats()).isPresent().contains(recSnap99);
     // Store was called once for snap42 and once for snap99 (cache miss for different snapshot).
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
@@ -726,10 +827,9 @@ class StatsOrchestratorTest {
             req.tableId(), req.snapshotId(), "gen-2", List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(gen2Record)));
 
-    o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE);
+    o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), Long.MAX_VALUE);
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req), Optional.of("gen-2"), false, Long.MAX_VALUE);
+        o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-2"), Long.MAX_VALUE);
 
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(2L);
     verify(store, Mockito.times(2)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
@@ -781,9 +881,9 @@ class StatsOrchestratorTest {
     when(store.getTargetStatsBatch(tableB, 42L, List.of(colTarget)))
         .thenReturn(Map.of(storageId, Optional.of(recB)));
 
-    o.resolvePlannerBatch(List.of(reqA), false, Long.MAX_VALUE);
+    o.resolvePlannerBatch(List.of(reqA), Long.MAX_VALUE);
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatch(List.of(reqB), false, Long.MAX_VALUE);
+        o.resolvePlannerBatch(List.of(reqB), Long.MAX_VALUE);
 
     // Table-B must return Table-B's row count, not Table-A's cached value.
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(2L);
@@ -806,14 +906,13 @@ class StatsOrchestratorTest {
     // First call: store returns absent (stats not yet captured).
     when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.empty()));
-    o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+    o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
 
     // Second call: store is queried AGAIN (absent not cached — stats may arrive via sync capture).
     TargetStatsRecord rec = columnRecord(req);
     when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(rec)));
-    Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+    Map<String, StatsResolutionResult> result = o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
@@ -836,12 +935,12 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(first)))
         .thenReturn(Map.of(storageId, Optional.of(replacement)));
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
     o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
@@ -866,8 +965,7 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(replacement)));
 
     assertThat(
-            o.resolvePlannerBatchInGeneration(
-                    List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE)
+            o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), Long.MAX_VALUE)
                 .get(storageId)
                 .stats())
         .contains(first);
@@ -875,8 +973,7 @@ class StatsOrchestratorTest {
     o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
 
     assertThat(
-            o.resolvePlannerBatchInGeneration(
-                    List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE)
+            o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), Long.MAX_VALUE)
                 .get(storageId)
                 .stats())
         .contains(replacement);
@@ -903,8 +1000,7 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 9L))));
 
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+        o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE);
 
     // The pinned generation is authoritative; newest is never consulted when the pin has the
     // target.
@@ -933,39 +1029,10 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 20L))));
 
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+        o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE);
 
     assertThat(result.get(storageId).hasStats()).isTrue();
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(20L);
-  }
-
-  @Test
-  void resolvePlannerBatch_staleAfterPinnedAndNewestMiss() {
-    StatsStore store = Mockito.mock(StatsStore.class);
-    StatsOrchestrator o =
-        orchestrator(
-            store,
-            Mockito.mock(ReconcileJobStore.class),
-            Mockito.mock(TableRepository.class),
-            Mockito.mock(StatsSyncCapture.class));
-
-    StatsCaptureRequest req = columnRequest(42L, 7L);
-    String storageId = StatsTargetIdentity.storageId(req.target());
-    when(store.getTargetStatsBatchInGeneration(
-            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
-        .thenReturn(Map.of(storageId, Optional.empty()));
-    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
-        .thenReturn(Map.of(storageId, Optional.empty()));
-    when(store.getStaleTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
-        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 5L))));
-
-    Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req), Optional.of("gen-pinned"), true, Long.MAX_VALUE);
-
-    assertThat(result.get(storageId).hasStats()).isTrue();
-    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(5L);
   }
 
   @Test
@@ -990,7 +1057,7 @@ class StatsOrchestratorTest {
     for (int i = 0; i < 2; i++) {
       assertThat(
               o.resolvePlannerBatchInGeneration(
-                      List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE)
+                      List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE)
                   .get(storageId)
                   .stats()
                   .get()
@@ -1083,7 +1150,6 @@ class StatsOrchestratorTest {
             List.of(req),
             Optional.of("gen-pinned"),
             completeAtRowCount(storageId, 10L),
-            false,
             Long.MAX_VALUE);
 
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(10L);
@@ -1110,7 +1176,6 @@ class StatsOrchestratorTest {
             List.of(req),
             Optional.of("gen-pinned"),
             completeAtRowCount(storageId, 10L),
-            false,
             Long.MAX_VALUE);
 
     // The pinned record satisfies the need: the hot path is one pinned read, newest untouched.
@@ -1142,13 +1207,10 @@ class StatsOrchestratorTest {
             List.of(req),
             Optional.of("gen-pinned"),
             completeAtRowCount(storageId, 10L),
-            /* staleOk= */ true,
             Long.MAX_VALUE);
 
-    // Between equally incomplete records, consistency prefers the pinned generation — and a
-    // partial record is still a hit: it never falls through to the stale ladder rung.
+    // Between equally incomplete records, consistency prefers the pinned generation.
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(1L);
-    verify(store, Mockito.never()).getStaleTargetStatsBatch(any(), anyLong(), any());
   }
 
   @Test
@@ -1187,11 +1249,10 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.empty()));
 
     // 1. Prime: a need with no completeness predicate caches the scalar-only pinned record.
-    o.resolvePlannerBatchInGeneration(
-        List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+    o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE);
 
-    // 2. A richer need the cached record cannot satisfy, staleOk=false so a fall-through would
-    // reach sync capture. The pinned re-read fails and the newest generation is empty — the only
+    // 2. A richer need the cached record cannot satisfy. The pinned re-read fails and the newest
+    // generation is empty — the only
     // thing standing between the planner and a needless capture is the incomplete cached record,
     // which is still a valid (degraded) hit and must be served.
     Map<String, StatsResolutionResult> result =
@@ -1199,13 +1260,11 @@ class StatsOrchestratorTest {
             List.of(req),
             Optional.of("gen-pinned"),
             completeAtRowCount(storageId, 10L),
-            false,
             Long.MAX_VALUE);
 
     assertThat(result.get(storageId).hasStats()).isTrue();
     assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(1L);
-    // The partial hit means no stale read and no capture were triggered.
-    verify(store, Mockito.never()).getStaleTargetStatsBatch(any(), anyLong(), any());
+    // The partial hit means no capture was triggered.
   }
 
   @Test
@@ -1229,7 +1288,7 @@ class StatsOrchestratorTest {
     // A need without a completeness predicate caches the pinned record: presence = complete.
     assertThat(
             o.resolvePlannerBatchInGeneration(
-                    List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE)
+                    List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE)
                 .get(storageId)
                 .stats()
                 .get()
@@ -1244,7 +1303,6 @@ class StatsOrchestratorTest {
                     List.of(req),
                     Optional.of("gen-pinned"),
                     completeAtRowCount(storageId, 10L),
-                    false,
                     Long.MAX_VALUE)
                 .get(storageId)
                 .stats()
@@ -1280,8 +1338,7 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
 
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+        o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE);
 
     // A pinned read failure must not zero the batch: the newest generation is an independent
     // path and still serves the target.
@@ -1357,7 +1414,7 @@ class StatsOrchestratorTest {
     assertThatThrownBy(
             () ->
                 o.resolvePlannerBatchInGeneration(
-                    List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE))
+                    List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE))
         .isSameAs(retryable);
     verify(store, never())
         .getTargetStatsInGeneration(req.tableId(), req.snapshotId(), "gen-pinned", req.target());
@@ -1396,8 +1453,7 @@ class StatsOrchestratorTest {
         .thenReturn(newest);
 
     Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            requests, Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+        o.resolvePlannerBatchInGeneration(requests, Optional.of("gen-pinned"), Long.MAX_VALUE);
 
     assertThat(result.values()).allMatch(StatsResolutionResult::hasStats);
     verify(store, Mockito.times(1))
@@ -1441,7 +1497,6 @@ class StatsOrchestratorTest {
         List.of(req),
         Optional.of("gen-pinned"),
         completeAtRowCount(storageId, 10L),
-        false,
         Long.MAX_VALUE);
 
     // Exactly the rung that served the target is counted, tagged result=newest_fill.
@@ -1478,12 +1533,12 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(first)))
         .thenReturn(Map.of(storageId, Optional.of(replacement)));
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
     o.invalidateStatsCache(req.tableId(), req.snapshotId(), List.of(targetOnlyRecord));
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
@@ -1506,12 +1561,12 @@ class StatsOrchestratorTest {
         .thenReturn(Map.of(storageId, Optional.of(first)))
         .thenReturn(Map.of(storageId, Optional.of(replacement)));
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
     o.invalidateStatsCache(req.tableId(), req.snapshotId());
 
-    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+    assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }

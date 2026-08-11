@@ -18,18 +18,24 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsService;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.TargetStatsView;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -50,6 +56,7 @@ import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import io.grpc.Status;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
@@ -64,6 +71,8 @@ import org.jboss.logging.Logger;
 
 @GrpcService
 public class TableStatisticsServiceImpl extends BaseServiceImpl implements TableStatisticsService {
+  static final int LIST_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+  static final int LIST_FETCH_MAX_RECORDS = 1_000;
 
   @Inject SnapshotRepository snapshots;
   @Inject StatsStore statsStore;
@@ -134,6 +143,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                       (request.hasPage() && request.getPage().getPageSize() > 0)
                           ? request.getPage().getPageSize()
                           : 200;
+                  final int boundedLimit = boundedListLimit(limit);
                   final String token = request.hasPage() ? request.getPage().getPageToken() : "";
                   final var tableId = request.getTableId();
                   final long snapId = resolveSnapshotId(tableId, request.getSnapshot());
@@ -152,23 +162,100 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
                   var listResult =
                       statsStore.listTargetStats(
-                          tableId, snapId, targetType, Math.max(1, limit), token);
+                          tableId, snapId, targetType, Math.max(1, boundedLimit), token);
                   int total = statsStore.countTargetStats(tableId, snapId, targetType);
 
-                  return ListTargetStatsResponse.newBuilder()
-                      .addAllRecords(listResult.records())
-                      .setPage(
-                          PageResponse.newBuilder()
-                              .setNextPageToken(listResult.nextPageToken())
-                              .setTotalSize(total)
-                              .build())
-                      .build();
+                  return buildListResponse(
+                      listResult, total, request.getView(), LIST_RESPONSE_MAX_BYTES);
                 }),
             correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  static ListTargetStatsResponse buildListResponse(
+      StatsStore.StatsStorePage storePage,
+      int total,
+      TargetStatsView view,
+      int maxSerializedBytes) {
+    List<TargetStatsRecord> records =
+        view == TargetStatsView.TSV_FULL
+            ? storePage.records()
+            : storePage.records().stream()
+                .map(TableStatisticsServiceImpl::withoutRawSketchData)
+                .toList();
+    ListTargetStatsResponse accepted = response(List.of(), storePage.nextPageToken(), total);
+    for (int i = 0; i < records.size(); i++) {
+      String nextToken =
+          i == records.size() - 1 ? storePage.nextPageToken() : storePage.continuationTokenAfter(i);
+      ListTargetStatsResponse candidate = response(records.subList(0, i + 1), nextToken, total);
+      if (candidate.getSerializedSize() <= maxSerializedBytes) {
+        accepted = candidate;
+        continue;
+      }
+      if (i == 0) {
+        throw Status.RESOURCE_EXHAUSTED
+            .withDescription(
+                "one target stats record exceeds the "
+                    + maxSerializedBytes
+                    + "-byte ListTargetStats response budget"
+                    + (view == TargetStatsView.TSV_FULL
+                        ? "; request TSV_SUMMARY or reduce the record payload"
+                        : ""))
+            .asRuntimeException();
+      }
+      return accepted;
+    }
+    return accepted;
+  }
+
+  static int boundedListLimit(int requestedLimit) {
+    return Math.max(1, Math.min(requestedLimit, LIST_FETCH_MAX_RECORDS));
+  }
+
+  private static ListTargetStatsResponse response(
+      List<TargetStatsRecord> records, String nextPageToken, int total) {
+    return ListTargetStatsResponse.newBuilder()
+        .addAllRecords(records)
+        .setPage(
+            PageResponse.newBuilder().setNextPageToken(nextPageToken).setTotalSize(total).build())
+        .build();
+  }
+
+  static TargetStatsRecord withoutRawSketchData(TargetStatsRecord record) {
+    TargetStatsRecord.Builder builder = record.toBuilder();
+    switch (record.getValueCase()) {
+      case SCALAR -> builder.setScalar(withoutRawSketchData(record.getScalar()));
+      case FILE -> {
+        FileTargetStats.Builder file = record.getFile().toBuilder().clearColumns();
+        for (FileColumnStats column : record.getFile().getColumnsList()) {
+          file.addColumns(
+              column.toBuilder().setScalar(withoutRawSketchData(column.getScalar())).build());
+        }
+        builder.setFile(file);
+      }
+      default -> {
+        // No sketch-bearing payload.
+      }
+    }
+    return builder.build();
+  }
+
+  private static ScalarStats withoutRawSketchData(ScalarStats scalar) {
+    ScalarStats.Builder builder = scalar.toBuilder().clearSketches();
+    for (SketchPayload sketch : scalar.getSketchesList()) {
+      builder.addSketches(sketch.toBuilder().clearData().build());
+    }
+    if (scalar.hasNdv()) {
+      Ndv.Builder ndv = scalar.getNdv().toBuilder().clearSketches();
+      for (SketchPayload sketch : scalar.getNdv().getSketchesList()) {
+        ndv.addSketches(sketch.toBuilder().clearData().build());
+      }
+      builder.setNdv(ndv);
+    }
+    return builder.build();
   }
 
   @Override
@@ -405,7 +492,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       }
       case AS_OF ->
           snapshots
-              .getAsOf(tableId, ref.getAsOf())
+              .getQueryableAsOf(tableId, ref.getAsOf())
               .map(Snapshot::getSnapshotId)
               .orElseThrow(
                   () ->

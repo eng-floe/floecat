@@ -22,16 +22,37 @@ import java.util.List;
 
 public record StandaloneFileGroupExecutionResult(
     String resultId,
-    List<TargetStatsRecord> statsRecords,
-    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    List<TargetStatsRecord> partialAggregateRecords,
+    List<TargetStatsRecord> publishedFileStatsRecords,
+    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+    List<String> realizedStatsSelectors) {
   public StandaloneFileGroupExecutionResult {
     resultId = resultId == null ? "" : resultId.trim();
-    statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
+    partialAggregateRecords =
+        partialAggregateRecords == null ? List.of() : List.copyOf(partialAggregateRecords);
+    publishedFileStatsRecords =
+        publishedFileStatsRecords == null ? List.of() : List.copyOf(publishedFileStatsRecords);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
+    realizedStatsSelectors =
+        realizedStatsSelectors == null ? List.of() : List.copyOf(realizedStatsSelectors);
+  }
+
+  public StandaloneFileGroupExecutionResult(
+      String resultId,
+      List<TargetStatsRecord> partialAggregateRecords,
+      List<TargetStatsRecord> publishedFileStatsRecords,
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    this(
+        resultId,
+        partialAggregateRecords,
+        publishedFileStatsRecords,
+        stagedIndexArtifacts,
+        List.of());
   }
 
   public static StandaloneFileGroupExecutionResult empty(String resultId) {
-    return new StandaloneFileGroupExecutionResult(resultId, List.of(), List.of());
+    return new StandaloneFileGroupExecutionResult(
+        resultId, List.of(), List.of(), List.of(), List.of());
   }
 }

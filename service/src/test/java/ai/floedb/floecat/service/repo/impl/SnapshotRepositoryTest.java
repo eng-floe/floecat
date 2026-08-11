@@ -17,12 +17,18 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -30,10 +36,13 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
 import java.util.UUID;
@@ -133,12 +142,12 @@ class SnapshotRepositoryTest {
     int total = snapshotRepo.count(tableRid);
     assertEquals(2, total);
 
-    var cur = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    var cur = snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow();
     assertEquals(200, cur.getSnapshotId());
   }
 
   @Test
-  void getCurrentSnapshotUsesCurrentPointer() {
+  void latestRegisteredSnapshotUsesCurrentPointer() {
     var tableRid = newSeededTable();
     String account = tableRid.getAccountId();
 
@@ -148,7 +157,7 @@ class SnapshotRepositoryTest {
     snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
         tableRid, snapshotRepo.getById(tableRid, 1).orElseThrow());
 
-    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    Snapshot current = snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow();
     assertEquals(1L, current.getSnapshotId());
   }
 
@@ -165,7 +174,7 @@ class SnapshotRepositoryTest {
         SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED,
         snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableRid, snapshot));
 
-    assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(1L, snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
     assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
   }
 
@@ -179,7 +188,7 @@ class SnapshotRepositoryTest {
     seedSnapshot(snapshotRepo, account, tableRid, 2, t, t - 20_000); // older
     snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
         tableRid, snapshotRepo.getById(tableRid, 1).orElseThrow());
-    assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(1L, snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
 
     // Make snapshot 2 the newest by commit time via update(). update() must NOT advance the current
     // pointer — the advance belongs to the service layer (which re-commits the root entry). If
@@ -192,13 +201,13 @@ class SnapshotRepositoryTest {
 
     assertEquals(
         1L,
-        snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId(),
+        snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId(),
         "update() must not advance the current pointer");
 
     // The service-path advance (which commits the root entry) is what moves it.
     snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
         tableRid, snapshotRepo.getById(tableRid, 2).orElseThrow());
-    assertEquals(2L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(2L, snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
   }
 
   @Test
@@ -260,7 +269,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
+  void latestRegisteredSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
     var tableRid = newSeededTable();
     String account = tableRid.getAccountId();
 
@@ -273,31 +282,31 @@ class SnapshotRepositoryTest {
     snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
         tableRid, snapshotRepo.getById(tableRid, 999).orElseThrow());
 
-    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    Snapshot current = snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow();
     assertEquals(999L, current.getSnapshotId());
     assertEquals(Timestamps.fromMillis(olderCreatedMs), current.getUpstreamCreatedAt());
   }
 
   @Test
-  void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsMissing() {
+  void latestRegisteredSnapshotFallsBackWhenCurrentPointerIsMissing() {
     var tableRid = newSeededTable();
     String account = tableRid.getAccountId();
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
-    Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    Snapshot fallback = snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow();
     assertEquals(204L, fallback.getSnapshotId());
     assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
   }
 
   @Test
-  void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsDangling() {
+  void latestRegisteredSnapshotFallsBackWhenCurrentPointerIsDangling() {
     var tableRid = newSeededTable();
     String account = tableRid.getAccountId();
     seedCurrentPointer(tableRid, 999_999L, clock.millis());
     seedSnapshot(snapshotRepo, account, tableRid, 101, clock.millis(), clock.millis() - 20_000);
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
-    Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    Snapshot fallback = snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow();
     assertEquals(204L, fallback.getSnapshotId());
     assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
   }
@@ -319,7 +328,8 @@ class SnapshotRepositoryTest {
     assertEquals(
         SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
         snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableRid, older));
-    assertEquals(200L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(
+        200L, snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
   }
 
   @Test
@@ -387,7 +397,7 @@ class SnapshotRepositoryTest {
         SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
         repo.maybeAdvanceCurrentSnapshotPointer(
             tableRid, repo.getById(tableRid, 200).orElseThrow()));
-    assertEquals(300L, repo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(300L, repo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
   }
 
   @Test
@@ -452,7 +462,52 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void tableWithoutARootStillReadsTheLegacyPointer() {
+  void queryableAsOfSkipsANewerUnfinalizedSnapshot() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+    long now = clock.millis();
+    long olderTime = now - 20_000;
+    long newerTime = now - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 1L, now, olderTime);
+    seedSnapshot(snapshotRepo, account, tableRid, 2L, now, newerTime);
+    seedRootWithCurrency(tableRid, 2L, newerTime);
+
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.setStatsGeneration(
+            roots,
+            tableRid,
+            1L,
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri("/stats/generation/1")
+                .build(),
+            2L));
+
+    StatsStore statsStore = mock(StatsStore.class);
+    when(statsStore.tracksStatsGenerations()).thenReturn(true);
+    SnapshotRepository gated =
+        new SnapshotRepository(
+            ptr,
+            blobs,
+            tableRepo,
+            new CurrentSnapshotPointerRepository(ptr, blobs),
+            roots,
+            statsStore);
+
+    assertEquals(
+        1L,
+        gated
+            .getQueryableAsOf(tableRid, Timestamps.fromMillis(newerTime))
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void tableWithoutARootDoesNotReadTheRegisteredPointer() {
     var tableRid = newSeededTable();
     String account = tableRid.getAccountId();
 
@@ -461,9 +516,10 @@ class SnapshotRepositoryTest {
     snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
         tableRid, snapshotRepo.getById(tableRid, 7).orElseThrow());
 
-    assertEquals(7L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertTrue(snapshotRepo.getCurrentSnapshot(tableRid).isEmpty());
+    assertTrue(snapshotRepo.getCurrentSnapshotPointer(tableRid).isEmpty());
     assertEquals(
-        7L, snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+        7L, snapshotRepo.latestRegisteredSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
   }
 
   /**
@@ -553,7 +609,7 @@ class SnapshotRepositoryTest {
         "AS_OF must skip the dangling entry to the older intact snapshot");
     assertEquals(
         10L,
-        snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId(),
+        snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId(),
         "the latest-by-time fallback must skip the dangling entry too");
   }
 
@@ -586,7 +642,9 @@ class SnapshotRepositoryTest {
 
     // Commit a root whose entry references the ORIGINAL blob (rootRefUri), currency = 9.
     var rootsRepo = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(rootsRepo);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            rootsRepo, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     committer.commit(
         tableRid,
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
@@ -625,9 +683,214 @@ class SnapshotRepositoryTest {
     assertEquals(Timestamps.fromMillis(ingestedMs), first.getUpdatedAt());
   }
 
+  @Test
+  void recordReuseManifestPreservesSnapshotAndIsIdempotent() {
+    var tableRid = newSeededTable();
+    Snapshot original =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .putSummary("existing", "value")
+            .build();
+    snapshotRepo.create(original);
+
+    byte[] digest = new byte[32];
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
+    Snapshot recorded = snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef);
+    Snapshot updated = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+    Snapshot replayedRecord = snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef);
+    Snapshot replayed = snapshotRepo.getById(tableRid, 42L).orElseThrow();
+
+    assertEquals(updated, recorded);
+    assertEquals(updated, replayedRecord);
+    assertEquals("value", updated.getSummaryOrThrow("existing"));
+    assertEquals("/reuse/manifest.pb", updated.getReuseManifestRef().getUri());
+    assertEquals(123L, updated.getReuseManifestRef().getPayloadBytes());
+    assertArrayEquals(digest, updated.getReuseManifestRef().getPayloadSha256().toByteArray());
+    assertEquals(
+        "/stats/generation.pb", updated.getReuseManifestRef().getStatsGenerationManifestUri());
+    assertEquals(updated, replayed);
+    assertEquals(updated, snapshotRepo.getById(tableRid, 42L).orElseThrow());
+  }
+
+  @Test
+  void recordReuseManifestFailsWhenSnapshotWasDeleted() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/reuse/manifest.pb")
+            .setPayloadBytes(123L)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .setStatsGenerationManifestUri("/stats/generation.pb")
+            .build();
+
+    assertThrows(
+        BaseResourceRepository.NotFoundException.class,
+        () -> snapshotRepo.recordReuseManifest(tableRid, 42L, reuseManifestRef));
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseIgnoresTheUnfinalizedCommittedCurrent() {
+    var tableRid = newSeededTable();
+    long now = clock.millis();
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      Snapshot.Builder snapshot =
+          Snapshot.newBuilder()
+              .setTableId(tableRid)
+              .setSnapshotId(snapshotId)
+              .setIngestedAt(Timestamps.fromMillis(now))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        snapshot.setReuseManifestRef(
+            ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef.newBuilder()
+                .setUri("/reuse/" + snapshotId + ".pb")
+                .setPayloadBytes(123L)
+                .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                .setStatsGenerationManifestUri("/reuse-stats/" + snapshotId));
+      }
+      snapshotRepo.create(snapshot.build());
+    }
+
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
+    for (long snapshotId = 1L; snapshotId <= 3L; snapshotId++) {
+      var entry =
+          ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+              .setSnapshotId(snapshotId)
+              .setSnapshotRef(
+                  ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                      .setUri(snapshotRepo.metaForSafe(tableRid, snapshotId).getBlobUri()))
+              .setUpstreamCreatedAt(Timestamps.fromMillis(now + snapshotId));
+      if (snapshotId < 3L) {
+        entry.setReuseStatsGenerationRef(
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri("/reuse-stats/" + snapshotId));
+      }
+      committer.commit(
+          tableRid,
+          ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+              roots, tableRid, entry.build(), null, false));
+    }
+    var currentEntry =
+        SnapshotManifests.findEntry(
+                roots, roots.get(tableRid).orElseThrow().getSnapshotManifestRef(), 3L)
+            .orElseThrow();
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.resync(
+            roots, tableRid, null, currentEntry, java.util.Set.of(1L, 2L, 3L), null));
+
+    assertEquals(
+        2L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 3L)
+            .orElseThrow()
+            .getSnapshotId());
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseFailsClosedWhenSelectedCandidateIsUnusable() {
+    var tableRid = newSeededTable();
+    Snapshot newestWithoutReuseManifest =
+        Snapshot.newBuilder().setTableId(tableRid).setSnapshotId(2L).build();
+    Snapshot reusablePredecessor =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(1L)
+            .setReuseManifestRef(
+                SnapshotReuseManifestRef.newBuilder()
+                    .setUri("/reuse/1.pb")
+                    .setPayloadBytes(123L)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("/reuse-stats/1.pb"))
+            .build();
+    snapshotRepo.create(newestWithoutReuseManifest);
+    snapshotRepo.create(reusablePredecessor);
+
+    var roots = new TableRootRepository(ptr, blobs);
+    assertTrue(
+        roots.createIfAbsent(
+            TableRoot.newBuilder()
+                .setTableId(tableRid)
+                .setCurrentSnapshotId(2L)
+                .setSnapshotManifestRef(BlobRef.newBuilder().setUri("/manifest/head.pb"))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(2L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 2L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/2.pb")))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(1L)
+                        .setSnapshotRef(
+                            BlobRef.newBuilder()
+                                .setUri(snapshotRepo.metaForSafe(tableRid, 1L).getBlobUri()))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/1.pb")))
+                .build()));
+
+    BaseResourceRepository.CorruptionException failure =
+        assertThrows(
+            BaseResourceRepository.CorruptionException.class,
+            () -> snapshotRepo.getLatestFinalizedSnapshotForReuse(tableRid, null));
+    assertTrue(failure.getMessage().contains("does not match its snapshot"));
+
+    assertEquals(
+        1L,
+        snapshotRepo
+            .getLatestFinalizedSnapshotForReuse(tableRid, 2L)
+            .orElseThrow()
+            .getSnapshotId());
+  }
+
+  @Test
+  void latestFinalizedSnapshotForReuseRetriesWhenSelectedSnapshotBlobIsMissing() {
+    var tableRid = newSeededTable();
+    var roots = new TableRootRepository(ptr, blobs);
+    assertTrue(
+        roots.createIfAbsent(
+            TableRoot.newBuilder()
+                .setTableId(tableRid)
+                .setCurrentSnapshotId(2L)
+                .setSnapshotManifestRef(BlobRef.newBuilder().setUri("/manifest/head.pb"))
+                .addReusableSnapshotCandidates(
+                    SnapshotManifestEntry.newBuilder()
+                        .setSnapshotId(2L)
+                        .setSnapshotRef(BlobRef.newBuilder().setUri("/snapshots/missing.pb"))
+                        .setReuseStatsGenerationRef(
+                            BlobRef.newBuilder().setUri("/reuse-stats/2.pb")))
+                .build()));
+
+    StorageAbortRetryableException failure =
+        assertThrows(
+            StorageAbortRetryableException.class,
+            () -> snapshotRepo.getLatestFinalizedSnapshotForReuse(tableRid, null));
+    assertTrue(failure.getMessage().contains("temporarily unavailable"));
+  }
+
   private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {
     var roots = new TableRootRepository(ptr, blobs);
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     for (Snapshot snap : snapshotRepo.list(tableId, 100, "", new StringBuilder())) {
       committer.commit(
           tableId,

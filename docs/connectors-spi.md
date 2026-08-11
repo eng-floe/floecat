@@ -20,8 +20,14 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   - `enumerateSnapshots(...)` → `SnapshotBundle`s containing per-snapshot metadata.
     Connectors receive `SnapshotEnumerationOptions` with `fullRescan`, `knownSnapshotIds`, and
     optional `targetSnapshotIds` for scoped enumeration.
+  - `planSnapshotFiles(...)` → optional immutable `SnapshotFilePlan` containing data files, delete
+    files, execution schema, and connector-native physical content identities.
   - `captureSnapshotTargetStats(...)` → targeted stats capture for one snapshot and optional selector
     hints (`#<column_id>` and/or connector-native names/paths).
+  - `captureSnapshotTargetStatsDirect(...)` → optional connector-native snapshot capture that
+    returns records, source-file count, and the concrete selectors represented by column stats.
+  - `capturePlannedFileGroup(...)` → captures one immutable planned file group and returns stats,
+    page-index entries, and its concrete realized stats selectors.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -99,17 +105,36 @@ interface FloecatConnector extends Closeable {
   List<String> listTables(String namespaceFq);
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshots(...);
+  Optional<SnapshotFilePlan> planSnapshotFiles(...);
   List<TargetStatsRecord> captureSnapshotTargetStats(...);
+  Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(...);
+  FileGroupCaptureResult capturePlannedFileGroup(...);
 }
 ```
+`DirectSnapshotStatsCapture.realizedStatsSelectors` and
+`FileGroupCaptureResult.realizedStatsSelectors` must contain the sorted, distinct concrete selector
+aliases represented by emitted column-stat aggregates. Return an empty list when column stats were
+not requested. Include both `#<field-id>` and the corresponding name/path when the capture path can
+resolve both; this lets durable content state recognize later requests using either alias and
+avoids unnecessary recapture.
+
 For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
-`TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
-with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
-should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,
-and per-column stats for planner scan paths. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
-maps so downstream APIs can mirror Iceberg’s REST contract.
+`TableDescriptor`, `SnapshotBundle`, `SnapshotFilePlan`, and `ScanBundle` are immutable records;
+connectors populate them with canonical metadata that the reconciler ingests. A
+`SnapshotBundle.parentId` of `-1` means the source snapshot has no predecessor. Snapshot bundles
+also carry manifest-list URIs, sequence numbers, summary maps, and metadata locations.
+
+Every `SnapshotFileEntry` and attached `SnapshotIcebergDeleteFile` supplies a stable
+`contentIdentity` derived only from immutable physical source metadata. It must change when the
+underlying file content identity changes and remain stable across snapshots that reference the same
+physical content. The reconciler combines it with file metadata, schema, partition, delete-vector,
+delete-file, and capture-policy state to produce stats and index compatibility fingerprints. An
+empty data-file content identity disables cross-snapshot reuse for that execution plan. Connectors
+should also identify attached delete files so their auxiliary fingerprints are bound to immutable
+source identity. Generating either identity must not read source file content, stats blobs, or index
+sidecars.
 
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).
@@ -143,7 +168,9 @@ ConnectorFactory.create(ConnectorConfig)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshots (metadata only)
-      → captureSnapshotTargetStats (stats capture per snapshot/selector scope)
+      → planSnapshotFiles (immutable file membership and physical identities)
+      → capturePlannedFileGroup (file-group stats and index capture)
+      → captureSnapshotTargetStatsDirect (connector-native direct stats when supported)
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the

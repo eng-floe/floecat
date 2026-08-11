@@ -28,6 +28,7 @@ final class JobIndexBackendSupport {
   static final String KIND_GLOBAL_STATE = "ReconcileJobState";
   static final String KIND_ACCOUNT_STATE = "ReconcileJobAccountState";
   static final String KIND_CONNECTOR_STATE = "ReconcileJobConnectorState";
+  static final String KIND_TERMINAL_RETENTION = "ReconcileJobTerminalRetention";
   static final String ATTR_POINTER_KEY = "pointer_key";
   static final String ATTR_CANONICAL_POINTER_KEY = "canonical_pointer_key";
   static final String ATTR_ACCOUNT_ID = "account_id";
@@ -82,6 +83,9 @@ final class JobIndexBackendSupport {
           CONNECTOR_SEGMENT_PLACEHOLDER);
   private static final String DEDUPE_MARKER =
       accountScopedMarker(Keys.reconcileDedupePointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+  private static final String TERMINAL_RETENTION_MARKER =
+      accountScopedMarker(
+          Keys.reconcileTerminalRetentionPointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
 
   private JobIndexBackendSupport() {}
 
@@ -101,7 +105,8 @@ final class JobIndexBackendSupport {
         || parseConnectorKey(pointerKey) != null
         || parseGlobalStateKey(pointerKey) != null
         || parseAccountStateKey(pointerKey) != null
-        || parseConnectorStateKey(pointerKey) != null;
+        || parseConnectorStateKey(pointerKey) != null
+        || parseTerminalRetentionKey(pointerKey) != null;
   }
 
   static CanonicalJobKey parseCanonicalJobKey(String pointerKey) {
@@ -275,6 +280,33 @@ final class JobIndexBackendSupport {
     return new DedupeKey(pointerKey, accountSegment, hashSegment);
   }
 
+  static TerminalRetentionKey parseTerminalRetentionKey(String pointerKey) {
+    String normalized = stripLeadingSlash(pointerKey);
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
+      return null;
+    }
+    int markerIndex = normalized.indexOf(TERMINAL_RETENTION_MARKER);
+    if (markerIndex < 0) {
+      return null;
+    }
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder = normalized.substring(markerIndex + TERMINAL_RETENTION_MARKER.length());
+    String[] parts = remainder.split("/", 2);
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || parts.length != 2
+        || parts[0].isBlank()
+        || parts[1].isBlank()) {
+      return null;
+    }
+    try {
+      Long.parseLong(parts[0]);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
+    return new TerminalRetentionKey(pointerKey, accountSegment, parts[0], parts[1]);
+  }
+
   static DedupeKey parseDedupePrefix(String prefix) {
     String normalized = stripLeadingSlash(prefix);
     if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX) || !normalized.endsWith("/")) {
@@ -328,6 +360,12 @@ final class JobIndexBackendSupport {
   static String dedupePartitionKey(String accountId) {
     var key = parseDedupePrefix(Keys.reconcileDedupePointerPrefix(accountId));
     return key == null ? "" : dedupePartitionKey(key);
+  }
+
+  static String terminalRetentionPartitionKey(String accountId) {
+    var key =
+        parseTerminalRetentionKey(Keys.reconcileTerminalRetentionPointer(accountId, 0L, "__job__"));
+    return key == null ? "" : terminalRetentionPartitionKey(key);
   }
 
   static String canonicalPartitionKey(CanonicalJobKey key) {
@@ -413,6 +451,14 @@ final class JobIndexBackendSupport {
 
   static String dedupeSortKey(DedupeKey key) {
     return "hash/" + key.hashSegment();
+  }
+
+  static String terminalRetentionPartitionKey(TerminalRetentionKey key) {
+    return "reconcile-job-terminal-retention/" + key.accountSegment();
+  }
+
+  static String terminalRetentionSortKey(TerminalRetentionKey key) {
+    return key.timestampSegment() + "/" + key.jobSegment();
   }
 
   static CanonicalJobKey parseCanonicalPrefix(String prefix) {
@@ -619,4 +665,7 @@ final class JobIndexBackendSupport {
       String jobSegment) {}
 
   record DedupeKey(String pointerKey, String accountSegment, String hashSegment) {}
+
+  record TerminalRetentionKey(
+      String pointerKey, String accountSegment, String timestampSegment, String jobSegment) {}
 }

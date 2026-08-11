@@ -58,7 +58,15 @@ public interface BlobStore {
     throw new UnsupportedOperationException("versioned deletes not supported by this store");
   }
 
-  void deletePrefix(String prefix);
+  /**
+   * Deletes objects whose keys begin with {@code prefix}.
+   *
+   * <p>Returns the number of object deletions the implementation reports as successful. Prefix
+   * deletion is not atomic: an exception may be raised after earlier batches have already been
+   * deleted. Implementation-specific housekeeping, such as removal of an object-store directory
+   * marker, is not included in the count.
+   */
+  int deletePrefix(String prefix);
 
   default Map<String, byte[]> getBatch(List<String> uris) {
     Map<String, byte[]> out = new HashMap<>(uris.size());
@@ -73,4 +81,12 @@ public interface BlobStore {
   }
 
   Page list(String prefix, int limit, String pageToken);
+
+  /**
+   * Lists immediate child prefixes below {@code prefix} without enumerating every object below each
+   * child. Object-store implementations should use their native delimiter support.
+   */
+  default Page listPrefixes(String prefix, int limit, String pageToken) {
+    throw new UnsupportedOperationException("common-prefix listing is not supported");
+  }
 }

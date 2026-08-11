@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -31,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -352,6 +354,134 @@ class TableServiceImplSystemTableTest {
     Table updated = tableCaptor.getValue();
     assertEquals("new", updated.getPropertiesMap().get("external"));
     assertEquals("2", updated.getPropertiesMap().get(ManagedTableProperties.FORMAT_VERSION));
+  }
+
+  @Test
+  void updateTable_withoutPrecondition_retriesConcurrentMutation() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_retry")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_retry")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl_user_retry")
+            .build();
+
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            "blob://test/v1",
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(userCatalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .setSchemaJson("{}")
+            .build();
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(7L).build(),
+            MutationMeta.newBuilder().setPointerVersion(8L).build());
+    when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
+    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false, true);
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(9L).build());
+
+    var req =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(TableSpec.newBuilder().setDisplayName("renamed").build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("display_name").build())
+            .build();
+
+    svc.updateTable(req).await().indefinitely();
+
+    ArgumentCaptor<Long> versionCaptor = ArgumentCaptor.forClass(Long.class);
+    verify(tableRepo, times(2)).update(any(Table.class), versionCaptor.capture());
+    assertEquals(List.of(7L, 8L), versionCaptor.getAllValues());
+  }
+
+  @Test
+  void updateTable_withPrecondition_doesNotRetryConcurrentMutation() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_precondition")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_precondition")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl_user_precondition")
+            .build();
+
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            "blob://test/v1",
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(userCatalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .setSchemaJson("{}")
+            .build();
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
+    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false);
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
+
+    var req =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(TableSpec.newBuilder().setDisplayName("renamed").build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("display_name").build())
+            .setPrecondition(Precondition.newBuilder().setExpectedVersion(7L).build())
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(tableRepo).update(any(Table.class), anyLong());
   }
 
   private UserTableNode userTableNode(

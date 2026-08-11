@@ -165,8 +165,55 @@ class TransactionsServiceImplTest {
   void commitAppliedResyncsTheTouchedTableRoots() throws Exception {
     var service = newService();
     var rootWriter = Mockito.mock(ai.floedb.floecat.service.catalog.impl.TableRootWriter.class);
+    var rootResyncQueue =
+        Mockito.mock(ai.floedb.floecat.service.catalog.impl.RootResyncQueue.class);
     inject(service, "rootWriter", rootWriter);
+    inject(service, "rootResyncQueue", rootResyncQueue);
+    when(rootWriter.resyncFromCommittedState(any())).thenReturn(true);
 
+    Transaction committed = commitTransactionTouchingTable1(service);
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    var expectedTable = resourceId("tbl-1", ResourceKind.RK_TABLE);
+    verify(rootWriter).resyncFromCommittedState(expectedTable);
+    Mockito.verifyNoMoreInteractions(rootWriter);
+    // The queue is the failure branch's job alone. Without this the success path would still pass
+    // if a regression enqueued a re-drive marker on every commit, quietly turning the GC's
+    // convergence backlog into a per-commit queue.
+    Mockito.verifyNoInteractions(rootResyncQueue);
+  }
+
+  @Test
+  void commitLeavesAReDriveMarkerWhenTheRootResyncFails() throws Exception {
+    // A table only ever touched by REST transactions has no other writer to converge its root, so a
+    // failed resync must leave a durable re-drive marker for the periodic transaction GC — the sole
+    // remaining convergence path. Losing the marker would strand such a table divergent until its
+    // next unrelated write, so verify the failure branch enqueues it exactly once.
+    var service = newService();
+    var rootWriter = Mockito.mock(ai.floedb.floecat.service.catalog.impl.TableRootWriter.class);
+    var rootResyncQueue =
+        Mockito.mock(ai.floedb.floecat.service.catalog.impl.RootResyncQueue.class);
+    inject(service, "rootWriter", rootWriter);
+    inject(service, "rootResyncQueue", rootResyncQueue);
+    when(rootWriter.resyncFromCommittedState(any())).thenReturn(false);
+
+    Transaction committed = commitTransactionTouchingTable1(service);
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    var expectedTable = resourceId("tbl-1", ResourceKind.RK_TABLE);
+    verify(rootWriter).resyncFromCommittedState(expectedTable);
+    verify(rootResyncQueue).enqueue(expectedTable);
+    Mockito.verifyNoMoreInteractions(rootResyncQueue);
+  }
+
+  /**
+   * Drive a commit whose transaction moves table {@code tbl-1}'s definition and current-snapshot
+   * pointers, so post-apply root reconciliation touches exactly {@code tbl-1}. Returns the
+   * committed transaction; the caller injects the root-writer/queue mocks and asserts the
+   * reconciliation.
+   */
+  private Transaction commitTransactionTouchingTable1(TransactionsServiceImpl service)
+      throws Exception {
     Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
     // The applier moves this table's definition pointer AND its current-snapshot pointer by raw
@@ -209,17 +256,11 @@ class TransactionsServiceImplTest {
             anyLong()))
         .thenReturn(true);
 
-    Transaction committed =
-        invokeCommitPrivate(
-            service,
-            "acct",
-            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
-            Timestamps.fromMillis(10));
-
-    assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    var expectedTable = resourceId("tbl-1", ResourceKind.RK_TABLE);
-    verify(rootWriter).resyncFromCommittedState(expectedTable);
-    Mockito.verifyNoMoreInteractions(rootWriter);
+    return invokeCommitPrivate(
+        service,
+        "acct",
+        CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+        Timestamps.fromMillis(10));
   }
 
   @Test
@@ -1141,8 +1182,10 @@ class TransactionsServiceImplTest {
                         && "table-1".equals(reconcileScope.destinationTableId())
                         && reconcileScope.snapshotSelection().kind()
                             == ReconcileSnapshotSelection.Kind.CURRENT),
-            org.mockito.ArgumentMatchers.any(
-                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.argThat(
+                policy ->
+                    policy != null
+                        && "tx-1".equals(policy.attributes().get("post_commit_transaction_id"))),
             org.mockito.ArgumentMatchers.eq(""));
   }
 
@@ -1176,8 +1219,10 @@ class TransactionsServiceImplTest {
                         && reconcileScope.snapshotSelection().kind()
                             == ReconcileSnapshotSelection.Kind.EXPLICIT
                         && reconcileScope.snapshotSelection().snapshotIds().equals(List.of(123L))),
-            org.mockito.ArgumentMatchers.any(
-                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.argThat(
+                policy ->
+                    policy != null
+                        && "tx-1".equals(policy.attributes().get("post_commit_transaction_id"))),
             org.mockito.ArgumentMatchers.eq(""));
   }
 

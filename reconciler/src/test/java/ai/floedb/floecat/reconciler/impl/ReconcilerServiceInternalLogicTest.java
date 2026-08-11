@@ -59,7 +59,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     var bundle =
         new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
             existing.getSnapshotId(),
-            existing.getParentSnapshotId(),
+            -1L,
             Instant.now().toEpochMilli(),
             "",
             null,
@@ -79,6 +79,21 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(result.getSummaryMap()).containsEntry("existing-key", "existing-val");
     assertThat(result.getSummaryMap()).containsEntry("new-key", "new-val");
     assertThat(result.getMetadataLocation()).isEqualTo("s3://bucket/new.metadata.json");
+  }
+
+  @Test
+  void buildSnapshotPreservesZeroAsExplicitParentSnapshotId() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    var bundle =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
+            1L, 0L, Instant.now().toEpochMilli(), "{}", null, 0L, null, Map.of(), 0, null);
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+
+    Snapshot result = queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, null).orElseThrow();
+
+    assertThat(result.hasParentSnapshotId()).isTrue();
+    assertThat(result.getParentSnapshotId()).isZero();
   }
 
   @Test
@@ -137,26 +152,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     assertThat(filtered)
         .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
         .containsExactly(11L);
-  }
-
-  void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
-    Set<Long> metadataOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, false, Set.of(10L, 11L), snapshotId -> false);
-    Set<Long> metadataAndStats =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), snapshotId -> snapshotId == 10L);
-    Set<Long> statsOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            false, true, Set.of(10L, 11L), snapshotId -> false);
-    Set<Long> fullRescan =
-        ReconcilerService.knownSnapshotIdsForEnumeration(
-            true, true, Set.of(10L, 11L), snapshotId -> true);
-
-    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(metadataAndStats).containsExactly(10L);
-    assertThat(statsOnly).isEmpty();
-    assertThat(fullRescan).isEmpty();
   }
 
   @Test

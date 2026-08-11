@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /** Source-aware capture request used by pluggable capture engines. */
 public record CaptureEngineRequest(
@@ -42,7 +43,8 @@ public record CaptureEngineRequest(
     Optional<String> storageLocation,
     Optional<String> authorizationToken,
     Optional<String> executionJobId,
-    Optional<String> executionLeaseEpoch) {
+    Optional<String> executionLeaseEpoch,
+    BooleanSupplier shouldStop) {
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -81,6 +83,7 @@ public record CaptureEngineRequest(
         executionLeaseEpoch == null
             ? Optional.empty()
             : executionLeaseEpoch.map(String::trim).filter(leaseEpoch -> !leaseEpoch.isBlank());
+    shouldStop = shouldStop == null ? () -> false : shouldStop;
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {
@@ -120,7 +123,7 @@ public record CaptureEngineRequest(
     return tableId != null && snapshotId >= 0 && !plannedFilePaths.isEmpty();
   }
 
-  public boolean expectsCompleteFileGroupOutputs() {
+  public boolean expectsProgressiveFileGroupOutputs() {
     return hasOutputs() && isFileGroupScoped();
   }
 }

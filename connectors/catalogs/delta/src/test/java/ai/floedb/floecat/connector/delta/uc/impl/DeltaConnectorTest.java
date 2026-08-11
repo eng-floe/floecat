@@ -36,7 +36,9 @@ import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.exceptions.TableNotFoundException;
 import io.delta.kernel.statistics.SnapshotStatistics;
 import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
+import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import java.io.IOException;
 import java.util.List;
@@ -80,6 +82,84 @@ class DeltaConnectorTest {
             .collect(Collectors.toList());
 
     assertEquals(List.of(3L, 5L), snapshotIds);
+  }
+
+  @Test
+  void enumerateSnapshotsUsesMinusOneOnlyWhenThereIsNoPredecessor() {
+    Snapshot versionZero = snapshot(0L, 0L);
+    Snapshot versionOne = snapshot(1L, 1000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(versionOne, Map.of(0L, versionZero, 1L, versionOne)));
+
+    List<FloecatConnector.SnapshotBundle> bundles =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)));
+
+    assertEquals(
+        List.of(0L, 1L),
+        bundles.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList());
+    assertEquals(
+        List.of(-1L, 0L), bundles.stream().map(FloecatConnector.SnapshotBundle::parentId).toList());
+  }
+
+  @Test
+  void latestNSelectsLatestVersionsWithinTargetEligibility() {
+    Snapshot latest = snapshot(9L, 9000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+
+    List<Long> versions =
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(2L, 5L, 8L),
+            FloecatConnector.SnapshotSelectionKind.LATEST_N,
+            Set.of(),
+            2);
+
+    assertEquals(List.of(5L, 8L), versions);
+  }
+
+  @Test
+  void currentSelectsUpstreamCurrentOnlyWhenItIsTargetEligible() {
+    Snapshot latest = snapshot(9L, 9000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+
+    assertEquals(
+        List.of(),
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(8L),
+            FloecatConnector.SnapshotSelectionKind.CURRENT,
+            Set.of(),
+            0));
+    assertEquals(
+        List.of(9L),
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(9L),
+            FloecatConnector.SnapshotSelectionKind.CURRENT,
+            Set.of(),
+            0));
+  }
+
+  @Test
+  void planSnapshotFilesReturnsEmptyForMissingVersion() {
+    Snapshot latest = snapshot(7L, 7000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
+
+    assertTrue(
+        connector.planSnapshotFiles("ns", "tbl", ResourceId.getDefaultInstance(), 6L).isEmpty());
   }
 
   @Test
@@ -273,6 +353,196 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void pageIndexSelectionResolvesStableHashedColumnId() {
+    Snapshot latest = snapshot(7L, 7000L, new StructType().add("id", LongType.LONG, false));
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
+    long stableColumnId =
+        new ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper()
+            .mapRaw(
+                ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA,
+                TEST_SCHEMA_JSON,
+                Set.of())
+            .getColumns(0)
+            .getId();
+    var entry = pageIndexEntry("s3://bucket/file.parquet", "id");
+
+    var selected =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                7L,
+                Set.of("#" + stableColumnId),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(entry))
+            .orElseThrow();
+
+    assertEquals(1, selected.size());
+    assertEquals("id", selected.getFirst().columnName());
+    assertTrue(selected.getFirst().selectorAliases().contains("#" + stableColumnId));
+
+    var selectedByDefault =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                7L,
+                Set.of(),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(entry))
+            .orElseThrow();
+    assertEquals(
+        Set.of("#" + stableColumnId, "id"), selectedByDefault.getFirst().selectorAliases());
+  }
+
+  @Test
+  void pageIndexSelectionSynthesizesAllNullRowsForOlderDeltaFile() {
+    String evolvedSchemaJson =
+        """
+        {
+          "type": "struct",
+          "fields": [
+            {"name": "id", "type": "long", "nullable": false, "metadata": {}},
+            {"name": "added", "type": "long", "nullable": true, "metadata": {}}
+          ]
+        }
+        """;
+    Snapshot latest =
+        snapshot(
+            8L,
+            8000L,
+            new StructType().add("id", LongType.LONG, false).add("added", LongType.LONG, true));
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(8L, latest)));
+    connector.setSnapshotSchemaJson(evolvedSchemaJson);
+    var schema =
+        new ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper()
+            .mapRaw(
+                ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                ai.floedb.floecat.catalog.rpc.TableFormat.TF_DELTA,
+                evolvedSchemaJson,
+                Set.of());
+    long addedColumnId =
+        schema.getColumnsList().stream()
+            .filter(column -> column.getPhysicalPath().equals("added"))
+            .findFirst()
+            .orElseThrow()
+            .getId();
+    String oldFile = "s3://bucket/old.parquet";
+    String newFile = "s3://bucket/new.parquet";
+
+    var selected =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                8L,
+                Set.of("#" + addedColumnId),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(
+                    pageIndexEntry(oldFile, "id"),
+                    pageIndexEntry(newFile, "id"),
+                    pageIndexEntry(newFile, "added")))
+            .orElseThrow();
+
+    assertEquals(
+        Set.of(oldFile, newFile),
+        selected.stream()
+            .map(FloecatConnector.ParquetPageIndexEntry::filePath)
+            .collect(java.util.stream.Collectors.toSet()));
+    var synthetic =
+        selected.stream()
+            .filter(entry -> entry.filePath().equals(oldFile))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("added", synthetic.columnName());
+    assertEquals(null, synthetic.pageHeaderOffset());
+    assertEquals(0, synthetic.pageTotalCompressedSize());
+    assertTrue(synthetic.selectorAliases().contains("#" + addedColumnId));
+
+    var schemaOnlyAddition =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                8L,
+                Set.of("#" + addedColumnId),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(pageIndexEntry(oldFile, "id")))
+            .orElseThrow();
+    assertEquals(1, schemaOnlyAddition.size());
+    assertEquals("added", schemaOnlyAddition.getFirst().columnName());
+    assertEquals(null, schemaOnlyAddition.getFirst().pageHeaderOffset());
+
+    var noDecodedColumns =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                8L,
+                Set.of("#" + addedColumnId),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                Set.of(oldFile),
+                List.of(),
+                List.of(new FloecatConnector.ParquetRowGroup(oldFile, 0, 17)))
+            .orElseThrow();
+    assertEquals(1, noDecodedColumns.size());
+    assertEquals(17, noDecodedColumns.getFirst().rowCount());
+    assertEquals("added", noDecodedColumns.getFirst().columnName());
+  }
+
+  @Test
+  void pageIndexSelectionMatchesDeltaPhysicalNameWithoutFooterFieldId() {
+    String mappedSchemaJson =
+        """
+        {
+          "type": "struct",
+          "fields": [
+            {
+              "name": "logical_id",
+              "type": "long",
+              "nullable": true,
+              "metadata": {"delta.columnMapping.physicalName": "col-123"}
+            }
+          ]
+        }
+        """;
+    StructType mappedSchema =
+        new StructType()
+            .add(
+                new StructField(
+                    "logical_id",
+                    LongType.LONG,
+                    true,
+                    FieldMetadata.builder()
+                        .putString(DeltaPlanner.COLUMN_MAPPING_PHYSICAL_NAME_KEY, "col-123")
+                        .build()));
+    Snapshot latest = snapshot(9L, 9000L, mappedSchema);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+    connector.setSnapshotSchemaJson(mappedSchemaJson);
+    var physicalEntry = pageIndexEntry("s3://bucket/mapped.parquet", "col-123");
+
+    var selected =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                9L,
+                Set.of("logical_id"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                List.of(physicalEntry))
+            .orElseThrow();
+
+    assertEquals(1, selected.size());
+    assertEquals("col-123", selected.getFirst().columnName());
+    assertEquals(16L, selected.getFirst().pageHeaderOffset());
+    assertTrue(selected.getFirst().selectorAliases().contains("logical_id"));
+  }
+
+  @Test
   void directStatsIncludeColumnsDefaultsToFirstThirtyTwoSchemaColumns() {
     List<String> availableColumns = new java.util.ArrayList<>();
     for (int i = 0; i < 40; i++) {
@@ -410,6 +680,30 @@ class DeltaConnectorTest {
       long snapshotId, String schemaJson) {
     return new FloecatConnector.SnapshotBundle(
         snapshotId, 0L, 0L, schemaJson, null, 0L, null, Map.of(), 0, null);
+  }
+
+  private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
+      String filePath, String columnName) {
+    return new FloecatConnector.ParquetPageIndexEntry(
+        filePath,
+        columnName,
+        0,
+        0,
+        0L,
+        1,
+        1,
+        16L,
+        32,
+        null,
+        null,
+        false,
+        "INT64",
+        "ZSTD",
+        (short) 1,
+        (short) 0,
+        null,
+        null,
+        null);
   }
 
   private static final class TestDeltaConnector extends DeltaConnector {

@@ -21,6 +21,6 @@ import java.util.Map;
 public class ReconcilerWorkerLocalProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of("floecat.reconciler.worker.mode", "local");
+    return Map.of("floecat.reconciler.worker.mode", "local", "floecat.stats.sync.enabled", "true");
   }
 }

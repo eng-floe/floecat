@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv;
 
 import io.smallrye.mutiny.Uni;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -71,6 +72,30 @@ public interface KvStore {
 
   // Reads
   Uni<Optional<Record>> get(Key key);
+
+  /** Batch read with a default implementation for embedded and specialized stores. */
+  default Uni<Map<Key, Record>> getBatch(List<Key> keys) {
+    List<Key> stable = keys == null ? List.of() : List.copyOf(keys);
+    if (stable.isEmpty()) {
+      return Uni.createFrom().item(Map.of());
+    }
+    List<Uni<Optional<Record>>> reads = stable.stream().map(this::get).toList();
+    return Uni.combine()
+        .all()
+        .unis(reads)
+        .with(
+            values -> {
+              Map<Key, Record> out = new LinkedHashMap<>();
+              for (int index = 0; index < stable.size(); index++) {
+                @SuppressWarnings("unchecked")
+                Optional<Record> value = (Optional<Record>) values.get(index);
+                if (value.isPresent()) {
+                  out.put(stable.get(index), value.get());
+                }
+              }
+              return Map.copyOf(out);
+            });
+  }
 
   /**
    * Conditional put.
@@ -175,7 +200,7 @@ public interface KvStore {
    */
   Uni<Boolean> txnWriteCas(List<TxnOp> ops);
 
-  sealed interface TxnOp permits TxnPut, TxnDelete, TxnCheck, TxnCheckAbsent {}
+  sealed interface TxnOp permits TxnPut, TxnPutUnconditional, TxnDelete, TxnCheck, TxnCheckAbsent {}
 
   /**
    * CAS put in a transaction.
@@ -187,6 +212,9 @@ public interface KvStore {
       if (expectedVersion < 0) throw new IllegalArgumentException("expectedVersion must be >= 0");
     }
   }
+
+  /** Unconditional put in a transaction. */
+  record TxnPutUnconditional(Record record) implements TxnOp {}
 
   /** CAS delete in a transaction (expectedVersion must be > 0). */
   record TxnDelete(Key key, long expectedVersion) implements TxnOp {

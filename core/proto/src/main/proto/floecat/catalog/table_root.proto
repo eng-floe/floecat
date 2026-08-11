@@ -66,6 +66,13 @@ message TableRoot {
   BlobRef snapshot_manifest_ref = 5;
 
   google.protobuf.Timestamp committed_at = 6;
+
+  /**
+   * The newest two reusable snapshots at or before current_snapshot_id, ordered newest first.
+   * GetLatestFinalizedSnapshot reads this bounded root-published index directly; two entries are
+   * retained because a replay may exclude the newest snapshot and request its predecessor.
+   */
+  repeated SnapshotManifestEntry reusable_snapshot_candidates = 7;
 }
 
 /** One snapshot's complete state as of the owning root's commit. */
@@ -99,6 +106,9 @@ message SnapshotManifestEntry {
    * cold on every ingest).
    */
   string schema_fingerprint = 6;
+
+  /** Stats generation whose compact bundles back this snapshot's artifact-reuse manifest. */
+  BlobRef reuse_stats_generation_ref = 7;
 }
 
 /**

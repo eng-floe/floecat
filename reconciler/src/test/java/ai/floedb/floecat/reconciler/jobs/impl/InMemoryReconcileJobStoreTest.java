@@ -25,8 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class InMemoryReconcileJobStoreTest {
@@ -232,18 +233,21 @@ class InMemoryReconcileJobStoreTest {
 
     ReconcileSnapshotTask task =
         ReconcileSnapshotTask.of(
-            "table-1",
-            55L,
-            "db",
-            "events",
-            List.of(
-                ReconcileFileGroupTask.of(
-                    jobId,
-                    "snapshot-55-group-0",
-                    "table-1",
-                    55L,
-                    List.of("s3://bucket/data/file-1.parquet"))),
-            true);
+                "table-1",
+                55L,
+                "db",
+                "events",
+                List.of(
+                    ReconcileFileGroupTask.of(
+                        jobId,
+                        "snapshot-55-group-0",
+                        "table-1",
+                        55L,
+                        List.of("s3://bucket/data/file-1.parquet"))),
+                true)
+            .withIndexPredecessor(
+                new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                    "generation-1", 7L, "/capture.pb", 9L));
     String manifestUri = store.persistSnapshotPlanManifest("acct", jobId, task);
     var lease = store.leaseNext().orElseThrow();
     assertTrue(store.adoptSnapshotPlanManifest(jobId, lease.leaseEpoch, task, manifestUri, true));
@@ -253,10 +257,154 @@ class InMemoryReconcileJobStoreTest {
     assertEquals(
         "s3://bucket/data/file-1.parquet",
         job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertEquals(task.indexPredecessor(), job.snapshotTask.indexPredecessor());
   }
 
   @Test
-  void persistFileGroupResultUpdatesStoredJobPayload() {
+  void snapshotOwnershipSurvivesWaitingUntilOwnerTerminates() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    String first =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(first, firstLease.jobId);
+    store.markWaiting(
+        first,
+        firstLease.leaseEpoch,
+        System.currentTimeMillis(),
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.cancel("acct", first, "cancel owner");
+    assertEquals(second, store.leaseNext().orElseThrow().jobId);
+  }
+
+  @Test
+  void snapshotOwnershipSurvivesRetryableFailure() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    String first =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    store.markFailed(
+        first,
+        firstLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "retry owner",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+
+    assertTrue(store.leaseNext().isEmpty());
+    assertEquals("JS_QUEUED", store.get("acct", second).orElseThrow().state);
+
+    store.cancel("acct", first, "cancel owner");
+    assertEquals(second, store.leaseNext().orElseThrow().jobId);
+  }
+
+  @Test
+  void leasedSnapshotPinsIndexPredecessorOnlyOnce() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(
+                    ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.Output
+                        .PARQUET_PAGE_INDEX)));
+    String jobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    var lease = store.leaseNext().orElseThrow();
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var laterPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, firstPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, laterPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+  }
+
+  @Test
+  void completeFileGroupSuccessPublishesCompactChildResult() {
     var store = new InMemoryReconcileJobStore();
     String jobId =
         store.enqueue(
@@ -277,28 +425,171 @@ class InMemoryReconcileJobStoreTest {
 
     var lease = store.leaseNext().orElseThrow();
     store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "executor-1");
-    store.persistFileGroupResult(
-        jobId,
-        lease.leaseEpoch,
-        ReconcileFileGroupTask.of(
-            "plan-1",
-            "group-1",
-            "table-1",
-            55L,
-            List.of("s3://bucket/data/file-1.parquet"),
-            List.of(
-                ai.floedb.floecat.reconciler.jobs.ReconcileFileResult.succeeded(
-                    "s3://bucket/data/file-1.parquet",
-                    2L,
-                    ReconcileIndexArtifactResult.of(
-                        "s3://bucket/index/file-1.parquet.index", "parquet", 1)))));
+    assertTrue(
+        store.completeFileGroupSuccess(
+            jobId,
+            lease.leaseEpoch,
+            new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor(
+                1,
+                "acct",
+                "conn",
+                "parent-1",
+                jobId,
+                "plan-1",
+                "group-1",
+                "table-1",
+                55L,
+                lease.leaseEpoch,
+                "result-1",
+                "/result.pb",
+                100L,
+                "sha256",
+                1,
+                1,
+                0,
+                0,
+                2,
+                1,
+                "/stats/",
+                1,
+                "0".repeat(64),
+                null,
+                System.currentTimeMillis()),
+            System.currentTimeMillis(),
+            "done"));
 
-    var job = store.get("acct", jobId).orElseThrow();
-    assertEquals(1, job.fileGroupTask.fileResults().size());
-    assertEquals(2L, job.fileGroupTask.fileResults().getFirst().statsProcessed());
-    assertEquals(
-        "s3://bucket/index/file-1.parquet.index",
-        job.fileGroupTask.fileResults().getFirst().indexArtifact().artifactUri());
+    var page = store.childFileGroupResultDescriptorsPage("acct", "parent-1", 10, "");
+    assertEquals(1, page.descriptors.size());
+    assertEquals("/result.pb", page.descriptors.getFirst().payloadUri());
+  }
+
+  @Test
+  void snapshotRollupUsesFinalizedManifestArtifactCounts() {
+    var store = new InMemoryReconcileJobStore();
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-job",
+            "");
+    store.enqueueFileGroupExecution(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileFileGroupTask.of(
+            snapshotJobId, "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    store.enqueueFileGroupExecution(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileFileGroupTask.of(
+            snapshotJobId, "group-2", "table-1", 55L, List.of("s3://bucket/data/file-2.parquet")),
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    for (long statsProcessed : List.of(6L, 8L)) {
+      var lease =
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+              .orElseThrow();
+      assertTrue(
+          store.applyLeaseOutcome(
+              lease.jobId,
+              lease.leaseEpoch,
+              ReconcileJobStore.CompletionKind.SUCCEEDED,
+              100L,
+              "Succeeded",
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              statsProcessed));
+    }
+    var finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    assertEquals(finalizerJobId, finalizerLease.jobId);
+    assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            List.of(),
+            200L,
+            "Succeeded"));
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            List.of(),
+            300L,
+            "Replayed"));
+    assertFalse(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/different-capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            List.of(),
+            300L,
+            "Conflicting replay"));
+
+    var snapshot = store.get("acct", snapshotJobId).orElseThrow();
+    assertEquals(9L, snapshot.statsProcessed);
+    assertEquals(7L, snapshot.indexesProcessed);
   }
 
   @Test
@@ -427,61 +718,6 @@ class InMemoryReconcileJobStoreTest {
 
     assertEquals(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, firstLease.jobKind);
     assertTrue(store.leaseNext().isEmpty());
-  }
-
-  @Test
-  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
-    var store = new InMemoryReconcileJobStore();
-    ReconcileSnapshotTask snapshotTask =
-        ReconcileSnapshotTask.of(
-            "table-1",
-            55L,
-            "db",
-            "events",
-            List.of(),
-            true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
-            "blob://planner-direct-stats",
-            0,
-            0,
-            "blob://planner-direct-stats",
-            3);
-
-    String jobId =
-        store.enqueueSnapshotFinalization(
-            "acct",
-            "conn",
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
-            snapshotTask,
-            ReconcileExecutionPolicy.defaults(),
-            "parent-1",
-            "");
-    var lease =
-        store
-            .leaseNext(
-                new ReconcileJobStore.LeaseRequest(
-                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
-            .orElseThrow();
-    store.markRunning(jobId, lease.leaseEpoch, System.currentTimeMillis(), "executor-finalizer");
-
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
-
-    ReconcileJobStore.ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(
-        java.util.Map.of(0, 1, 1, 1, 2, 1),
-        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
-
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
-
-    ReconcileJobStore.ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(
-        java.util.Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
   }
 
   @Test

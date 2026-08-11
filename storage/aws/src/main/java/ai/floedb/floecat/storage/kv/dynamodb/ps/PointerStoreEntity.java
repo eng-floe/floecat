@@ -32,7 +32,9 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -64,6 +66,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   static final String ATTR_RESOURCE_ID = "rid";
   static final String ATTR_RESOURCE_KIND = "rk";
   static final String ATTR_DISPLAY_NAME = "dn";
+  static final String ATTR_REFERENCED_OBJECT_SIZE_BYTES = "object_size_bytes";
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
@@ -176,6 +179,13 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (dn != null && !dn.isEmpty()) {
       builder.setDisplayName(dn);
     }
+    var objectSizeBytes = r.attrs().get(ATTR_REFERENCED_OBJECT_SIZE_BYTES);
+    if (objectSizeBytes != null) {
+      try {
+        builder.setReferencedObjectSizeBytes(Math.max(0L, objectSizeBytes.asLong()));
+      } catch (NumberFormatException ignored) {
+      }
+    }
 
     return builder.buildPartial();
   }
@@ -203,6 +213,26 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   public Uni<Optional<Pointer>> get(String key) {
     return get(pointerKey(key));
+  }
+
+  public Uni<Map<String, Pointer>> getBatch(List<String> keys) {
+    Map<KvStore.Key, String> originals = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      originals.put(pointerKey(key), key);
+    }
+    return getBatchRecords(List.copyOf(originals.keySet()))
+        .map(
+            values -> {
+              Map<String, Pointer> out = new LinkedHashMap<>();
+              values.forEach(
+                  (key, pointer) -> {
+                    String original = originals.get(key);
+                    if (original != null) {
+                      out.put(original, pointer);
+                    }
+                  });
+              return Map.copyOf(out);
+            });
   }
 
   /**
@@ -263,6 +293,20 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
             new KvStore.Record(
                 pointerKey(upsert.key()), KIND_POINTER, new byte[0], attrs, nextVersion);
         txOps.add(new KvStore.TxnPut(rec, upsert.expectedVersion()));
+      } else if (op instanceof PointerStore.UnconditionalUpsert upsert) {
+        var attrs = attrsFor(upsert.next());
+        if (upsert.next().hasExpiresAt()) {
+          long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
+          attrs.put(ATTR_EXPIRES_AT, AttrValue.of(Long.toString(ttl)));
+        }
+        var rec =
+            new KvStore.Record(
+                pointerKey(upsert.key()),
+                KIND_POINTER,
+                new byte[0],
+                attrs,
+                upsert.next().getVersion());
+        txOps.add(new KvStore.TxnPutUnconditional(rec));
       } else if (op instanceof PointerStore.CasDelete delete) {
         txOps.add(new KvStore.TxnDelete(pointerKey(delete.key()), delete.expectedVersion()));
       } else if (op instanceof PointerStore.CasCheck check) {
@@ -286,6 +330,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     }
     if (!pointer.getDisplayName().isEmpty()) {
       attrs.put(ATTR_DISPLAY_NAME, AttrValue.of(pointer.getDisplayName()));
+    }
+    if (pointer.hasReferencedObjectSizeBytes()) {
+      attrs.put(
+          ATTR_REFERENCED_OBJECT_SIZE_BYTES,
+          AttrValue.of(Long.toString(pointer.getReferencedObjectSizeBytes())));
     }
     return attrs;
   }

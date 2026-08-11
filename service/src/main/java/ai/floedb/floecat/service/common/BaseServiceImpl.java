@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -42,7 +43,6 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
-import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Multi;
@@ -69,7 +69,10 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -92,21 +95,22 @@ public abstract class BaseServiceImpl {
   }
 
   /**
-   * The OTel context to re-activate inside a hopped body. Prefers the context current at method
-   * entry, but when that carries no valid span — the norm on this server, where the span is only
-   * current inside the innermost tracing interceptor's window and never at the method layer — it
-   * grafts on the span {@code SpanCaptureInterceptor} stashed on the per-call duplicated-context
-   * carrier. Without this, {@code Span.current()} inside the body is the invalid root span and
-   * every per-request decoration and diagnostic summary event silently no-ops.
+   * The OTel context to re-activate inside a hopped body: the entry context, with the call's gRPC
+   * server span grafted on when it carries none (the norm at the method layer). See {@link
+   * ResolvedCallContexts#withCurrentCallSpan} for why — the same rule {@code PropagatedContext}
+   * uses.
    */
   private static Context otelContextForBody(Context captured) {
-    if (Span.fromContext(captured).getSpanContext().isValid()) {
-      return captured;
-    }
-    Span carried = ResolvedCallContexts.currentCallSpanOrInvalid();
-    return carried.getSpanContext().isValid() ? captured.with(carried) : captured;
+    return ResolvedCallContexts.withCurrentCallSpan(captured);
   }
 
+  /**
+   * Run one unary RPC body on the blocking executor under the request contexts captured at method
+   * entry. Each subscription owns its cancellation signal; subscriber termination or cancellation
+   * of the captured gRPC context is visible through {@link PropagatedContext} until the body exits.
+   * Results and failures are emitted unchanged while the subscription is active, and an expected
+   * {@link CancellationException} is discarded after its subscriber has already terminated.
+   */
   protected <T> Uni<T> run(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
@@ -115,17 +119,33 @@ public abstract class BaseServiceImpl {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = otelContextForBody(Context.current());
     return Uni.createFrom()
-        .item(
-            () ->
-                grpcCtx.call(
-                    () ->
-                        ResolvedCallContexts.callWith(
-                            callCtx,
-                            () -> {
-                              try (Scope ignored = otelCtx.makeCurrent()) {
-                                return body.get();
-                              }
-                            })));
+        .<T>emitter(
+            emitter -> {
+              RequestCancellation cancellation = new RequestCancellation(grpcCtx);
+              emitter.onTermination(cancellation::terminate);
+              try {
+                T result =
+                    grpcCtx.call(
+                        () ->
+                            ResolvedCallContexts.callWithOrInherit(
+                                callCtx,
+                                () -> {
+                                  try (var cancellationScope =
+                                          PropagatedContext.bindCancellation(cancellation);
+                                      Scope ignored = otelCtx.makeCurrent()) {
+                                    return body.get();
+                                  }
+                                }));
+                emitter.complete(result);
+              } catch (CancellationException cancelled) {
+                if (!cancellation.subscriptionTerminated()) {
+                  emitter.fail(cancelled);
+                }
+              } catch (Throwable failure) {
+                emitter.fail(failure);
+              }
+            })
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
   /**
@@ -138,22 +158,60 @@ public abstract class BaseServiceImpl {
    * (eng-floe/floecat#361).
    */
   protected <T> Multi<T> runStream(Function<ResolvedCallContext, Multi<T>> body) {
+    return runStream((callCtx, ignored) -> body.apply(callCtx));
+  }
+
+  /**
+   * Cancellation-aware streaming analogue of {@link #run}. The supplied signal belongs to one
+   * subscription and remains live for lazy producers after {@code body} returns; producers must
+   * pass it to cancellation-aware work at the point that work executes. Source results and failures
+   * retain their original streaming semantics.
+   */
+  protected <T> Multi<T> runStream(
+      BiFunction<ResolvedCallContext, BooleanSupplier, Multi<T>> body) {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>deferred(
-            () ->
-                grpcCtx.call(
-                    () ->
-                        ResolvedCallContexts.callWith(
-                            callCtx,
-                            () -> {
-                              try (Scope ignored = otelCtx.makeCurrent()) {
-                                return body.apply(callCtx);
-                              }
-                            })))
+            () -> {
+              RequestCancellation cancellation = new RequestCancellation(grpcCtx);
+              Multi<T> source =
+                  grpcCtx.call(
+                      () ->
+                          ResolvedCallContexts.callWithOrInherit(
+                              callCtx,
+                              () -> {
+                                try (Scope ignored = otelCtx.makeCurrent()) {
+                                  return body.apply(callCtx, cancellation);
+                                }
+                              }));
+              return source.onTermination().invoke(cancellation::terminate);
+            })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
+  }
+
+  /** Per-subscription cancellation state combined with the captured live gRPC request context. */
+  private static final class RequestCancellation implements BooleanSupplier {
+    private final GrpcContextUtil grpcContext;
+    private final AtomicBoolean subscriptionTerminated = new AtomicBoolean();
+
+    private RequestCancellation(GrpcContextUtil grpcContext) {
+      this.grpcContext = grpcContext;
+    }
+
+    @Override
+    public boolean getAsBoolean() {
+      return subscriptionTerminated.get() || grpcContext.isCancelled();
+    }
+
+    private boolean subscriptionTerminated() {
+      return subscriptionTerminated.get();
+    }
+
+    private void terminate() {
+      subscriptionTerminated.set(true);
+    }
   }
 
   /** Emitter-based analogue of {@link #runStream} for bodies that drive a {@link MultiEmitter}. */
@@ -167,7 +225,7 @@ public abstract class BaseServiceImpl {
             emitter ->
                 grpcCtx.run(
                     () ->
-                        ResolvedCallContexts.runWith(
+                        ResolvedCallContexts.runWithOrInherit(
                             callCtx,
                             () -> {
                               try (Scope ignored = otelCtx.makeCurrent()) {

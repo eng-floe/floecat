@@ -62,6 +62,7 @@ class CasBlobGcTest {
     gc.queryContextStore = queryContextStore;
     gc.tableRootRepo = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     gc.statsRepository = new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
+    gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
   }
 
   @AfterEach
@@ -79,6 +80,734 @@ class CasBlobGcTest {
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(blobs.head(blobUri).isPresent());
+  }
+
+  @Test
+  void sweepsCurrentSnapshotCasFamilyWithoutDeletingThePointedVersion() {
+    seedCurrentTable();
+    String live = Keys.currentSnapshotPointerBlobUri(ACCOUNT_ID, TABLE_ID, "sha-live");
+    String orphan = Keys.currentSnapshotPointerBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan");
+    blobs.put(live, "live".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(orphan, "orphan".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.currentSnapshotPointerByTable(ACCOUNT_ID, TABLE_ID), live);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(live).isPresent());
+    assertFalse(blobs.head(orphan).isPresent());
+  }
+
+  @Test
+  void sweepsStorageAuthorityCasFamilyWithoutDeletingThePointedVersion() {
+    String live = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-live");
+    String orphan = Keys.storageAuthorityBlobUri(ACCOUNT_ID, "authority-1", "sha-orphan");
+    blobs.put(live, "live".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(orphan, "orphan".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.storageAuthorityPointerById(ACCOUNT_ID, "authority-1"), live);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(live).isPresent());
+    assertFalse(blobs.head(orphan).isPresent());
+  }
+
+  @Test
+  void estimatesKnownReferencedBytesFromPointersAlreadyScannedByTheMark() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    String connectorBlob = Keys.connectorBlobUri(ACCOUNT_ID, "connector-1", "sha-connector");
+    blobs.put(tableBlob, new byte[5], "application/x-protobuf");
+    blobs.put(connectorBlob, new byte[7], "application/x-protobuf");
+    String tablePointer = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String connectorPointer = Keys.connectorPointerById(ACCOUNT_ID, "connector-1");
+    assertTrue(
+        pointers.compareAndSet(
+            tablePointer, 0L, PointerReferences.blobPointer(tablePointer, tableBlob, 1L, 5L)));
+    assertTrue(
+        pointers.compareAndSet(
+            connectorPointer,
+            0L,
+            PointerReferences.blobPointer(connectorPointer, connectorBlob, 1L)));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(2, result.pointersScanned());
+    assertEquals(5L, result.referencedBytes());
+    assertEquals(1, result.sizedBlobPointers());
+    assertEquals(2, result.blobPointers());
+  }
+
+  @Test
+  void generationCleanupIgnoresUnregisteredPreLifecycleWorkerUpload() {
+    String workerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "worker-uploads/child/lease/target/stats.pb";
+    blobs.put(workerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(workerObject).isPresent(),
+        "lifecycle-less worker uploads are outside the supported generation protocol");
+  }
+
+  @Test
+  void generationCleanupIgnoresUnregisteredPreLifecycleFinalizerOutput() {
+    String finalizerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "finalizer-outputs/finalize-job/lease/target/stats.pb";
+    blobs.put(finalizerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(finalizerObject).isPresent(),
+        "lifecycle-less finalizer outputs are outside the supported generation protocol");
+  }
+
+  @Test
+  void deadlineStopsBeforeGenerationCleanupAndRetainsTheMarkEpoch() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    java.util.concurrent.atomic.AtomicLong observedDeadline =
+        new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs,
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
+            observedDeadline.set(deadlineMs);
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    gc.runForAccount(ACCOUNT_ID, 0L);
+
+    assertEquals(
+        Long.MIN_VALUE,
+        observedDeadline.get(),
+        "the scheduler deadline covers generation cleanup instead of granting an overrun slice");
+    assertEquals(
+        java.util.Optional.of(ACCOUNT_ID),
+        gc.continuationAccountId(),
+        "the next tick resumes the same safe mark epoch");
+  }
+
+  @Test
+  void pointerCollectionResumesFromItsContinuationToken() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first = Keys.catalogBlobUri(ACCOUNT_ID, "cat-a", "sha-a");
+    String second = Keys.catalogBlobUri(ACCOUNT_ID, "cat-b", "sha-b");
+    blobs.put(first, new byte[] {1}, "application/x-protobuf");
+    blobs.put(second, new byte[] {2}, "application/x-protobuf");
+    putPointer(Keys.catalogPointerById(ACCOUNT_ID, "cat-a"), first);
+    putPointer(Keys.catalogPointerById(ACCOUNT_ID, "cat-b"), second);
+    java.util.ArrayList<String> observedTokens = new java.util.ArrayList<>();
+    long deadline = System.currentTimeMillis() + 20L;
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            if (prefix.equals(Keys.catalogPointerByIdPrefix(ACCOUNT_ID))) {
+              observedTokens.add(pageToken);
+            }
+            List<Pointer> result =
+                super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+            if (prefix.equals(Keys.catalogPointerByIdPrefix(ACCOUNT_ID)) && pageToken.isBlank()) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return result;
+          }
+        };
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(
+        observedTokens.stream().skip(1).anyMatch(token -> token != null && !token.isBlank()),
+        "the resumed pointer page must use the saved continuation token");
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  @Test
+  void blobSweepResumesFromItsContinuationToken() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first = Keys.accountBlobUri(ACCOUNT_ID, "sha-a");
+    String second = Keys.accountBlobUri(ACCOUNT_ID, "sha-b");
+    var observedTokens = new java.util.ArrayList<String>();
+    long deadline = System.currentTimeMillis() + 20L;
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          private boolean delayed;
+
+          @Override
+          public BlobStore.Page list(String prefix, int limit, String pageToken) {
+            BlobStore.Page page = super.list(prefix, limit, pageToken);
+            if (prefix.equals(Keys.accountBlobPrefix(ACCOUNT_ID))) {
+              observedTokens.add(pageToken);
+              if (!delayed) {
+                delayed = true;
+                while (System.currentTimeMillis() <= deadline) {
+                  Thread.onSpinWait();
+                }
+              }
+            }
+            return page;
+          }
+        };
+    deadlineBlobs.put(first, new byte[] {1}, "application/x-protobuf");
+    deadlineBlobs.put(second, new byte[] {2}, "application/x-protobuf");
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(
+        observedTokens.stream().skip(1).anyMatch(token -> token != null && !token.isBlank()),
+        "the resumed blob page must use the saved continuation token");
+    assertTrue(gc.continuationAccountId().isEmpty());
+    assertFalse(deadlineBlobs.head(first).isPresent());
+    assertFalse(deadlineBlobs.head(second).isPresent());
+  }
+
+  @Test
+  void blobSweepCountersSurviveADeadlineAfterACompletedPage() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first = Keys.accountBlobUri(ACCOUNT_ID, "sha-a");
+    String second = Keys.accountBlobUri(ACCOUNT_ID, "sha-b");
+    long deadline = System.currentTimeMillis() + 200L;
+    var delayedDelete = new java.util.concurrent.atomic.AtomicBoolean();
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean delete(String key, String versionId) {
+            boolean deleted = super.delete(key, versionId);
+            if ((first.equals(key) || first.equals("/" + key))
+                && delayedDelete.compareAndSet(false, true)) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return deleted;
+          }
+        };
+    deadlineBlobs.put(first, new byte[] {1}, "application/x-protobuf");
+    deadlineBlobs.put(second, new byte[] {2}, "application/x-protobuf");
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    var completed = gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(delayedDelete.get());
+    assertEquals(2, completed.blobsScanned());
+    assertEquals(2, completed.blobsDeleted());
+  }
+
+  @Test
+  void generationGcDoesNotHoldThePublicationGuardAcrossBlobIo() {
+    var insideGuard = new java.util.concurrent.atomic.AtomicBoolean();
+    var guardedBlobIo = new java.util.concurrent.atomic.AtomicBoolean();
+    var checkingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            if (insideGuard.get() && key.contains("/generations/")) {
+              guardedBlobIo.set(true);
+            }
+            return super.head(key);
+          }
+
+          @Override
+          public boolean delete(String key, String versionId) {
+            if (insideGuard.get() && key.contains("/generations/")) {
+              guardedBlobIo.set(true);
+            }
+            return super.delete(key, versionId);
+          }
+        };
+    blobs = checkingBlobs;
+    gc.blobStore = checkingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, checkingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, checkingBlobs);
+    gc.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> T exclusive(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Supplier<T> action) {
+            return super.exclusive(
+                tableId,
+                () -> {
+                  insideGuard.set(true);
+                  try {
+                    return action.get();
+                  } finally {
+                    insideGuard.set(false);
+                  }
+                });
+          }
+        };
+    seedCurrentTable();
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            tableRid(),
+            7L,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    gc.statsRepository.replaceAllStatsForSnapshot(tableRid(), 7L, java.util.List.of(record));
+    gc.statsRepository.replaceAllStatsForSnapshot(tableRid(), 7L, java.util.List.of(record));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.blobsDeleted() > 0, "the superseded generation was reclaimed");
+    assertFalse(guardedBlobIo.get(), "remote generation blob I/O must run outside the guard");
+  }
+
+  @Test
+  void deferredPageIsRetainedBeforeDeadlineAdvancesPastIt() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
+    String second =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    long deadline = System.currentTimeMillis() + 200L;
+    var delayedFirstHead = new java.util.concurrent.atomic.AtomicBoolean();
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            var header = super.head(key);
+            if ((first.equals(key) || first.equals("/" + key))
+                && delayedFirstHead.compareAndSet(false, true)) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return header;
+          }
+        };
+    blobs = deadlineBlobs;
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+    seedCurrentTable();
+    blobs.put(first, new byte[] {1}, "application/x-protobuf");
+    blobs.put(second, new byte[] {2}, "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+
+    assertTrue(delayedFirstHead.get(), "the first deferred listing page reached the deadline");
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    assertTrue(blobs.head(first).isPresent(), "the retained page has not been flushed yet");
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(gc.continuationAccountId().isEmpty());
+    assertFalse(blobs.head(first).isPresent(), "the pre-deadline deferred page is resumed");
+    assertFalse(blobs.head(second).isPresent(), "the following deferred page is also swept");
+  }
+
+  @Test
+  void deferredFlushLocksAroundOnlyOneVersionDeleteAtATime() {
+    var deleteCalls = new java.util.concurrent.atomic.AtomicInteger();
+    var maxDeletesInCriticalSection = new java.util.concurrent.atomic.AtomicInteger();
+    var countingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean delete(String key, String versionId) {
+            deleteCalls.incrementAndGet();
+            return super.delete(key, versionId);
+          }
+        };
+    var granularGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            return super.deleteIfUnchanged(
+                proof,
+                () -> {
+                  int before = deleteCalls.get();
+                  T result = deletion.get();
+                  maxDeletesInCriticalSection.accumulateAndGet(
+                      deleteCalls.get() - before, Math::max);
+                  return result;
+                });
+          }
+        };
+    blobs = countingBlobs;
+    gc.blobStore = countingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, countingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, countingBlobs);
+    gc.reachabilityGuard = granularGuard;
+    seedCurrentTable();
+    String first =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
+    String second =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    blobs.put(first, new byte[] {1}, "application/x-protobuf");
+    blobs.put(second, new byte[] {2}, "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(first).isPresent());
+    assertFalse(blobs.head(second).isPresent());
+    assertEquals(1, maxDeletesInCriticalSection.get());
+  }
+
+  @Test
+  void tablePrefixDiscoveryResumesFromItsContinuationToken() {
+    System.setProperty("floecat.gc.cas.page-size", "1");
+    String first = Keys.tableBlobUri(ACCOUNT_ID, "table-a", "sha-a");
+    String second = Keys.tableBlobUri(ACCOUNT_ID, "table-b", "sha-b");
+    var observedTokens = new java.util.ArrayList<String>();
+    long deadline = System.currentTimeMillis() + 20L;
+    var deadlineBlobs =
+        new InMemoryBlobStore() {
+          private boolean delayed;
+
+          @Override
+          public BlobStore.Page listPrefixes(String prefix, int limit, String pageToken) {
+            BlobStore.Page page = super.listPrefixes(prefix, limit, pageToken);
+            if (prefix.equals(Keys.tableRootPrefix(ACCOUNT_ID))) {
+              observedTokens.add(pageToken);
+              if (!delayed) {
+                delayed = true;
+                while (System.currentTimeMillis() <= deadline) {
+                  Thread.onSpinWait();
+                }
+              }
+            }
+            return page;
+          }
+        };
+    deadlineBlobs.put(first, new byte[] {1}, "application/x-protobuf");
+    deadlineBlobs.put(second, new byte[] {2}, "application/x-protobuf");
+    gc.blobStore = deadlineBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(
+        observedTokens.stream().skip(1).anyMatch(token -> token != null && !token.isBlank()),
+        "the resumed common-prefix page must use the saved continuation token");
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  @Test
+  void losingLocalContinuationStartsANewMarkBeforeAnyDelete() {
+    String blob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-live-after-restart");
+    blobs.put(blob, new byte[] {1}, "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID, 0L);
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), blob);
+
+    CasBlobGc restarted = new CasBlobGc();
+    restarted.pointerStore = pointers;
+    restarted.blobStore = blobs;
+    restarted.queryContextStore = queryContextStore;
+    restarted.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    restarted.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
+    restarted.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    restarted.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(blob).isPresent(), "restart must re-mark the newly live blob");
+  }
+
+  @Test
+  void probabilisticMatchCanOnlyKeepGarbage() {
+    String orphan = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-false-positive");
+    blobs.put(orphan, new byte[] {1}, "application/x-protobuf");
+    CasBlobGc conservative =
+        new CasBlobGc() {
+          @Override
+          ReferenceIndex newReferenceIndex(long capacity, double falsePositiveRate, long seed) {
+            return new ReferenceIndex() {
+              @Override
+              public void add(String key) {}
+
+              @Override
+              public boolean mightContain(String key) {
+                return true;
+              }
+
+              @Override
+              public long insertions() {
+                return 0;
+              }
+
+              @Override
+              public long capacity() {
+                return capacity;
+              }
+
+              @Override
+              public double saturation() {
+                return 1.0d;
+              }
+
+              @Override
+              public double estimatedFalsePositiveProbability() {
+                return 1.0d;
+              }
+
+              @Override
+              public long memoryBytes() {
+                return 0;
+              }
+            };
+          }
+        };
+    conservative.pointerStore = pointers;
+    conservative.blobStore = blobs;
+    conservative.queryContextStore = queryContextStore;
+    conservative.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    conservative.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
+    conservative.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+
+    conservative.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(orphan).isPresent(), "a Bloom false positive is a keep, never a delete");
+  }
+
+  @Test
+  void referenceIndexCapacityFailureAbandonsTheEpochWithoutDeleting() {
+    String blob = Keys.accountBlobUri(ACCOUNT_ID, "sha-account");
+    blobs.put(blob, new byte[] {1}, "application/x-protobuf");
+    putPointer(Keys.accountPointerById(ACCOUNT_ID), blob);
+    CasBlobGc capacityLimited =
+        new CasBlobGc() {
+          @Override
+          ReferenceIndex newReferenceIndex(long capacity, double falsePositiveRate, long seed) {
+            return new ReferenceIndex() {
+              @Override
+              public void add(String key) {
+                throw new ReferenceIndex.CapacityExceededException("full");
+              }
+
+              @Override
+              public boolean mightContain(String key) {
+                return false;
+              }
+
+              @Override
+              public long insertions() {
+                return 0;
+              }
+
+              @Override
+              public long capacity() {
+                return 0;
+              }
+
+              @Override
+              public double saturation() {
+                return 1.0d;
+              }
+
+              @Override
+              public double estimatedFalsePositiveProbability() {
+                return 1.0d;
+              }
+
+              @Override
+              public long memoryBytes() {
+                return 0;
+              }
+            };
+          }
+        };
+    capacityLimited.pointerStore = pointers;
+    capacityLimited.blobStore = blobs;
+    capacityLimited.queryContextStore = queryContextStore;
+    capacityLimited.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    capacityLimited.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
+    capacityLimited.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+
+    CasBlobGc.Result result = capacityLimited.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+    assertTrue(blobs.head(blob).isPresent());
+    assertTrue(capacityLimited.continuationAccountId().isEmpty());
+  }
+
+  @Test
+  void oversizedGenerationTableDoesNotStopLaterTablesInTheAccount() {
+    String firstTable = "tbl-a";
+    String secondTable = "tbl-b";
+    for (String tableId : List.of(firstTable, secondTable)) {
+      String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, tableId, "sha-table");
+      blobs.put(tableBlob, tableId.getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+      putPointer(Keys.tablePointerById(ACCOUNT_ID, tableId), tableBlob);
+    }
+    List<String> discoveredTables = new java.util.ArrayList<>();
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public boolean discoverGenerationKeys(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              long deadlineMs,
+              GenerationGcContinuation continuation) {
+            discoveredTables.add(tableId.getId());
+            if (firstTable.equals(tableId.getId())) {
+              throw new GenerationGcCapacityExceededException("simulated oversized table");
+            }
+            return super.discoverGenerationKeys(tableId, deadlineMs, continuation);
+          }
+        };
+
+    CasBlobGc.Result result = gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(firstTable, discoveredTables.get(0));
+    assertTrue(
+        discoveredTables.contains(secondTable),
+        "generation discovery continues with the table after the oversized one");
+    assertTrue(result.poisoned(), "the skipped table keeps the account backlog visible");
+    assertEquals(2, result.tablesScanned());
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  @Test
+  void generationCleanupCursorSurvivesGcRecreation() {
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-a"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-a", "sha-a"));
+    putPointer(
+        Keys.tablePointerById(ACCOUNT_ID, "tbl-b"),
+        Keys.tableBlobUri(ACCOUNT_ID, "tbl-b", "sha-b"));
+    java.util.ArrayList<String> visited = new java.util.ArrayList<>();
+    java.util.concurrent.atomic.AtomicBoolean delayFirstTableB =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    ai.floedb.floecat.service.repo.impl.StatsRepository recordingStats =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs,
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
+            visited.add(tableId.getId());
+            if ("tbl-b".equals(tableId.getId()) && delayFirstTableB.getAndSet(false)) {
+              while (System.currentTimeMillis() <= deadlineMs) {
+                Thread.onSpinWait();
+              }
+            }
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+    gc.statsRepository = recordingStats;
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 200L);
+    assertEquals(
+        "tbl-b",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+
+    CasBlobGc recreated = new CasBlobGc();
+    recreated.pointerStore = pointers;
+    recreated.blobStore = blobs;
+    recreated.queryContextStore = queryContextStore;
+    recreated.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    recreated.statsRepository = recordingStats;
+    recreated.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    visited.clear();
+
+    recreated.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 1_000L);
+
+    assertEquals("tbl-b", visited.getFirst());
+  }
+
+  @Test
+  void completedGenerationCleanupPassRotatesItsStartingTable() {
+    for (String tableId : List.of("tbl-a", "tbl-b", "tbl-c")) {
+      putPointer(
+          Keys.tablePointerById(ACCOUNT_ID, tableId),
+          Keys.tableBlobUri(ACCOUNT_ID, tableId, "sha-" + tableId));
+    }
+    java.util.ArrayList<String> visited = new java.util.ArrayList<>();
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs,
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
+            visited.add(tableId.getId());
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(List.of("tbl-a", "tbl-b", "tbl-c"), visited);
+    assertEquals(
+        "tbl-b",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+
+    visited.clear();
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals("tbl-b", visited.getFirst());
+    assertEquals(
+        "tbl-c",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
   }
 
   @Test
@@ -107,7 +836,8 @@ class CasBlobGcTest {
     // table's root; the ONLY tableRootByTable read is remarkTable's, strictly after the flush's
     // per-table pin snapshot — so the pin the flag then reveals is invisible to that snapshot and
     // only the per-candidate re-read can catch it.
-    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    String fileStatsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-fs");
     blobs.put(
         fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain"); // deferred garbage
     String rootKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
@@ -157,11 +887,16 @@ class CasBlobGcTest {
   }
 
   @Test
-  void statsBlobsGcHonorsPointers() {
+  void generationStatsBlobsAreNeverSweptIndividually() {
     long snapshotId = 1L;
+    String generationId = "gen-1";
     String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
-    String statsBlob = Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, targetId, "sha-stats");
-    String statsPtr = Keys.snapshotTargetStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId, targetId);
+    String statsBlob =
+        Keys.snapshotTargetStatsBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-stats");
+    String statsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId);
 
     seedCurrentTable();
 
@@ -173,7 +908,95 @@ class CasBlobGcTest {
 
     pointers.delete(statsPtr);
     gc.runForAccount(ACCOUNT_ID);
-    assertFalse(blobs.head(statsBlob).isPresent());
+    assertTrue(
+        blobs.head(statsBlob).isPresent(),
+        "generation-owned stats remain exclusively owned by StatsRepository cleanup");
+  }
+
+  @Test
+  void genericGcNeverScansTheBroadTargetStatsPointerTree() {
+    seedCurrentTable();
+    String broadStatsPrefix = Keys.snapshotRootPrefix(ACCOUNT_ID, TABLE_ID);
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            if (broadStatsPrefix.equals(prefix)) {
+              throw new AssertionError("generic GC must not scan generation-owned pointers");
+            }
+            return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+          }
+        };
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs,
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+
+    gc.runForAccount(ACCOUNT_ID);
+  }
+
+  @Test
+  void deletingLargeGenerationDoesNotDereferenceRemovedIndexWrappers() {
+    long snapshotId = 11L;
+    String generationId = "large-generation";
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, new byte[] {1}, "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    for (int i = 0; i < 501; i++) {
+      String pointer =
+          Keys.snapshotTargetStatsGenerationPointer(
+              ACCOUNT_ID, TABLE_ID, snapshotId, generationId, "target-" + i);
+      putPointer(pointer, "missing-target-blob-" + i);
+    }
+    String manifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    blobs.put(
+        manifest,
+        com.google.protobuf.StringValue.of(generationId).toByteArray(),
+        "application/x-protobuf");
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    assertTrue(
+        pointers.compareAndSet(
+            lifecycle, 0L, PointerReferences.opaqueMarkerPointer(lifecycle, "PUBLISHED", 1L)));
+    String targetId = "file:s3://bucket/data.parquet";
+    String wrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-wrapper");
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+    blobs.put(
+        wrapper,
+        ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+            .setArtifactUri(sidecar)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(
+        Keys.snapshotIndexArtifactGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId),
+        wrapper);
+
+    CasBlobGc.Result result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertTrue(
+        pointers.get(lifecycle).isPresent(),
+        "bounded pointer cleanup should leave the deletion claim for its next slice");
+    assertFalse(blobs.head(wrapper).isPresent());
   }
 
   @Test
@@ -199,6 +1022,154 @@ class CasBlobGcTest {
     pointers.delete(constraintsPtr);
     gc.runForAccount(ACCOUNT_ID);
     assertFalse(blobs.head(constraintsBlob).isPresent());
+  }
+
+  @Test
+  void captureManifestGcKeepsActiveAndSweepsSupersededBlob() {
+    long snapshotId = 7L;
+    seedCurrentTable();
+    String active =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-active");
+    String superseded =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-superseded");
+    blobs.put(active, "active".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(superseded, "superseded".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(
+        Keys.snapshotIndexArtifactCaptureManifestPointer(ACCOUNT_ID, TABLE_ID, snapshotId), active);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(active).isPresent(), "the active capture manifest is a GC root");
+    assertFalse(blobs.head(superseded).isPresent(), "a superseded capture manifest is reclaimed");
+  }
+
+  @Test
+  void youngOrphanCaptureManifestSurvivesMinimumAgeWindow() {
+    System.setProperty("floecat.gc.cas.min-age-ms", "3600000");
+    try {
+      seedCurrentTable();
+      String young =
+          Keys.snapshotIndexArtifactCaptureManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-young");
+      blobs.put(young, "young".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+
+      gc.runForAccount(ACCOUNT_ID);
+
+      assertTrue(
+          blobs.head(young).isPresent(),
+          "an unreferenced capture manifest younger than min-age is retained");
+    } finally {
+      System.setProperty("floecat.gc.cas.min-age-ms", "0");
+    }
+  }
+
+  @Test
+  void captureManifestOwnerRecheckKeepsTheCurrentPointerTarget() {
+    long snapshotId = 7L;
+    seedCurrentTable();
+    String pointerKey =
+        Keys.snapshotIndexArtifactCaptureManifestPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
+    String active =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, "sha-active");
+    blobs.put(active, "active".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(pointerKey, active);
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(pointerKey));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(active).isPresent(),
+        "the owner recheck protects an active manifest omitted from the pointer scan");
+    assertEquals(0, result.blobsRescued(), "owner-rooted capture manifests are expected keeps");
+  }
+
+  @Test
+  void generationScopedIndexWrapperIsNeverSweptIndividually() {
+    long snapshotId = 7L;
+    String generationId = "direct";
+    String targetId = "file:s3://source/data.parquet";
+    seedCurrentTable();
+    String pointerKey =
+        Keys.snapshotIndexArtifactGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId);
+    String wrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-wrapper");
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+    var wrapperRecord =
+        ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    blobs.put(wrapper, wrapperRecord.toByteArray(), "application/x-protobuf");
+    blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    putPointer(pointerKey, wrapper);
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    assertTrue(
+        pointers.compareAndSet(
+            lifecycle, 0L, PointerReferences.opaqueMarkerPointer(lifecycle, "PUBLISHED", 1L)));
+
+    gc.runForAccount(ACCOUNT_ID);
+    assertTrue(blobs.head(wrapper).isPresent(), "a live generation pointer roots its wrapper");
+    assertTrue(blobs.head(sidecar).isPresent(), "the live wrapper protects its shared sidecar");
+
+    pointers.delete(pointerKey);
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(wrapper).isPresent(),
+        "generation wrappers remain exclusively owned by StatsRepository cleanup");
+    assertFalse(blobs.head(sidecar).isPresent(), "the unreferenced shared sidecar is generic CAS");
+  }
+
+  @Test
+  void directIndexGenerationWithoutStatsLifecycleProtectsItsSharedSidecar() {
+    long snapshotId = 8L;
+    String targetId = "file:s3://source/direct.parquet";
+    seedCurrentTable();
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, "sha-snapshot");
+    blobs.put(snapshotBlob, "snapshot".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, snapshotId), snapshotBlob);
+
+    String activeGeneration =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
+    assertTrue(
+        pointers.compareAndSet(
+            activeGeneration,
+            0L,
+            PointerReferences.opaqueMarkerPointer(
+                activeGeneration, Keys.INDEX_ARTIFACT_DIRECT_GENERATION, 1L)));
+    String wrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            Keys.INDEX_ARTIFACT_DIRECT_GENERATION,
+            targetId,
+            "sha-wrapper");
+    String sidecar =
+        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+    var wrapperRecord =
+        ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    blobs.put(wrapper, wrapperRecord.toByteArray(), "application/x-protobuf");
+    blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    putPointer(
+        Keys.snapshotIndexArtifactGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION, targetId),
+        wrapper);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(wrapper).isPresent(), "the direct generation pointer roots its wrapper");
+    assertTrue(
+        blobs.head(sidecar).isPresent(),
+        "a direct generation with no stats lifecycle still protects its shared sidecar");
   }
 
   @Test
@@ -384,7 +1355,7 @@ class CasBlobGcTest {
       blobs.put(pinnedBlob, "pinned".getBytes(StandardCharsets.UTF_8), "text/plain");
 
       // Stage 1: resolving — the pin is constructed but not yet committed into a context.
-      store.registerResolvingPinBlobs("q-gc", java.util.List.of(pinnedBlob));
+      store.registerResolvingPinBlobs("q-gc", tableRid(), java.util.List.of(pinnedBlob));
       gc.runForAccount(ACCOUNT_ID);
       assertTrue(blobs.head(pinnedBlob).isPresent(), "resolving root must protect the blob");
 
@@ -474,6 +1445,40 @@ class CasBlobGcTest {
   }
 
   @Test
+  void rootChainResumesInsideTheCurrentManifestPageWithoutReportingACycle() {
+    seedCurrentTable();
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    blobs.put(snapshotBlob, "snapshot".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    commitRoot(7L, snapshotBlob, "v7", null);
+    long deadline = System.currentTimeMillis() + 20L;
+    java.util.concurrent.atomic.AtomicBoolean delayFirstPage =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs) {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.catalog.rpc.SnapshotManifestPage>
+              getManifestPage(ai.floedb.floecat.catalog.rpc.BlobRef ref) {
+            var page = super.getManifestPage(ref);
+            if (delayFirstPage.compareAndSet(true, false)) {
+              while (System.currentTimeMillis() <= deadline) {
+                Thread.onSpinWait();
+              }
+            }
+            return page;
+          }
+        };
+
+    gc.runForAccount(ACCOUNT_ID, deadline);
+    assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
+
+    var resumed = gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertFalse(resumed.poisoned());
+    assertTrue(gc.continuationAccountId().isEmpty());
+    assertTrue(blobs.head(snapshotBlob).isPresent());
+  }
+
+  @Test
   void supersededUnpinnedRootBlobsAreSwept() {
     seedCurrentTable();
 
@@ -551,6 +1556,37 @@ class CasBlobGcTest {
   }
 
   @Test
+  void aReuseGenerationSurvivesAfterTheActiveStatsGenerationMovesOn() {
+    seedCurrentTable();
+
+    String reuseManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen");
+    blobs.put(reuseManifest, "reuse".getBytes(StandardCharsets.UTF_8), "text/plain");
+    String activeManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "active-gen");
+    blobs.put(activeManifest, "active".getBytes(StandardCharsets.UTF_8), "text/plain");
+    String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
+    putPointer(
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen", targetId),
+        Keys.snapshotTargetStatsBlobUri(
+            ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen", targetId, "sha-rec"));
+    putPointer(
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(ACCOUNT_ID, TABLE_ID, 7L, "reuse-gen"),
+        "PUBLISHED");
+    putPointer(Keys.snapshotTargetStatsManifestPointer(ACCOUNT_ID, TABLE_ID, 7L), activeManifest);
+
+    String snapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snap");
+    blobs.put(snapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
+    commitRoot(7L, snapBlob, "v7", activeManifest, reuseManifest);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(reuseManifest).isPresent(),
+        "the root's reuse generation remains live after another stats generation becomes active");
+  }
+
+  @Test
   void aPinTakenMidSweepProtectsItsRootsGenerations() {
     // A pin registered after the sweep started protects its root's WHOLE chain — including the
     // generation manifests its entries reference — not just the pin's own blob URIs. The pinned
@@ -613,10 +1649,11 @@ class CasBlobGcTest {
   }
 
   @Test
-  void aFailedChainWalkPoisonsTheWholeSweep() {
+  void aFailedChainWalkFailsClosedForItsTableWithoutStarvingOtherTables() {
     // Manifest pages and the refs inside them are reachable ONLY through chain walks. If a walk
     // cannot complete (missing page blob, transient storage error), the referenced set is not
-    // trustworthy and NOTHING may be deleted this pass — an orphan elsewhere must survive too.
+    // trustworthy for that table, so that table must not be swept. Other tables have independent
+    // scoped marks and may still be reclaimed.
     seedCurrentTable();
 
     var tableId = tableRid();
@@ -631,8 +1668,7 @@ class CasBlobGcTest {
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
-    assertTrue(blobs.head(orphan).isPresent(), "a poisoned sweep must delete NOTHING");
-    assertTrue(result.blobsDeleted() == 0, "no deletes when a chain walk failed");
+    assertFalse(blobs.head(orphan).isPresent(), "another table's proven garbage is still deleted");
     assertTrue(result.poisoned(), "the poison signal must surface for the backlog gauge");
   }
 
@@ -670,7 +1706,7 @@ class CasBlobGcTest {
   }
 
   @Test
-  void aCyclicManifestChainPoisonsTheSweepInsteadOfHanging() {
+  void aCyclicManifestChainPoisonsItsTableInsteadOfHanging() {
     // Content-addressed pages are acyclic by construction, so a repeated prevPageRef means
     // corruption. The walk must fail safe (poison the sweep, delete nothing) rather than loop
     // forever on the GC background thread, which has no request timeout to rescue it.
@@ -706,8 +1742,7 @@ class CasBlobGcTest {
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
-    assertTrue(blobs.head(orphan).isPresent(), "a cyclic chain poisons the whole sweep");
-    assertTrue(result.blobsDeleted() == 0, "no deletes when a chain walk cannot terminate");
+    assertFalse(blobs.head(orphan).isPresent(), "another table remains independently collectible");
     assertTrue(result.poisoned(), "a cyclic chain reports poisoned for the backlog gauge");
   }
 
@@ -789,6 +1824,15 @@ class CasBlobGcTest {
 
   private void commitRoot(
       long snapshotId, String snapBlobUri, String snapVersion, String genManifestUri) {
+    commitRoot(snapshotId, snapBlobUri, snapVersion, genManifestUri, null);
+  }
+
+  private void commitRoot(
+      long snapshotId,
+      String snapBlobUri,
+      String snapVersion,
+      String genManifestUri,
+      String reuseGenManifestUri) {
     var tableId = tableRid();
     var entry =
         ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
@@ -801,7 +1845,13 @@ class CasBlobGcTest {
       entry.setStatsGenerationRef(
           ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(genManifestUri));
     }
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
+    if (reuseGenManifestUri != null) {
+      entry.setReuseStatsGenerationRef(
+          ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(reuseGenManifestUri));
+    }
+    var committer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+            gc.tableRootRepo, gc.reachabilityGuard);
     committer.commit(
         tableId,
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
@@ -890,7 +1940,18 @@ class CasBlobGcTest {
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-live");
     blobs.put(blobUri, "live".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(pointerKey, blobUri);
-    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(pointerKey));
+    java.util.concurrent.atomic.AtomicBoolean hideFirstGet =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of(pointerKey)) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            if (pointerKey.equals(key) && hideFirstGet.getAndSet(false)) {
+              return java.util.Optional.empty();
+            }
+            return super.get(key);
+          }
+        };
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -907,9 +1968,26 @@ class CasBlobGcTest {
     // the key shape, so a scan miss must not destroy the root chain's anchor.
     String rootPointerKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
     String rootBlobUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
-    blobs.put(rootBlobUri, "root".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    blobs.put(
+        rootBlobUri,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .build()
+            .toByteArray(),
+        "application/octet-stream");
     putPointer(rootPointerKey, rootBlobUri);
-    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(rootPointerKey));
+    java.util.concurrent.atomic.AtomicBoolean hideFirstGet =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of(rootPointerKey)) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            if (rootPointerKey.equals(key) && hideFirstGet.getAndSet(false)) {
+              return java.util.Optional.empty();
+            }
+            return super.get(key);
+          }
+        };
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -938,6 +2016,8 @@ class CasBlobGcTest {
     putPointer(pointerKey, blobA);
     // ... but every SCAN sees the stale mid-flip view: pointer at B.
     Pointer staleView = PointerReferences.blobPointer(pointerKey, blobB, 1L);
+    java.util.concurrent.atomic.AtomicBoolean staleFirstGet =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
     gc.pointerStore =
         new ScanHidingPointerStore(pointers, Set.of()) {
           @Override
@@ -946,6 +2026,14 @@ class CasBlobGcTest {
             return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut).stream()
                 .map(ptr -> pointerKey.equals(ptr.getKey()) ? staleView : ptr)
                 .toList();
+          }
+
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            if (pointerKey.equals(key) && staleFirstGet.getAndSet(false)) {
+              return java.util.Optional.of(staleView);
+            }
+            return super.get(key);
           }
         };
 
@@ -970,24 +2058,36 @@ class CasBlobGcTest {
 
   @Test
   void aLiveNoOwnerBlobSurvivesARescueElsewhereViaTheFlushRemark() {
-    // A LIVE no-owner family (file-stats, with its own live pointer) sorts BEFORE the table's
-    // definition blob. When the scan misses the table's by-id pointer, the definition is only
-    // rescued AFTER the file-stats was already reached. Deferral keeps the file-stats out of the
-    // inline delete path; the flush then re-proves it against the settled store (its live stats
-    // pointer) and keeps it — and the rescue does NOT poison the flush, so this works even under a
-    // concurrent rescue.
+    // A LIVE generation stats record with no owner derivable from its hashed target path sorts
+    // before the table's definition blob. When the scan misses the table's by-id pointer, the
+    // definition is only rescued AFTER the stats blob was already reached. Deferral keeps the
+    // stats blob out of the inline delete path; the flush then re-proves it against the settled
+    // store and keeps it — and the rescue does NOT poison the flush.
     String tablePtr = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
     String definitionBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def");
-    String fileStatsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
-    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    String fileStatsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1");
+    String fileStatsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-fs");
     blobs.put(definitionBlob, "def".getBytes(StandardCharsets.UTF_8), "text/plain");
     blobs.put(fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(tablePtr, definitionBlob); // live definition (its by-id pointer)
     putPointer(fileStatsPtr, fileStatsBlob); // live file-stats
     // The scan misses only the table's by-id pointer, so the table is absent from tableIds and its
-    // mark-phase stats/root scans never run — the definition and file-stats are both unreferenced
-    // in the stale set. The file-stats pointer itself stays visible for the flush re-mark.
-    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(tablePtr));
+    // mark-phase stats/root scans never run — the definition and stats record are both unreferenced
+    // in the stale set. The stats pointer itself stays visible for the flush re-mark.
+    java.util.concurrent.atomic.AtomicBoolean hideFirstGet =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of(tablePtr)) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            if (tablePtr.equals(key) && hideFirstGet.getAndSet(false)) {
+              return java.util.Optional.empty();
+            }
+            return super.get(key);
+          }
+        };
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -1034,8 +2134,10 @@ class CasBlobGcTest {
     // sweep's stale set: it re-scans the owning table's constraints/stats pointer prefixes
     // against the settled store and keeps anything they reference.
     seedCurrentTable();
-    String statsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
-    String statsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-live");
+    String statsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1");
+    String statsBlob =
+        Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1", "file-f1", "sha-live");
     blobs.put(statsBlob, "live".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(statsPtr, statsBlob);
     // The pointer is invisible to the FIRST prefix scan that would return it (the mark scan) and
@@ -1067,6 +2169,60 @@ class CasBlobGcTest {
   }
 
   @Test
+  void flushRestartsItsRemarkWhenARootPublicationOverlapsIt() {
+    seedCurrentTable();
+    var page =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestPage.newBuilder()
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder().setSnapshotId(7L))
+            .build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, ai.floedb.floecat.types.Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    String rootPointer = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
+    String rootUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "published-mid-remark");
+    var root =
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotManifestRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(pageUri))
+            .build();
+    java.util.concurrent.atomic.AtomicInteger rootReads =
+        new java.util.concurrent.atomic.AtomicInteger();
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            java.util.Optional<Pointer> observed = super.get(key);
+            if (rootPointer.equals(key) && rootReads.getAndIncrement() == 1) {
+              gc.reachabilityGuard.publishing(
+                  ACCOUNT_ID,
+                  TABLE_ID,
+                  () -> {
+                    blobs.put(rootUri, root.toByteArray(), "application/x-protobuf");
+                    pointers.compareAndSet(
+                        rootPointer,
+                        0L,
+                        PointerReferences.blobPointer(
+                            rootPointer, rootUri, 1L, root.toByteArray().length));
+                    return null;
+                  });
+            }
+            return observed;
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        rootReads.get() >= 3,
+        "the publication epoch change must invalidate and restart the first re-mark");
+    assertTrue(blobs.head(pageUri).isPresent(), "the newly published root protects its page");
+    assertFalse(result.poisoned());
+  }
+
+  @Test
   void oneTablesUnprovableRemarkDoesNotStarveAnotherTablesFlush() {
     // A re-mark failure is per-table: table A's root pointer references a missing root blob, so
     // A's chain is unprovable and its deferred candidates must be kept — but table B's deferred
@@ -1074,8 +2230,8 @@ class CasBlobGcTest {
     // flush. The failure still surfaces on the poisoned gauge (unprovable garbage was left).
     String rootPtrA = Keys.tableRootByTable(ACCOUNT_ID, "tbl-a");
     putPointer(rootPtrA, Keys.tableRootBlobUri(ACCOUNT_ID, "tbl-a", "sha-missing"));
-    String deferredA = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-a", "f", "sha-a");
-    String deferredB = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-b", "f", "sha-b");
+    String deferredA = Keys.snapshotManifestBlobUri(ACCOUNT_ID, "tbl-a", "sha-a");
+    String deferredB = Keys.snapshotManifestBlobUri(ACCOUNT_ID, "tbl-b", "sha-b");
     blobs.put(deferredA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
     blobs.put(deferredB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
 

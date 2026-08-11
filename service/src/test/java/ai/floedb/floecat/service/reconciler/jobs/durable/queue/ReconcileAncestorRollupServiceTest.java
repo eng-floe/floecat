@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 
 class ReconcileAncestorRollupServiceTest {
   @Test
-  void parentRollupDoesNotAddCopiedAggregateCountersBackIntoChildren() {
+  void snapshotRollupUsesFinalizedManifestArtifactCounts() {
     ReconcileAncestorRollupService rollups = rollups();
     StoredReconcileJob parent =
         job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
@@ -49,13 +49,151 @@ class ReconcileAncestorRollupServiceTest {
         job("finalizer", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, parent.jobId, "JS_SUCCEEDED");
     finalizer.snapshotsProcessed = 1L;
     finalizer.statsProcessed = 9L;
+    finalizer.indexesProcessed = 7L;
 
     var projection = rollups.recomputeParentProjection(parent, List.of(fileGroup, finalizer));
 
     assertEquals("JS_SUCCEEDED", projection.state());
     assertEquals(1L, projection.snapshotsProcessed());
-    assertEquals(27L, projection.statsProcessed());
-    assertEquals(18L, projection.indexesProcessed());
+    assertEquals(9L, projection.statsProcessed());
+    assertEquals(7L, projection.indexesProcessed());
+  }
+
+  @Test
+  void snapshotRollupShowsFileGroupProgressUntilFinalizerSucceeds() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
+
+    StoredReconcileJob fileGroupOne =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    fileGroupOne.statsProcessed = 6L;
+    fileGroupOne.indexesProcessed = 2L;
+    StoredReconcileJob fileGroupTwo =
+        job("file-group-2", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    fileGroupTwo.statsProcessed = 8L;
+    fileGroupTwo.indexesProcessed = 3L;
+    StoredReconcileJob finalizer =
+        job("finalizer", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, parent.jobId, "JS_RUNNING");
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroupOne, fileGroupTwo, finalizer));
+
+    assertEquals(14L, projection.statsProcessed());
+    assertEquals(5L, projection.indexesProcessed());
+  }
+
+  @Test
+  void successfulReplacementFinalizerSupersedesPriorFailedFinalizers() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
+
+    StoredReconcileJob fileGroupOne =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob fileGroupTwo =
+        job("file-group-2", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+
+    StoredReconcileJob failed =
+        job(
+            "failed-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    failed.createdAtMs = 100L;
+    failed.finishedAtMs = 150L;
+    failed.errors = 1L;
+    StoredReconcileJob succeeded =
+        job(
+            "replacement-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_SUCCEEDED");
+    succeeded.createdAtMs = 200L;
+    succeeded.statsProcessed = 9L;
+    succeeded.indexesProcessed = 7L;
+
+    var projection =
+        rollups.recomputeParentProjection(
+            parent, List.of(fileGroupOne, fileGroupTwo, failed, succeeded));
+
+    assertEquals("JS_SUCCEEDED", projection.state());
+    assertEquals(0L, projection.errors());
+    assertEquals(9L, projection.statsProcessed());
+    assertEquals(7L, projection.indexesProcessed());
+  }
+
+  @Test
+  void successfulReplacementFinalizerDoesNotHideMissingFileGroupChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+    parent.snapshotTaskFileGroupCount = 2;
+
+    StoredReconcileJob fileGroup =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob failed =
+        job(
+            "failed-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    failed.createdAtMs = 100L;
+    StoredReconcileJob succeeded =
+        job(
+            "replacement-finalizer",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_SUCCEEDED");
+    succeeded.createdAtMs = 200L;
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroup, failed, succeeded));
+
+    assertEquals("JS_WAITING", projection.state());
+  }
+
+  @Test
+  void historicalFailedReplacementFinalizersRemainOneTerminalLogicalChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 2L;
+    parent.snapshotTaskFileGroupCount = 1;
+
+    StoredReconcileJob fileGroup =
+        job("file-group", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    StoredReconcileJob firstFailure =
+        job(
+            "failed-finalizer-1",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    firstFailure.createdAtMs = 100L;
+    firstFailure.errors = 1L;
+    StoredReconcileJob latestFailure =
+        job(
+            "failed-finalizer-2",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            parent.jobId,
+            "JS_FAILED");
+    latestFailure.createdAtMs = 200L;
+    latestFailure.errors = 1L;
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroup, firstFailure, latestFailure));
+
+    assertEquals("JS_FAILED", projection.state());
+    assertEquals(1L, projection.errors());
   }
 
   @Test
@@ -126,6 +264,76 @@ class ReconcileAncestorRollupServiceTest {
     var projection = rollups.recomputeParentProjection(table, List.of(snapshotOne, snapshotTwo));
 
     assertEquals(2L, projection.snapshotsProcessed());
+  }
+
+  @Test
+  void tableRollupDoesNotCountContentDeduplicatedSnapshotChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshot.snapshotsProcessed = 0L;
+
+    var projection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(0L, projection.snapshotsProcessed());
+  }
+
+  @Test
+  void tableAndConnectorRollupsUseFinalizedSnapshotArtifactCounts() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+    table.statsProcessed = 14_195L;
+    table.indexesProcessed = 14_195L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshot.snapshotsProcessed = 1L;
+    snapshot.statsProcessed = 12_371L;
+    snapshot.indexesProcessed = 12_352L;
+
+    var tableProjection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(12_371L, tableProjection.statsProcessed());
+    assertEquals(12_352L, tableProjection.indexesProcessed());
+
+    StoredReconcileJob connector =
+        job("connector", ReconcileJobKind.PLAN_CONNECTOR, "", "JS_WAITING");
+    connector.childrenFinalized = true;
+    connector.expectedDirectChildren = 1L;
+    table.state = tableProjection.state();
+    table.statsProcessed = tableProjection.statsProcessed();
+    table.indexesProcessed = tableProjection.indexesProcessed();
+
+    var connectorProjection = rollups.recomputeParentProjection(connector, List.of(table));
+
+    assertEquals(12_371L, connectorProjection.statsProcessed());
+    assertEquals(12_352L, connectorProjection.indexesProcessed());
+  }
+
+  @Test
+  void tableRollupKeepsCanonicalArtifactProgressUntilSnapshotsSucceed() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+    table.statsProcessed = 14_195L;
+    table.indexesProcessed = 14_195L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_RUNNING");
+    snapshot.statsProcessed = 12_371L;
+    snapshot.indexesProcessed = 12_352L;
+
+    var projection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(14_195L, projection.statsProcessed());
+    assertEquals(14_195L, projection.indexesProcessed());
   }
 
   @Test

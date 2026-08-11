@@ -19,10 +19,12 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScopeCanonicalizer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
@@ -57,15 +59,21 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
+  private final Map<String, ReconcileFileGroupResultDescriptor> fileGroupResultDescriptors =
+      new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
+  private final Set<String> snapshotFinalizeCommits = ConcurrentHashMap.newKeySet();
+  private final Map<String, SnapshotFinalizeCompletion> snapshotFinalizeCompletions =
+      new ConcurrentHashMap<>();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
   private final Map<String, String> dedupeKeysByJobId = new ConcurrentHashMap<>();
   private final Map<String, String> activeJobIdByDedupeKey = new ConcurrentHashMap<>();
   private final Map<String, String> laneKeysByJobId = new ConcurrentHashMap<>();
   private final Map<String, String> activeJobIdByLaneKey = new ConcurrentHashMap<>();
-  private final Map<String, String> activeJobIdBySnapshotLeaseKey = new ConcurrentHashMap<>();
+  private final Map<String, String> activeJobIdBySnapshotOwnershipKey = new ConcurrentHashMap<>();
+  private final Set<String> snapshotIndexPredecessorPinPending = ConcurrentHashMap.newKeySet();
   private final Map<String, Integer> attemptsByJobId = new ConcurrentHashMap<>();
   private final Map<String, Long> nextAttemptAtMs = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
@@ -164,6 +172,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveViewTask);
     ReconcileExecutionPolicy effectivePolicy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+    ReconcileScope identityScope =
+        ReconcileScopeCanonicalizer.resolvedWorkScope(
+            effectiveScope,
+            effectiveJobKind,
+            effectiveSnapshotTask,
+            captureMode == CaptureMode.CAPTURE_ONLY);
     String effectiveParentJobId = parentJobId == null ? "" : parentJobId.trim();
     String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
     String dedupeKey =
@@ -172,15 +186,14 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             connectorId,
             fullRescan,
             captureMode,
-            effectiveScope,
+            identityScope,
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
             effectiveSnapshotTask,
             effectiveFileGroupTask,
             effectivePolicy,
-            effectiveParentJobId,
-            effectivePinnedExecutorId);
+            effectiveParentJobId);
     String activeJobId = activeJobIdByDedupeKey.get(dedupeKey);
     if (activeJobId != null) {
       ReconcileJob existing = jobs.get(activeJobId);
@@ -235,6 +248,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveFileGroupTask,
             effectiveParentJobId);
     jobs.put(id, job);
+    if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT
+        && effectiveScope.capturePolicy().requestsIndexes()
+        && effectiveSnapshotTask.indexPredecessor() == null) {
+      snapshotIndexPredecessorPinPending.add(id);
+    }
     pinnedExecutors.put(id, effectivePinnedExecutorId);
     ready.add(id);
     return id;
@@ -341,6 +359,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.captureMode,
         job.snapshotsProcessed,
         job.statsProcessed,
+        Math.max(job.indexesProcessed, indexesProcessedSelf(job)),
+        job.aggregateSummaryPresent,
         job.scope,
         job.executionPolicy,
         pinnedExecutors.getOrDefault(job.jobId, ""),
@@ -350,6 +370,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.viewTask,
         job.snapshotTask,
         job.fileGroupTask,
+        job.plannedFileGroups,
+        job.plannedFiles,
+        job.completedFileGroups,
+        job.failedFileGroups,
+        job.completedFiles,
+        job.failedFiles,
         job.parentJobId);
   }
 
@@ -435,6 +461,29 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.jobKind == ReconcileJobKind.PLAN_TABLE
             ? aggregatePlanTableChanged(children)
             : children.stream().mapToLong(child -> child.tablesChanged).sum();
+    Optional<ReconcileJob> successfulSnapshotFinalizer =
+        job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+            ? children.stream()
+                .filter(
+                    child ->
+                        child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                            && "JS_SUCCEEDED".equals(child.state))
+                .findFirst()
+            : Optional.empty();
+    long aggregateStatsProcessed =
+        successfulSnapshotFinalizer
+            .map(child -> child.statsProcessed)
+            .orElseGet(
+                () ->
+                    job.statsProcessed
+                        + children.stream().mapToLong(child -> child.statsProcessed).sum());
+    long aggregateIndexesProcessed =
+        successfulSnapshotFinalizer
+            .map(child -> child.indexesProcessed)
+            .orElseGet(
+                () ->
+                    selfIndexes
+                        + children.stream().mapToLong(child -> child.indexesProcessed).sum());
     return new ReconcileJob(
         job.jobId,
         job.accountId,
@@ -452,8 +501,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.captureMode,
         job.snapshotsProcessed
             + children.stream().mapToLong(child -> child.snapshotsProcessed).sum(),
-        job.statsProcessed + children.stream().mapToLong(child -> child.statsProcessed).sum(),
-        selfIndexes + children.stream().mapToLong(child -> child.indexesProcessed).sum(),
+        aggregateStatsProcessed,
+        aggregateIndexesProcessed,
         true,
         job.scope,
         job.executionPolicy,
@@ -553,18 +602,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return "JS_SUCCEEDED";
   }
 
-  private static long indexesProcessedSelf(ReconcileJob job) {
-    if (job == null || job.fileGroupTask == null) {
+  private long indexesProcessedSelf(ReconcileJob job) {
+    if (job == null) {
       return 0L;
     }
-    return job.fileGroupTask.fileResults().stream()
-        .filter(result -> result != null && result.indexArtifact() != null)
-        .filter(
-            result ->
-                !result.indexArtifact().artifactUri().isBlank()
-                    || !result.indexArtifact().artifactFormat().isBlank()
-                    || result.indexArtifact().artifactFormatVersion() > 0)
-        .count();
+    ReconcileFileGroupResultDescriptor descriptor = fileGroupResultDescriptors.get(job.jobId);
+    if (descriptor != null) {
+      return Math.max(0, descriptor.indexArtifactCount());
+    }
+    SnapshotFinalizeCompletion completion = snapshotFinalizeCompletions.get(job.jobId);
+    return completion == null ? 0L : Math.max(0L, completion.indexArtifactCount());
   }
 
   @Override
@@ -665,7 +712,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
                   effective.directStatsRecordCount(),
-                  effective.directStatsPersistedRecordCountsByChunk());
+                  effective.sourceRevision(),
+                  effective.metadataFingerprint(),
+                  effective.requestedCoverage(),
+                  effective.indexPredecessor());
           if (existing.snapshotTask.equals(adoptedTask)) {
             return existing;
           }
@@ -700,105 +750,177 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void persistFileGroupResult(
-      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask) {
-    ReconcileFileGroupTask effective =
-        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
-    jobs.computeIfPresent(
-        jobId,
-        (id, existing) -> {
-          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
-          if (!"JS_RUNNING".equals(existing.state)
-              || leaseEpoch == null
-              || leaseEpoch.isBlank()
-              || !leaseEpoch.equals(currentLeaseEpoch)) {
-            return existing;
-          }
-          return new ReconcileJob(
-              existing.jobId,
-              existing.accountId,
-              existing.connectorId,
-              existing.state,
-              existing.message,
-              existing.startedAtMs,
-              existing.finishedAtMs,
-              existing.tablesScanned,
-              existing.tablesChanged,
-              existing.viewsScanned,
-              existing.viewsChanged,
-              existing.errors,
-              existing.fullRescan,
-              existing.captureMode,
-              existing.snapshotsProcessed,
-              existing.statsProcessed,
-              existing.scope,
-              existing.executionPolicy,
-              existing.executorId,
-              existing.jobKind,
-              existing.tableTask,
-              existing.viewTask,
-              existing.snapshotTask,
-              effective,
-              existing.parentJobId);
-        });
+  public Optional<ReconcileJob> getCompactLeaseView(String jobId) {
+    return getLeaseView(jobId);
   }
 
   @Override
-  public void persistSnapshotFinalizeDirectStatsProgress(
+  public synchronized Optional<ReconcileSnapshotTask> pinSnapshotIndexPredecessor(
       String jobId,
       String leaseEpoch,
-      boolean fullRescan,
-      int chunkIndex,
-      int directStatsPersistedRecordCount) {
-    final boolean[] updated = {false};
-    jobs.computeIfPresent(
-        jobId,
-        (id, existing) -> {
-          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
-          if (!"JS_RUNNING".equals(existing.state)
-              || leaseEpoch == null
-              || leaseEpoch.isBlank()
-              || !leaseEpoch.equals(currentLeaseEpoch)
-              || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
-            return existing;
-          }
-          updated[0] = true;
-          ReconcileSnapshotTask updatedSnapshotTask =
-              ((fullRescan && Math.max(0, chunkIndex) == 0)
-                      ? existing.snapshotTask.withoutDirectStatsPersistedRecordCounts()
-                      : existing.snapshotTask)
-                  .withDirectStatsPersistedRecordCountForChunk(
-                      Math.max(0, chunkIndex), Math.max(0, directStatsPersistedRecordCount));
-          return new ReconcileJob(
-              existing.jobId,
-              existing.accountId,
-              existing.connectorId,
-              existing.state,
-              existing.message,
-              existing.startedAtMs,
-              existing.finishedAtMs,
-              existing.tablesScanned,
-              existing.tablesChanged,
-              existing.viewsScanned,
-              existing.viewsChanged,
-              existing.errors,
-              existing.fullRescan,
-              existing.captureMode,
-              existing.snapshotsProcessed,
-              existing.statsProcessed,
-              existing.scope,
-              existing.executionPolicy,
-              existing.executorId,
-              existing.jobKind,
-              existing.tableTask,
-              existing.viewTask,
-              updatedSnapshotTask,
-              existing.fileGroupTask,
-              existing.parentJobId);
-        });
-    if (!updated[0]) {
-      throw new IllegalStateException("Failed to persist snapshot finalize direct stats progress");
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    ReconcileJob existing = jobs.get(jobId);
+    if (existing == null
+        || existing.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || !leased.contains(jobId)
+        || !java.util.Objects.equals(leaseEpochs.get(jobId), leaseEpoch)) {
+      return Optional.empty();
     }
+    if (existing.snapshotTask.indexPredecessor() != null) {
+      return Optional.of(existing.snapshotTask);
+    }
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor effectivePredecessor =
+        java.util.Objects.requireNonNull(predecessor, "predecessor");
+    if (!snapshotIndexPredecessorPinPending.remove(jobId)) {
+      throw new IllegalStateException(
+          "PLAN_SNAPSHOT job is missing lease-time predecessor pin eligibility; recreate the job");
+    }
+    ReconcileSnapshotTask pinnedTask =
+        existing.snapshotTask.withIndexPredecessor(effectivePredecessor);
+    jobs.put(
+        jobId,
+        new ReconcileJob(
+            existing.jobId,
+            existing.accountId,
+            existing.connectorId,
+            existing.state,
+            existing.message,
+            existing.startedAtMs,
+            existing.finishedAtMs,
+            existing.tablesScanned,
+            existing.tablesChanged,
+            existing.viewsScanned,
+            existing.viewsChanged,
+            existing.errors,
+            existing.fullRescan,
+            existing.captureMode,
+            existing.snapshotsProcessed,
+            existing.statsProcessed,
+            existing.scope,
+            existing.executionPolicy,
+            existing.executorId,
+            existing.jobKind,
+            existing.tableTask,
+            existing.viewTask,
+            pinnedTask,
+            existing.fileGroupTask,
+            existing.parentJobId));
+    return Optional.of(pinnedTask);
+  }
+
+  @Override
+  public synchronized boolean completeFileGroupSuccess(
+      String jobId,
+      String leaseEpoch,
+      ReconcileFileGroupResultDescriptor descriptor,
+      long finishedAtMs,
+      String message) {
+    if (descriptor == null
+        || !java.util.Objects.equals(
+            leaseEpoch == null ? "" : leaseEpoch, descriptor.leaseEpoch())) {
+      throw new IllegalArgumentException(
+          "file-group result descriptor lease epoch does not match completion lease");
+    }
+    ReconcileJob existing = jobs.get(jobId);
+    String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
+    if (existing == null
+        || !"JS_RUNNING".equals(existing.state)
+        || leaseEpoch == null
+        || leaseEpoch.isBlank()
+        || !leaseEpoch.equals(currentLeaseEpoch)) {
+      return existing != null
+          && "JS_SUCCEEDED".equals(existing.state)
+          && java.util.Objects.equals(fileGroupResultDescriptors.get(jobId), descriptor);
+    }
+    fileGroupResultDescriptors.put(jobId, descriptor);
+    markSucceeded(
+        jobId,
+        leaseEpoch,
+        finishedAtMs,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        (long) descriptor.fileStatsRecordCount() + (long) descriptor.partialAggregateRecordCount());
+    return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
+  }
+
+  @Override
+  public synchronized boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount,
+      List<String> materializedCoverage,
+      long finishedAtMs,
+      String message) {
+    ReconcileJob existing = jobs.get(jobId);
+    SnapshotFinalizeCompletion completion =
+        new SnapshotFinalizeCompletion(
+            blankToEmpty(leaseEpoch),
+            blankToEmpty(resultId),
+            blankToEmpty(manifestUri),
+            manifestBytes,
+            blankToEmpty(manifestSha256),
+            fileGroupCount,
+            sourceFileCount,
+            statsRecordCount,
+            indexArtifactCount);
+    if (existing != null && "JS_SUCCEEDED".equals(existing.state)) {
+      return existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+          && completion.equals(snapshotFinalizeCompletions.get(jobId));
+    }
+    if (existing == null
+        || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+        || !renewLease(jobId, leaseEpoch)) {
+      return false;
+    }
+    snapshotFinalizeCompletions.put(jobId, completion);
+    markSucceeded(
+        jobId, leaseEpoch, finishedAtMs, 0L, 0L, 0L, 0L, 1L, Math.max(0L, statsRecordCount));
+    snapshotFinalizeCommits.remove(jobId);
+    return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
+  }
+
+  @Override
+  public FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    ReconcileJobPage page =
+        ReconcileJobStore.super.childJobsPage(accountId, parentJobId, pageSize, pageToken);
+    List<ReconcileFileGroupResultDescriptor> descriptors =
+        page.jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+            .filter(job -> "JS_SUCCEEDED".equals(job.state))
+            .map(job -> fileGroupResultDescriptors.get(job.jobId))
+            .filter(java.util.Objects::nonNull)
+            .toList();
+    return new FileGroupResultDescriptorPage(descriptors, page.nextPageToken);
+  }
+
+  @Override
+  public ChildJobStatePage childJobStatesPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    ReconcileJobPage page =
+        ReconcileJobStore.super.childJobsPage(accountId, parentJobId, pageSize, pageToken);
+    List<ChildJobState> states =
+        page.jobs.stream()
+            .map(
+                job ->
+                    new ChildJobState(
+                        job,
+                        job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP
+                                && "JS_SUCCEEDED".equals(job.state)
+                            ? fileGroupResultDescriptors.get(job.jobId)
+                            : null))
+            .toList();
+    return new ChildJobStatePage(states, page.nextPageToken);
   }
 
   @Override
@@ -840,7 +962,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           continue;
         }
       }
-      if (!tryAcquireSnapshotLease(job, jobId, now)) {
+      if (!tryAcquireSnapshotOwnership(job, jobId)) {
         ready.add(jobId);
         continue;
       }
@@ -902,7 +1024,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 leasedJob.parentJobId,
                 laneKey));
       }
-      releaseSnapshotLease(jobId);
+      releaseSnapshotOwnership(jobId);
     }
     return Optional.empty();
   }
@@ -922,6 +1044,24 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
     leaseExpiresAtMs.put(jobId, now + leaseMs);
     return true;
+  }
+
+  @Override
+  public boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    jobs.computeIfPresent(
+        jobId,
+        (id, job) -> {
+          if ("JS_RUNNING".equals(job.state)
+              && job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+              && hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis())) {
+            snapshotFinalizeCommits.add(id);
+            accepted.set(true);
+          }
+          return job;
+        });
+    return accepted.get();
   }
 
   @Override
@@ -1156,6 +1296,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               snapshotsProcessed,
               statsProcessed);
     }
+    snapshotFinalizeCommits.remove(jobId);
     return true;
   }
 
@@ -1180,7 +1321,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
+          releaseSnapshotOwnership(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -1238,12 +1379,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
           int attempts = attemptsByJobId.merge(id, 1, Integer::sum);
           if (attempts >= maxAttempts) {
+            releaseSnapshotOwnership(id);
             pinnedExecutors.remove(id);
             clearDedupe(id);
             return new ReconcileJob(
@@ -1330,7 +1471,6 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -1387,7 +1527,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
+          releaseSnapshotOwnership(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -1437,6 +1577,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          if ("JS_RUNNING".equals(job.state) && snapshotFinalizeCommits.contains(id)) {
+            return job;
+          }
           if ("JS_RUNNING".equals(job.state)) {
             long now = System.currentTimeMillis();
             long cancelPokeExpiry = now + CANCEL_POKE_MAX_DELAY_MS;
@@ -1476,7 +1619,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.parentJobId);
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
+          releaseSnapshotOwnership(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -1552,7 +1695,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             return job;
           }
           releaseLane(id);
-          releaseSnapshotLease(id);
+          releaseSnapshotOwnership(id);
           leased.remove(id);
           leaseEpochs.remove(id);
           leaseExpiresAtMs.remove(id);
@@ -1620,7 +1763,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               return job;
             }
             releaseLane(id);
-            releaseSnapshotLease(id);
+            snapshotFinalizeCommits.remove(id);
             leaseEpochs.remove(id);
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {
@@ -1706,15 +1849,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     }
   }
 
-  private boolean tryAcquireSnapshotLease(ReconcileJob job, String jobId, long nowMs) {
-    String snapshotLeaseKey = snapshotLeaseKey(job);
-    if (snapshotLeaseKey.isBlank()) {
+  private boolean tryAcquireSnapshotOwnership(ReconcileJob job, String jobId) {
+    String snapshotOwnershipKey = snapshotOwnershipKey(job);
+    if (snapshotOwnershipKey.isBlank()) {
       return true;
     }
     while (true) {
-      String ownerJobId = activeJobIdBySnapshotLeaseKey.get(snapshotLeaseKey);
+      String ownerJobId = activeJobIdBySnapshotOwnershipKey.get(snapshotOwnershipKey);
       if (ownerJobId == null) {
-        if (activeJobIdBySnapshotLeaseKey.putIfAbsent(snapshotLeaseKey, jobId) == null) {
+        if (activeJobIdBySnapshotOwnershipKey.putIfAbsent(snapshotOwnershipKey, jobId) == null) {
           return true;
         }
         continue;
@@ -1722,29 +1865,26 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       if (ownerJobId.equals(jobId)) {
         return true;
       }
-      if (hasLiveSnapshotLease(ownerJobId, nowMs)) {
+      if (hasActiveSnapshotOwnership(ownerJobId)) {
         return false;
       }
-      activeJobIdBySnapshotLeaseKey.remove(snapshotLeaseKey, ownerJobId);
+      activeJobIdBySnapshotOwnershipKey.remove(snapshotOwnershipKey, ownerJobId);
     }
   }
 
-  private boolean hasLiveSnapshotLease(String jobId, long nowMs) {
+  private boolean hasActiveSnapshotOwnership(String jobId) {
     ReconcileJob job = jobs.get(jobId);
     if (job == null || job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT) {
       return false;
     }
-    if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
-      return false;
-    }
-    return leaseExpiresAtMs.getOrDefault(jobId, 0L) > nowMs;
+    return !isTerminalState(aggregateJobView(withPinnedExecutor(job)).state);
   }
 
-  private void releaseSnapshotLease(String jobId) {
+  private void releaseSnapshotOwnership(String jobId) {
     ReconcileJob job = jobs.get(jobId);
-    String snapshotLeaseKey = snapshotLeaseKey(job);
-    if (!snapshotLeaseKey.isBlank()) {
-      activeJobIdBySnapshotLeaseKey.remove(snapshotLeaseKey, jobId);
+    String snapshotOwnershipKey = snapshotOwnershipKey(job);
+    if (!snapshotOwnershipKey.isBlank()) {
+      activeJobIdBySnapshotOwnershipKey.remove(snapshotOwnershipKey, jobId);
     }
   }
 
@@ -1760,7 +1900,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return Math.min(maxBackoffMs, base);
   }
 
-  private static String snapshotLeaseKey(ReconcileJob job) {
+  private static String snapshotOwnershipKey(ReconcileJob job) {
     if (job == null
         || job.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
         || job.snapshotTask == null
@@ -1768,7 +1908,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         || job.snapshotTask.snapshotId() < 0L) {
       return "";
     }
-    return job.snapshotTask.tableId() + "|" + job.snapshotTask.snapshotId();
+    return job.accountId + "|" + job.snapshotTask.tableId() + "|" + job.snapshotTask.snapshotId();
   }
 
   private static ReconcileScope normalizeScopeForJobKind(
@@ -1892,8 +2032,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileSnapshotTask snapshotTask,
       ReconcileFileGroupTask fileGroupTask,
       ReconcileExecutionPolicy executionPolicy,
-      String parentJobId,
-      String pinnedExecutorId) {
+      String parentJobId) {
     String namespaces =
         scope.destinationNamespaceIds().stream().sorted().reduce((a, b) -> a + "," + b).orElse("*");
     String table = scope.destinationTableId() == null ? "*" : scope.destinationTableId();
@@ -1982,8 +2121,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             "policy.execution_class=" + policy.executionClass().name(),
             "policy.lane=" + policy.lane(),
             "policy.attributes=" + canonicalAttributes(policy.attributes()),
-            "parent_job_id=" + blankToEmpty(parentJobId),
-            "pinned_executor_id=" + blankToEmpty(pinnedExecutorId));
+            "parent_job_id=" + blankToEmpty(parentJobId));
     return hashValue(payload);
   }
 
@@ -2017,7 +2155,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + canonicalAttributes(policy.properties());
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
@@ -2117,6 +2257,17 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static String blankToEmpty(String value) {
     return value == null ? "" : value.trim();
   }
+
+  private record SnapshotFinalizeCompletion(
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount) {}
 
   private static boolean blank(String value) {
     return value == null || value.isBlank();

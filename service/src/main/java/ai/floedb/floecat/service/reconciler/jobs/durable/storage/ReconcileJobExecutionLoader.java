@@ -34,11 +34,55 @@ public class ReconcileJobExecutionLoader {
     return payloadStore.requireDefinition(state);
   }
 
-  public ReconcileSnapshotTask snapshotTask(StoredReconcileJob state) {
-    return payloadStore.snapshotTaskForExecution(state);
+  public ReconcileSnapshotTask compactSnapshotTask(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileSnapshotTask.empty();
+    }
+    return ReconcileSnapshotTask.of(
+        state.snapshotTaskTableId,
+        state.snapshotTaskSnapshotId,
+        state.snapshotTaskSourceNamespace,
+        state.snapshotTaskSourceTable,
+        java.util.List.of(),
+        state.snapshotTaskFileGroupPlanRecorded,
+        ReconcileSnapshotTask.CompletionMode.fromString(state.snapshotTaskCompletionMode),
+        state.snapshotPlanBlobUri == null ? "" : state.snapshotPlanBlobUri,
+        Math.max(0, state.snapshotTaskFileGroupCount),
+        (int) Math.max(0L, state.snapshotTaskSourceFileCount),
+        state.snapshotTaskDirectStatsBlobUri == null ? "" : state.snapshotTaskDirectStatsBlobUri,
+        (int) Math.max(0L, state.snapshotTaskDirectStatsRecordCount),
+        state.snapshotTaskSourceRevision,
+        state.snapshotTaskMetadataFingerprint,
+        state.snapshotTaskRequestedCoverage,
+        snapshotIndexPredecessor(state));
   }
 
-  public ReconcileFileGroupTask fileGroupTask(StoredReconcileJob state) {
-    return payloadStore.fileGroupTaskForExecution(state);
+  private static ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+          .IndexGenerationPredecessor
+      snapshotIndexPredecessor(StoredReconcileJob state) {
+    return state.snapshotTaskIndexPredecessorPresent
+        ? new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+            .IndexGenerationPredecessor(
+            state.snapshotTaskIndexPredecessorGenerationId,
+            state.snapshotTaskIndexPredecessorActivePointerVersion,
+            state.snapshotTaskIndexPredecessorCaptureManifestUri,
+            state.snapshotTaskIndexPredecessorCaptureManifestPointerVersion)
+        : null;
+  }
+
+  public ReconcileFileGroupTask compactFileGroupTask(StoredReconcileJob state) {
+    if (state == null) {
+      return ReconcileFileGroupTask.empty();
+    }
+    return ReconcileFileGroupTask.of(
+        state.fileGroupPlanId,
+        state.fileGroupGroupId,
+        state.fileGroupTableId,
+        state.fileGroupSnapshotId,
+        state.fileGroupFileCount,
+        "",
+        0,
+        java.util.List.of(),
+        java.util.List.of());
   }
 }

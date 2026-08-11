@@ -17,11 +17,14 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public interface PointerStore {
-  sealed interface CasOp permits CasUpsert, CasDelete, CasCheck, CasCheckAbsent {}
+  sealed interface CasOp
+      permits CasUpsert, UnconditionalUpsert, CasDelete, CasCheck, CasCheckAbsent {}
 
   record CasUpsert(String key, long expectedVersion, Pointer next) implements CasOp {
     public CasUpsert {
@@ -33,6 +36,28 @@ public interface PointerStore {
       }
       if (next == null) {
         throw new IllegalArgumentException("next pointer must be set");
+      }
+    }
+  }
+
+  /**
+   * Unconditional pointer replacement within an atomic batch.
+   *
+   * <p>The caller supplies the opaque version token written with the pointer. Consumers can later
+   * use that token in a conditional delete, which makes this suitable for coalescing work markers:
+   * concurrent producers never contend on a previously read version, while a consumer cannot delete
+   * a marker replaced after it was observed.
+   */
+  record UnconditionalUpsert(String key, Pointer next) implements CasOp {
+    public UnconditionalUpsert {
+      if (key == null || key.isBlank()) {
+        throw new IllegalArgumentException("key must be non-blank");
+      }
+      if (next == null) {
+        throw new IllegalArgumentException("next pointer must be set");
+      }
+      if (next.getVersion() <= 0L) {
+        throw new IllegalArgumentException("next pointer version must be > 0");
       }
     }
   }
@@ -68,6 +93,18 @@ public interface PointerStore {
   }
 
   Optional<Pointer> get(String key);
+
+  /**
+   * Reads multiple pointers. Backends should override with a native batch operation; the default
+   * preserves compatibility for decorators and specialized test stores.
+   */
+  default Map<String, Pointer> getBatch(List<String> keys) {
+    Map<String, Pointer> out = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      get(key).ifPresent(pointer -> out.put(key, pointer));
+    }
+    return Map.copyOf(out);
+  }
 
   boolean compareAndSet(String key, long expectedVersion, Pointer next);
 

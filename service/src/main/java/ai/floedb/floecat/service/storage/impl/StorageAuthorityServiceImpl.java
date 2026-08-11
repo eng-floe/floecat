@@ -268,7 +268,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   public Uni<DeleteStorageAuthorityResponse> deleteStorageAuthority(
       DeleteStorageAuthorityRequest request) {
     return mapFailures(
-        run(
+        runWithRetry(
             () -> {
               PrincipalContext principal = principalProvider.get();
               authz.require(principal, "connector.manage");

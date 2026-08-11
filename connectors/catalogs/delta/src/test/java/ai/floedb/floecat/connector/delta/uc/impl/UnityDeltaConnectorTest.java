@@ -216,6 +216,47 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
+  void describeViewUsesTypeJsonForComplexColumns() throws Exception {
+    // UC's type_text for an array column is the display string "array<string>", which no Delta
+    // schema parser accepts. type_json carries the real Delta StructField JSON and must win.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> {
+          String body =
+              """
+              {
+                "name":"tags_view",
+                "table_type":"VIEW",
+                "view_definition":"SELECT id, tags FROM t",
+                "columns":[
+                  {"name":"id","type_name":"INT","type_text":"int",
+                   "type_json":"{\\"name\\":\\"id\\",\\"type\\":\\"integer\\",\\"nullable\\":false,\\"metadata\\":{}}",
+                   "nullable":false},
+                  {"name":"tags","type_name":"ARRAY","type_text":"array<string>",
+                   "type_json":"{\\"name\\":\\"tags\\",\\"type\\":{\\"type\\":\\"array\\",\\"elementType\\":\\"string\\",\\"containsNull\\":true},\\"nullable\\":true,\\"metadata\\":{}}",
+                   "nullable":true}
+                ]
+              }
+              """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    Optional<FloecatConnector.ViewDescriptor> result =
+        connector.describeView("cat.schema", "tags_view");
+
+    assertThat(result).isPresent();
+    String schemaJson = result.get().schemaJson();
+    // The array column carries structured Delta type JSON, not the "array<string>" display string.
+    assertThat(schemaJson).contains("\"elementType\":\"string\"");
+    assertThat(schemaJson).doesNotContain("array<string>");
+    // The scalar column resolves from type_json too.
+    assertThat(schemaJson).contains("\"integer\"");
+  }
+
+  @Test
   void describeViewUsesTypeNameFallbackWhenTypeTextMissing() throws Exception {
     server.createContext(
         "/api/2.1/unity-catalog/tables/",

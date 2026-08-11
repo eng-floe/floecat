@@ -24,6 +24,8 @@ import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -265,6 +267,35 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   return GetSnapshotResponse.newBuilder().setSnapshot(snap).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetLatestFinalizedSnapshotResponse> getLatestFinalizedSnapshot(
+      GetLatestFinalizedSnapshotRequest request) {
+    var L = LogHelper.start(LOG, "GetLatestFinalizedSnapshot");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "table.read");
+
+                  var tableId = request.getTableId();
+                  ensureTableVisible(tableId, correlationId());
+
+                  Long excludedSnapshotId =
+                      request.hasExcludedSnapshotId() ? request.getExcludedSnapshotId() : null;
+                  var response = GetLatestFinalizedSnapshotResponse.newBuilder();
+                  snapshotRepo
+                      .getLatestFinalizedSnapshotForReuse(tableId, excludedSnapshotId)
+                      .ifPresent(response::setSnapshot);
+                  return response.build();
                 }),
             correlationId())
         .onFailure()
@@ -756,7 +787,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private static Snapshot normalizeSnapshotForComparison(Snapshot snapshot) {
-    return snapshot.toBuilder().clearIngestedAt().build();
+    return snapshot.toBuilder().clearIngestedAt().clearReuseManifestRef().build();
   }
 
   private static byte[] canonicalFingerprint(SnapshotSpec spec) {

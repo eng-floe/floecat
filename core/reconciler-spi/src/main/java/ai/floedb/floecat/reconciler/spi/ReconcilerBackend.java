@@ -86,6 +86,13 @@ public interface ReconcilerBackend {
 
   Optional<Snapshot> fetchSnapshot(ReconcileContext ctx, ResourceId tableId, long snapshotId);
 
+  /**
+   * Returns the newest finalized snapshot at or before the committed current snapshot that has
+   * reusable artifacts, excluding the snapshot currently being planned.
+   */
+  Optional<Snapshot> latestReconciledSnapshotForReuse(
+      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId);
+
   Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
@@ -168,18 +175,14 @@ public interface ReconcilerBackend {
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 
   /**
-   * Returns whether ready index artifacts exist for all requested file paths in the snapshot.
+   * Returns whether a finalized snapshot capture proves complete index coverage for the requested
+   * selectors.
    *
-   * <p>This is intentionally file-path scoped so reconciler planning can decide whether snapshot-
-   * wide page-index work is already complete. Implementations should return {@code false} when any
-   * file path is missing an index artifact or when completeness cannot be proven.
+   * <p>Implementations must use a snapshot-level proof rather than issuing one remote lookup per
+   * source file. Missing, partial, or unverifiable publication state must return {@code false}.
    */
-  boolean indexArtifactsCapturedForFilePaths(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> filePaths,
-      Set<String> selectors);
+  boolean indexCaptureComplete(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors);
 
   default void putIndexArtifacts(ReconcileContext ctx, List<StagedIndexArtifact> artifacts) {}
 

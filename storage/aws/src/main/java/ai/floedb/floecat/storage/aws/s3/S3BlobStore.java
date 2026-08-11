@@ -270,6 +270,30 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public BlobStore.Page listPrefixes(String prefix, int limit, String pageToken) {
+    final String p = normalize(prefix);
+    final int lim = Math.max(1, limit);
+    try {
+      ListObjectsV2Request.Builder builder =
+          ListObjectsV2Request.builder().bucket(bucket).prefix(p).delimiter("/").maxKeys(lim);
+      if (pageToken != null && !pageToken.isBlank()) {
+        builder.continuationToken(pageToken);
+      }
+      ListObjectsV2Response response = s3.call(c -> c.listObjectsV2(builder.build()));
+      List<String> prefixes =
+          response.commonPrefixes().stream().map(value -> value.prefix()).toList();
+      String next = response.isTruncated() ? response.nextContinuationToken() : "";
+      return new PageImpl(prefixes, next);
+    } catch (S3Exception e) {
+      throw mapAndWrap("LIST", p, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("LIST", p, e);
+    }
+  }
+
+  @Override
   public boolean delete(String key) {
     final String k = normalize(key);
     try {
@@ -365,9 +389,10 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
-  public void deletePrefix(String prefix) {
+  public int deletePrefix(String prefix) {
     final String p = normalize(prefix);
     String ct = null;
+    int deleted = 0;
 
     try {
       do {
@@ -382,12 +407,32 @@ public class S3BlobStore implements BlobStore {
         var resp = s3.call(c -> c.listObjectsV2(req));
 
         if (!resp.contents().isEmpty()) {
-          var objs = resp.contents();
+          var objs =
+              p.endsWith("/")
+                  ? resp.contents().stream().filter(object -> !p.equals(object.key())).toList()
+                  : resp.contents();
           for (int i = 0; i < objs.size(); i += 1000) {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
-            s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            var deleteResponse =
+                s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            if (deleteResponse.hasErrors()) {
+              String failures =
+                  deleteResponse.errors().stream()
+                      .limit(10)
+                      .map(error -> error.key() + ":" + error.code())
+                      .collect(java.util.stream.Collectors.joining(","));
+              throw new StorageAbortRetryableException(
+                  msg(
+                      "DELETE_PREFIX",
+                      p,
+                      "S3 rejected "
+                          + deleteResponse.errors().size()
+                          + " object delete(s): "
+                          + failures));
+            }
+            deleted += deleteResponse.deleted().size();
           }
         }
 
@@ -398,9 +443,14 @@ public class S3BlobStore implements BlobStore {
       if (p.endsWith("/")) {
         try {
           s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
-        } catch (Throwable ignore) {
+        } catch (RuntimeException e) {
+          // All listed objects have already been processed. A directory marker is only
+          // housekeeping, so its failure must not turn completed object deletion into an
+          // ambiguous failed operation.
+          LOG.debugf(e, "best-effort directory marker delete failed key=%s", p);
         }
       }
+      return deleted;
 
     } catch (S3Exception e) {
       throw mapAndWrap("DELETE_PREFIX", p, e);
@@ -450,7 +500,7 @@ public class S3BlobStore implements BlobStore {
       return new StoragePreconditionFailedException(msg(op, key, detail));
     }
 
-    if (sc >= 500) {
+    if (sc == 408 || sc == 429 || sc >= 500) {
       return new StorageAbortRetryableException(msg(op, key, detail));
     }
 

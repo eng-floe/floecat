@@ -55,6 +55,50 @@ class ImmutableBlobCacheTest {
   }
 
   @Test
+  void pointerProjectionsOfOneBlobAreCachedSeparately() {
+    var cache = cache();
+    AtomicInteger loads = new AtomicInteger();
+
+    assertEquals(
+        "one",
+        cache
+            .getProjection(
+                "s3://t/shared.pb",
+                "/pointers/one",
+                uri -> {
+                  loads.incrementAndGet();
+                  return Optional.of(StringValue.of("one"));
+                })
+            .orElseThrow()
+            .getValue());
+    assertEquals(
+        "two",
+        cache
+            .getProjection(
+                "s3://t/shared.pb",
+                "/pointers/two",
+                uri -> {
+                  loads.incrementAndGet();
+                  return Optional.of(StringValue.of("two"));
+                })
+            .orElseThrow()
+            .getValue());
+    assertEquals(
+        "one",
+        cache
+            .<StringValue>getProjection(
+                "s3://t/shared.pb",
+                "/pointers/one",
+                uri -> {
+                  throw new AssertionError("projection should have been cached");
+                })
+            .orElseThrow()
+            .getValue());
+
+    assertEquals(2, loads.get());
+  }
+
+  @Test
   void absenceIsNeverCached() {
     var cache = cache();
     AtomicInteger loads = new AtomicInteger();
@@ -167,6 +211,24 @@ class ImmutableBlobCacheTest {
     assertEquals(
         "two",
         cache.<StringValue>getAllPresent(List.of("s3://t/2.pb")).get("s3://t/2.pb").getValue());
+  }
+
+  @Test
+  void batchProjectionProbeKeepsSharedBlobPointersDistinct() {
+    var cache = cache();
+    var first = new ImmutableBlobCache.ProjectionKey("s3://t/shared.pb", "pointer-1");
+    var second = new ImmutableBlobCache.ProjectionKey("s3://t/shared.pb", "pointer-2");
+    cache.putProjection(first.uri(), first.projection(), StringValue.of("one"));
+    cache.putProjection(second.uri(), second.projection(), StringValue.of("two"));
+
+    Map<ImmutableBlobCache.ProjectionKey, StringValue> present =
+        cache.getAllProjectionsPresent(List.of(first, second));
+
+    assertEquals("one", present.get(first).getValue());
+    assertEquals("two", present.get(second).getValue());
+    assertTrue(
+        cache.<StringValue>getAllPresent(List.of("s3://t/shared.pb")).isEmpty(),
+        "pointer projections must not leak into the bare-URI cache");
   }
 
   @Test

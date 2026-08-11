@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -122,12 +123,16 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             0,
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
-      var captured =
-          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
+      List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> publishedFileStats = new ArrayList<>();
+      var captured = runner.execute(payload, context.shouldStop(), publishedFileStats::add);
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
-              successResultId, captured.statsRecords(), captured.stagedIndexArtifacts());
+              successResultId,
+              captured.statsRecords(),
+              publishedFileStats,
+              captured.stagedIndexArtifacts(),
+              captured.realizedStatsSelectors());
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
         throw new IllegalStateException(
             "page-index capture produced no staged artifacts for file group " + payload.groupId());
@@ -150,7 +155,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
                   + String.join(", ", missingArtifactFiles));
         }
       }
-      long statsProcessed = captured.statsRecords().size();
+      long statsProcessed = publishedFileStats.size();
       return submitTerminalSuccess(
           context,
           lease,
@@ -159,6 +164,8 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
           result,
           statsProcessed,
           "Executed file group " + payload.groupId());
+    } catch (CancellationException e) {
+      return stopRequestedResult(payload);
     } catch (ReconcileFailureException e) {
       throw e;
     } catch (RuntimeException e) {

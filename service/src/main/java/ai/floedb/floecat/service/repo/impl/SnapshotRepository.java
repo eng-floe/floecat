@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
@@ -212,6 +214,39 @@ public class SnapshotRepository {
   }
 
   /**
+   * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
+   * the exact snapshot revision written so callers do not need a racy follow-up read.
+   */
+  public Snapshot recordReuseManifest(
+      ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
+    if (reuseManifestRef == null
+        || reuseManifestRef.getUri().isBlank()
+        || reuseManifestRef.getPayloadBytes() <= 0L
+        || reuseManifestRef.getPayloadSha256().size() != 32
+        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
+      throw new IllegalArgumentException("complete reuse manifest metadata is required");
+    }
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      MutationMeta meta = repo.pointerMetaForSafe(key);
+      Snapshot current = repo.getByKey(key).orElse(null);
+      if (current == null) {
+        throw new BaseResourceRepository.NotFoundException(
+            "snapshot disappeared before reuse manifest publication: " + snapshotId);
+      }
+      Snapshot next = current.toBuilder().setReuseManifestRef(reuseManifestRef).build();
+      if (next.equals(current) || repo.update(next, meta.getPointerVersion())) {
+        return next;
+      }
+      if (attempt < 7) {
+        backoffCurrentPointerAdvance(attempt);
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
+  }
+
+  /**
    * Loads a snapshot directly from its immutable blob URI, bypassing the (table, snapshot id)
    * pointer. Used to read the exact snapshot blob a query pinned: an in-place UpdateSnapshot on the
    * same id republishes the pointer to a new blob, so resolving by id could drift the scan to that
@@ -353,6 +388,81 @@ public class SnapshotRepository {
     return rootCurrentSnapshot(tableId, false);
   }
 
+  /** Returns the newest root-published reusable snapshot at or before committed current. */
+  public Optional<Snapshot> getLatestFinalizedSnapshotForReuse(
+      ResourceId tableId, Long excludedSnapshotId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()) {
+      return Optional.empty();
+    }
+    if (lookup.root() == null) {
+      throw new StorageAbortRetryableException(
+          "reusable snapshot root is temporarily unavailable: " + tableId.getId());
+    }
+    if (!lookup.root().hasCurrentSnapshotId()) {
+      if (lookup.root().getReusableSnapshotCandidatesCount() != 0) {
+        throw reusableCandidateCorruption(
+            "root publishes reusable snapshots without a committed current snapshot");
+      }
+      return Optional.empty();
+    }
+    if (!lookup.root().hasSnapshotManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root with a committed current snapshot has no snapshot manifest");
+    }
+    for (SnapshotManifestEntry entry : lookup.root().getReusableSnapshotCandidatesList()) {
+      if (excludedSnapshotId != null && entry.getSnapshotId() == excludedSnapshotId) {
+        continue;
+      }
+      return Optional.of(loadReusableCandidate(tableId, entry));
+    }
+    return Optional.empty();
+  }
+
+  private Snapshot loadReusableCandidate(ResourceId tableId, SnapshotManifestEntry entry) {
+    if (!entry.hasSnapshotRef()
+        || entry.getSnapshotRef().getUri().isBlank()
+        || !entry.hasReuseStatsGenerationRef()
+        || entry.getReuseStatsGenerationRef().getUri().isBlank()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate is structurally incomplete");
+    }
+    Snapshot candidate =
+        getByBlobUriLive(entry.getSnapshotRef().getUri())
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "root-published reusable snapshot is temporarily unavailable: "
+                            + entry.getSnapshotRef().getUri()));
+    if (!candidate.getTableId().equals(tableId)
+        || candidate.getSnapshotId() != entry.getSnapshotId()
+        || !candidate.hasReuseManifestRef()) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot candidate does not match its snapshot");
+    }
+    SnapshotReuseManifestRef reuse = candidate.getReuseManifestRef();
+    if (reuse.getUri().isBlank()
+        || reuse.getPayloadBytes() <= 0L
+        || reuse.getPayloadSha256().size() != 32
+        || reuse.getStatsGenerationManifestUri().isBlank()
+        || !entry
+            .getReuseStatsGenerationRef()
+            .getUri()
+            .equals(reuse.getStatsGenerationManifestUri())) {
+      throw reusableCandidateCorruption(
+          "root-published reusable snapshot manifest reference is invalid");
+    }
+    return candidate;
+  }
+
+  private static BaseResourceRepository.CorruptionException reusableCandidateCorruption(
+      String message) {
+    return new BaseResourceRepository.CorruptionException(message);
+  }
+
   private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {
     if (tableId == null) {
       return Optional.empty();
@@ -372,7 +482,7 @@ public class SnapshotRepository {
       return snapshotFromRootEntry(
           tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady);
     }
-    return latestRegisteredSnapshot(tableId);
+    return Optional.empty();
   }
 
   /**
@@ -413,11 +523,8 @@ public class SnapshotRepository {
   }
 
   /**
-   * The table's root, distinguishing "no root pointer" (a legacy, un-migrated table — the legacy
-   * fallback is legitimate) from "root pointer present but blob unreadable" (a superseded root
-   * swept between the two reads, or corruption). The latter retries once — the pointer has
-   * necessarily moved on a sweep race — and then resolves to a present-but-unreadable lookup so
-   * callers stay GATED instead of walking to the legacy pointer.
+   * Loads the table's root. A missing root is unsupported; an unreadable published root retries
+   * once because its pointer may have moved after a supersede-and-sweep race.
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -496,7 +603,7 @@ public class SnapshotRepository {
     }
     RootLookup lookup = lookupRoot(tableId);
     if (!lookup.pointerExists()) {
-      return currentPointerRepo.get(tableId);
+      return Optional.empty();
     }
     if (lookup.root() == null || !lookup.root().hasCurrentSnapshotId()) {
       return Optional.empty(); // gated or unreadable root: never the ungated legacy pointer
@@ -582,6 +689,27 @@ public class SnapshotRepository {
     String boundary =
         Keys.snapshotPointerByTime(tableId.getAccountId(), tableId.getId(), Long.MAX_VALUE, asOfMs);
     return firstByTimeAtOrAfter(tableId, pointerStore.pageTokenAfterKey(boundary));
+  }
+
+  /** Resolves AS_OF through the immutable table root and applies the query finalize gate. */
+  public Optional<Snapshot> getQueryableAsOf(ResourceId tableId, Timestamp asOf) {
+    long asOfMs = Timestamps.toMillis(asOf);
+    if (asOfMs < 0) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()) {
+      return Optional.empty();
+    }
+    if (lookup.root() == null) {
+      return Optional.empty();
+    }
+    var head =
+        lookup.root().hasSnapshotManifestRef() ? lookup.root().getSnapshotManifestRef() : null;
+    return SnapshotManifests.entryAsOf(
+            roots, head, asOfMs, StatsVisibilityGate.gateOnFinalize(statsStore))
+        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank())
+        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
   }
 
   public List<Snapshot> list(

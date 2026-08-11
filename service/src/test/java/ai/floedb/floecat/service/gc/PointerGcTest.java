@@ -94,9 +94,14 @@ class PointerGcTest {
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
 
     long snapshotId = 7L;
+    String generationId = "gen-1";
     String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
-    String statsPtr = Keys.snapshotTargetStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId, targetId);
-    String statsBlob = Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, targetId, "sha-stats");
+    String statsPtr =
+        Keys.snapshotTargetStatsGenerationPointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId);
+    String statsBlob =
+        Keys.snapshotTargetStatsBlobUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-stats");
     putPointer(statsPtr, statsBlob);
 
     gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);

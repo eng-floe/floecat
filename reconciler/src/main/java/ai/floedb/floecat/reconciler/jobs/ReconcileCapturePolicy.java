@@ -89,6 +89,12 @@ public final class ReconcileCapturePolicy {
     this.outputs = outputs == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(outputs));
     this.defaultColumnScope =
         defaultColumnScope == null ? DefaultColumnScope.FIRST_N : defaultColumnScope;
+    if (this.outputs.contains(Output.PARQUET_PAGE_INDEX)
+        && this.defaultColumnScope == DefaultColumnScope.EXPLICIT_ONLY
+        && this.columns.stream().noneMatch(Column::captureIndex)) {
+      throw new IllegalArgumentException(
+          "PARQUET_PAGE_INDEX with EXPLICIT_ONLY requires at least one index selector");
+    }
     this.maxDefaultColumns =
         maxDefaultColumns == null || maxDefaultColumns <= 0
             ? DEFAULT_MAX_COLUMNS
@@ -153,6 +159,15 @@ public final class ReconcileCapturePolicy {
   @JsonIgnore
   public boolean isEmpty() {
     return columns.isEmpty() && outputs.isEmpty();
+  }
+
+  public boolean semanticallyEquals(ReconcileCapturePolicy other) {
+    return other != null
+        && columns.equals(other.columns)
+        && outputs.equals(other.outputs)
+        && defaultColumnScope == other.defaultColumnScope
+        && maxDefaultColumns == other.maxDefaultColumns
+        && properties.equals(other.properties);
   }
 
   public boolean requestsStats() {

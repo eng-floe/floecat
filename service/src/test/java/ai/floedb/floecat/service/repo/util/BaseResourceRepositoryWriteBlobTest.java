@@ -19,12 +19,16 @@ package ai.floedb.floecat.service.repo.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.StringValue;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -57,6 +61,29 @@ class BaseResourceRepositoryWriteBlobTest {
         "application/x-protobuf");
   }
 
+  private static final class ProjectingRepository extends BaseResourceRepository<StringValue> {
+    private ProjectingRepository(
+        InMemoryPointerStore pointers, InMemoryBlobStore blobs, ImmutableBlobCache blobCache) {
+      super(
+          pointers,
+          blobs,
+          StringValue::parseFrom,
+          StringValue::toByteArray,
+          "application/x-protobuf",
+          blobCache);
+    }
+
+    @Override
+    protected boolean blobsImmutable() {
+      return true;
+    }
+
+    @Override
+    protected StringValue parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes) {
+      return StringValue.of(pointerKey);
+    }
+  }
+
   @Test
   void putBlobRePutsWhenAnIdenticalBlobAlreadyExists() {
     var blobs = new CountingBlobStore();
@@ -81,5 +108,22 @@ class BaseResourceRepositoryWriteBlobTest {
     repo.putBlobStrictBytes(uri, bytes);
 
     assertEquals(2, blobs.puts.get(uri), "an identical strict re-write must still PUT");
+  }
+
+  @Test
+  void sharedBundleProjectionsAreCachedByPointerIdentity() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5));
+    var repository = new ProjectingRepository(pointers, blobs, cache);
+    String uri = "/stats/reuse-bundles/shared.pb";
+    blobs.put(uri, StringValue.of("bundle").toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(
+        "pointer-one", 0L, PointerReferences.blobPointer("pointer-one", uri, 1L));
+    pointers.compareAndSet(
+        "pointer-two", 0L, PointerReferences.blobPointer("pointer-two", uri, 1L));
+
+    assertEquals("pointer-one", repository.get("pointer-one").orElseThrow().getValue());
+    assertEquals("pointer-two", repository.get("pointer-two").orElseThrow().getValue());
   }
 }

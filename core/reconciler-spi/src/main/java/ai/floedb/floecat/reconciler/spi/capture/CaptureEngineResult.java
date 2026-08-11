@@ -22,30 +22,50 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
 
 /**
- * Captured outputs for one file-group execution.
+ * Terminal captured outputs for one file-group execution.
  *
- * <p>Results are persistable file-group execution outputs. Engines may obtain those outputs however
- * they want, while callers remain responsible for any snapshot-level aggregate derivation.
+ * <p>File-scoped outputs are delivered progressively through {@link CaptureFileResultConsumer} and
+ * must not be retained here. Stats records in this result are compact file-group aggregate
+ * partials.
  */
 public record CaptureEngineResult(
     List<TargetStatsRecord> statsRecords,
     List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
-    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+    List<String> realizedStatsSelectors) {
   public CaptureEngineResult {
     statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
     pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
+    realizedStatsSelectors =
+        realizedStatsSelectors == null
+            ? List.of()
+            : realizedStatsSelectors.stream()
+                .filter(selector -> selector != null && !selector.isBlank())
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
   }
 
   public static CaptureEngineResult of(
       List<TargetStatsRecord> statsRecords,
       List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    return new CaptureEngineResult(statsRecords, pageIndexEntries, stagedIndexArtifacts);
+    return new CaptureEngineResult(statsRecords, pageIndexEntries, stagedIndexArtifacts, List.of());
+  }
+
+  public static CaptureEngineResult of(
+      List<TargetStatsRecord> statsRecords,
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+      List<String> realizedStatsSelectors) {
+    return new CaptureEngineResult(
+        statsRecords, pageIndexEntries, stagedIndexArtifacts, realizedStatsSelectors);
   }
 
   public static CaptureEngineResult empty() {
-    return new CaptureEngineResult(List.of(), List.of(), List.of());
+    return new CaptureEngineResult(List.of(), List.of(), List.of(), List.of());
   }
 }

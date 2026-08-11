@@ -78,6 +78,7 @@ class ReconcileJobProjectorTest {
     stored.snapshotTaskTableId = "table-1";
     stored.snapshotTaskSnapshotId = 42L;
     stored.snapshotTaskFileGroupPlanRecorded = true;
+    stored.snapshotTaskFileGroupCount = 3;
     stored.snapshotPlanBlobUri =
         "/accounts/acct-1/reconcile/jobs/job-1/snapshot-plan/"
             + "snapshot-plan-47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU.json";
@@ -111,8 +112,6 @@ class ReconcileJobProjectorTest {
     stored.jobKind = ReconcileJobKind.EXEC_FILE_GROUP.name();
     stored.definition = StoredJobDefinition.of(null, null, null);
     stored.fileGroupFileCount = 2;
-    stored.fileGroupResultBlobUri =
-        "/accounts/acct-1/reconcile/jobs/job-2/result-file-group-result-missing.json";
     stored.indexesProcessed = 1L;
     stored.plannedFileGroups = 1L;
     stored.plannedFiles = 2L;
@@ -156,6 +155,7 @@ class ReconcileJobProjectorTest {
     stored.snapshotTaskSourceNamespace = "db";
     stored.snapshotTaskSourceTable = "orders";
     stored.snapshotTaskFileGroupPlanRecorded = true;
+    stored.snapshotTaskFileGroupCount = 3;
     stored.snapshotPlanBlobUri =
         "/accounts/acct-1/reconcile/jobs/job-3/snapshot-plan/"
             + "snapshot-plan-47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU.json";
@@ -194,8 +194,6 @@ class ReconcileJobProjectorTest {
     stored.fileGroupTableId = "table-1";
     stored.fileGroupSnapshotId = 42L;
     stored.fileGroupFileCount = 2;
-    stored.fileGroupResultBlobUri =
-        "/accounts/acct-1/reconcile/jobs/job-4/result-file-group-result-missing.json";
     stored.plannedFileGroups = 1L;
     stored.plannedFiles = 2L;
     stored.completedFiles = 1L;

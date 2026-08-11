@@ -36,11 +36,15 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -54,7 +58,16 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -74,6 +87,81 @@ class StatsProviderFactoryTest {
           .setId("users")
           .setKind(ResourceKind.RK_TABLE)
           .build();
+
+  @Test
+  void statsWarmLimiterIsSharedAcrossQueryProviders() throws Exception {
+    int processLimit = 16;
+    int queryCount = processLimit + 1;
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    CountDownLatch callersReady = new CountDownLatch(queryCount);
+    CountDownLatch start = new CountDownLatch(1);
+    CountDownLatch firstWaveEntered = new CountDownLatch(processLimit);
+    CountDownLatch extraCallEntered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicInteger active = new AtomicInteger();
+
+    when(tableRepository.getById(TABLE))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenAnswer(
+            ignored -> {
+              int now = active.incrementAndGet();
+              if (now <= processLimit) {
+                firstWaveEntered.countDown();
+              } else {
+                extraCallEntered.countDown();
+              }
+              try {
+                release.await();
+              } finally {
+                active.decrementAndGet();
+              }
+              return StatsResolutionResult.skipped("test");
+            });
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            orchestrator,
+            tableRepository,
+            store,
+            null,
+            defaultSyncConfig(),
+            new StatsWarmLimiter(processLimit));
+    var providers = new ArrayList<ai.floedb.floecat.scanner.spi.StatsProvider>(queryCount);
+    for (int i = 0; i < queryCount; i++) {
+      QueryContext query = queryContextWithPin("query-admission-" + i, 10L);
+      store.seed(query);
+      providers.add(factory.forQuery(query, "corr-" + i));
+    }
+
+    List<Future<?>> calls = new ArrayList<>(queryCount);
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      for (var provider : providers) {
+        calls.add(
+            executor.submit(
+                () -> {
+                  callersReady.countDown();
+                  assertTrue(start.await(1, TimeUnit.SECONDS));
+                  provider.tableStatsBatch(List.of(TABLE), () -> false);
+                  return null;
+                }));
+      }
+      assertTrue(callersReady.await(1, TimeUnit.SECONDS));
+      start.countDown();
+      assertTrue(firstWaveEntered.await(1, TimeUnit.SECONDS));
+      try {
+        assertTrue(
+            !extraCallEntered.await(250, TimeUnit.MILLISECONDS),
+            "a seventeenth query bypassed the shared stats-warm ceiling");
+      } finally {
+        release.countDown();
+      }
+      for (Future<?> call : calls) {
+        call.get(1, TimeUnit.SECONDS);
+      }
+    }
+  }
 
   @Test
   void tableStatsAreOptionalWhenMissing() {
@@ -290,7 +378,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void tableLookupPassesResolvedConnectorTypeToOrchestrator() {
+  void tableLookupUsesQueryCaptureDisabledDefaults() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -326,8 +414,68 @@ class StatsProviderFactoryTest {
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
     Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
-    assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
-    assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
+    assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
+    assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
+  }
+
+  @Test
+  void tableStatsBatchReturnsWhenCancelledStatsWarmIgnoresInterrupts() throws Exception {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    QueryContext ctx = queryContextWithPin(500L);
+    store.seed(ctx);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    CountDownLatch allowCompletion = new CountDownLatch(1);
+    CountDownLatch completed = new CountDownLatch(1);
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenAnswer(
+            ignored -> {
+              started.countDown();
+              try {
+                while (true) {
+                  try {
+                    allowCompletion.await();
+                    break;
+                  } catch (InterruptedException e) {
+                    // Deliberately ignore interruption to model a non-cooperative remote call.
+                    interrupted.countDown();
+                  }
+                }
+              } finally {
+                completed.countDown();
+              }
+              return StatsResolutionResult.skipped("cancelled");
+            });
+    AtomicBoolean cancelled = new AtomicBoolean();
+    var provider = factory.forQuery(ctx, "corr");
+
+    CompletableFuture<Throwable> batch =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                provider.tableStatsBatch(java.util.List.of(TABLE), cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    try {
+      assertTrue(started.await(1, TimeUnit.SECONDS));
+      cancelled.set(true);
+
+      assertTrue(
+          batch.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+      assertTrue(interrupted.await(1, TimeUnit.SECONDS));
+    } finally {
+      allowCompletion.countDown();
+    }
+    assertTrue(completed.await(1, TimeUnit.SECONDS));
   }
 
   @Test
@@ -445,9 +593,9 @@ class StatsProviderFactoryTest {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
-    SnapshotRepository snapshots =
-        new SnapshotRepository(
-            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long snapshotId = 777L;
@@ -461,6 +609,7 @@ class StatsProviderFactoryTest {
             .build());
     snapshots.maybeAdvanceCurrentSnapshotPointer(
         TABLE, snapshots.getById(TABLE, snapshotId).orElseThrow());
+    publishSnapshotToRoot(pointers, blobs, snapshotTableRepository, snapshots, TABLE, snapshotId);
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,
@@ -485,9 +634,9 @@ class StatsProviderFactoryTest {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository snapshotTableRepository = Mockito.mock(TableRepository.class);
-    SnapshotRepository snapshots =
-        new SnapshotRepository(
-            new InMemoryPointerStore(), new InMemoryBlobStore(), snapshotTableRepository);
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, snapshotTableRepository);
     StatsProviderFactory factory = factory(repository, store, snapshots);
 
     long olderSnapshotId = 700L;
@@ -508,6 +657,8 @@ class StatsProviderFactoryTest {
             .build());
     snapshots.maybeAdvanceCurrentSnapshotPointer(
         TABLE, snapshots.getById(TABLE, latestSnapshotId).orElseThrow());
+    publishSnapshotToRoot(
+        pointers, blobs, snapshotTableRepository, snapshots, TABLE, latestSnapshotId);
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,
@@ -530,6 +681,19 @@ class StatsProviderFactoryTest {
     assertEquals(20L, view.rowCountValue().orElseThrow());
     assertEquals(200L, view.totalSizeBytesValue().orElseThrow());
     assertEquals(1, repository.tableStatsCalls());
+  }
+
+  private static void publishSnapshotToRoot(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      ResourceId tableId,
+      long snapshotId) {
+    TableRootRepository roots = new TableRootRepository(pointers, blobs);
+    TableRootCommitter committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
+    new TableRootWriter(roots, committer, tables, snapshots, null, null)
+        .commitSnapshotEntry(tableId, snapshotId);
   }
 
   private static QueryContext queryContextWithPin(long snapshotId) {

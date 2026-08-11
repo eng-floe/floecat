@@ -35,13 +35,13 @@ import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -55,6 +55,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 
 public final class UserObjectBundleTestSupport {
@@ -69,14 +70,18 @@ public final class UserObjectBundleTestSupport {
             .build());
   }
 
-  public static final class FakeCatalogOverlay implements CatalogOverlay {
+  public static class FakeCatalogOverlay implements CatalogOverlay {
     private final Map<String, GraphNode> nodes = new HashMap<>();
     private final Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> schemas =
         new HashMap<>();
     private final Map<String, NameRef> names = new HashMap<>();
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
+    private final Set<String> schemaFailures = new HashSet<>();
+    private final Set<String> nullSchemas = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
+    private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
+    private final Map<ResourceId, Integer> tableSchemaCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -84,7 +89,23 @@ public final class UserObjectBundleTestSupport {
       names.clear();
       catalogs.clear();
       hidden.clear();
+      schemaFailures.clear();
+      nullSchemas.clear();
       resolveCalls.clear();
+      resolveNameCalls.clear();
+      tableSchemaCalls.clear();
+    }
+
+    /**
+     * Make {@link #tableSchema} throw for this relation, to exercise per-relation build failures.
+     */
+    public void failSchemaFor(ResourceId id) {
+      schemaFailures.add(id.getId());
+    }
+
+    /** Make {@link #tableSchema(ResourceId)} return null for this relation. */
+    public void returnNullSchemaFor(ResourceId id) {
+      nullSchemas.add(id.getId());
     }
 
     public void registerTable(
@@ -124,6 +145,11 @@ public final class UserObjectBundleTestSupport {
               Optional.empty(),
               Map.of());
       catalogs.put(id.getId(), node);
+      nodes.put(id.getId(), node);
+    }
+
+    public void registerNode(GraphNode node) {
+      nodes.put(node.id().getId(), node);
     }
 
     public void hideNode(ResourceId id) {
@@ -197,10 +223,27 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+      resolveNameCalls.merge(ref, 1, Integer::sum);
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
           .findFirst();
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      return resolveName(correlationId, ref);
+    }
+
+    /** How many times {@link #resolveName} ran for the exact ref (batch loop included). */
+    public int resolveNameCount(NameRef ref) {
+      return resolveNameCalls.getOrDefault(ref, 0);
+    }
+
+    /** How many times {@link #tableSchema(ResourceId)} ran for this relation. */
+    public int tableSchemaCount(ResourceId id) {
+      return tableSchemaCalls.getOrDefault(id, 0);
     }
 
     @Override
@@ -309,6 +352,13 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(ResourceId tableId) {
+      tableSchemaCalls.merge(tableId, 1, Integer::sum);
+      if (schemaFailures.contains(tableId.getId())) {
+        throw new RuntimeException("schema unavailable for " + tableId.getId());
+      }
+      if (nullSchemas.contains(tableId.getId())) {
+        return null;
+      }
       return schemas.getOrDefault(tableId.getId(), List.of());
     }
   }
@@ -376,17 +426,24 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public ResolutionResult resolveInputs(
+    protected ResolutionResult resolveInputsAttempt(
         String queryId,
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, TablePin> currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
+        QueryInputResolver.ResolutionAttempt attempt) {
+      return resolveInputs(inputs, attempt.cancelled());
+    }
+
+    private ResolutionResult resolveInputs(List<QueryInput> inputs, BooleanSupplier cancelled) {
+
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       for (QueryInput input : inputs) {
+        if (cancelled.getAsBoolean()) {
+          throw new java.util.concurrent.CancellationException("input resolution cancelled");
+        }
         calls.add(List.of(input));
         switch (input.getTargetCase()) {
           case TABLE_ID -> {
@@ -408,6 +465,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, QueryContext> contexts = new HashMap<>();
     private final List<QueryContext> updates = new ArrayList<>();
     private final Map<String, ScanSession> scanSessions = new HashMap<>();
+    private final Set<String> resolvingPinBlobUris = ConcurrentHashMap.newKeySet();
 
     public void seed(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
@@ -415,6 +473,10 @@ public final class UserObjectBundleTestSupport {
 
     public int updateCount() {
       return updates.size();
+    }
+
+    public Set<String> resolvingPinBlobUris() {
+      return Set.copyOf(resolvingPinBlobUris);
     }
 
     @Override
@@ -463,13 +525,13 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public void registerResolvingPinBlobs(
-        String correlationId, java.util.Collection<String> blobUris) {
-      // no-op: this fake does not model GC roots
+        String correlationId, ResourceId tableId, java.util.Collection<String> blobUris) {
+      resolvingPinBlobUris.addAll(blobUris);
     }
 
     @Override
     public void releaseResolvingPinBlobs(String queryId, java.util.Collection<String> blobUris) {
-      // no-op: this fake does not model GC roots
+      resolvingPinBlobUris.removeAll(blobUris);
     }
 
     @Override

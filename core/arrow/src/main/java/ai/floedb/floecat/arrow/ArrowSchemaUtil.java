@@ -20,6 +20,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -54,11 +55,15 @@ public final class ArrowSchemaUtil {
   }
 
   private static FieldType fieldType(SchemaColumn column) {
-    ArrowType arrowType = arrowType(column.getLogicalType());
+    if (!column.hasType()) {
+      throw new IllegalArgumentException("Schema column '" + column.getName() + "' has no type");
+    }
+    ArrowType arrowType = arrowType(LogicalTypeProtoAdapter.columnType(column));
     return new FieldType(column.getNullable(), arrowType, null);
   }
 
-  private static ArrowType arrowType(String logicalType) {
+  /** Converts a canonical type string to its Arrow type (for callers without a SchemaColumn). */
+  public static ArrowType arrowType(String logicalType) {
     LogicalType parsed = LogicalTypeFormat.parse(requireNonBlank(logicalType));
     return arrowType(parsed);
   }

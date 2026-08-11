@@ -16,10 +16,13 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -35,6 +38,10 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
@@ -47,6 +54,7 @@ import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -81,6 +89,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
@@ -95,6 +104,144 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
+  @Test
+  void latestReconciledSnapshotForReuseReadsLatestFinalizedSnapshotDirectly() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    SnapshotReuseManifestRef reuseManifest =
+        SnapshotReuseManifestRef.newBuilder().setUri("/reuse.pb").build();
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenReturn(
+            GetLatestFinalizedSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(7L)
+                        .setReuseManifestRef(reuseManifest))
+                .build());
+
+    Optional<Snapshot> selected =
+        backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L);
+
+    assertThat(selected).map(Snapshot::getSnapshotId).contains(7L);
+    ArgumentCaptor<GetLatestFinalizedSnapshotRequest> request =
+        ArgumentCaptor.forClass(GetLatestFinalizedSnapshotRequest.class);
+    verify(backend.snapshot).getLatestFinalizedSnapshot(request.capture());
+    assertThat(request.getValue().getTableId()).isEqualTo(tableId);
+    assertThat(request.getValue().getExcludedSnapshotId()).isEqualTo(55L);
+    verify(backend.snapshot, never()).getSnapshot(any());
+    verify(backend.snapshot, never()).listSnapshots(any());
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseReturnsEmptyBeforeTheFirstFinalization() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenReturn(GetLatestFinalizedSnapshotResponse.getDefaultInstance());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThat(backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isEmpty();
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseClassifiesStructuralFailureAsTerminal() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.getLatestFinalizedSnapshot(any()))
+        .thenThrow(Status.INTERNAL.withDescription("corrupt reuse candidate").asRuntimeException());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    ReconcileFailureException failure =
+        assertThrows(
+            ReconcileFailureException.class,
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L));
+
+    assertThat(failure.retryDisposition())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL);
+    assertThat(failure.retryClass()).isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.NONE);
+  }
+
+  @Test
+  void latestReconciledSnapshotForReuseLeavesTransientFailureRetryable() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    StatusRuntimeException aborted =
+        Status.ABORTED
+            .withDescription("reuse candidate temporarily unavailable")
+            .asRuntimeException();
+    when(backend.snapshot.getLatestFinalizedSnapshot(any())).thenThrow(aborted);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+
+    assertThatThrownBy(
+            () -> backend.latestReconciledSnapshotForReuse(reconcileContext(), tableId, 55L))
+        .isSameAs(aborted);
+  }
+
+  @Test
+  void indexCompletenessUsesOneSnapshotLevelRpc() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.index =
+        mock(
+            ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc.TableIndexServiceBlockingStub
+                .class);
+    when(backend.index.withInterceptors(any())).thenReturn(backend.index);
+    when(backend.index.getIndexCaptureStatus(any()))
+        .thenReturn(GetIndexCaptureStatusResponse.newBuilder().setComplete(true).build());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+
+    assertThat(
+            backend.indexCaptureComplete(reconcileContext(), tableId, 44L, Set.of("customer_id")))
+        .isTrue();
+
+    ArgumentCaptor<GetIndexCaptureStatusRequest> request =
+        ArgumentCaptor.forClass(GetIndexCaptureStatusRequest.class);
+    verify(backend.index).getIndexCaptureStatus(request.capture());
+    assertThat(request.getValue().getSnapshot().getSnapshotId()).isEqualTo(44L);
+    assertThat(request.getValue().getSelectorsList()).containsExactly("customer_id");
+  }
+
   @Test
   void ensureTablePersistsStorageLocationFromDescriptorWhenMissingFromProperties() {
     GrpcReconcilerBackend backend =
@@ -710,7 +857,10 @@ class GrpcReconcilerBackendTest {
                     "",
                     0,
                     List.of(),
-                    null)),
+                    null,
+                    null,
+                    List.of(),
+                    "test-file-v1:path/file.parquet")),
             List.of());
     when(source.planSnapshotFiles(anyString(), anyString(), any(), anyLong()))
         .thenReturn(Optional.of(plan));
@@ -868,7 +1018,10 @@ class GrpcReconcilerBackendTest {
           }
 
           @Override
-          public Optional<CaptureEngineResult> capture(CaptureEngineRequest request) {
+          public Optional<CaptureEngineResult> capture(
+              CaptureEngineRequest request,
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer
+                  fileResultConsumer) {
             return Optional.of(CaptureEngineResult.of(stats, List.of(), List.of()));
           }
         };
@@ -949,7 +1102,7 @@ class GrpcReconcilerBackendTest {
             .addOutputColumns(
                 ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
                     .setName("order_id")
-                    .setLogicalType("INT")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                     .setNullable(false)
                     .build())
             .build();

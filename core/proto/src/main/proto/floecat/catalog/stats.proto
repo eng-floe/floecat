@@ -315,6 +315,14 @@ message GetTargetStatsResponse {
   TargetStatsRecord stats = 1;
 }
 
+enum TargetStatsView {
+  // Summary is the default so list responses do not carry potentially large raw sketch bytes.
+  TSV_UNSPECIFIED = 0;
+  TSV_SUMMARY = 1;
+  // Includes raw SketchPayload.data bytes.
+  TSV_FULL = 2;
+}
+
 message ListTargetStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.SnapshotRef snapshot = 2;
@@ -322,6 +330,7 @@ message ListTargetStatsRequest {
   // At most one kind per request is currently supported.
   // Multi-kind filtering is reserved for future use.
   repeated StatsTargetKind target_kinds = 4;
+  TargetStatsView view = 5;
 }
 message ListTargetStatsResponse {
   repeated TargetStatsRecord records = 1;

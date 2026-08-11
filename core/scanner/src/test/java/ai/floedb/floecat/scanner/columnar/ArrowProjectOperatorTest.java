@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
@@ -37,15 +38,19 @@ class ArrowProjectOperatorTest {
   void retainsRequestedColumnOrderAndValues() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("extra")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(3)
                 .build());
 
@@ -83,7 +88,11 @@ class ArrowProjectOperatorTest {
   void returnsOriginalBatchWhenNoColumnsRequested() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build());
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build());
     List<SystemObjectRow> rows =
         List.of(new SystemObjectRow(new Object[] {1}), new SystemObjectRow(new Object[] {2}));
 
@@ -103,10 +112,14 @@ class ArrowProjectOperatorTest {
   void ignoresUnknownAndDuplicateColumns() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -134,10 +147,14 @@ class ArrowProjectOperatorTest {
   void normalizesColumnNamesCaseAndWhitespace() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -173,10 +190,14 @@ class ArrowProjectOperatorTest {
   void returnsOriginalBatchWhenOnlyUnknownColumnsRequested() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -203,15 +224,19 @@ class ArrowProjectOperatorTest {
   void consumesInputBatchWhenProjectionIsApplied() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("extra")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(3)
                 .build());
 
@@ -239,7 +264,11 @@ class ArrowProjectOperatorTest {
   void doesNotConsumeInputBatchWhenNoOpProjection() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build());
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build());
 
     List<SystemObjectRow> rows =
         List.of(new SystemObjectRow(new Object[] {1}), new SystemObjectRow(new Object[] {2}));

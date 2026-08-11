@@ -98,6 +98,7 @@ final class DeltaPlanner implements Planner<String> {
   private final Snapshot snapshot;
   private final String storageLocation;
   private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
+  private final Map<String, DeletionVectorDescriptor> deletionVectorsByFile = new LinkedHashMap<>();
   private final List<String> missingLogStatsSamplePaths = new ArrayList<>();
   private final List<String> checkpointStructRecoverySamplePaths = new ArrayList<>();
   private final List<String> deletionVectorSamplePaths = new ArrayList<>();
@@ -175,29 +176,29 @@ final class DeltaPlanner implements Planner<String> {
             Map<String, Long> nanCounts = null;
             Map<String, Object> mins = null;
             Map<String, Object> maxs = null;
-            String partitionJson = "{\"partitionValues\":[]}";
+            AddFile add =
+                new AddFile(scanFileRow.getStruct(InternalScanFileUtils.ADD_FILE_ORDINAL));
+            add.getDeletionVector()
+                .ifPresent(
+                    dv -> {
+                      deletionVectorsByFile.put(path, dv);
+                      if (dv.isInline()) {
+                        hasInlineDeletionVectors = true;
+                        inlineDeletionVectorCount++;
+                        addDiagnosticSample(deletionVectorSamplePaths, path + "#inline");
+                      } else if (dv.isOnDisk()) {
+                        diskDeletionVectors.add(dv);
+                        onDiskDeletionVectorCount++;
+                        addDiagnosticSample(
+                            deletionVectorSamplePaths,
+                            path
+                                + "#ondisk:"
+                                + (dv.getPathOrInlineDv() == null ? "" : dv.getPathOrInlineDv()));
+                      }
+                    });
+            String partitionJson = encodePartition(add);
 
             if (includeStats) {
-              AddFile add =
-                  new AddFile(scanFileRow.getStruct(InternalScanFileUtils.ADD_FILE_ORDINAL));
-              add.getDeletionVector()
-                  .ifPresent(
-                      dv -> {
-                        if (dv.isInline()) {
-                          hasInlineDeletionVectors = true;
-                          inlineDeletionVectorCount++;
-                          addDiagnosticSample(deletionVectorSamplePaths, path + "#inline");
-                        } else if (dv.isOnDisk()) {
-                          diskDeletionVectors.add(dv);
-                          onDiskDeletionVectorCount++;
-                          addDiagnosticSample(
-                              deletionVectorSamplePaths,
-                              path
-                                  + "#ondisk:"
-                                  + (dv.getPathOrInlineDv() == null ? "" : dv.getPathOrInlineDv()));
-                        }
-                      });
-              partitionJson = encodePartition(add);
               Optional<DataFileStatistics> optStats = add.getStats(snapshot.getSchema());
               if (optStats.isEmpty()) {
                 optStats = checkpointStatsForPath(path);
@@ -305,7 +306,11 @@ final class DeltaPlanner implements Planner<String> {
                     maxs,
                     partitionJson,
                     0,
-                    null));
+                    null,
+                    contentIdentity(
+                        add.getModificationTime(),
+                        add.getBaseRowId().orElse(null),
+                        add.getDefaultRowCommitVersion().orElse(null))));
           }
         }
       }
@@ -320,6 +325,16 @@ final class DeltaPlanner implements Planner<String> {
 
   boolean missingLogStats() {
     return missingLogStats;
+  }
+
+  static String contentIdentity(
+      long modificationTime, Long baseRowId, Long defaultRowCommitVersion) {
+    return "delta-add-v1:"
+        + modificationTime
+        + ":"
+        + (baseRowId == null ? "" : baseRowId)
+        + ":"
+        + (defaultRowCommitVersion == null ? "" : defaultRowCommitVersion);
   }
 
   int missingLogStatsFileCount() {
@@ -356,6 +371,14 @@ final class DeltaPlanner implements Planner<String> {
 
   List<DeletionVectorDescriptor> deletionVectors() {
     return Collections.unmodifiableList(diskDeletionVectors);
+  }
+
+  DeletionVectorDescriptor deletionVectorForFile(String filePath) {
+    return deletionVectorsByFile.get(filePath);
+  }
+
+  StructType schema() {
+    return snapshot.getSchema();
   }
 
   private String encodePartition(AddFile add) {

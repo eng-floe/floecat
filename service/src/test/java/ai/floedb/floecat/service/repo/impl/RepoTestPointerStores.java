@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -44,6 +45,11 @@ final class RepoTestPointerStores {
     @Override
     public Optional<Pointer> get(String key) {
       return delegate.get(key);
+    }
+
+    @Override
+    public Map<String, Pointer> getBatch(List<String> keys) {
+      return delegate.getBatch(keys);
     }
 
     @Override
@@ -163,6 +169,9 @@ final class RepoTestPointerStores {
 
     private String keyOf(CasOp op) {
       if (op instanceof CasUpsert u) {
+        return u.key();
+      }
+      if (op instanceof UnconditionalUpsert u) {
         return u.key();
       }
       if (op instanceof CasDelete d) {

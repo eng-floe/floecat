@@ -25,14 +25,25 @@ public final class ServiceMetrics {
   private static final String CONTRACT = "v1";
 
   public static final class Storage {
-    public static final MetricId ACCOUNT_POINTERS =
+    public static final MetricId ACCOUNT_GC_ESTIMATED_POINTERS =
         new MetricId(
-            "floecat.service.storage.account.pointers", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId ACCOUNT_BYTES =
+            "floecat.service.storage.account.gc_estimated_pointers",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ACCOUNT_GC_ESTIMATED_BYTES =
         new MetricId(
-            "floecat.service.storage.account.bytes",
+            "floecat.service.storage.account.gc_estimated_bytes",
             MetricType.GAUGE,
             "bytes",
+            CONTRACT,
+            "service");
+    public static final MetricId ACCOUNT_GC_SIZE_COVERAGE =
+        new MetricId(
+            "floecat.service.storage.account.gc_size_coverage",
+            MetricType.GAUGE,
+            "ratio",
             CONTRACT,
             "service");
     public static final MetricId PARTIAL_STATE =
@@ -374,6 +385,51 @@ public final class ServiceMetrics {
             "floecat.service.gc.reconcile_jobs.deleted.last_tick",
             MetricType.GAUGE,
             "count",
+            CONTRACT,
+            "service");
+  }
+
+  /** Process-wide metadata-I/O admission (see {@code MetadataIoRunner}). */
+  public static final class MetadataIo {
+    private MetadataIo() {}
+
+    // MetadataIoMetrics exports these strings as Prometheus HELP, and
+    // ServiceTelemetryContributor registers the same constants in the published contract.
+    public static final String CAPACITY_DESC =
+        "Configured process-wide metadata-I/O concurrency ceiling.";
+    public static final String IN_USE_DESC =
+        "Metadata-I/O admission permits held by in-flight store calls.";
+    public static final String WAITERS_DESC = "Threads waiting for metadata-I/O admission.";
+    public static final String SATURATED_DESC =
+        "Metadata-I/O admissions that found the concurrency ceiling saturated on arrival.";
+
+    public static final MetricId PERMITS_CAPACITY =
+        new MetricId(
+            "floecat.service.metadata_io.permits.capacity",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId PERMITS_IN_USE =
+        new MetricId(
+            "floecat.service.metadata_io.permits.in_use",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId ADMISSION_WAITERS =
+        new MetricId(
+            "floecat.service.metadata_io.admission.waiters",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+
+    public static final MetricId ADMISSION_SATURATED_WAITS =
+        new MetricId(
+            "floecat.service.metadata_io.admission.saturated_waits.total",
+            MetricType.COUNTER,
+            "",
             CONTRACT,
             "service");
   }

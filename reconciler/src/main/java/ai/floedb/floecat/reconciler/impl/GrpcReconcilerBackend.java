@@ -21,15 +21,13 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.GetIndexArtifactRequest;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
-import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -468,6 +466,34 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Optional<Snapshot> latestReconciledSnapshotForReuse(
+      ReconcileContext ctx, ResourceId tableId, long excludedSnapshotId) {
+    try {
+      var response =
+          snapshot(ctx)
+              .getLatestFinalizedSnapshot(
+                  GetLatestFinalizedSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setExcludedSnapshotId(excludedSnapshotId)
+                      .build());
+      return response.hasSnapshot() ? Optional.of(response.getSnapshot()) : Optional.empty();
+    } catch (StatusRuntimeException error) {
+      if (error.getStatus().getCode() == Status.Code.INTERNAL
+          || error.getStatus().getCode() == Status.Code.DATA_LOSS
+          || error.getStatus().getCode() == Status.Code.FAILED_PRECONDITION
+          || error.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
+        throw new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            "invalid finalized snapshot reuse basis",
+            error);
+      }
+      throw error;
+    }
+  }
+
+  @Override
   public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
     Set<Long> snapshotIds = new LinkedHashSet<>();
     String token = "";
@@ -567,6 +593,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         request.tableId(),
         CaptureEngineResult.empty(),
         (source, sourceCtx) -> {
+          List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> fileStats =
+              new java.util.ArrayList<>();
+          List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
+              new java.util.ArrayList<>();
           CaptureEngineResult capture =
               captureEngineRegistry.capture(
                   new CaptureEngineRequest(
@@ -586,19 +616,28 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       Optional.of(sourceCtx.storageLocation()),
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
-                      ctx.executionLeaseEpoch()));
+                      ctx.executionLeaseEpoch(),
+                      () -> false),
+                  (completedFileStats, completedPageIndexEntries) -> {
+                    fileStats.addAll(completedFileStats);
+                    pageIndexEntries.addAll(completedPageIndexEntries);
+                  });
+          List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> stats =
+              new java.util.ArrayList<>(capture.statsRecords().size() + fileStats.size());
+          stats.addAll(capture.statsRecords());
+          stats.addAll(fileStats);
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
-            return capture;
+            return CaptureEngineResult.of(stats, pageIndexEntries, capture.stagedIndexArtifacts());
           }
           return CaptureEngineResult.of(
-              capture.statsRecords(),
+              stats,
               List.of(),
               FileGroupIndexArtifactStager.stage(
                   request.tableId(),
                   request.snapshotId(),
                   request.plannedFilePaths(),
-                  capture.statsRecords(),
-                  capture.pageIndexEntries()));
+                  fileStats,
+                  pageIndexEntries));
         });
   }
 
@@ -794,52 +833,21 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public boolean indexArtifactsCapturedForFilePaths(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      List<String> filePaths,
-      Set<String> selectors) {
-    if (filePaths == null || filePaths.isEmpty()) {
-      return true;
-    }
+  public boolean indexCaptureComplete(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
     Set<String> normalizedSelectors = normalizeIndexSelectors(selectors);
     if (normalizedSelectors == null) {
       return false;
     }
-    try {
-      for (String filePath : filePaths) {
-        if (filePath == null || filePath.isBlank()) {
-          return false;
-        }
-        var response =
-            index(ctx)
-                .getIndexArtifact(
-                    GetIndexArtifactRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                        .setTarget(
-                            IndexTarget.newBuilder()
-                                .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
-                                .build())
-                        .build());
-        if (response == null
-            || !response.hasRecord()
-            || response.getRecord().getState() != IndexArtifactState.IAS_READY) {
-          return false;
-        }
-        if (!normalizedSelectors.isEmpty()
-            && !persistedIndexSelectors(response.getRecord()).containsAll(normalizedSelectors)) {
-          return false;
-        }
-      }
-      return true;
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return false;
-      }
-      throw e;
-    }
+    var response =
+        index(ctx)
+            .getIndexCaptureStatus(
+                GetIndexCaptureStatusRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                    .addAllSelectors(normalizedSelectors)
+                    .build());
+    return response != null && response.getComplete();
   }
 
   @Override
@@ -967,24 +975,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       normalized.add(trimmed);
     }
     return Set.copyOf(normalized);
-  }
-
-  private static Set<String> persistedIndexSelectors(
-      ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
-    if (record == null) {
-      return Set.of();
-    }
-    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
-    if (encoded.isBlank()) {
-      return Set.of();
-    }
-    LinkedHashSet<String> selectors = new LinkedHashSet<>();
-    for (String token : encoded.split(",")) {
-      if (token != null && !token.isBlank()) {
-        selectors.add(token.trim());
-      }
-    }
-    return Set.copyOf(selectors);
   }
 
   private static List<PutIndexArtifactsRequest> groupIndexArtifactRequests(
@@ -1134,12 +1124,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .addPaths("creation_search_path")
             .addPaths("output_columns")
             .build();
+    ViewSpec mergedSpec =
+        spec.toBuilder()
+            .clearProperties()
+            .putAllProperties(mergedReconcileViewProperties(current, spec))
+            .build();
     ResourceId updatedId =
         view(ctx)
             .updateView(
                 UpdateViewRequest.newBuilder()
                     .setViewId(existingId)
-                    .setSpec(spec)
+                    .setSpec(mergedSpec)
                     .setUpdateMask(mask)
                     .build())
             .getView()
@@ -1212,11 +1207,39 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return current.getCatalogId().equals(spec.getCatalogId())
         && current.getNamespaceId().equals(spec.getNamespaceId())
         && current.getDisplayName().equals(spec.getDisplayName())
-        && current.getPropertiesMap().equals(spec.getPropertiesMap())
+        && reconcileManagedViewProperties(current.getPropertiesMap())
+            .equals(spec.getPropertiesMap())
         && current.getSqlDefinitionsList().equals(spec.getSqlDefinitionsList())
         && current.getBaseRelationsList().equals(spec.getBaseRelationsList())
         && current.getCreationSearchPathList().equals(spec.getCreationSearchPathList())
         && current.getOutputColumnsList().equals(spec.getOutputColumnsList());
+  }
+
+  /**
+   * The reconciler owns only the source-identity properties it writes; server-managed entries
+   * (engine hints etc.) live in the same map. Comparing or overwriting the full stored map made any
+   * staged hint a permanent diff — a rewrite every pass that also wiped the hints (tables solved
+   * this with mergedReconcileProperties; this is the view equivalent).
+   */
+  private static Map<String, String> reconcileManagedViewProperties(Map<String, String> stored) {
+    LinkedHashMap<String, String> managed = new LinkedHashMap<>();
+    stored.forEach(
+        (key, value) -> {
+          if (!key.startsWith("engine.hint.") && !key.startsWith("view.metadata.")) {
+            managed.put(key, value);
+          }
+        });
+    return managed;
+  }
+
+  private static Map<String, String> mergedReconcileViewProperties(View current, ViewSpec spec) {
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>(current.getPropertiesMap());
+    // Reconcile owns the non-managed keys wholesale: drop stale ones, then apply the spec's.
+    merged
+        .keySet()
+        .removeIf(key -> !key.startsWith("engine.hint.") && !key.startsWith("view.metadata."));
+    merged.putAll(spec.getPropertiesMap());
+    return Map.copyOf(merged);
   }
 
   @Override

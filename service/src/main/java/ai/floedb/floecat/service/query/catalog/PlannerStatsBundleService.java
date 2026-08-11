@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -66,7 +67,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.BiFunction;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -148,8 +151,8 @@ public class PlannerStatsBundleService {
 
   /**
    * Test factory that wires through the real {@code providerLookup()} path — including {@link
-   * StatsOrchestrator#resolvePlannerBatch} with stale-before-sync ordering. Use this for
-   * integration tests that need to verify the full resolution chain.
+   * StatsOrchestrator#resolvePlannerBatch}. Use this for integration tests that need to verify the
+   * full resolution chain.
    */
   static PlannerStatsBundleService forTestingWithRealLookup(
       StatsOrchestrator orchestrator,
@@ -221,10 +224,7 @@ public class PlannerStatsBundleService {
                 statsStore
                     .getTargetStats(tableId, snapshotId, target.target())
                     .map(PlannerTargetStatsLookupResult::hit)
-                    .orElseGet(() -> PlannerTargetStatsLookupResult.skipped("test_store_miss"))
-                    .withStaleFallback(
-                        policy.staleOk(),
-                        () -> statsStore.getStaleTargetStats(tableId, snapshotId, target.target()));
+                    .orElseGet(() -> PlannerTargetStatsLookupResult.skipped("test_store_miss"));
             byTarget.put(StatsTargetIdentity.storageId(target.target()), result);
           }
           return Map.copyOf(byTarget);
@@ -232,8 +232,26 @@ public class PlannerStatsBundleService {
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
+  /** Stream target statistics without an external cancellation signal. */
   public Multi<TargetStatsBundleChunk> streamTargets(
       String correlationId, QueryContext ctx, FetchTargetStatsRequest request) {
+    return streamTargets(correlationId, ctx, request, () -> false);
+  }
+
+  /**
+   * Stream target statistics while exposing request cancellation to lazy admitted metadata reads.
+   *
+   * <p>The caller retains ownership of {@code cancelled} and must keep it safe to poll for the
+   * lifetime of every subscription, and the signal must not throw. A {@code true} result abandons
+   * an outstanding admitted read and terminates that subscription with {@link
+   * CancellationException}.
+   */
+  public Multi<TargetStatsBundleChunk> streamTargets(
+      String correlationId,
+      QueryContext ctx,
+      FetchTargetStatsRequest request,
+      BooleanSupplier cancelled) {
+    Objects.requireNonNull(cancelled, "cancelled");
     PhaseDiagnostics diagnostics = diagnostics("planner_target_stats");
     long startedNanos = System.nanoTime();
     FetchTargetStatsRequest safeRequest =
@@ -283,6 +301,7 @@ public class PlannerStatsBundleService {
                         normalized.omittedByBudget(),
                         servingPolicy,
                         System.nanoTime() + servingPolicy.latencyBudget().toNanos(),
+                        cancelled,
                         diagnostics,
                         startedNanos);
                 return Multi.createFrom()
@@ -320,8 +339,8 @@ public class PlannerStatsBundleService {
       }
       String connectorType = ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId);
       /* Build one StatsCaptureRequest per target, all sharing the same execution parameters.
-       * resolvePlannerBatch() will issue a single batch store read, apply stale-before-sync
-       * ordering, and only block on sync capture for targets still missing after the stale check.
+       * resolvePlannerBatch() will issue a single batch store read and only block on sync capture
+       * for targets still missing after the exact-snapshot checks.
        * This replaces the old N×resolve() loop that made one store read + optional sync per target. */
       List<StatsCaptureRequest> requests = new ArrayList<>(targets.size());
       for (PlannerStatsTargetNeed target : targets) {
@@ -353,7 +372,7 @@ public class PlannerStatsBundleService {
 
       java.util.Map<String, StatsResolutionResult> resolved =
           statsOrchestrator.resolvePlannerBatchInGeneration(
-              requests, statsGenerationRef, completeness, policy.staleOk(), deadlineNanos);
+              requests, statsGenerationRef, completeness, deadlineNanos);
 
       Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>(targets.size());
       for (PlannerStatsTargetNeed target : targets) {
@@ -541,6 +560,7 @@ public class PlannerStatsBundleService {
 
     private final PlannerStatsServingPolicy servingPolicy;
     private final long requestDeadlineNanos;
+    private final BooleanSupplier cancelled;
 
     private int nextTableIndex = 0;
     private long returnedTargets = 0;
@@ -548,7 +568,6 @@ public class PlannerStatsBundleService {
     private long errorTargets = 0;
     private long omittedByBudget = 0;
     private long partialTargets = 0;
-    private long staleTargets = 0;
     private long responseBytes = 0;
     private long constraintBytes = 0;
     private boolean byteBudgetExhausted = false;
@@ -569,6 +588,7 @@ public class PlannerStatsBundleService {
         long preOmittedByBudget,
         PlannerStatsServingPolicy servingPolicy,
         long requestDeadlineNanos,
+        BooleanSupplier cancelled,
         PhaseDiagnostics diagnostics,
         long startedNanos) {
       super(queryId, diagnostics, "floecat.planner_target_stats.summary", startedNanos);
@@ -584,6 +604,7 @@ public class PlannerStatsBundleService {
       this.preOmittedByBudget = preOmittedByBudget;
       this.servingPolicy = servingPolicy;
       this.requestDeadlineNanos = requestDeadlineNanos;
+      this.cancelled = Objects.requireNonNull(cancelled, "cancelled");
       /* omittedByBudget starts at 0; pre-omitted targets are drained via hasPreOmitted()
        * and each increments omittedByBudget exactly once in processNextTarget(). */
       this.omittedByBudget = 0;
@@ -675,7 +696,6 @@ public class PlannerStatsBundleService {
               .setErrorTargets(errorTargets)
               .setOmittedByBudget(omittedByBudget)
               .setPartialTargets(partialTargets)
-              .setStaleTargets(staleTargets)
               .build();
       return TargetStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
@@ -693,7 +713,6 @@ public class PlannerStatsBundleService {
       diagnostics.put("error_targets", errorTargets);
       diagnostics.put("omitted_by_budget", omittedByBudget);
       diagnostics.put("partial_targets", partialTargets);
-      diagnostics.put("stale_targets", staleTargets);
       diagnostics.put("response_bytes", responseBytes);
       diagnostics.put("constraint_bytes", constraintBytes);
     }
@@ -734,17 +753,9 @@ public class PlannerStatsBundleService {
             StatsResultStatus status = materialized.status();
             counter =
                 switch (status) {
-                  case STATS_RESULT_HIT_STALE -> TargetResultCounter.STALE;
                   case STATS_RESULT_HIT_PARTIAL -> TargetResultCounter.PARTIAL;
                   default -> TargetResultCounter.RETURNED;
                 };
-            /* A result can be simultaneously stale AND partial; the primary status is STALE
-             * but partialTargets must also be incremented so the end chunk is accurate. */
-            if (status == StatsResultStatus.STATS_RESULT_HIT_STALE
-                && materialized.returnedStats().stream()
-                    .anyMatch(s -> s.getStatus() != StatsResultStatus.STATS_RESULT_HIT_COMPLETE)) {
-              partialTargets++;
-            }
             result = PlannerStatsResultMaterializer.buildFoundResult(materialized);
           } else {
             if (lookupResult.outcome() == StatsSyncOutcome.FAILED) {
@@ -766,6 +777,8 @@ public class PlannerStatsBundleService {
               counter = TargetResultCounter.NOT_FOUND;
             }
           }
+        } catch (CancellationException e) {
+          throw e;
         } catch (RuntimeException e) {
           result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
           counter = TargetResultCounter.ERROR;
@@ -803,10 +816,6 @@ public class PlannerStatsBundleService {
         case PARTIAL -> {
           returnedTargets++;
           partialTargets++;
-        }
-        case STALE -> {
-          returnedTargets++;
-          staleTargets++;
         }
         case NONE -> {}
       }
@@ -861,15 +870,17 @@ public class PlannerStatsBundleService {
     }
 
     private void loadTargetBatchTimed(TableWork work, long snapshotId) {
-      diagnostics.time(
-          "target_batch_lookup",
-          () ->
-              work.ensureTargetBatchLoaded(
-                  targetStatsLookup,
-                  snapshotId,
-                  pinLookup.pinnedStatsGenerationRef(work.tableId),
-                  servingPolicy,
-                  requestDeadlineNanos));
+      try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
+        diagnostics.time(
+            "target_batch_lookup",
+            () ->
+                work.ensureTargetBatchLoaded(
+                    targetStatsLookup,
+                    snapshotId,
+                    pinLookup.pinnedStatsGenerationRef(work.tableId),
+                    servingPolicy,
+                    requestDeadlineNanos));
+      }
     }
 
     private ConstraintResolution resolveConstraintsTimed(TableWork work) {
@@ -1181,8 +1192,7 @@ public class PlannerStatsBundleService {
     RETURNED,
     NOT_FOUND,
     ERROR,
-    PARTIAL,
-    STALE
+    PARTIAL
   }
 
   private record ConstraintResolution(

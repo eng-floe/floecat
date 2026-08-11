@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -38,6 +39,11 @@ public abstract class KvPointerStore implements PointerStore {
   @Override
   public Optional<Pointer> get(String key) {
     return await(() -> pointers.get(key).await().indefinitely());
+  }
+
+  @Override
+  public Map<String, Pointer> getBatch(List<String> keys) {
+    return await(() -> pointers.getBatch(keys).await().indefinitely());
   }
 
   @Override

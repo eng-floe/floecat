@@ -37,6 +37,7 @@ import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.TargetStatsView;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -304,7 +305,8 @@ final class StatsCliSupport {
             .setSnapshot(
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
-            .addTargetKinds(StatsTargetKind.STK_FILE);
+            .addTargetKinds(StatsTargetKind.STK_FILE)
+            .setView(TargetStatsView.TSV_SUMMARY);
     Function<ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse, String> nextToken =
         r -> r.hasPage() ? r.getPage().getNextPageToken() : "";
 

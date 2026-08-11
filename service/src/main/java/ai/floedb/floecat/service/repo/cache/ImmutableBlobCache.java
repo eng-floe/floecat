@@ -32,7 +32,8 @@ import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Process-wide cache of DECODED immutable blob content, keyed by blob URI.
+ * Process-wide cache of DECODED immutable blob content, keyed by blob URI and, when necessary, a
+ * pointer-specific projection identity.
  *
  * <p>Everything a query reads below the two mutable pointer reads (root pointer, name→id) is a
  * content-addressed or frozen blob: the content at a given URI never changes, only pointers move.
@@ -44,7 +45,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <p>The cache is a pure engine: callers pass their existing load-and-parse lambda, so decode logic
  * and exception semantics stay at the repository seams and are never duplicated here. Absence is
  * never cached (a loader returning empty stores nothing — the blob may appear later), and loads are
- * single-flight per URI (a cold hot-table burst collapses to one backend fetch).
+ * single-flight per URI or pointer projection.
  *
  * <p>Correctness contract for callers: only route a read through this cache when the blob is
  * declared immutable — {@code schema.casBlobs} at the repository seams, or frozen-by-contract
@@ -71,7 +72,7 @@ public class ImmutableBlobCache {
   /** Estimated per-entry overhead inside a cached index map (boxed key + HashMap node). */
   private static final long MAP_ENTRY_OVERHEAD_BYTES = 72L;
 
-  private final Cache<String, Object> cache;
+  private final Cache<CacheKey, Object> cache;
   private final CacheMetrics metrics;
   private final boolean enabled;
 
@@ -110,7 +111,7 @@ public class ImmutableBlobCache {
     var builder =
         Caffeine.newBuilder()
             .maximumWeight(Math.max(1L, maxWeightBytes))
-            .weigher((Weigher<String, Object>) ImmutableBlobCache::weight);
+            .weigher((Weigher<CacheKey, Object>) ImmutableBlobCache::weight);
     // <=0 means "no idle expiry" (the conventional reading); a literal zero would expire every
     // entry immediately — a permanently cold cache masquerading as enabled.
     if (!expireAfterAccess.isZero() && !expireAfterAccess.isNegative()) {
@@ -119,8 +120,11 @@ public class ImmutableBlobCache {
     this.cache = builder.build();
   }
 
-  private static int weight(String uri, Object value) {
-    long size = ENTRY_OVERHEAD_BYTES + 2L * uri.length();
+  private static int weight(CacheKey key, Object value) {
+    long size =
+        ENTRY_OVERHEAD_BYTES
+            + 2L * key.uri().length()
+            + (key.projection() == null ? 0L : 2L * key.projection().length());
     if (value instanceof MessageLite message) {
       size += RETAINED_HEAP_FACTOR * message.getSerializedSize();
     } else if (value instanceof String s) {
@@ -167,6 +171,24 @@ public class ImmutableBlobCache {
    */
   @SuppressWarnings("unchecked")
   public <T> Optional<T> get(String uri, Function<String, Optional<T>> loader) {
+    return get(CacheKey.blob(uri), uri, loader);
+  }
+
+  /**
+   * A pointer-specific projection of immutable content at {@code uri}. Different pointers may
+   * select different records from one shared blob, so their decoded projections must not collide in
+   * the URI-only cache.
+   */
+  public <T> Optional<T> getProjection(
+      String uri, String projection, Function<String, Optional<T>> loader) {
+    return get(CacheKey.projection(uri, projection), uri, loader);
+  }
+
+  /** Identity for a pointer-specific projection of a shared immutable blob. */
+  public record ProjectionKey(String uri, String projection) {}
+
+  @SuppressWarnings("unchecked")
+  private <T> Optional<T> get(CacheKey cacheKey, String uri, Function<String, Optional<T>> loader) {
     if (!enabled || uri == null || uri.isBlank()) {
       return loader.apply(uri);
     }
@@ -175,10 +197,10 @@ public class ImmutableBlobCache {
     boolean[] missed = new boolean[1];
     Object value =
         cache.get(
-            uri,
+            cacheKey,
             k -> {
               missed[0] = true;
-              return loader.apply(k).orElse(null);
+              return loader.apply(uri).orElse(null);
             });
     if (missed[0]) {
       recordMiss();
@@ -197,7 +219,7 @@ public class ImmutableBlobCache {
     if (!enabled || uris == null || uris.isEmpty()) {
       return Map.of();
     }
-    Map<String, Object> present = cache.getAllPresent(uris);
+    Map<CacheKey, Object> present = cache.getAllPresent(uris.stream().map(CacheKey::blob).toList());
     if (metrics != null) {
       for (int i = present.size(); i > 0; i--) {
         metrics.recordHit();
@@ -206,8 +228,39 @@ public class ImmutableBlobCache {
         metrics.recordMiss();
       }
     }
-    // Caffeine's result is already an unmodifiable snapshot; re-typing it is free, copying is not.
-    return (Map<String, T>) (Map<String, ?>) present;
+    java.util.LinkedHashMap<String, T> byUri = new java.util.LinkedHashMap<>();
+    present.forEach((key, value) -> byUri.put(key.uri(), (T) value));
+    return Map.copyOf(byUri);
+  }
+
+  /**
+   * The cached pointer-specific projections among {@code projections}. Unlike the URI-only batch
+   * probe, two pointers into one shared blob remain distinct entries.
+   */
+  @SuppressWarnings("unchecked")
+  public <T> Map<ProjectionKey, T> getAllProjectionsPresent(Collection<ProjectionKey> projections) {
+    if (!enabled || projections == null || projections.isEmpty()) {
+      return Map.of();
+    }
+    var requested = projections.stream().filter(java.util.Objects::nonNull).distinct().toList();
+    Map<CacheKey, Object> present =
+        cache.getAllPresent(
+            requested.stream()
+                .map(key -> CacheKey.projection(key.uri(), key.projection()))
+                .toList());
+    if (metrics != null) {
+      for (int i = present.size(); i > 0; i--) {
+        metrics.recordHit();
+      }
+      for (int i = requested.size() - present.size(); i > 0; i--) {
+        metrics.recordMiss();
+      }
+    }
+    java.util.LinkedHashMap<ProjectionKey, T> byProjection = new java.util.LinkedHashMap<>();
+    present.forEach(
+        (key, value) ->
+            byProjection.put(new ProjectionKey(key.uri(), key.projection()), (T) value));
+    return Map.copyOf(byProjection);
   }
 
   /**
@@ -221,7 +274,7 @@ public class ImmutableBlobCache {
     if (!enabled || uri == null || uri.isBlank()) {
       return null;
     }
-    Object hit = cache.getIfPresent(uri);
+    Object hit = cache.getIfPresent(CacheKey.blob(uri));
     if (hit != null) {
       recordHit();
     }
@@ -236,13 +289,21 @@ public class ImmutableBlobCache {
     if (!enabled || uri == null || uri.isBlank() || value == null) {
       return;
     }
-    cache.put(uri, value);
+    cache.put(CacheKey.blob(uri), value);
+  }
+
+  /** Populates a pointer-specific projection decoded by a batch reader. */
+  public void putProjection(String uri, String projection, Object value) {
+    if (!enabled || uri == null || uri.isBlank() || value == null) {
+      return;
+    }
+    cache.put(CacheKey.projection(uri, projection), value);
   }
 
   /** Belt-and-braces eviction (correctness never depends on it — content is immutable). */
   public void invalidate(String uri) {
     if (uri != null) {
-      cache.invalidate(uri);
+      cache.asMap().keySet().removeIf(key -> uri.equals(key.uri()));
     }
   }
 
@@ -260,6 +321,16 @@ public class ImmutableBlobCache {
   private void recordMiss() {
     if (metrics != null) {
       metrics.recordMiss();
+    }
+  }
+
+  private record CacheKey(String uri, String projection) {
+    private static CacheKey blob(String uri) {
+      return new CacheKey(uri, null);
+    }
+
+    private static CacheKey projection(String uri, String projection) {
+      return new CacheKey(uri, projection == null ? "" : projection);
     }
   }
 }

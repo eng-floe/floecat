@@ -19,7 +19,6 @@ package ai.floedb.floecat.reconciler.impl;
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -50,7 +49,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -59,7 +57,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 @ApplicationScoped
@@ -286,35 +283,6 @@ public class ReconcilerService {
     return Optional.empty();
   }
 
-  static Set<Long> knownSnapshotIdsForEnumeration(
-      boolean fullRescan,
-      boolean includeStats,
-      Set<Long> knownSnapshotIds,
-      Predicate<Long> statsAlreadyCaptured) {
-    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
-      return Set.of();
-    }
-    if (!includeStats) {
-      return Set.copyOf(knownSnapshotIds);
-    }
-    if (statsAlreadyCaptured == null) {
-      return Set.of();
-    }
-    Set<Long> fullyCaptured = new LinkedHashSet<>();
-    for (Long snapshotId : knownSnapshotIds) {
-      if (snapshotId == null || snapshotId < 0) {
-        continue;
-      }
-      if (statsAlreadyCaptured.test(snapshotId)) {
-        fullyCaptured.add(snapshotId);
-      }
-    }
-    if (fullyCaptured.isEmpty()) {
-      return Set.of();
-    }
-    return Set.copyOf(fullyCaptured);
-  }
-
   static FloecatConnector.SnapshotEnumerationOptions snapshotEnumerationOptions(
       ReconcileSnapshotSelection selection,
       boolean fullRescan,
@@ -323,26 +291,36 @@ public class ReconcilerService {
     ReconcileSnapshotSelection effective =
         selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
     Set<Long> known = knownSnapshotIds == null ? Set.of() : knownSnapshotIds;
+    Set<Long> targets = targetSnapshotIds == null ? Set.of() : targetSnapshotIds;
     return switch (effective.kind()) {
       case CURRENT ->
-          fullRescan
-              ? FloecatConnector.SnapshotEnumerationOptions.fullCurrent(true)
-              : FloecatConnector.SnapshotEnumerationOptions.incrementalCurrent(known);
+          new FloecatConnector.SnapshotEnumerationOptions(
+              fullRescan,
+              fullRescan ? Set.of() : known,
+              targets,
+              FloecatConnector.SnapshotSelectionKind.CURRENT,
+              Set.of(),
+              0);
       case LATEST_N ->
-          fullRescan
-              ? FloecatConnector.SnapshotEnumerationOptions.fullLatestN(true, effective.latestN())
-              : FloecatConnector.SnapshotEnumerationOptions.incrementalLatestN(
-                  known, effective.latestN());
+          new FloecatConnector.SnapshotEnumerationOptions(
+              fullRescan,
+              fullRescan ? Set.of() : known,
+              targets,
+              FloecatConnector.SnapshotSelectionKind.LATEST_N,
+              Set.of(),
+              effective.latestN());
       case EXPLICIT ->
-          fullRescan
-              ? FloecatConnector.SnapshotEnumerationOptions.fullExplicit(
-                  true, Set.copyOf(effective.snapshotIds()))
-              : FloecatConnector.SnapshotEnumerationOptions.incrementalExplicit(
-                  known, Set.copyOf(effective.snapshotIds()));
+          new FloecatConnector.SnapshotEnumerationOptions(
+              fullRescan,
+              fullRescan ? Set.of() : known,
+              targets,
+              FloecatConnector.SnapshotSelectionKind.EXPLICIT,
+              Set.copyOf(effective.snapshotIds()),
+              0);
       case ALL, UNSPECIFIED ->
           fullRescan
-              ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
-              : FloecatConnector.SnapshotEnumerationOptions.incremental(known, targetSnapshotIds);
+              ? FloecatConnector.SnapshotEnumerationOptions.full(true, targets)
+              : FloecatConnector.SnapshotEnumerationOptions.incremental(known, targets);
     };
   }
 
@@ -373,60 +351,15 @@ public class ReconcilerService {
     return includesMetadata(captureMode) && !isCaptureOnlyConnector(connector);
   }
 
-  Set<Long> enumerationKnownSnapshotIds(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      ReconcileCapturePolicy capturePolicy,
-      Map<Long, List<ReconcileScope.ScopedCaptureRequest>> scopedCaptureRequestsBySnapshot,
-      Set<String> defaultColumnSelectors) {
-    if (capturePolicy == null || capturePolicy.outputs().isEmpty()) {
-      return knownSnapshotIdsForEnumeration(fullRescan, false, knownSnapshotIds, null);
-    }
-    return knownSnapshotIdsForEnumeration(
-        fullRescan,
-        capturePolicy.requestsStats() || capturePolicy.requestsIndexes(),
-        knownSnapshotIds,
-        snapshotId -> {
-          List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests =
-              scopedCaptureRequestsBySnapshot.getOrDefault(snapshotId, List.of());
-          boolean statsComplete =
-              !capturePolicy.requestsStats()
-                  || isStatsCaptureCompleteForScope(
-                      ctx,
-                      tableId,
-                      snapshotId,
-                      capturePolicy,
-                      scopedCaptureRequests,
-                      defaultColumnSelectors);
-          boolean indexesComplete =
-              !capturePolicy.requestsIndexes()
-                  || isIndexCaptureCompleteForScope(
-                      ctx, tableId, snapshotId, capturePolicy, scopedCaptureRequests);
-          return statsComplete && indexesComplete;
-        });
-  }
-
-  static ReconcileSnapshotSelection captureOnlyEnumerationSelection(
-      ReconcileSnapshotSelection selection,
-      Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
-    ReconcileSnapshotSelection effective =
-        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
-    Set<Long> localSnapshotIds =
-        captureOnlySelectedSnapshotIds(effective, knownSnapshotIds, targetSnapshotIds);
-    if (localSnapshotIds.isEmpty()) {
-      return effective;
-    }
-    return ReconcileSnapshotSelection.explicit(List.copyOf(localSnapshotIds));
-  }
-
-  private static Set<Long> captureOnlySelectedSnapshotIds(
-      ReconcileSnapshotSelection selection,
-      Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
-    Set<Long> known = knownSnapshotIds == null ? Set.of() : new LinkedHashSet<>(knownSnapshotIds);
+  static Set<Long> captureOnlyEnumerationTargetSnapshotIds(
+      Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
+    Set<Long> known =
+        knownSnapshotIds == null
+            ? Set.of()
+            : knownSnapshotIds.stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(snapshotId -> snapshotId >= 0L)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     if (known.isEmpty()) {
       return Set.of();
     }
@@ -435,216 +368,7 @@ public class ReconcilerService {
           .filter(targetSnapshotIds::contains)
           .collect(Collectors.toCollection(LinkedHashSet::new));
     }
-    ReconcileSnapshotSelection effective =
-        selection == null ? ReconcileSnapshotSelection.unspecified() : selection;
-    return switch (effective.kind()) {
-      case CURRENT -> {
-        long latestKnown = known.stream().mapToLong(Long::longValue).max().orElse(-1L);
-        yield latestKnown >= 0L ? Set.of(latestKnown) : Set.of();
-      }
-      case LATEST_N ->
-          known.stream()
-              .sorted(Comparator.reverseOrder())
-              .limit(Math.max(0, effective.latestN()))
-              .sorted()
-              .collect(Collectors.toCollection(LinkedHashSet::new));
-      case EXPLICIT ->
-          known.stream()
-              .filter(new LinkedHashSet<>(effective.snapshotIds())::contains)
-              .collect(Collectors.toCollection(LinkedHashSet::new));
-      case ALL, UNSPECIFIED -> Set.copyOf(known);
-    };
-  }
-
-  boolean isSnapshotCaptureCompleteForScope(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileCapturePolicy capturePolicy,
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests,
-      Set<String> defaultColumnSelectors) {
-    boolean statsComplete =
-        !capturePolicy.requestsStats()
-            || isStatsCaptureCompleteForScope(
-                ctx,
-                tableId,
-                snapshotId,
-                capturePolicy,
-                scopedCaptureRequests,
-                defaultColumnSelectors);
-    boolean indexesComplete =
-        !capturePolicy.requestsIndexes()
-            || isIndexCaptureCompleteForScope(
-                ctx, tableId, snapshotId, capturePolicy, scopedCaptureRequests);
-    return statsComplete && indexesComplete;
-  }
-
-  private boolean isStatsCaptureCompleteForScope(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileCapturePolicy capturePolicy,
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests,
-      Set<String> defaultColumnSelectors) {
-    boolean emptySnapshotMarkerPresent =
-        backend.hasZeroDataFileTableStats(ctx, tableId, snapshotId);
-    boolean requiresTableStats =
-        capturePolicy != null
-            && capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.TABLE_STATS);
-    boolean requiresFileStats =
-        capturePolicy != null
-            && capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS);
-    boolean requiresColumnStats =
-        capturePolicy != null
-            && capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS);
-    if (scopedCaptureRequests != null && !scopedCaptureRequests.isEmpty()) {
-      Set<String> scopedSelectors =
-          requiresColumnStats ? selectorsForScopedTableRequests(scopedCaptureRequests) : Set.of();
-      if (matchesDefaultTableWideScopedCapture(scopedCaptureRequests, defaultColumnSelectors)) {
-        if (requiresTableStats
-            && !backend.statsAlreadyCapturedForTargetKind(
-                ctx, tableId, snapshotId, StatsTargetKind.STK_TABLE)) {
-          return false;
-        }
-        if (requiresFileStats
-            && !backend.statsAlreadyCapturedForTargetKind(
-                ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
-            && !emptySnapshotMarkerPresent) {
-          return false;
-        }
-        return !requiresColumnStats
-            || scopedSelectors.isEmpty()
-            || emptySnapshotMarkerPresent
-            || backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, scopedSelectors);
-      }
-      Set<StatsTarget> scopedTargets = decodeTargetSpecsFromRequests(scopedCaptureRequests);
-      if (!scopedTargets.isEmpty()
-          && !backend.statsCapturedForTargets(ctx, tableId, snapshotId, scopedTargets)) {
-        return false;
-      }
-      if (requiresFileStats
-          && !backend.statsAlreadyCapturedForTargetKind(
-              ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
-          && !emptySnapshotMarkerPresent) {
-        return false;
-      }
-      return !requiresColumnStats
-          || scopedSelectors.isEmpty()
-          || emptySnapshotMarkerPresent
-          || backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, scopedSelectors);
-    }
-    if (requiresTableStats
-        && !backend.statsAlreadyCapturedForTargetKind(
-            ctx, tableId, snapshotId, StatsTargetKind.STK_TABLE)) {
-      return false;
-    }
-    if (requiresFileStats
-        && !backend.statsAlreadyCapturedForTargetKind(
-            ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
-        && !emptySnapshotMarkerPresent) {
-      return false;
-    }
-    return !requiresColumnStats
-        || defaultColumnSelectors == null
-        || defaultColumnSelectors.isEmpty()
-        || emptySnapshotMarkerPresent
-        || backend.statsCapturedForColumnSelectors(
-            ctx, tableId, snapshotId, defaultColumnSelectors);
-  }
-
-  private boolean isIndexCaptureCompleteForScope(
-      ReconcileContext ctx,
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileCapturePolicy capturePolicy,
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests) {
-    Set<String> requestedSelectors =
-        capturePolicy == null ? Set.of() : capturePolicy.selectorsForIndex();
-    if (!supportsIndexCompletenessCheck(scopedCaptureRequests)) {
-      return false;
-    }
-    List<String> parquetFilePaths =
-        backend
-            .fetchSnapshotFilePlan(ctx, tableId, snapshotId)
-            .map(
-                plan ->
-                    java.util.stream.Stream.concat(
-                            plan.dataFiles().stream(), plan.deleteFiles().stream())
-                        .filter(file -> file != null && isParquetSnapshotFile(file))
-                        .map(FloecatConnector.SnapshotFileEntry::filePath)
-                        .filter(path -> path != null && !path.isBlank())
-                        .distinct()
-                        .toList())
-            .orElse(null);
-    if (parquetFilePaths == null) {
-      return false;
-    }
-    return backend.indexArtifactsCapturedForFilePaths(
-        ctx, tableId, snapshotId, parquetFilePaths, requestedSelectors);
-  }
-
-  private boolean supportsIndexCompletenessCheck(
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests) {
-    if (scopedCaptureRequests == null || scopedCaptureRequests.isEmpty()) {
-      return true;
-    }
-    for (ReconcileScope.ScopedCaptureRequest request : scopedCaptureRequests) {
-      Optional<StatsTarget> decoded =
-          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec());
-      if (decoded.isEmpty() || decoded.get().getTargetCase() != StatsTarget.TargetCase.TABLE) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private static boolean isParquetSnapshotFile(FloecatConnector.SnapshotFileEntry file) {
-    String format = file.fileFormat() == null ? "" : file.fileFormat().trim();
-    if ("PARQUET".equalsIgnoreCase(format)) {
-      return true;
-    }
-    String path = file.filePath() == null ? "" : file.filePath().toLowerCase(java.util.Locale.ROOT);
-    return path.endsWith(".parquet") || path.endsWith(".parq");
-  }
-
-  private Set<StatsTarget> decodeTargetSpecsFromRequests(
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests) {
-    if (scopedCaptureRequests == null || scopedCaptureRequests.isEmpty()) {
-      return Set.of();
-    }
-    LinkedHashSet<StatsTarget> decodedTargets = new LinkedHashSet<>();
-    for (ReconcileScope.ScopedCaptureRequest request : scopedCaptureRequests) {
-      decodedTargets.add(
-          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec())
-              .orElseThrow(
-                  () ->
-                      terminalValidation(
-                          "Invalid scoped capture target spec for table="
-                              + request.tableId()
-                              + " snapshot="
-                              + request.snapshotId()
-                              + " spec="
-                              + request.targetSpec())));
-    }
-    return decodedTargets;
-  }
-
-  private static boolean matchesDefaultTableWideScopedCapture(
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests,
-      Set<String> defaultColumnSelectors) {
-    if (scopedCaptureRequests == null || scopedCaptureRequests.isEmpty()) {
-      return false;
-    }
-    for (ReconcileScope.ScopedCaptureRequest request : scopedCaptureRequests) {
-      Optional<StatsTarget> decodedTarget =
-          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec());
-      if (decodedTarget.isEmpty()
-          || decodedTarget.get().getTargetCase() != StatsTarget.TargetCase.TABLE) {
-        return false;
-      }
-    }
-    return selectorsForScopedTableRequests(scopedCaptureRequests)
-        .equals(defaultColumnSelectors == null ? Set.of() : defaultColumnSelectors);
+    return Set.copyOf(known);
   }
 
   String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
@@ -1269,24 +993,6 @@ public class ReconcilerService {
       }
     }
     return Optional.empty();
-  }
-
-  private static Set<String> selectorsForScopedTableRequests(
-      List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests) {
-    if (scopedCaptureRequests == null || scopedCaptureRequests.isEmpty()) {
-      return Set.of();
-    }
-    LinkedHashSet<String> selectors = new LinkedHashSet<>();
-    for (ReconcileScope.ScopedCaptureRequest request : scopedCaptureRequests) {
-      Optional<StatsTarget> decodedTarget =
-          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec());
-      if (decodedTarget.isEmpty()
-          || decodedTarget.get().getTargetCase() != StatsTarget.TargetCase.TABLE) {
-        continue;
-      }
-      selectors.addAll(normalizeSelectors(request.columnSelectors()));
-    }
-    return selectors;
   }
 
   private ConnectorConfig resolveCredentials(

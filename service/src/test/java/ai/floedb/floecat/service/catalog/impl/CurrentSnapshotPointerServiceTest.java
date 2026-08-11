@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository.CurrentSnapshotPointerUpdateResult;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
@@ -75,7 +76,7 @@ class CurrentSnapshotPointerServiceTest {
 
     service.maybeAdvance(tableId, candidate, "corr");
 
-    verify(service.rootWriter).commitSnapshotEntry(tableId, candidate);
+    verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
     // The pointer id did not move, so there is no currency to reconcile.
     verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
   }
@@ -92,17 +93,23 @@ class CurrentSnapshotPointerServiceTest {
 
     service.maybeAdvance(tableId, candidate, "corr");
 
-    verify(service.rootWriter).commitSnapshotEntry(tableId, candidate);
+    verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
     verify(service.rootWriter).commitStatsGeneration(tableId, 7L);
   }
 
   @Test
-  void advanceCommitsTheSnapshotEntryOntoTheTableRoot() {
+  void advanceCommitsTheSnapshotEntryWhenObservationTimestampsDiffer() {
     var candidate =
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(7L)
             .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1_000L))
+            .setReuseManifestRef(
+                ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef.newBuilder()
+                    .setUri("s3://tbl/reuse-7.pb")
+                    .setPayloadBytes(10L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]))
+                    .setStatsGenerationManifestUri("s3://tbl/stats/7/reuse-gen.pb"))
             .build();
     var roots =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(
@@ -111,15 +118,27 @@ class CurrentSnapshotPointerServiceTest {
     var tableRepo = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     service.rootWriter =
         new TableRootWriter(
-            roots, new TableRootCommitter(roots), tableRepo, service.snapshotRepo, null, null);
+            roots,
+            new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
+            tableRepo,
+            service.snapshotRepo,
+            null,
+            null);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
         .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+    when(service.snapshotRepo.getById(tableId, 7L)).thenReturn(Optional.of(candidate));
+    var observationTime = new java.util.concurrent.atomic.AtomicLong();
     when(service.snapshotRepo.metaForSafe(tableId, 7L))
-        .thenReturn(
-            ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
-                .setBlobUri("s3://tbl/snap-7.pb")
-                .setEtag("etag-s7")
-                .build());
+        .thenAnswer(
+            ignored ->
+                ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+                    .setPointerVersion(1L)
+                    .setBlobUri("s3://tbl/snap-7.pb")
+                    .setEtag("etag-s7")
+                    .setUpdatedAt(
+                        com.google.protobuf.util.Timestamps.fromMillis(
+                            observationTime.incrementAndGet()))
+                    .build());
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(
             ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
@@ -139,5 +158,66 @@ class CurrentSnapshotPointerServiceTest {
             .orElseThrow();
     assertEquals("s3://tbl/snap-7.pb", entry.getSnapshotRef().getUri());
     assertEquals("etag-s7", entry.getSnapshotRef().getVersion());
+    assertEquals("s3://tbl/stats/7/reuse-gen.pb", entry.getReuseStatsGenerationRef().getUri());
+  }
+
+  @Test
+  void rootPublicationConvergesOnSnapshotRevisionChangedDuringRead() {
+    Snapshot first =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(7L)
+            .setSchemaJson("{\"version\":1}")
+            .build();
+    Snapshot latest = first.toBuilder().setSchemaJson("{\"version\":2}").build();
+    var firstMeta =
+        ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+            .setPointerVersion(1L)
+            .setBlobUri("s3://tbl/snap-7-v1.pb")
+            .setEtag("etag-v1")
+            .build();
+    var latestMeta =
+        ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+            .setPointerVersion(2L)
+            .setBlobUri("s3://tbl/snap-7-v2.pb")
+            .setEtag("etag-v2")
+            .build();
+    var roots =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    var tableRepo = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
+    service.rootWriter =
+        new TableRootWriter(
+            roots,
+            new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
+            tableRepo,
+            service.snapshotRepo,
+            null,
+            null);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, first))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UNCHANGED);
+    when(service.snapshotRepo.metaForSafe(tableId, 7L))
+        .thenReturn(firstMeta, latestMeta, latestMeta, latestMeta);
+    when(service.snapshotRepo.getById(tableId, 7L))
+        .thenReturn(Optional.of(first), Optional.of(latest));
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(
+            ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+                .setBlobUri("s3://tbl/table.pb")
+                .setEtag("etag-t")
+                .build());
+
+    service.maybeAdvance(tableId, first, "corr");
+
+    var root = roots.get(tableId).orElseThrow();
+    var entry =
+        ai.floedb.floecat.service.repo.impl.SnapshotManifests.findEntry(
+                roots, root.getSnapshotManifestRef(), 7L)
+            .orElseThrow();
+    assertEquals("s3://tbl/snap-7-v2.pb", entry.getSnapshotRef().getUri());
+    assertEquals(
+        ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(latest),
+        entry.getSchemaFingerprint());
   }
 }

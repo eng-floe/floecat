@@ -153,7 +153,15 @@ definition/snapshot/generation-manifest/constraints blob they reference). A pinn
 its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes are fenced by a
 30 s min-age (`floecat.gc.cas.min-age-ms`, age since the blob was written), and any failed
 root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
-nothing is deleted that pass (fail closed). `PointerGc` removes
+nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
+are process-local. In a multi-replica deployment, enable `FLOECAT_GC_CAS_ENABLED=true` on exactly
+one designated control-plane replica only when all live query contexts are visible to that replica;
+otherwise leave it disabled. A retained account continuation is abandoned after
+`floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
+account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
+Snapshot compatibility artifacts under `snapshots/<id>/compat/` are gateway-managed mutable
+artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
+than this CAS sweep. `PointerGc` removes
 orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
 intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. The default finished reconcile-job retention window is 24 h
@@ -203,6 +211,10 @@ Notable `application.properties` keys:
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
+| `floecat.query.resolver.max_parallel_inputs` | Per-request query-input pin-resolution fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
+| `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
+| `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
+| `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

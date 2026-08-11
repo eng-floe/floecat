@@ -21,6 +21,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -87,7 +88,7 @@ public final class ConstraintTableUsageScanner implements SystemObjectScanner {
   private static SchemaColumn col(String name, boolean nullable) {
     return SchemaColumn.newBuilder()
         .setName(name)
-        .setLogicalType("VARCHAR")
+        .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
         .setNullable(nullable)
         .build();
   }

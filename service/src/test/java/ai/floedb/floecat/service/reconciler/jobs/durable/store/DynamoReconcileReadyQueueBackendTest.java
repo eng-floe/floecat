@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -26,16 +27,20 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend.ReadyQueueSlice;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import jakarta.enterprise.inject.Instance;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
 import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 
 class DynamoReconcileReadyQueueBackendTest {
 
@@ -96,6 +101,23 @@ class DynamoReconcileReadyQueueBackendTest {
   }
 
   @Test
+  void scanReadySliceUsesStronglyConsistentReads() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().build());
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers");
+    LeaseScanStats stats = new LeaseScanStats();
+    stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
+
+    backend.scanReadySlice(
+        new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""), 16, "", stats);
+
+    ArgumentCaptor<QueryRequest> request = ArgumentCaptor.forClass(QueryRequest.class);
+    verify(dynamoDb).query(request.capture());
+    assertTrue(request.getValue().consistentRead());
+  }
+
+  @Test
   void loadCanonicalSnapshotNormalizesAttemptTimeoutAsLeaseScanAbort() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.getItem(any(GetItemRequest.class)))
@@ -112,5 +134,62 @@ class DynamoReconcileReadyQueueBackendTest {
 
     assertFalse(error.callerCancelled());
     assertTrue(stats.abortedByDeadline);
+  }
+
+  @Test
+  void conditionalDeleteChecksCanonicalSnapshotAndReadyMappingAtomically() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers");
+    String canonical = Keys.reconcileJobPointerById("acct", "job");
+    String ready = Keys.reconcileReadyPointerByDue(1L, "acct", "lane", "job");
+    var entry =
+        ReadyQueueBackendSupport.decodeReadyQueueEntry(
+            ready,
+            canonical,
+            new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""));
+
+    assertTrue(
+        backend.deleteReadyEntry(entry, new CanonicalPointerSnapshot(canonical, "blob-v1", 7L)));
+
+    ArgumentCaptor<TransactWriteItemsRequest> request =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(request.capture());
+    assertEquals(2, request.getValue().transactItems().size());
+    assertTrue(
+        request
+            .getValue()
+            .transactItems()
+            .getFirst()
+            .conditionCheck()
+            .conditionExpression()
+            .contains("#v = :v"));
+    assertTrue(
+        request
+            .getValue()
+            .transactItems()
+            .get(1)
+            .delete()
+            .conditionExpression()
+            .contains("#canonical = :canonical"));
+  }
+
+  @Test
+  void conditionalDeleteTreatsConcurrentRefreshAsNotDeleted() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenThrow(TransactionCanceledException.builder().message("condition failed").build());
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers");
+    String canonical = Keys.reconcileJobPointerById("acct", "job");
+    String ready = Keys.reconcileReadyPointerByDue(1L, "acct", "lane", "job");
+    var entry =
+        ReadyQueueBackendSupport.decodeReadyQueueEntry(
+            ready,
+            canonical,
+            new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""));
+
+    assertFalse(
+        backend.deleteReadyEntry(entry, new CanonicalPointerSnapshot(canonical, "blob-v1", 7L)));
   }
 }

@@ -77,6 +77,10 @@ This lists all metrics currently available in the repository:
 | floecat.service.gc.reconcile_jobs.accounts.last_tick | GAUGE | count | v1 | Reconcile job GC accounts processed in the last completed tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.deleted.last_tick | GAUGE | count | v1 | Reconcile job GC pointer/blob deletes completed in the last completed tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.quarantined.last_tick | GAUGE | count | v1 | Unreadable reconcile job GC payloads retained in the last completed tick. | component, operation | component, operation |
+| floecat.service.metadata_io.admission.saturated_waits.total | COUNTER |  | v1 | Metadata-I/O admissions that found the concurrency ceiling saturated on arrival. | component, operation | component, operation |
+| floecat.service.metadata_io.admission.waiters | GAUGE | count | v1 | Threads waiting for metadata-I/O admission. | component, operation | component, operation |
+| floecat.service.metadata_io.permits.capacity | GAUGE | count | v1 | Configured process-wide metadata-I/O concurrency ceiling. | component, operation | component, operation |
+| floecat.service.metadata_io.permits.in_use | GAUGE | count | v1 | Metadata-I/O admission permits held by in-flight store calls. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
@@ -115,8 +119,9 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.store_misses.total | COUNTER |  | v1 | Stats store miss count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync.latency | TIMER | ms | v1 | End-to-end latency of a single sync-first resolution attempt including store reads. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync_outcomes.total | COUNTER |  | v1 | Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED, SKIPPED). | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
-| floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
-| floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
+| floecat.service.storage.account.gc_estimated_bytes | GAUGE | bytes | v1 | Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark. | account | account |
+| floecat.service.storage.account.gc_estimated_pointers | GAUGE |  | v1 | Pointer roots traversed by the latest per-account CAS GC mark. | account | account |
+| floecat.service.storage.account.gc_size_coverage | GAUGE | ratio | v1 | Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata. | account | account |
 | floecat.service.storage.partial_state.total | COUNTER |  | v1 | Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band. | operation, resource | operation, resource |
 
 <!-- METRICS:END -->

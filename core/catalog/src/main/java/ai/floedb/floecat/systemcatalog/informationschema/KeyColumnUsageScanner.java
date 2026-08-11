@@ -22,6 +22,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -91,7 +92,7 @@ public final class KeyColumnUsageScanner implements SystemObjectScanner {
   private static SchemaColumn col(String name, String type, boolean nullable) {
     return SchemaColumn.newBuilder()
         .setName(name)
-        .setLogicalType(type)
+        .setType(LogicalTypeProtoAdapter.parseToProto(type))
         .setNullable(nullable)
         .build();
   }

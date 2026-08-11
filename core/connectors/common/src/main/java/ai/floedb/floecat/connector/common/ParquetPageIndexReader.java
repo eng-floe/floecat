@@ -72,22 +72,30 @@ public final class ParquetPageIndexReader {
   }
 
   public List<FloecatConnector.ParquetPageIndexEntry> readEntries(Set<String> plannedFilePaths) {
+    return read(plannedFilePaths).entries();
+  }
+
+  public ReadResult read(Set<String> plannedFilePaths) {
     if (plannedFilePaths == null || plannedFilePaths.isEmpty()) {
-      return List.of();
+      return ReadResult.empty();
     }
     List<FloecatConnector.ParquetPageIndexEntry> out = new ArrayList<>();
+    List<FloecatConnector.ParquetRowGroup> rowGroups = new ArrayList<>();
     for (String filePath : plannedFilePaths) {
-      if (!isParquetPath(filePath)) {
-        continue;
-      }
-      out.addAll(readEntries(filePath));
+      ReadResult fileResult = read(filePath);
+      out.addAll(fileResult.entries());
+      rowGroups.addAll(fileResult.rowGroups());
     }
-    return List.copyOf(out);
+    return new ReadResult(out, rowGroups);
   }
 
   public List<FloecatConnector.ParquetPageIndexEntry> readEntries(String filePath) {
-    if (filePath == null || filePath.isBlank() || !isParquetPath(filePath)) {
-      return List.of();
+    return read(filePath).entries();
+  }
+
+  public ReadResult read(String filePath) {
+    if (filePath == null || filePath.isBlank()) {
+      return ReadResult.empty();
     }
     InputFile inputFile = parquetLookup.apply(filePath);
     try (ParquetFileReader reader = ParquetFileReader.open(inputFile)) {
@@ -95,9 +103,13 @@ public final class ParquetPageIndexReader {
       var schema = footer.getFileMetaData().getSchema();
       var parsedVersion = parsedVersion(footer.getFileMetaData().getCreatedBy());
       List<FloecatConnector.ParquetPageIndexEntry> out = new ArrayList<>();
+      List<FloecatConnector.ParquetRowGroup> rowGroups = new ArrayList<>();
       var blocks = footer.getBlocks();
       for (int rowGroupOrdinal = 0; rowGroupOrdinal < blocks.size(); rowGroupOrdinal++) {
         var block = blocks.get(rowGroupOrdinal);
+        rowGroups.add(
+            new FloecatConnector.ParquetRowGroup(
+                filePath, rowGroupOrdinal, clampInt(block.getRowCount())));
         try (PageReadStore pageStore = reader.readRowGroup(rowGroupOrdinal)) {
           for (var column : block.getColumns()) {
             String[] path = column.getPath().toArray();
@@ -125,9 +137,22 @@ public final class ParquetPageIndexReader {
           }
         }
       }
-      return List.copyOf(out);
+      return new ReadResult(out, rowGroups);
     } catch (IOException e) {
       throw new RuntimeException("Failed to read parquet page indexes for " + filePath, e);
+    }
+  }
+
+  public record ReadResult(
+      List<FloecatConnector.ParquetPageIndexEntry> entries,
+      List<FloecatConnector.ParquetRowGroup> rowGroups) {
+    public ReadResult {
+      entries = entries == null ? List.of() : List.copyOf(entries);
+      rowGroups = rowGroups == null ? List.of() : List.copyOf(rowGroups);
+    }
+
+    public static ReadResult empty() {
+      return new ReadResult(List.of(), List.of());
     }
   }
 
@@ -253,7 +278,11 @@ public final class ParquetPageIndexReader {
               typedStats.minDecimal128Unscaled(),
               typedStats.maxDecimal128Unscaled(),
               typedStats.minDecimal256Unscaled(),
-              typedStats.maxDecimal256Unscaled()));
+              typedStats.maxDecimal256Unscaled(),
+              column.getPrimitiveType().getId() == null
+                  ? null
+                  : column.getPrimitiveType().getId().intValue(),
+              Set.of()));
       firstRowIndex += rowCount;
       pageOrdinal += 1;
     }
@@ -327,14 +356,6 @@ public final class ParquetPageIndexReader {
   private static int safeAdd(int left, int right) {
     long sum = (long) left + right;
     return sum > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, sum);
-  }
-
-  private static boolean isParquetPath(String filePath) {
-    if (filePath == null || filePath.isBlank()) {
-      return false;
-    }
-    String normalized = filePath.toLowerCase();
-    return normalized.endsWith(".parquet") || normalized.endsWith(".parq");
   }
 
   private static Long nullIfNegative(long value) {

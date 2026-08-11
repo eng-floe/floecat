@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import ai.floedb.floecat.types.Hashing;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -90,6 +91,40 @@ class KeysTest {
   }
 
   @Test
+  void generationStatsAndIndexWrappersUseTheSameHashedTargetDirectory() {
+    String targetId = "file:s3://bucket/path/data.parquet";
+    String targetHash = Hashing.sha256Hex(targetId);
+
+    assertEquals(
+        "/accounts/a/tables/t/target-stats/0000000000000000007/generations/gen/"
+            + targetHash
+            + "/stats-sha.pb",
+        Keys.snapshotTargetStatsBlobUri("a", "t", 7L, "gen", targetId, "stats-sha"));
+    assertEquals(
+        "/accounts/a/tables/t/target-stats/0000000000000000007/generations/gen/"
+            + "index-artifacts/"
+            + targetHash
+            + "/index-sha.pb",
+        Keys.snapshotIndexArtifactGenerationBlobUri("a", "t", 7L, "gen", targetId, "index-sha"));
+  }
+
+  @Test
+  void generationManifestUriRecoversDecodedGenerationIdentity() {
+    assertEquals(
+        new Keys.GenerationKey(7L, "generation +/one"),
+        Keys.generationFromManifestBlobUri(
+            Keys.snapshotTargetStatsManifestBlobUri("account", "table", 7L, "generation +/one")));
+  }
+
+  @Test
+  void snapshotFinalizerStatsPrefixIsStableAcrossReplacementAttempts() {
+    assertEquals(
+        "/accounts/a/tables/t/target-stats/0000000000000000007/generations/"
+            + "full-rescan-parent/finalizer-outputs/",
+        Keys.reconcileSnapshotFinalizeStatsObjectPrefix("a", "t", 7L, "parent"));
+  }
+
+  @Test
   void tableIdFromSnapshotPointerKeyCoversEverySnapshotPointerShape() {
     // A transaction touching ANY snapshot pointer must schedule a root resync, not only the
     // current-snapshot pointer. The extractor recovers the (percent-decoded) table id from all
@@ -138,13 +173,13 @@ class KeysTest {
         Keys.snapshotConstraintsPointer("a c", "tbl 1", 7L),
         Keys.ownerPointerKeyForBlob(Keys.snapshotConstraintsBlobUri("a c", "tbl 1", 7L, "sha")));
     assertEquals(
+        Keys.snapshotIndexArtifactCaptureManifestPointer("a c", "tbl 1", 7L),
+        Keys.ownerPointerKeyForBlob(
+            Keys.snapshotIndexArtifactCaptureManifestBlobUri("a c", "tbl 1", 7L, "sha manifest")));
+    assertEquals(
         Keys.snapshotTargetStatsManifestPointer("a c", "tbl 1", 7L),
         Keys.ownerPointerKeyForBlob(
             Keys.snapshotTargetStatsManifestBlobUri("a c", "tbl 1", 7L, "gen 1")));
-    assertEquals(
-        Keys.snapshotTargetStatsGenerationPointer("a c", "tbl 1", 7L, "gen 1", "tgt 1"),
-        Keys.ownerPointerKeyForBlob(
-            Keys.snapshotTargetStatsBlobUri("a c", "tbl 1", 7L, "gen 1", "tgt 1", "sha")));
     // Blob LISTs return keys without the leading slash — same derivation.
     assertEquals(
         Keys.tablePointerById("a c", "tbl 1"),
@@ -155,12 +190,17 @@ class KeysTest {
   void ownerPointerKeyForBlobIsNullWhereNoSingleOwnerIsDerivable() {
     // Root manifest pages are referenced from TableRoot blob content, not by any pointer.
     assertEquals(null, Keys.ownerPointerKeyForBlob(Keys.snapshotManifestBlobUri("a", "t", "sha")));
-    // Per-target stats and file-stats blobs carry no snapshot id in the key, so their owning
-    // /snapshots/<snapshot_id>/stats/... pointers cannot be derived.
+    // Generation stats and index wrappers carry only a bounded target hash, so their owning
+    // target pointer cannot be reconstructed from the blob key.
     assertEquals(
-        null, Keys.ownerPointerKeyForBlob(Keys.snapshotTargetStatsBlobUri("a", "t", "tgt", "sha")));
+        null,
+        Keys.ownerPointerKeyForBlob(
+            Keys.snapshotTargetStatsBlobUri("a", "t", 7L, "gen", "target", "sha")));
     assertEquals(
-        null, Keys.ownerPointerKeyForBlob(Keys.snapshotFileStatsBlobUri("a", "t", "f", "sha")));
+        null,
+        Keys.ownerPointerKeyForBlob(
+            Keys.snapshotIndexArtifactGenerationBlobUri(
+                "a", "t", 7L, "gen", "file:s3://bucket/file.parquet", "sha")));
     assertEquals(null, Keys.ownerPointerKeyForBlob(null));
     assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/a"));
     assertEquals(null, Keys.ownerPointerKeyForBlob("/other/a/tables/t/table/sha.pb"));

@@ -27,6 +27,7 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import java.io.Closeable;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -330,32 +331,149 @@ public interface FloecatConnector extends Closeable {
         captureIndexes);
   }
 
+  /**
+   * Applies connector-specific selector semantics to decoded Parquet page-index entries.
+   *
+   * <p>An empty optional delegates selection to the generic physical-name policy. Connectors should
+   * return a present value for explicit selectors whose stable IDs or logical names need
+   * format-specific resolution.
+   */
+  default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      long snapshotId,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      List<ParquetPageIndexEntry> entries) {
+    Set<String> plannedFilePaths =
+        entries == null
+            ? Set.of()
+            : entries.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(ParquetPageIndexEntry::filePath)
+                .filter(path -> path != null && !path.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    Map<String, Map<Integer, Integer>> rowGroupsByFile = new LinkedHashMap<>();
+    if (entries != null) {
+      for (ParquetPageIndexEntry entry : entries) {
+        if (entry == null || entry.filePath().isBlank()) {
+          continue;
+        }
+        long rowGroupEnd = entry.firstRowIndex() + entry.rowCount();
+        int rowCount =
+            rowGroupEnd >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, rowGroupEnd);
+        rowGroupsByFile
+            .computeIfAbsent(entry.filePath(), ignored -> new LinkedHashMap<>())
+            .merge(entry.rowGroup(), rowCount, Math::max);
+      }
+    }
+    List<ParquetRowGroup> rowGroups = new java.util.ArrayList<>();
+    rowGroupsByFile.forEach(
+        (filePath, groups) ->
+            groups.forEach(
+                (rowGroup, rowCount) ->
+                    rowGroups.add(new ParquetRowGroup(filePath, rowGroup, rowCount))));
+    return selectPageIndexEntries(
+        namespaceFq,
+        tableName,
+        snapshotId,
+        selectors,
+        columnSelectorPolicy,
+        plannedFilePaths,
+        entries,
+        rowGroups);
+  }
+
+  /**
+   * Applies connector-specific selector semantics with complete planned-file and row-group
+   * metadata, including files for which no decodable page-index entry was produced.
+   */
+  default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
+      String namespaceFq,
+      String tableName,
+      long snapshotId,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
+    return Optional.empty();
+  }
+
   record FileGroupCaptureResult(
-      List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
+      List<TargetStatsRecord> statsRecords,
+      List<ParquetPageIndexEntry> pageIndexEntries,
+      List<ParquetRowGroup> pageIndexRowGroups,
+      List<String> realizedStatsSelectors) {
     public FileGroupCaptureResult {
       statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
       pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
+      pageIndexRowGroups = pageIndexRowGroups == null ? List.of() : List.copyOf(pageIndexRowGroups);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static FileGroupCaptureResult of(
         List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
-      return new FileGroupCaptureResult(statsRecords, pageIndexEntries);
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, List.of(), List.of());
+    }
+
+    public static FileGroupCaptureResult of(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, List.of(), realizedStatsSelectors);
+    }
+
+    public static FileGroupCaptureResult of(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<ParquetRowGroup> pageIndexRowGroups,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors);
     }
 
     public static FileGroupCaptureResult empty() {
-      return new FileGroupCaptureResult(List.of(), List.of());
+      return new FileGroupCaptureResult(List.of(), List.of(), List.of(), List.of());
     }
   }
 
-  record DirectSnapshotStatsCapture(List<TargetStatsRecord> records, int sourceFileCount) {
+  record ParquetRowGroup(String filePath, int rowGroup, int rowCount) {
+    public ParquetRowGroup {
+      filePath = filePath == null ? "" : filePath.trim();
+      rowGroup = Math.max(0, rowGroup);
+      rowCount = Math.max(0, rowCount);
+    }
+  }
+
+  record DirectSnapshotStatsCapture(
+      List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
     public DirectSnapshotStatsCapture {
       records = records == null ? List.of() : List.copyOf(records);
       sourceFileCount = Math.max(0, sourceFileCount);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static DirectSnapshotStatsCapture of(
-        List<TargetStatsRecord> records, int sourceFileCount) {
-      return new DirectSnapshotStatsCapture(records, sourceFileCount);
+        List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
+      return new DirectSnapshotStatsCapture(records, sourceFileCount, realizedStatsSelectors);
     }
   }
 
@@ -594,6 +712,7 @@ public interface FloecatConnector extends Closeable {
 
   record SnapshotBundle(
       long snapshotId,
+      /** The explicit predecessor snapshot ID, or {@code -1} when there is no predecessor. */
       long parentId,
       long upstreamCreatedAtMs,
       String schemaJson,
@@ -613,7 +732,10 @@ public interface FloecatConnector extends Closeable {
       String partitionDataJson,
       int partitionSpecId,
       List<Integer> equalityFieldIds,
-      Long sequenceNumber) {
+      Long sequenceNumber,
+      SnapshotDeletionVector deletionVector,
+      List<SnapshotIcebergDeleteFile> icebergDeleteFiles,
+      String contentIdentity) {
     public SnapshotFileEntry {
       filePath = filePath == null ? "" : filePath;
       fileFormat = fileFormat == null ? "" : fileFormat;
@@ -622,13 +744,54 @@ public interface FloecatConnector extends Closeable {
       fileContent = fileContent == null ? FileContent.FC_DATA : fileContent;
       partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
       equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+      icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
     }
   }
 
-  record SnapshotFilePlan(List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+  record SnapshotIcebergDeleteFile(
+      String filePath,
+      long fileSizeInBytes,
+      FileContent fileContent,
+      int partitionSpecId,
+      List<Integer> equalityFieldIds,
+      String contentIdentity) {
+    public SnapshotIcebergDeleteFile {
+      filePath = filePath == null ? "" : filePath;
+      fileSizeInBytes = Math.max(0L, fileSizeInBytes);
+      contentIdentity = contentIdentity == null ? "" : contentIdentity.trim();
+      fileContent = fileContent == null ? FileContent.FC_UNSPECIFIED : fileContent;
+      equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+    }
+  }
+
+  record SnapshotDeletionVector(
+      String storageType,
+      String pathOrInlineDv,
+      Integer offset,
+      int sizeInBytes,
+      long cardinality) {
+    public SnapshotDeletionVector {
+      storageType = storageType == null ? "" : storageType.trim();
+      pathOrInlineDv = pathOrInlineDv == null ? "" : pathOrInlineDv;
+      sizeInBytes = Math.max(0, sizeInBytes);
+      cardinality = Math.max(0L, cardinality);
+    }
+  }
+
+  record SnapshotFilePlan(
+      List<SnapshotFileEntry> dataFiles,
+      List<SnapshotFileEntry> deleteFiles,
+      String executionSchemaJson) {
+    public SnapshotFilePlan(
+        List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+      this(dataFiles, deleteFiles, "");
+    }
+
     public SnapshotFilePlan {
       dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
       deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
+      executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
     }
   }
 
@@ -667,7 +830,9 @@ public interface FloecatConnector extends Closeable {
       byte[] minDecimal128Unscaled,
       byte[] maxDecimal128Unscaled,
       byte[] minDecimal256Unscaled,
-      byte[] maxDecimal256Unscaled) {
+      byte[] maxDecimal256Unscaled,
+      Integer parquetFieldId,
+      Set<String> selectorAliases) {
     public ParquetPageIndexEntry {
       filePath = filePath == null ? "" : filePath;
       columnName = columnName == null ? "" : columnName;
@@ -697,6 +862,18 @@ public interface FloecatConnector extends Closeable {
           maxDecimal256Unscaled == null
               ? null
               : java.util.Arrays.copyOf(maxDecimal256Unscaled, maxDecimal256Unscaled.length);
+      parquetFieldId = parquetFieldId == null || parquetFieldId <= 0 ? null : parquetFieldId;
+      LinkedHashSet<String> normalizedAliases = new LinkedHashSet<>();
+      if (!columnName.isBlank()) {
+        normalizedAliases.add(columnName.trim());
+      }
+      if (selectorAliases != null) {
+        selectorAliases.stream()
+            .filter(alias -> alias != null && !alias.isBlank())
+            .map(String::trim)
+            .forEach(normalizedAliases::add);
+      }
+      selectorAliases = Set.copyOf(normalizedAliases);
     }
 
     public ParquetPageIndexEntry(
@@ -754,7 +931,58 @@ public interface FloecatConnector extends Closeable {
           null,
           null,
           null,
-          null);
+          null,
+          null,
+          Set.of());
+    }
+
+    public ParquetPageIndexEntry withSelectorAliases(Set<String> aliases) {
+      return copyWith(parquetFieldId, aliases);
+    }
+
+    public ParquetPageIndexEntry withParquetFieldId(Integer fieldId) {
+      return copyWith(fieldId, selectorAliases);
+    }
+
+    private ParquetPageIndexEntry copyWith(Integer fieldId, Set<String> aliases) {
+      return new ParquetPageIndexEntry(
+          filePath,
+          columnName,
+          rowGroup,
+          pageOrdinal,
+          firstRowIndex,
+          rowCount,
+          liveRowCount,
+          pageHeaderOffset,
+          pageTotalCompressedSize,
+          dictionaryPageHeaderOffset,
+          dictionaryPageTotalCompressedSize,
+          requiresDictionaryPage,
+          parquetPhysicalType,
+          parquetCompression,
+          parquetMaxDefLevel,
+          parquetMaxRepLevel,
+          decimalPrecision,
+          decimalScale,
+          decimalBits,
+          minI32,
+          maxI32,
+          minI64,
+          maxI64,
+          minF32,
+          maxF32,
+          minF64,
+          maxF64,
+          minBool,
+          maxBool,
+          minUtf8,
+          maxUtf8,
+          minDecimal128Unscaled,
+          maxDecimal128Unscaled,
+          minDecimal256Unscaled,
+          maxDecimal256Unscaled,
+          fieldId,
+          aliases);
     }
   }
 

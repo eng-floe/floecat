@@ -72,6 +72,23 @@ class InboundContextInterceptorContextTest {
     assertEquals(null, MDC.get("correlation_id"));
   }
 
+  @Test
+  void populateMdcOwnsOnlyTheRequestIdsNotTheDispatchDimensions() {
+    // PropagatedContext relies on this split: it re-establishes the dispatching work's
+    // component/operation from its captured MDC snapshot and then calls populateMdc for the
+    // call-derived request ids. If populateMdc ever grew to write component/operation it would
+    // clobber the fan-out's own dimensions with the inbound RPC's, so pin the boundary here.
+    MDC.clear();
+    MDC.put("floecat_component", "query-resolver");
+    MDC.put("floecat_operation", "resolve-inputs");
+
+    InboundContextInterceptor.populateMdc(sampleContext());
+
+    assertEquals("query-resolver", MDC.get("floecat_component"));
+    assertEquals("resolve-inputs", MDC.get("floecat_operation"));
+    InboundContextInterceptor.clearMdc();
+  }
+
   private static ResolvedCallContext sampleContext() {
     return new ResolvedCallContext(
         PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("subject-1").build(),

@@ -186,7 +186,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           }
           if (canonicalSnapshot == null) {
             recordSkip(scanStats, "stale_pointer");
-            deleteStaleReadyEntry(candidate);
+            deleteStaleReadyEntry(candidate, null);
             continue;
           }
           var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
@@ -195,13 +195,13 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           }
           if (recordOpt.isEmpty()) {
             recordSkip(scanStats, "missing_record");
-            deleteStaleReadyEntry(candidate);
+            deleteStaleReadyEntry(candidate, canonicalSnapshot);
             continue;
           }
           StoredReconcileJob record = recordOpt.get();
           if ("JS_WAITING".equals(record.state)) {
             recordSkip(scanStats, "waiting");
-            deleteStaleReadyEntry(candidate);
+            deleteStaleReadyEntry(candidate, canonicalSnapshot);
             continue;
           }
           ReadyQueuePruneSupport.ReadyEntryPruneReason pruneReason =
@@ -209,12 +209,12 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                   candidate, this, record, blockedByCancellation);
           if (pruneReason == ReadyQueuePruneSupport.ReadyEntryPruneReason.CANCELLATION_BLOCKED) {
             recordSkip(scanStats, "cancellation_blocked");
-            deleteStaleReadyEntry(candidate);
+            deleteStaleReadyEntry(candidate, canonicalSnapshot);
             continue;
           }
           if (pruneReason == ReadyQueuePruneSupport.ReadyEntryPruneReason.STALE) {
             recordSkip(scanStats, "pointer_mismatch");
-            deleteStaleReadyEntry(candidate);
+            deleteStaleReadyEntry(candidate, canonicalSnapshot);
             continue;
           }
           // Not stale, just not eligible for this requester: leave the pointer for another lane.
@@ -285,29 +285,29 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
             .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
             .orElse(null);
     if (currentSnapshot == null) {
-      deleteStaleReadyEntry(candidate);
+      deleteStaleReadyEntry(candidate, null);
       return "lease_race_missing";
     }
     var currentRecordOpt = jobIndexStore.readRecord(currentSnapshot);
     if (currentRecordOpt.isEmpty()) {
-      deleteStaleReadyEntry(candidate);
+      deleteStaleReadyEntry(candidate, currentSnapshot);
       return "lease_race_missing";
     }
     StoredReconcileJob currentRecord = currentRecordOpt.get();
     String state = blankToEmpty(currentRecord.state);
     if (isTerminalState(state)) {
-      deleteStaleReadyEntry(candidate);
+      deleteStaleReadyEntry(candidate, currentSnapshot);
       return "lease_race_terminal";
     }
     if ("JS_RUNNING".equals(state)) {
       return "lease_race_running";
     }
     if (!"JS_QUEUED".equals(state)) {
-      deleteStaleReadyEntry(candidate);
+      deleteStaleReadyEntry(candidate, currentSnapshot);
       return "lease_race_not_queued";
     }
     if (!readyPointerMatchesRecord(candidate, currentRecord)) {
-      deleteStaleReadyEntry(candidate);
+      deleteStaleReadyEntry(candidate, currentSnapshot);
       return "lease_race_pointer_mismatch";
     }
     if (!matchesLeaseRequest(currentRecord, request)) {
@@ -319,11 +319,12 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     return "lease_race";
   }
 
-  private void deleteStaleReadyEntry(ReadyQueueEntry candidate) {
+  private void deleteStaleReadyEntry(
+      ReadyQueueEntry candidate, CanonicalPointerSnapshot canonicalSnapshot) {
     if (candidate == null || blank(candidate.readyPointerKey())) {
       return;
     }
-    readyQueueBackend.deleteReadyEntry(candidate.readyPointerKey());
+    readyQueueBackend.deleteReadyEntry(candidate, canonicalSnapshot);
   }
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {

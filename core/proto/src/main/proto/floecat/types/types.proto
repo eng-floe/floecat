@@ -59,7 +59,46 @@ message LogicalType {
   optional int32 interval_leading_precision = 6;
   // Fractional seconds precision for INTERVAL (applies when range includes SECOND).
   optional int32 interval_fractional_precision = 7;
-  map<string,string> params = 99;
+
+  // Recursive shape for complex kinds. Set for TK_ARRAY/TK_MAP/TK_STRUCT when the nested
+  // structure is known; a complex kind without a shape is the legacy non-parameterised
+  // container tag. A StructShape with zero fields is an explicitly known empty struct
+  // (distinct from an unset shape). Never set for scalar kinds or TK_VARIANT.
+  oneof shape {
+    ArrayShape array = 20;
+    MapShape map = 21;
+    StructShape struct = 22;
+  }
+
+  reserved 99;
+  reserved "params";
+}
+
+// Nullability is encoded as *required* so the proto3 default (false) is the safe direction:
+// a producer that forgets to set it declares the child nullable, which can only cost
+// performance — never correctness. (A forgotten "nullable=false" would license consumers to
+// skip null handling.) This also matches the upstream vocabulary the connectors read
+// (Iceberg element-required / value-required / required).
+message ArrayShape {
+  LogicalType element = 1;
+  bool element_required = 2;
+}
+
+message MapShape {
+  // Map keys carry no nullability: they are always required.
+  LogicalType key = 1;
+  LogicalType value = 2;
+  bool value_required = 3;
+}
+
+message StructShape {
+  repeated LogicalField fields = 1;
+}
+
+message LogicalField {
+  string name = 1;
+  LogicalType type = 2;
+  bool required = 3;
 }
 
 message ScalarValue {

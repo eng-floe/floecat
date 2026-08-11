@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -39,10 +40,12 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -50,8 +53,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   private static final Observability NOOP_OBSERVABILITY = new NoopObservability();
   private static volatile Observability cachedObservability;
 
-  protected PointerStore pointerStore;
-  protected BlobStore blobStore;
+  protected PointerStore mutationPointerStore;
+  protected BlobStore mutationBlobStore;
+  protected RepositoryReads mutationReads;
+  protected RepositoryReads.Pointers pointerReads;
+  protected RepositoryReads.Blobs blobReads;
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
@@ -123,23 +129,50 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected BaseResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(pointerStore, blobStore, parser, toBytes, contentType, null);
+    this(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, null);
   }
 
   protected BaseResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
       ImmutableBlobCache blobCache) {
-    this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
-    this.blobStore = Objects.requireNonNull(blobStore, "blobs");
+    this(
+        mutationPointerStore,
+        mutationBlobStore,
+        parser,
+        toBytes,
+        contentType,
+        blobCache,
+        RepositoryReads.direct(mutationPointerStore, mutationBlobStore));
+  }
+
+  /**
+   * Compose raw stores for mutation transactions with the read capabilities selected for this
+   * repository family. Reads performed as part of a write protocol stay on the raw stores so the
+   * protocol retains one direct consistency boundary.
+   */
+  protected BaseResourceRepository(
+      PointerStore mutationPointerStore,
+      BlobStore mutationBlobStore,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache,
+      RepositoryReads reads) {
+    this.mutationPointerStore =
+        Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
+    this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
+    this.mutationReads = RepositoryReads.direct(mutationPointerStore, mutationBlobStore);
+    this.pointerReads = Objects.requireNonNull(reads, "reads").pointers();
+    this.blobReads = reads.blobs();
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
@@ -165,7 +198,28 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected Optional<T> read(String key) {
-    var pointerStoreOpt = pointerStore.get(key);
+    return read(key, pointerReads, this::loadAndParseReferencedBlob);
+  }
+
+  /** Read one mutation prerequisite through the raw stores that own the write protocol. */
+  protected final Optional<T> readForMutation(String key) {
+    return read(
+        key,
+        mutationReads.pointers(),
+        (pointerKey, blobUri) ->
+            loadAndParseReferencedBlob(pointerKey, blobUri, mutationReads.blobs()));
+  }
+
+  /**
+   * Resolve one pointer with the selected read capability, loading its referenced blob through
+   * {@code blobLoader}. Cache hits preserve the selected boundary by avoiding the loader; a stable
+   * dangling pointer remains corruption, while a concurrently changed pointer reads as absent.
+   */
+  private Optional<T> read(
+      String key,
+      RepositoryReads.Pointers pointers,
+      BiFunction<String, String, Optional<T>> blobLoader) {
+    var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -174,14 +228,16 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     String blobUri = requireBlobReference(pointer, key);
     Optional<T> loaded =
         blobCacheable()
-            ? blobCache.get(blobUri, this::loadAndParseBlob)
-            : loadAndParseBlob(blobUri);
+            ? ReusableArtifactBundleUris.isBundleUri(blobUri)
+                ? blobCache.getProjection(blobUri, key, ignored -> blobLoader.apply(key, blobUri))
+                : blobCache.get(blobUri, ignored -> blobLoader.apply(key, blobUri))
+            : blobLoader.apply(key, blobUri);
     if (loaded.isPresent()) {
       return loaded;
     }
     // The pointed-at blob is absent: either the pointer moved/vanished under us (benign race) or
     // it genuinely dangles (corruption). Absence is never cached, so this re-check stays live.
-    if (pointerChangedOrDeleted(key, pointer)) {
+    if (pointerChangedOrDeleted(pointers, key, pointer)) {
       return Optional.empty();
     }
     throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
@@ -193,36 +249,81 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * semantics live here, once, for both pointer-resolved and blob-direct reads.
    */
   protected final Optional<T> loadAndParseBlob(String blobUri) {
-    try {
-      byte[] bytes = blobStore.get(blobUri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
-      return Optional.of(parser.parse(bytes));
-    } catch (StorageNotFoundException snf) {
+    byte[] bytes = loadBlob(blobReads, blobUri);
+    if (bytes == null) {
       return Optional.empty();
+    }
+    try {
+      return Optional.of(parser.parse(bytes));
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
-    } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + blobUri, e);
     }
   }
 
-  private boolean pointerChangedOrDeleted(String key, Pointer before) {
-    var after = pointerStore.get(key).orElse(null);
+  /** Decodes a pointer-resolved blob. Subclasses may select one record from a shared bundle. */
+  protected Optional<T> loadAndParseReferencedBlob(String pointerKey, String blobUri) {
+    return loadAndParseReferencedBlob(pointerKey, blobUri, blobReads);
+  }
+
+  /**
+   * Load and decode a referenced blob through the selected read capability. Missing blobs are
+   * returned as empty so the caller can distinguish a concurrent pointer change from corruption;
+   * storage and parse failures propagate with their existing repository semantics.
+   */
+  private Optional<T> loadAndParseReferencedBlob(
+      String pointerKey, String blobUri, RepositoryReads.Blobs blobs) {
+    byte[] bytes = loadBlob(blobs, blobUri);
+    if (bytes == null) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(parseReferencedBlob(pointerKey, blobUri, bytes));
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
+  }
+
+  /** Read one blob while preserving policy failures and normalizing the storage API's outcomes. */
+  private static byte[] loadBlob(RepositoryReads.Blobs blobs, String blobUri) {
+    try {
+      return blobs.get(blobUri);
+    } catch (StorageNotFoundException notFound) {
+      return null;
+    } catch (StorageAbortRetryableException retryable) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
+    }
+  }
+
+  protected T parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
+      throws Exception {
+    return parser.parse(bytes);
+  }
+
+  private boolean pointerChangedOrDeleted(
+      RepositoryReads.Pointers pointers, String key, Pointer before) {
+    var after = pointers.get(key).orElse(null);
     return after == null || !Objects.equals(after.getBlobUri(), before.getBlobUri());
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri) {
-    var reserve = PointerReferences.blobPointer(key, blobUri, 1L);
+    return reserveIndexOrIdempotent(key, blobUri, -1L);
+  }
 
-    if (pointerStore.compareAndSet(key, 0L, reserve)) {
+  private boolean reserveIndexOrIdempotent(String key, String blobUri, long referencedBytes) {
+    var reserve =
+        referencedBytes >= 0L
+            ? PointerReferences.blobPointer(key, blobUri, 1L, referencedBytes)
+            : PointerReferences.blobPointer(key, blobUri, 1L);
+
+    if (mutationPointerStore.compareAndSet(key, 0L, reserve)) {
       return true;
     }
 
-    var pointer = pointerStore.get(key).orElse(null);
+    var pointer = mutationPointerStore.get(key).orElse(null);
 
     if (pointer == null) {
       throw new AbortRetryableException("pointer suddenly vanished: " + key);
@@ -236,12 +337,16 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void reserveAllOrRollback(String... keyBlobPairs) {
+    reserveAllOrRollback(-1L, keyBlobPairs);
+  }
+
+  protected void reserveAllOrRollback(long referencedBytes, String... keyBlobPairs) {
     final var createdKeys = new ArrayList<String>(keyBlobPairs.length / 2);
     try {
       for (int i = 0; i < keyBlobPairs.length; i += 2) {
         final var key = keyBlobPairs[i];
         final var blobUri = keyBlobPairs[i + 1];
-        if (reserveIndexOrIdempotent(key, blobUri)) {
+        if (reserveIndexOrIdempotent(key, blobUri, referencedBytes)) {
           createdKeys.add(key);
         }
       }
@@ -263,6 +368,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void writeBlob(String blobUri, T value) {
+    writeBlobAndGetSize(blobUri, value);
+  }
+
+  /** Writes and verifies a blob, returning the serialized byte count already available to us. */
+  protected int writeBlobAndGetSize(String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
     String want = sha256B64(bytes);
 
@@ -270,12 +380,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     // (rewrites oscillate between content states), and CasBlobGc's min-age fence is anchored on
     // LastModified: skipping the PUT would leave a re-referenced old blob "already old" and thus
     // sweepable in a pass whose mark predates the pointer CAS (eng-floe/core#1904).
-    blobStore.put(blobUri, bytes, contentType);
-    var after = blobStore.head(blobUri);
+    mutationBlobStore.put(blobUri, bytes, contentType);
+    var after = mutationBlobStore.head(blobUri);
 
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
+    return bytes.length;
   }
 
   protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
@@ -287,9 +398,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     // No exists-with-matching-etag skip: see writeBlob — the PUT refreshes LastModified, which
     // the CAS GC's min-age fence depends on.
-    blobStore.put(blobUri, bytes, contentType);
+    mutationBlobStore.put(blobUri, bytes, contentType);
 
-    if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
+    if (!mutationBlobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
   }
@@ -299,7 +410,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     observeRepository(
         "advance_pointer",
         () -> {
-          var pointer = pointerStore.get(key).orElse(null);
+          var pointer = mutationPointerStore.get(key).orElse(null);
 
           if (pointer == null) {
             if (expectedVersion != 0L) {
@@ -307,11 +418,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
                   "missing pointer: " + key + " expected=" + expectedVersion);
             }
             var created = PointerReferences.blobPointer(key, blobUri, 1L);
-            if (pointerStore.compareAndSet(key, 0L, created)) {
+            if (mutationPointerStore.compareAndSet(key, 0L, created)) {
               return;
             }
 
-            var after = pointerStore.get(key).orElse(null);
+            var after = mutationPointerStore.get(key).orElse(null);
             if (after == null) {
               throw new AbortRetryableException("pointer vanished during create: " + key);
             }
@@ -336,11 +447,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
                   .setVersion(pointer.getVersion() + 1)
                   .setReferenceKind(ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_BLOB_URI)
                   .build();
-          if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+          if (mutationPointerStore.compareAndSet(key, expectedVersion, next)) {
             return;
           }
 
-          var after = pointerStore.get(key).orElse(null);
+          var after = mutationPointerStore.get(key).orElse(null);
           if (after == null) {
             throw new AbortRetryableException("pointer vanished during advance: " + key);
           }
@@ -371,7 +482,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           String token = "";
           do {
             var next = new StringBuilder();
-            out.addAll(pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next));
+            out.addAll(pointerReads.list(prefix, REFS_PAGE_SIZE, token, next));
             token = next.toString();
           } while (!token.isBlank());
           return out;
@@ -379,43 +490,75 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   public Optional<Pointer> refByPointer(String key) {
-    return observeRepository("ref_by_pointer", () -> pointerStore.get(key));
+    return observeRepository("ref_by_pointer", () -> pointerReads.get(key));
   }
+
+  public record KeyedValue<T>(String key, T value) {}
 
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut).stream()
+        .map(KeyedValue::value)
+        .toList();
+  }
+
+  protected List<KeyedValue<T>> listByPrefixWithKeys(
+      String prefix, int limit, String token, StringBuilder nextOut) {
     return observeRepository(
         "list_by_prefix",
         () -> {
-          var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
-          var uris = new ArrayList<String>(rows.size());
+          var rows = pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
+          var ordinaryUris = new ArrayList<String>(rows.size());
+          var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
           for (var row : rows) {
-            uris.add(requireBlobReference(row, row.getKey()));
+            String blobUri = requireBlobReference(row, row.getKey());
+            if (ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+              projectionKeys.add(new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()));
+            } else {
+              ordinaryUris.add(blobUri);
+            }
           }
 
           // Serve immutable blobs from the decoded cache and batch-fetch only the misses; fetched
           // misses are decoded once and populated back for the next page/scan of this data.
-          Map<String, T> cached =
-              blobCacheable() ? blobCache.getAllPresent(uris) : Map.<String, T>of();
-          var missUris = new ArrayList<String>(uris.size() - cached.size());
-          for (var uri : uris) {
-            if (!cached.containsKey(uri)) {
-              missUris.add(uri);
+          Map<String, T> cachedBlobs =
+              blobCacheable() ? blobCache.getAllPresent(ordinaryUris) : Map.<String, T>of();
+          Map<ImmutableBlobCache.ProjectionKey, T> cachedProjections =
+              blobCacheable()
+                  ? blobCache.getAllProjectionsPresent(projectionKeys)
+                  : Map.<ImmutableBlobCache.ProjectionKey, T>of();
+          var missUris = new LinkedHashSet<String>();
+          for (var row : rows) {
+            String blobUri = requireBlobReference(row, row.getKey());
+            boolean cached =
+                ReusableArtifactBundleUris.isBundleUri(blobUri)
+                    ? cachedProjections.containsKey(
+                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
+                    : cachedBlobs.containsKey(blobUri);
+            if (!cached) {
+              missUris.add(blobUri);
             }
           }
           var blobsMap =
-              missUris.isEmpty() ? Map.<String, byte[]>of() : blobStore.getBatch(missUris);
-          var blobs = new ArrayList<T>(rows.size());
+              missUris.isEmpty()
+                  ? Map.<String, byte[]>of()
+                  : blobReads.getBatch(new ArrayList<>(missUris));
+          var blobs = new ArrayList<KeyedValue<T>>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
-            T hit = cached.get(blobUri);
+            boolean projected = ReusableArtifactBundleUris.isBundleUri(blobUri);
+            T hit =
+                projected
+                    ? cachedProjections.get(
+                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
+                    : cachedBlobs.get(blobUri);
             if (hit != null) {
-              blobs.add(hit);
+              blobs.add(new KeyedValue<>(row.getKey(), hit));
               continue;
             }
             byte[] bytes = blobsMap.get(blobUri);
             if (bytes == null) {
-              var after = pointerStore.get(row.getKey()).orElse(null);
+              var after = pointerReads.get(row.getKey()).orElse(null);
               if (after == null || !Objects.equals(after.getBlobUri(), row.getBlobUri())) {
                 continue;
               }
@@ -423,11 +566,15 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             }
 
             try {
-              T parsed = parser.parse(bytes);
+              T parsed = parseReferencedBlob(row.getKey(), blobUri, bytes);
               if (blobCacheable()) {
-                blobCache.put(blobUri, parsed);
+                if (projected) {
+                  blobCache.putProjection(blobUri, row.getKey(), parsed);
+                } else {
+                  blobCache.put(blobUri, parsed);
+                }
               }
-              blobs.add(parsed);
+              blobs.add(new KeyedValue<>(row.getKey(), parsed));
             } catch (Exception e) {
               throw new CorruptionException("parse failed: " + blobUri, e);
             }
@@ -438,7 +585,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public int countByPrefix(String prefix) {
-    return observeRepository("count_by_prefix", () -> pointerStore.countByPrefix(prefix));
+    return observeRepository("count_by_prefix", () -> pointerReads.count(prefix));
   }
 
   protected static String sha256B64(byte[] data) {
@@ -455,7 +602,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta readMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
-    return readMetaOrDefault(pointerStore.get(pointerKey), pointerKey, blobUri, nowTs);
+    return readMetaOrDefault(pointerReads.get(pointerKey), pointerKey, blobUri, nowTs);
   }
 
   /**
@@ -464,7 +611,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    var header = blobStore.head(blobUri);
+    var header = blobReads.head(blobUri);
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
     String etag = header.map(BlobHeader::getEtag).orElse("");
 
@@ -490,9 +637,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void deletePointerOrThrow(String key, long expectedVersion) {
-    boolean ok = pointerStore.compareAndDelete(key, expectedVersion);
+    boolean ok = mutationPointerStore.compareAndDelete(key, expectedVersion);
     if (!ok) {
-      var cur = pointerStore.get(key).orElse(null);
+      var cur = mutationPointerStore.get(key).orElse(null);
 
       if (cur == null) {
         throw new NotFoundException("pointer already deleted: " + key);
@@ -540,12 +687,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           int rowNumber = 0;
           do {
             var next = new StringBuilder();
-            var rows = pointerStore.listPointersByPrefix(prefix, limit, token, next);
+            var rows = pointerReads.list(prefix, limit, token, next);
 
             for (var r : rows) {
               rowNumber++;
               String blobUri = requireBlobReference(r, r.getKey());
-              var blobHeaderOpt = blobStore.head(blobUri);
+              var blobHeaderOpt = blobReads.head(blobUri);
               String etag = blobHeaderOpt.map(BlobHeader::getEtag).orElse("-");
               String created =
                   blobHeaderOpt
@@ -573,14 +720,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository(
         "dump_pointer",
         () -> {
-          var pointer = pointerStore.get(key).orElse(null);
+          var pointer = pointerReads.get(key).orElse(null);
 
           if (pointer == null) {
             return "pointer not found: " + key;
           }
 
           String blobUri = requireBlobReference(pointer, key);
-          var blobHeader = blobStore.head(blobUri);
+          var blobHeader = blobReads.head(blobUri);
           String etag = blobHeader.map(BlobHeader::getEtag).orElse("-");
           String created = blobHeader.map(h -> Timestamps.toString(h.getCreatedAt())).orElse("-");
           String modified =

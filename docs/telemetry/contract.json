@@ -550,6 +550,46 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.metadata_io.admission.saturated_waits.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Metadata-I/O admissions that found the concurrency ceiling saturated on arrival.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.admission.waiters",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Threads waiting for metadata-I/O admission.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.permits.capacity",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Configured process-wide metadata-I/O concurrency ceiling.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.metadata_io.permits.in_use",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Metadata-I/O admission permits held by in-flight store calls.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
@@ -930,22 +970,32 @@
     "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
   },
   {
-    "name": "floecat.service.storage.account.bytes",
+    "name": "floecat.service.storage.account.gc_estimated_bytes",
     "type": "GAUGE",
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
-    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
+    "description": "Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
   {
-    "name": "floecat.service.storage.account.pointers",
+    "name": "floecat.service.storage.account.gc_estimated_pointers",
     "type": "GAUGE",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Per-account pointer count stored in the service.",
+    "description": "Pointer roots traversed by the latest per-account CAS GC mark.",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
+    "name": "floecat.service.storage.account.gc_size_coverage",
+    "type": "GAUGE",
+    "unit": "ratio",
+    "since": "v1",
+    "origin": "service",
+    "description": "Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },

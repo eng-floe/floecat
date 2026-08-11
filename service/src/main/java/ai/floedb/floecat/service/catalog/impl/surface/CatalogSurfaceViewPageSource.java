@@ -61,7 +61,11 @@ final class CatalogSurfaceViewPageSource
 
   @Override
   public List<View> listRepo(int limit, String cursor, StringBuilder next) {
-    return repo.list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next);
+    return repo
+        .list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next)
+        .stream()
+        .map(CatalogSurfaceViews::withUpgradedOutputColumns)
+        .toList();
   }
 
   @Override

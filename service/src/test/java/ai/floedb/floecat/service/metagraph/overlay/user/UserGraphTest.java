@@ -88,7 +88,10 @@ class UserGraphTest {
     principalProvider = new FakePrincipalProvider("account");
     tableRootRepository =
         new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    rootCommitter = new TableRootCommitter(tableRootRepository);
+    rootCommitter =
+        new TableRootCommitter(
+            tableRootRepository,
+            new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     graph =
         new UserGraph(
             catalogRepository,

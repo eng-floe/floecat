@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,10 +32,14 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -42,16 +47,21 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
+import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
+import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -65,8 +75,22 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class ReconcileExecutorControlImplTest {
+
+  @Test
+  void snapshotFinalizeInputKeepsFieldTenReservedAndUsesFieldNineteenForPlanUri() {
+    var descriptor = LeasedSnapshotFinalizeInput.getDescriptor();
+
+    assertEquals(null, descriptor.findFieldByNumber(10));
+    assertEquals(19, descriptor.findFieldByName("snapshot_plan_uri").getNumber());
+    assertTrue(descriptor.toProto().getReservedNameList().contains("snapshot_task"));
+    assertTrue(
+        descriptor.toProto().getReservedRangeList().stream()
+            .anyMatch(range -> range.getStart() == 10 && range.getEnd() == 11));
+  }
+
   private ReconcileExecutorControlImpl service;
 
   @BeforeEach
@@ -81,6 +105,7 @@ class ReconcileExecutorControlImplTest {
     service.leasedSnapshotFinalizeInputService = mock(LeasedSnapshotFinalizeInputService.class);
     service.leasedSnapshotFinalizeExecutionService =
         mock(LeasedSnapshotFinalizeExecutionService.class);
+    service.leasedPlannerWorkerService = mock(LeasedPlannerWorkerService.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -209,6 +234,13 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void leaseReconcileJobUsesExecutorAwareLeaseFilterAndMapsLease() {
+    ReconcileCapturePolicy capturePolicy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+            Map.of("engine.option", "enabled"));
     when(service.jobs.leaseNext(any()))
         .thenReturn(
             Optional.of(
@@ -218,7 +250,7 @@ class ReconcileExecutorControlImplTest {
                     "connector-1",
                     false,
                     CaptureMode.METADATA_AND_CAPTURE,
-                    ReconcileScope.of(java.util.List.of(), "orders"),
+                    ReconcileScope.of(java.util.List.of(), "orders", List.of(), capturePolicy),
                     ReconcileExecutionPolicy.of(
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
                     "lease-1",
@@ -241,6 +273,13 @@ class ReconcileExecutorControlImplTest {
     assertEquals("job-1", response.getJob().getJobId());
     assertEquals("connector-1", response.getJob().getConnectorId().getId());
     assertEquals("orders", response.getJob().getScope().getDestinationTableId());
+    assertEquals(
+        "enabled",
+        response
+            .getJob()
+            .getScope()
+            .getCapturePolicy()
+            .getPropertiesOrDefault("engine.option", ""));
     assertEquals("remote-executor", response.getJob().getPinnedExecutorId());
     verify(service.jobs)
         .leaseNext(
@@ -250,6 +289,124 @@ class ReconcileExecutorControlImplTest {
                         && request.executionClasses.contains(ReconcileExecutionClass.HEAVY)
                         && request.lanes.contains("remote")
                         && request.executorIds.contains("remote-executor")));
+  }
+
+  @Test
+  void leaseReconcileJobPreservesSnapshotIndexPredecessor() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders").withIndexPredecessor(predecessor);
+    when(service.jobs.leaseNext(any()))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+
+    var response =
+        service
+            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getJob().getSnapshotTask().hasIndexPredecessor());
+    assertEquals(
+        "generation-1",
+        response.getJob().getSnapshotTask().getIndexPredecessor().getGenerationId());
+    assertEquals(
+        7L, response.getJob().getSnapshotTask().getIndexPredecessor().getActivePointerVersion());
+  }
+
+  @Test
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  void submitPlanSnapshotChunkPreservesReusableArtifactContract() {
+    byte[] payloadSha256 = new byte[32];
+    payloadSha256[0] = 1;
+    payloadSha256[31] = 4;
+    var executionPlan =
+        ai.floedb.floecat.reconciler.rpc.FileExecutionPlan.newBuilder()
+            .setFilePath("s3://bucket/data.parquet")
+            .setFileSizeInBytes(100L)
+            .setFileFormat("PARQUET")
+            .setContentIdentity("delta-add-v1:1234::")
+            .setSourceFingerprint("stats-source")
+            .setIndexSourceFingerprint("index-source")
+            .setStatsCaptureSignature("stats-signature")
+            .setIndexCaptureSignature("index-signature")
+            .putAuxiliaryStatsFingerprints("s3://bucket/dv.bin", "dv-fingerprint")
+            .addReusableArtifactBundleSelections(
+                ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleSelection.newBuilder()
+                    .setArtifact(
+                        ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                            .setTargetStorageId("bundle:abc")
+                            .setPayloadUri("s3://artifacts/reuse-bundle.pb")
+                            .setPayloadBytes(321L)
+                            .setPayloadSha256(
+                                com.google.protobuf.ByteString.copyFrom(payloadSha256)))
+                    .addStatsFilePaths("s3://bucket/data.parquet")
+                    .addIndexFilePaths("s3://bucket/data.parquet"))
+            .build();
+    SubmitLeasedPlanSnapshotResultRequest request =
+        SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+            .setJobId("job-1")
+            .setLeaseEpoch("lease-1")
+            .setChunk(
+                SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder()
+                    .addFileGroupJobs(
+                        PlannedFileGroupPlanJob.newBuilder()
+                            .setFileGroupTask(
+                                ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask.newBuilder()
+                                    .setPlanId("plan-1")
+                                    .setGroupId("group-1")
+                                    .setTableId("table-1")
+                                    .setSnapshotId(55L)
+                                    .addFilePaths("s3://bucket/data.parquet")
+                                    .addFileExecutionPlans(executionPlan))))
+            .build();
+    when(service.leasedPlannerWorkerService.persistPlanSnapshotFileGroupChunk(
+            any(), eq("job-1"), eq("lease-1"), any(), any(), any()))
+        .thenReturn(true);
+
+    var response = service.submitLeasedPlanSnapshotResult(request).await().indefinitely();
+
+    assertTrue(response.getAccepted());
+    ArgumentCaptor<List<PlannedFileGroupJob>> jobsCaptor =
+        ArgumentCaptor.forClass((Class) List.class);
+    verify(service.leasedPlannerWorkerService)
+        .persistPlanSnapshotFileGroupChunk(
+            any(), eq("job-1"), eq("lease-1"), any(), any(), jobsCaptor.capture());
+    ReconcileFileExecutionPlan mapped =
+        jobsCaptor.getValue().getFirst().fileGroupTask().fileExecutionPlans().getFirst();
+    assertEquals("delta-add-v1:1234::", mapped.contentIdentity());
+    assertEquals("stats-source", mapped.sourceFingerprint());
+    assertEquals("index-source", mapped.indexSourceFingerprint());
+    assertEquals("stats-signature", mapped.statsCaptureSignature());
+    assertEquals("index-signature", mapped.indexCaptureSignature());
+    assertEquals("dv-fingerprint", mapped.auxiliaryStatsFingerprints().get("s3://bucket/dv.bin"));
+    assertEquals(1, mapped.reusableArtifactBundleSelections().size());
+    var selection = mapped.reusableArtifactBundleSelections().getFirst();
+    assertEquals("bundle:abc", selection.targetStorageId());
+    assertEquals("s3://artifacts/reuse-bundle.pb", selection.payloadUri());
+    assertEquals(321L, selection.payloadBytes());
+    assertArrayEquals(payloadSha256, selection.payloadSha256());
+    assertEquals(List.of("s3://bucket/data.parquet"), selection.statsFilePaths());
+    assertEquals(List.of("s3://bucket/data.parquet"), selection.indexFilePaths());
   }
 
   @Test
@@ -517,54 +674,22 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void submitLeasedFileGroupExecutionResultRoutesChunk() {
-    when(service.leasedFileGroupExecutionService.persistChunk(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(3), any(), any()))
-        .thenReturn(true);
-
-    var response =
-        service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
-                    .setJobId("job-1")
-                    .setLeaseEpoch("lease-1")
-                    .setChunk(
-                        SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
-                            .setResultId("result-1")
-                            .setChunkIndex(3)
-                            .build())
-                    .build())
-            .await()
-            .indefinitely();
-
-    assertTrue(response.getAccepted());
-    verify(service.leasedFileGroupExecutionService)
-        .persistChunk(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(3), any(), any());
-  }
-
-  @Test
-  void submitLeasedFileGroupExecutionResultRoutesSuccessCompletion() {
+  void commitLeasedFileGroupResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(2), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any()))
         .thenReturn(true);
 
     var response =
         service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            .commitLeasedFileGroupResult(
+                CommitLeasedFileGroupResultRequest.newBuilder()
                     .setJobId("job-1")
                     .setLeaseEpoch("lease-1")
                     .setSuccess(
-                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                        CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
-                            .setChunkCount(2)
-                            .addFileResults(
-                                ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
-                                    .setFilePath("s3://bucket/file-1.parquet")
-                                    .setState(
-                                        ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State
-                                            .RFRS_SUCCEEDED)
-                                    .build())
+                            .setResultDescriptor(fileGroupResultDescriptor())
+                            .setArtifactBundle(fileGroupArtifactBundle())
                             .build())
                     .build())
             .await()
@@ -572,27 +697,43 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(2), any());
+        .persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            argThat(
+                descriptor ->
+                    descriptor.indexPredecessor() != null
+                        && descriptor.indexPredecessor().generationId().equals("generation-1")
+                        && descriptor.indexPredecessor().activePointerVersion() == 7L
+                        && descriptor
+                            .indexPredecessor()
+                            .captureManifestUri()
+                            .equals("/capture-1.pb")
+                        && descriptor.indexPredecessor().captureManifestPointerVersion() == 9L),
+            any());
   }
 
   @Test
-  void submitLeasedFileGroupExecutionResultAllowsRunningLeafToFinishAfterConnectorDelete() {
+  void commitLeasedFileGroupResultAllowsRunningLeafToFinishAfterConnectorDelete() {
     service.connectorRepo = mock(ConnectorRepository.class);
     when(service.connectorRepo.existsById(any())).thenReturn(false);
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), eq(1), any()))
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any()))
         .thenReturn(true);
 
     var response =
         service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            .commitLeasedFileGroupResult(
+                CommitLeasedFileGroupResultRequest.newBuilder()
                     .setJobId("leaf-1")
                     .setLeaseEpoch("lease-1")
                     .setSuccess(
-                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                        CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
-                            .setChunkCount(1)
+                            .setResultDescriptor(fileGroupResultDescriptor())
+                            .setArtifactBundle(fileGroupArtifactBundle())
                             .build())
                     .build())
             .await()
@@ -600,7 +741,59 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), eq(1), any());
+        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any());
+  }
+
+  @Test
+  void listLeasedSnapshotFileGroupResultsPreservesIndexPredecessor() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var descriptor =
+        new ReconcileFileGroupResultDescriptor(
+            1,
+            "acct",
+            "connector",
+            "parent-1",
+            "job-1",
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            "lease-1",
+            "result-1",
+            "/result.pb",
+            100L,
+            java.util.Base64.getEncoder().encodeToString("sha256".getBytes()),
+            1,
+            1,
+            0,
+            0,
+            0,
+            1,
+            "/stats.pb",
+            1,
+            "0".repeat(64),
+            predecessor,
+            1L);
+    when(service.leasedSnapshotFinalizeInputService.descriptorPage(
+            any(), eq("job-1"), eq("lease-1"), eq(200), eq("")))
+        .thenReturn(new LeasedSnapshotFinalizeInputService.DescriptorPage(List.of(descriptor), ""));
+
+    var response =
+        service
+            .listLeasedSnapshotFileGroupResults(
+                ListLeasedSnapshotFileGroupResultsRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getDescriptorsCount());
+    assertEquals(
+        "generation-1", response.getDescriptors(0).getIndexPredecessor().getGenerationId());
+    assertEquals(7L, response.getDescriptors(0).getIndexPredecessor().getActivePointerVersion());
   }
 
   @Test
@@ -622,19 +815,12 @@ class ReconcileExecutorControlImplTest {
                 "",
                 0,
                 4,
-                ReconcileSnapshotTask.of(
-                    "table-1",
-                    55L,
-                    "db",
-                    "events",
-                    List.of(
-                        ReconcileFileGroupTask.of(
-                            "plan-1",
-                            "group-1",
-                            "table-1",
-                            55L,
-                            List.of("s3://bucket/file-1.parquet"))),
-                    true)));
+                "/accounts/acct/reconcile/jobs/parent-1/snapshot-plan/blob.json",
+                1,
+                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                new ai.floedb.floecat.service.repo.impl.IndexArtifactRepository
+                    .GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L)));
 
     var response =
         service
@@ -656,8 +842,17 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getFinalizeMode());
     assertEquals(false, response.getInput().getFullRescan());
     assertEquals(4, response.getInput().getSourceFileCount());
-    assertEquals(1, response.getInput().getSnapshotTask().getFileGroupsCount());
-    assertEquals("group-1", response.getInput().getSnapshotTask().getFileGroups(0).getGroupId());
+    assertEquals(1, response.getInput().getFileGroupCount());
+    assertEquals(
+        "/accounts/acct/reconcile/jobs/parent-1/snapshot-plan/blob.json",
+        response.getInput().getSnapshotPlanUri());
+    assertEquals(
+        "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
+        response.getInput().getStatsObjectPrefix());
+    assertEquals(
+        "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+        response.getInput().getCaptureManifestUri());
+    assertEquals("generation-1", response.getInput().getIndexPredecessor().getGenerationId());
   }
 
   @Test
@@ -679,14 +874,11 @@ class ReconcileExecutorControlImplTest {
                 "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
                 3,
                 6,
-                ReconcileSnapshotTask.of(
-                    "table-1",
-                    55L,
-                    "db",
-                    "events",
-                    List.of(),
-                    true,
-                    ReconcileSnapshotTask.CompletionMode.DIRECT_STATS)));
+                "",
+                0,
+                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                null));
 
     var response =
         service
@@ -707,16 +899,19 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getDirectStatsBlobUri());
     assertEquals(3, response.getInput().getDirectStatsRecordCount());
     assertEquals(6, response.getInput().getSourceFileCount());
-    assertEquals(
-        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_DIRECT_STATS,
-        response.getInput().getSnapshotTask().getCompletionMode());
+    assertEquals(0, response.getInput().getFileGroupCount());
   }
 
   @Test
   void submitLeasedSnapshotFinalizeResultRoutesSuccessCompletion() {
     when(service.leasedSnapshotFinalizeExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1")))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any()))
         .thenReturn(true);
+    SnapshotCaptureManifestDescriptor descriptor =
+        SnapshotCaptureManifestDescriptor.newBuilder()
+            .setFormatVersion(1)
+            .setManifestUri("/accounts/acct/reconcile/result-payloads/capture-manifest.pb")
+            .build();
 
     var response =
         service
@@ -727,6 +922,7 @@ class ReconcileExecutorControlImplTest {
                     .setSuccess(
                         SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
                             .setResultId("result-1")
+                            .setManifestDescriptor(descriptor)
                             .build())
                     .build())
             .await()
@@ -734,7 +930,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedSnapshotFinalizeExecutionService)
-        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"));
+        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(descriptor));
   }
 
   @Test
@@ -938,6 +1134,50 @@ class ReconcileExecutorControlImplTest {
   private static ReconcileJobStore.ReconcileJob job(
       String jobId, String accountId, ReconcileJobKind jobKind, String parentJobId) {
     return job(jobId, accountId, jobKind, parentJobId, "JS_QUEUED");
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor
+      fileGroupResultDescriptor() {
+    return ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor.newBuilder()
+        .setFormatVersion(1)
+        .setAccountId("acct")
+        .setConnectorId("connector")
+        .setParentJobId("parent-1")
+        .setFileGroupJobId("job-1")
+        .setPlanId("plan-1")
+        .setGroupId("group-1")
+        .setTableId("table-1")
+        .setSnapshotId(55L)
+        .setLeaseEpoch("lease-1")
+        .setResultId("result-1")
+        .setPayloadUri("/result.pb")
+        .setPayloadBytes(100L)
+        .setPayloadSha256(com.google.protobuf.ByteString.copyFromUtf8("sha256"))
+        .setPlannedFileCount(1)
+        .setSucceededFileCount(1)
+        .setStatsObjectPrefix("/stats.pb")
+        .setFileStatsRecordCount(1)
+        .setIndexPredecessor(
+            ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                .setGenerationId("generation-1")
+                .setActivePointerVersion(7L)
+                .setCaptureManifestUri("/capture-1.pb")
+                .setCaptureManifestPointerVersion(9L)
+                .build())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor
+      fileGroupArtifactBundle() {
+    return ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId("reuse-bundle:group-1")
+                .setPayloadUri("/stats/reuse-bundles/bundle.pb")
+                .setPayloadBytes(1L)
+                .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+        .addFileStatsTargetStorageIds("file:s3://bucket/file.parquet")
+        .build();
   }
 
   private static ReconcileJobStore.ReconcileJob job(

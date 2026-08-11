@@ -38,15 +38,19 @@ import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.IdempotencyRepositoryImpl;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -55,14 +59,17 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 class LeasedPlannerWorkerServiceTest {
   private LeasedPlannerWorkerService service;
   private ReconcileJobStore jobs;
   private ConnectorRepository connectorRepo;
+  private IndexArtifactRepository indexArtifactRepository;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -70,8 +77,10 @@ class LeasedPlannerWorkerServiceTest {
     service = new LeasedPlannerWorkerService();
     jobs = mock(ReconcileJobStore.class);
     connectorRepo = mock(ConnectorRepository.class);
+    indexArtifactRepository = mock(IndexArtifactRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
+    service.indexArtifactRepository = indexArtifactRepository;
     service.idempotencyStore =
         new IdempotencyRepositoryImpl(new InMemoryPointerStore(), new InMemoryBlobStore());
     when(principal.getCorrelationId()).thenReturn("corr");
@@ -92,6 +101,243 @@ class LeasedPlannerWorkerServiceTest {
               }
               return new ReconcileJobStore.BulkEnqueueResult(items);
             });
+  }
+
+  @Test
+  void referencedSnapshotPlanMustMatchOwningTableBeforeAdoption() {
+    ReconcileFileGroupTask wrongTableGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-2", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String uri = SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", List.of(wrongTableGroup));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            uri,
+            1,
+            1,
+            "",
+            0);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), wrongTableGroup))));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("different table or snapshot"));
+  }
+
+  @Test
+  void referencedSnapshotPlanUriMustStayWithinLeasedJobPrefix() {
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlanUri(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    "/accounts/other/reconcile/jobs/job-1/snapshot-plan/snapshot-plan-x.json"));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("outside the leased account"));
+  }
+
+  @Test
+  void referencedSnapshotPlanMustBelongToOwningPlanJob() {
+    ReconcileFileGroupTask group =
+        referencedGroup(
+            "other-job",
+            "group-1",
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("group identity"));
+  }
+
+  @Test
+  void referencedSnapshotPlanRejectsPartiallyOverlappingFileGroups() {
+    String first = "s3://bucket/data/file-1.parquet";
+    String second = "s3://bucket/data/file-2.parquet";
+    ReconcileFileGroupTask groupOne =
+        referencedGroup("job-1", "group-1", List.of(first), List.of(first));
+    ReconcileFileGroupTask groupTwo =
+        referencedGroup("job-1", "group-2", List.of(first, second), List.of(first, second));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(groupOne, groupTwo), 3);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(
+                        new PlannedFileGroupJob(ReconcileScope.empty(), groupOne),
+                        new PlannedFileGroupJob(ReconcileScope.empty(), groupTwo))));
+
+    assertTrue(error.getStatus().getDescription().contains("duplicate file paths"));
+  }
+
+  @Test
+  void referencedSnapshotPlanExecutionFilesMustMatchDeclaredFiles() {
+    ReconcileFileGroupTask group =
+        referencedGroup(
+            "job-1",
+            "group-1",
+            List.of("s3://bucket/data/declared.parquet"),
+            List.of("s3://bucket/data/executed.parquet"));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("do not match"));
+  }
+
+  @Test
+  void referencedSnapshotPlanRequiresExactSourceFileCount() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        referencedGroup("job-1", "group-1", List.of(file), List.of(file));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 0);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("source file count"));
+  }
+
+  @Test
+  void referencedSnapshotPlanAcceptsBoundSelfContainedGroups() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        referencedGroup("job-1", "group-1", List.of(file), List.of(file));
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    LeasedPlannerWorkerService.validateReferencedPlan(
+        snapshotLease(ReconcileScope.empty(), snapshotTask),
+        snapshotTask,
+        List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+  }
+
+  @Test
+  void referencedSnapshotPlanRejectsGroupsWithoutExecutionDetails() {
+    String file = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group = referencedGroup("job-1", "group-1", List.of(file), List.of());
+    ReconcileSnapshotTask snapshotTask = referencedSnapshotTask(List.of(group), 1);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                LeasedPlannerWorkerService.validateReferencedPlan(
+                    snapshotLease(ReconcileScope.empty(), snapshotTask),
+                    snapshotTask,
+                    List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group))));
+
+    assertTrue(error.getStatus().getDescription().contains("do not match"));
+  }
+
+  @Test
+  void persistPlanTableSnapshotChunkDefersIndexPredecessorPinUntilSnapshotLease() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "events")
+            .withIndexPredecessor(
+                new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+                    .IndexGenerationPredecessor("stale-generation", 1L, "/stale.pb", 2L));
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE, scope)));
+
+    assertTrue(
+        service.persistPlanTableSnapshotChunk(
+            principal,
+            "job-1",
+            "lease-1",
+            SubmitLeasedPlanTableResultRequest.Chunk.newBuilder().setChunkIndex(0).build(),
+            List.of(new LeasedPlannerWorkerService.PlannedSnapshotJob(scope, snapshotTask))));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<ReconcileJobStore.BulkEnqueueSpec>> specs =
+        ArgumentCaptor.forClass(List.class);
+    verify(jobs).bulkEnqueue(specs.capture());
+    assertEquals(null, specs.getValue().getFirst().snapshotTask.indexPredecessor());
+    verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlanSnapshotPinsIndexPredecessorAfterLease() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    var predecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+    var pinnedPredecessor =
+        new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+            .IndexGenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(
+            java.util.Optional.of(
+                job("job-1", ReconcileJobKind.PLAN_SNAPSHOT, scope, snapshotTask)));
+    when(indexArtifactRepository.captureGenerationInput(
+            eq(tableId("table-1")), eq(55L), eq(List.of())))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(predecessor, List.of()));
+    when(jobs.pinSnapshotIndexPredecessor("job-1", "lease-1", pinnedPredecessor))
+        .thenReturn(java.util.Optional.of(snapshotTask.withIndexPredecessor(pinnedPredecessor)));
+    ReconcileJobStore.LeasedJob frozenLease = snapshotLease(scope, snapshotTask);
+    when(jobs.freezeSnapshotPlanCoverage("job-1", "lease-1"))
+        .thenReturn(java.util.Optional.of(frozenLease));
+
+    var payload = service.resolvePlanSnapshot(principal, "job-1", "lease-1");
+
+    assertEquals(pinnedPredecessor, payload.snapshotTask().indexPredecessor());
+    verify(jobs).pinSnapshotIndexPredecessor("job-1", "lease-1", pinnedPredecessor);
   }
 
   @Test
@@ -1529,6 +1775,19 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   private static ReconcileJobStore.ReconcileJob job(String jobId, ReconcileJobKind jobKind) {
+    return job(jobId, jobKind, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId, ReconcileJobKind jobKind, ReconcileScope scope) {
+    return job(jobId, jobKind, scope, ReconcileSnapshotTask.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId,
+      ReconcileJobKind jobKind,
+      ReconcileScope scope,
+      ReconcileSnapshotTask snapshotTask) {
     return new ReconcileJobStore.ReconcileJob(
         jobId,
         "acct",
@@ -1546,14 +1805,14 @@ class LeasedPlannerWorkerServiceTest {
         CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "remote-executor",
         "remote_snapshot_planner_worker",
         jobKind,
         ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
         ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
-        ReconcileSnapshotTask.empty(),
+        snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-1");
   }
@@ -1570,6 +1829,66 @@ class LeasedPlannerWorkerServiceTest {
         "lease-1",
         "remote-executor",
         "remote_snapshot_planner_worker");
+  }
+
+  private static ReconcileJobStore.LeasedJob snapshotLease(
+      ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {
+    return new ReconcileJobStore.LeasedJob(
+        "job-1",
+        "acct",
+        "connector-1",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "lease-1",
+        "remote-executor",
+        "remote_snapshot_planner_worker",
+        ReconcileJobKind.PLAN_SNAPSHOT,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        snapshotTask,
+        ReconcileFileGroupTask.empty(),
+        "parent-1");
+  }
+
+  private static ReconcileSnapshotTask referencedSnapshotTask(
+      List<ReconcileFileGroupTask> groups, int sourceFileCount) {
+    return ReconcileSnapshotTask.of(
+        "table-1",
+        55L,
+        "db",
+        "events",
+        List.of(),
+        true,
+        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+        SnapshotPlanManifestIds.manifestBlobUri("acct", "job-1", groups),
+        groups.size(),
+        sourceFileCount,
+        "",
+        0);
+  }
+
+  private static ReconcileFileGroupTask referencedGroup(
+      String planId, String groupId, List<String> filePaths, List<String> executionFilePaths) {
+    return ReconcileFileGroupTask.of(
+        planId,
+        groupId,
+        "table-1",
+        55L,
+        filePaths.size(),
+        "",
+        0,
+        filePaths,
+        List.of(),
+        List.of(),
+        "{}",
+        executionFilePaths.stream()
+            .map(
+                filePath ->
+                    ReconcileFileExecutionPlan.of(
+                        filePath, 1L, "{}", null, "parquet", 0, List.of(), "identity"))
+            .toList());
   }
 
   private void stagePlanSnapshotChunk(

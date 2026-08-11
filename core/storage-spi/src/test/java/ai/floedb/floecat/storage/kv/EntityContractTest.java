@@ -82,6 +82,36 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
   }
 
   @Test
+  void batchReadOmitsEmptyValuesLikeSingleRead() {
+    KvStore.Key emptyKey = key("pk", "empty");
+    KvStore.Key validKey = key("pk", "valid");
+    kv.records.put(emptyKey, record("pk", "empty", TestEntity.KIND, new byte[0], Map.of(), 1L));
+    kv.records.put(
+        validKey,
+        record("pk", "valid", TestEntity.KIND, pointerBytes("pointer-key"), Map.of(), 1L));
+
+    assertTrue(entity.getForTest(emptyKey).await().indefinitely().isEmpty());
+    Map<KvStore.Key, Pointer> batch =
+        entity.getBatchRecordsForTest(List.of(emptyKey, validKey)).await().indefinitely();
+
+    assertEquals(Map.of(validKey, Pointer.newBuilder().setKey("pointer-key").build()), batch);
+  }
+
+  @Test
+  void corruptValuesFailSingleAndBatchReads() {
+    KvStore.Key corruptKey = key("pk", "corrupt");
+    kv.records.put(
+        corruptKey,
+        record("pk", "corrupt", TestEntity.KIND, new byte[] {0x0a, 0x02, 0x01}, Map.of(), 1L));
+
+    assertThrows(
+        RuntimeException.class, () -> entity.getForTest(corruptKey).await().indefinitely());
+    assertThrows(
+        RuntimeException.class,
+        () -> entity.getBatchRecordsForTest(List.of(corruptKey)).await().indefinitely());
+  }
+
+  @Test
   void listEntities_handles_empty_page_items_but_token_present() {
     kv.setCannedPages(
         List.of(
@@ -409,6 +439,14 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
 
     private Uni<Optional<Pointer>> getViaPointerForTest(KvStore.Key key) {
       return getViaPointer(key);
+    }
+
+    private Uni<Optional<Pointer>> getForTest(KvStore.Key key) {
+      return get(key);
+    }
+
+    private Uni<Map<KvStore.Key, Pointer>> getBatchRecordsForTest(List<KvStore.Key> keys) {
+      return getBatchRecords(keys);
     }
 
     private Uni<EntityPage<Pointer>> listByPartitionKeyIndexForTest(
