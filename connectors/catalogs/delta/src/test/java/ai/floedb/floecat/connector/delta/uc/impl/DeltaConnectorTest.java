@@ -31,14 +31,17 @@ import io.delta.kernel.Snapshot;
 import io.delta.kernel.Snapshot.ChecksumWriteMode;
 import io.delta.kernel.Table;
 import io.delta.kernel.TransactionBuilder;
+import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
 import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.exceptions.TableNotFoundException;
 import io.delta.kernel.statistics.SnapshotStatistics;
 import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
+import io.delta.kernel.types.DataType;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.FileStatus;
@@ -80,12 +83,51 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void cancelledDeltaChunkDoesNotFabricateDeleteArtifactChanges() {
-    DeltaConnector.DeltaChangeChunk cancelled = DeltaConnector.DeltaChangeChunk.cancelledChunk();
+  void nonAppendDeltaChunkCarriesNoAdditions() {
+    DeltaConnector.DeltaChangeChunk chunk = DeltaConnector.DeltaChangeChunk.nonAppendChunk();
 
-    assertTrue(cancelled.cancelled());
-    assertTrue(cancelled.removals().isEmpty());
-    assertFalse(cancelled.deleteArtifactsChanged());
+    assertTrue(chunk.nonAppend());
+    assertTrue(chunk.additions().isEmpty());
+  }
+
+  @Test
+  void appendOnlyDeltaChunkIsNotMarkedNonAppend() {
+    DeltaConnector.DeltaChangeChunk chunk = new DeltaConnector.DeltaChangeChunk(Map.of(), false);
+
+    assertFalse(chunk.nonAppend());
+  }
+
+  @Test
+  void removalScanDisqualifiesABatchRegardlessOfActionOrder() {
+    // An OPTIMIZE commit may list every add action ahead of its removes. The columnar null scan
+    // must disqualify the batch from the remove column alone, before any add row is materialized.
+    assertTrue(DeltaConnector.hasNonNull(nullableVector(true, true, false), 3));
+    assertTrue(DeltaConnector.hasNonNull(nullableVector(false, false, true), 3));
+    assertFalse(DeltaConnector.hasNonNull(nullableVector(true, true, true), 3));
+    assertFalse(DeltaConnector.hasNonNull(nullableVector(), 0));
+  }
+
+  /** A minimal {@link ColumnVector} exposing only the null bitmap the removal scan reads. */
+  private static ColumnVector nullableVector(boolean... nulls) {
+    return new ColumnVector() {
+      @Override
+      public DataType getDataType() {
+        return StringType.STRING;
+      }
+
+      @Override
+      public int getSize() {
+        return nulls.length;
+      }
+
+      @Override
+      public boolean isNullAt(int rowId) {
+        return nulls[rowId];
+      }
+
+      @Override
+      public void close() {}
+    };
   }
 
   @Test

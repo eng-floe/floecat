@@ -47,6 +47,7 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
+import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.internal.DeltaLogActionUtils;
@@ -56,7 +57,6 @@ import io.delta.kernel.internal.TableChangesUtils;
 import io.delta.kernel.internal.TableImpl;
 import io.delta.kernel.internal.actions.AddFile;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
-import io.delta.kernel.internal.actions.RemoveFile;
 import io.delta.kernel.internal.fs.Path;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.ArrayType;
@@ -899,44 +899,11 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     long listedNanos = System.nanoTime();
 
-    List<DeltaChangeChunk> classification;
-    int readerCount = deltaChangeReaderCount(commitFiles.size());
-    AtomicBoolean classificationNonAppend = new AtomicBoolean();
-    try {
-      classification =
-          readDeltaChangeChunks(
-              storageLocation, commitFiles, readerCount, classificationNonAppend, false);
-    } catch (Exception e) {
-      throw new RuntimeException(
-          "Delta change planning failed (versions "
-              + baseSnapshotId
-              + ".."
-              + targetSnapshotId
-              + ")",
-          e);
-    }
-    long classifiedNanos = System.nanoTime();
-
-    for (DeltaChangeChunk chunk : classification) {
-      if (chunk.cancelled()) {
-        return Optional.empty();
-      }
-      if (!chunk.appendOnly()) {
-        return Optional.of(
-            new SnapshotFileDelta(
-                List.of(),
-                List.copyOf(chunk.removals()),
-                chunk.deleteArtifactsChanged(),
-                DataTypeJsonSerDe.serializeStructType(target.getSchema())));
-      }
-    }
-
     List<DeltaChangeChunk> chunks;
-    AtomicBoolean materializationNonAppend = new AtomicBoolean();
+    int readerCount = deltaChangeReaderCount(commitFiles.size());
+    AtomicBoolean nonAppend = new AtomicBoolean();
     try {
-      chunks =
-          readDeltaChangeChunks(
-              storageLocation, commitFiles, readerCount, materializationNonAppend, true);
+      chunks = readDeltaChangeChunks(storageLocation, commitFiles, readerCount, nonAppend);
     } catch (Exception e) {
       throw new RuntimeException(
           "Delta change planning failed (versions "
@@ -948,32 +915,26 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     long completedNanos = System.nanoTime();
 
+    // A single non-append change anywhere in the range disqualifies the whole range, so the reuse
+    // planner only ever needs the append-only verdict. Report it by declining the delta outright,
+    // matching the Iceberg connector, instead of returning partly populated removal fields.
     LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
     for (DeltaChangeChunk chunk : chunks) {
-      if (chunk.cancelled()) {
+      if (chunk.nonAppend()) {
         return Optional.empty();
-      }
-      if (!chunk.appendOnly()) {
-        return Optional.of(
-            new SnapshotFileDelta(
-                List.of(),
-                List.copyOf(chunk.removals()),
-                chunk.deleteArtifactsChanged(),
-                DataTypeJsonSerDe.serializeStructType(target.getSchema())));
       }
       chunk.additions().forEach(additions::put);
     }
     LOG.infof(
         "Delta change planning timing versions=%d..%d commits=%d readers=%d"
-            + " snapshotMs=%d listMs=%d classifyMs=%d readMs=%d totalMs=%d",
+            + " snapshotMs=%d listMs=%d readMs=%d totalMs=%d",
         baseSnapshotId + 1,
         targetSnapshotId,
         commitFiles.size(),
         readerCount,
         TimeUnit.NANOSECONDS.toMillis(listingStartedNanos - startedNanos),
         TimeUnit.NANOSECONDS.toMillis(listedNanos - listingStartedNanos),
-        TimeUnit.NANOSECONDS.toMillis(classifiedNanos - listedNanos),
-        TimeUnit.NANOSECONDS.toMillis(completedNanos - classifiedNanos),
+        TimeUnit.NANOSECONDS.toMillis(completedNanos - listedNanos),
         TimeUnit.NANOSECONDS.toMillis(completedNanos - startedNanos));
 
     return Optional.of(
@@ -988,22 +949,16 @@ abstract class DeltaConnector implements FloecatConnector {
       String storageLocation,
       List<FileStatus> commitFiles,
       int readerCount,
-      AtomicBoolean nonAppend,
-      boolean materializeAdditions)
+      AtomicBoolean nonAppend)
       throws Exception {
     List<List<FileStatus>> partitions = partitionCommitFiles(commitFiles, readerCount);
     if (partitions.size() == 1) {
-      return List.of(
-          readDeltaChangeChunk(
-              storageLocation, partitions.getFirst(), nonAppend, materializeAdditions));
+      return List.of(readDeltaChangeChunk(storageLocation, partitions.getFirst(), nonAppend));
     }
     List<Callable<DeltaChangeChunk>> readers =
         partitions.stream()
             .<Callable<DeltaChangeChunk>>map(
-                partition ->
-                    () ->
-                        readDeltaChangeChunk(
-                            storageLocation, partition, nonAppend, materializeAdditions))
+                partition -> () -> readDeltaChangeChunk(storageLocation, partition, nonAppend))
             .toList();
     try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
       List<Future<DeltaChangeChunk>> futures;
@@ -1035,11 +990,18 @@ abstract class DeltaConnector implements FloecatConnector {
     }
   }
 
+  /**
+   * Reads one contiguous slice of the commit range in a single pass.
+   *
+   * <p>Each batch is disqualified before anything is materialized from it. Remove actions are found
+   * with a columnar null scan over the {@code remove} vector, so a range that a compaction or
+   * delete has touched costs no {@link SnapshotFileEntry} allocations at all, no matter whether the
+   * commit log happens to list its add actions before its remove actions. Deletion vectors are only
+   * visible through the {@code add} struct, so they are checked per row immediately before that
+   * row's entry is built; the most that can be built and discarded is one batch.
+   */
   private DeltaChangeChunk readDeltaChangeChunk(
-      String storageLocation,
-      List<FileStatus> commitFiles,
-      AtomicBoolean nonAppend,
-      boolean materializeAdditions)
+      String storageLocation, List<FileStatus> commitFiles, AtomicBoolean nonAppend)
       throws Exception {
     LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
     try (var commits =
@@ -1049,40 +1011,50 @@ abstract class DeltaConnector implements FloecatConnector {
             TableChangesUtils.flattenCommitsAndAddMetadata(engine, commits)) {
       while (batches.hasNext()) {
         if (nonAppend.get()) {
-          return DeltaChangeChunk.cancelledChunk();
+          return DeltaChangeChunk.nonAppendChunk();
         }
         var batch = batches.next();
         int addOrdinal = batch.getSchema().indexOf("add");
         int removeOrdinal = batch.getSchema().indexOf("remove");
+        if (removeOrdinal >= 0
+            && hasNonNull(batch.getColumnVector(removeOrdinal), batch.getSize())) {
+          nonAppend.set(true);
+          return DeltaChangeChunk.nonAppendChunk();
+        }
+        if (addOrdinal < 0) {
+          continue;
+        }
         try (var rows = batch.getRows()) {
           while (rows.hasNext()) {
             if (nonAppend.get()) {
-              return DeltaChangeChunk.cancelledChunk();
+              return DeltaChangeChunk.nonAppendChunk();
             }
             var row = rows.next();
-            if (removeOrdinal >= 0 && !row.isNullAt(removeOrdinal)) {
-              RemoveFile remove = new RemoveFile(row.getStruct(removeOrdinal));
-              String path = DeltaPlanner.absoluteDataPath(storageLocation, remove.getPath());
+            if (row.isNullAt(addOrdinal)) {
+              continue;
+            }
+            AddFile add = new AddFile(row.getStruct(addOrdinal));
+            if (add.getDeletionVector().isPresent()) {
               nonAppend.set(true);
-              return DeltaChangeChunk.removal(path, remove.getDeletionVector().isPresent());
+              return DeltaChangeChunk.nonAppendChunk();
             }
-            if (addOrdinal >= 0 && !row.isNullAt(addOrdinal)) {
-              AddFile add = new AddFile(row.getStruct(addOrdinal));
-              DeletionVectorDescriptor deletionVector = add.getDeletionVector().orElse(null);
-              if (deletionVector != null) {
-                nonAppend.set(true);
-                return DeltaChangeChunk.deleteArtifactChange();
-              }
-              if (materializeAdditions) {
-                String path = DeltaPlanner.absoluteDataPath(storageLocation, add.getPath());
-                additions.put(path, toSnapshotDataFile(path, add, null));
-              }
-            }
+            String path = DeltaPlanner.absoluteDataPath(storageLocation, add.getPath());
+            additions.put(path, toSnapshotDataFile(path, add, null));
           }
         }
       }
     }
-    return new DeltaChangeChunk(additions, Set.of(), false, false);
+    return new DeltaChangeChunk(additions, false);
+  }
+
+  /** Scans a batch's null bitmap for a present action without materializing any row. */
+  static boolean hasNonNull(ColumnVector vector, int size) {
+    for (int index = 0; index < size; index++) {
+      if (!vector.isNullAt(index)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static int deltaChangeReaderCount(int commitCount) {
@@ -1109,25 +1081,14 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(partitions);
   }
 
-  record DeltaChangeChunk(
-      Map<String, SnapshotFileEntry> additions,
-      Set<String> removals,
-      boolean deleteArtifactsChanged,
-      boolean cancelled) {
-    boolean appendOnly() {
-      return removals.isEmpty() && !deleteArtifactsChanged;
-    }
-
-    static DeltaChangeChunk removal(String path, boolean deleteArtifactsChanged) {
-      return new DeltaChangeChunk(Map.of(), Set.of(path), deleteArtifactsChanged, false);
-    }
-
-    static DeltaChangeChunk deleteArtifactChange() {
-      return new DeltaChangeChunk(Map.of(), Set.of(), true, false);
-    }
-
-    static DeltaChangeChunk cancelledChunk() {
-      return new DeltaChangeChunk(Map.of(), Set.of(), false, true);
+  /**
+   * One reader's slice of the change range: either its additions, or the fact that the range is not
+   * append-only. Which change disqualified the range is deliberately not carried, because the reuse
+   * planner needs only the verdict and a partial removal list would invite false trust.
+   */
+  record DeltaChangeChunk(Map<String, SnapshotFileEntry> additions, boolean nonAppend) {
+    static DeltaChangeChunk nonAppendChunk() {
+      return new DeltaChangeChunk(Map.of(), true);
     }
   }
 
