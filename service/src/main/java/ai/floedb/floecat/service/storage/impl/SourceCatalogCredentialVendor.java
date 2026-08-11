@@ -41,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Asks a table's own source catalog to vend storage credentials.
@@ -70,8 +71,14 @@ public class SourceCatalogCredentialVendor {
   private static final List<String> VENDED_ROUTING_KEYS =
       List.of("s3.region", "s3.endpoint", "s3.path-style-access");
 
+  /** Region aliases, matching what {@code StorageAuthorityResolver.putRegionConfig} writes. */
+  private static final List<String> REGION_KEYS = List.of("s3.region", "region", "client.region");
+
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
+
+  @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
+  String defaultRegion;
 
   /**
    * Vends credentials for {@code table} from the catalog it was captured from, or returns {@code
@@ -153,9 +160,19 @@ public class SourceCatalogCredentialVendor {
 
     requireRefreshableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName());
 
+    // A delegating catalog vends credentials, not routing. Polaris returns the session triple and
+    // no region at all, which left every consumer to supply its own: the reconcile worker has a
+    // default and survived, the query scan engine has none and fails the whole scan with "region
+    // is missing" after planning has already succeeded. Region is resolved here so both paths see
+    // the same answer, and written under every alias the authority path emits -- consumers read
+    // different ones, and an authority-backed response has always carried all three.
+    Map<String, String> routing =
+        routingProperties(vended.get().properties(), resolvedConfig.options());
+
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", "s3");
     storageConfig.putAll(vended.get().properties());
+    storageConfig.putAll(routing);
     VendedStorageCredential.Builder credential =
         VendedStorageCredential.newBuilder()
             .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
@@ -174,7 +191,7 @@ public class SourceCatalogCredentialVendor {
     // guess the endpoint for any non-default region or custom-endpoint bucket. Authority-backed
     // responses carry routing in client-safe config for exactly this reason.
     return ResolveStorageAuthorityResponse.newBuilder()
-        .putAllClientSafeConfig(clientSafeRoutingProperties(vended.get().properties()))
+        .putAllClientSafeConfig(routing)
         .addStorageCredentials(credential)
         .build();
   }
@@ -188,6 +205,49 @@ public class SourceCatalogCredentialVendor {
       }
     }
     return routing;
+  }
+
+  /**
+   * Non-secret routing to advertise alongside vended credentials.
+   *
+   * <p>Endpoint and path-style come only from what the catalog vended or how the connector was
+   * configured. They are deliberately <em>not</em> defaulted from floecat's own storage settings:
+   * that endpoint points at floecat's blob store -- LocalStack in dev -- and injecting it would
+   * redirect reads of a real S3 warehouse to the wrong service. A missing endpoint correctly means
+   * "standard AWS S3".
+   *
+   * <p>Region is different: it has no safe absent value, and the catalog does not supply one. It
+   * falls back to the connector's own configuration and then to the deployment's configured region,
+   * mirroring {@code resolveSnapshotCompatStorageSettings}, which synthesizes exactly these
+   * settings when no authority exists. A wrong region announces itself immediately as an S3
+   * redirect; an absent one fails mid-scan with nothing pointing at the cause.
+   */
+  Map<String, String> routingProperties(
+      Map<String, String> vendedProps, Map<String, String> connectorOptions) {
+    LinkedHashMap<String, String> routing =
+        new LinkedHashMap<>(clientSafeRoutingProperties(vendedProps));
+    String region =
+        firstNonBlank(
+            firstNonBlank(REGION_KEYS.stream().map(vendedProps::get).toArray(String[]::new)),
+            firstNonBlank(REGION_KEYS.stream().map(connectorOptions::get).toArray(String[]::new)),
+            defaultRegion);
+    if (region != null) {
+      // Same three keys putRegionConfig writes for an authority-backed response.
+      REGION_KEYS.forEach(key -> routing.put(key, region));
+    }
+    return Map.copyOf(routing);
+  }
+
+  private static String firstNonBlank(String... values) {
+    if (values == null) {
+      return null;
+    }
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        return value.trim();
+      }
+    }
+    return null;
   }
 
   /**

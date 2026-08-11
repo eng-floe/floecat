@@ -703,6 +703,70 @@ class StorageAuthorityServiceImplTest {
     assertFalse(routing.containsKey("s3.session-token"));
   }
 
+  @Test
+  void vendedRoutingCarriesARegionUnderEveryAliasTheAuthorityPathEmits() {
+    // Polaris vends the session triple and no region at all. The reconcile worker has a default
+    // and survived; the query scan engine has none and failed the whole scan with "region is
+    // missing" after planning had already succeeded. The aliases matter as much as the value --
+    // an authority-backed response has always carried all three, and consumers read different ones.
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of(
+                "s3.access-key-id", "ASIA",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "token"),
+            java.util.Map.of());
+
+    assertEquals("us-east-1", routing.get("s3.region"));
+    assertEquals("us-east-1", routing.get("region"));
+    assertEquals("us-east-1", routing.get("client.region"));
+    assertFalse(routing.containsKey("s3.access-key-id"));
+  }
+
+  @Test
+  void vendedRegionWinsOverConnectorAndDeploymentDefault() {
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of("s3.region", "eu-west-1"),
+            java.util.Map.of("s3.region", "ap-south-1"));
+
+    assertEquals("eu-west-1", routing.get("s3.region"));
+    assertEquals("eu-west-1", routing.get("client.region"));
+  }
+
+  @Test
+  void connectorRegionIsUsedWhenTheCatalogVendsNone() {
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of(), java.util.Map.of("client.region", "eu-west-2"));
+
+    assertEquals("eu-west-2", routing.get("s3.region"));
+    assertEquals("eu-west-2", routing.get("region"));
+  }
+
+  @Test
+  void endpointIsNeverSynthesizedFromDeploymentStorageSettings() {
+    // Region has no safe absent value, so it is defaulted. An endpoint does: absent means standard
+    // AWS S3. Defaulting it from floecat's own storage config would point reads of a real S3
+    // warehouse at floecat's blob store -- LocalStack in dev.
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing = vendor.routingProperties(java.util.Map.of(), java.util.Map.of());
+
+    assertFalse(routing.containsKey("s3.endpoint"));
+    assertFalse(routing.containsKey("s3.path-style-access"));
+  }
+
   /**
    * A PLAN_VIEW bootstrap lease scopes credentials by location, never validating request.table_id
    * against the lease. Source-catalog vending must therefore not be derived from a caller-supplied
