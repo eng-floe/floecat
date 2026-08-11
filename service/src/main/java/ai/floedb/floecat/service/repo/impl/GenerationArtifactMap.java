@@ -27,6 +27,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jboss.logging.Logger;
 
 /**
  * Structurally shared file-artifact map for a published stats/index generation.
@@ -37,6 +38,7 @@ import java.util.Optional;
  * additional small S3 nodes are written.
  */
 final class GenerationArtifactMap {
+  private static final Logger LOG = Logger.getLogger(GenerationArtifactMap.class);
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
   private final ImmutableBlobCache blobCache;
@@ -178,7 +180,22 @@ final class GenerationArtifactMap {
       throw new BaseResourceRepository.CorruptionException(
           "generation artifact map manifest is missing: " + pointer.getBlobUri());
     }
-    loaded.ifPresent(value -> validateManifest(value, tableId, snapshotId));
+    SnapshotCaptureManifest manifest = loaded.orElseThrow();
+    if (manifest.getReusableArtifactIndex().getFormatVersion()
+        != ReusableArtifactIndexStore.FORMAT_VERSION) {
+      // An index written against an older contract is not readable, but it is not corruption:
+      // report it as absent so reads fall back to the per-target pointers and the next capture
+      // re-captures in full. Failing here would break reads on generations already committed.
+      LOG.infof(
+          "Generation artifact map index is not current; ignoring it tableId=%s snapshotId=%d"
+              + " generationId=%s formatVersion=%d",
+          tableId.getId(),
+          snapshotId,
+          generationId,
+          manifest.getReusableArtifactIndex().getFormatVersion());
+      return Optional.empty();
+    }
+    validateManifest(manifest, tableId, snapshotId);
     return loaded;
   }
 

@@ -1155,6 +1155,13 @@ message CommitLeasedFileGroupResultResponse {
 // group before activating its stats and index generations. It does not read file-group payloads or
 // per-file objects. A missing marker is retryable and requires an exact replay of this result.
 message SubmitLeasedSnapshotFinalizeResultRequest {
+  enum FailureKind {
+    SFFK_UNSPECIFIED = 0;
+    // The durable append-only plan was created against an incompatible capture/index contract.
+    // The service schedules a new full-capture reconcile for the same scope.
+    SFFK_APPEND_ONLY_BASE_INCOMPATIBLE = 1;
+  }
+
   message Success {
     string result_id = 1;
     SnapshotCaptureManifestDescriptor manifest_descriptor = 2;
@@ -1163,6 +1170,7 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
   message Failure {
     string result_id = 1;
     string message = 2;
+    FailureKind kind = 3;
   }
 
   string job_id = 1;

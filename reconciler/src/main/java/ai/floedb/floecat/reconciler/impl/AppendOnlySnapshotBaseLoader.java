@@ -38,8 +38,10 @@ final class AppendOnlySnapshotBaseLoader {
     }
     if (base.snapshotId() == input.snapshotId()
         || base.sourceFileCount() > input.sourceFileCount()) {
-      throw new IllegalArgumentException("append-only snapshot base is not an earlier subset");
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only snapshot base is not an earlier subset");
     }
+    // Blob reads stay untyped: a storage failure is retryable and must not schedule a rescan.
     byte[] bytes = blobStore.get(base.manifestUri());
     if (bytes == null) {
       throw new StorageNotFoundException(
@@ -47,10 +49,16 @@ final class AppendOnlySnapshotBaseLoader {
     }
     if (bytes.length != base.manifestBytes()
         || !MessageDigest.isEqual(sha256(bytes), base.manifestSha256Bytes())) {
-      throw new IllegalArgumentException("append-only snapshot base manifest metadata mismatch");
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only snapshot base manifest metadata mismatch");
     }
     SnapshotCaptureManifest manifest = parseManifest(bytes);
-    ReusableArtifactManifest.validateReuseBaseSummary(manifest);
+    try {
+      ReusableArtifactManifest.validateReuseBaseSummary(manifest);
+    } catch (IllegalArgumentException error) {
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only snapshot base reuse summary is invalid", error);
+    }
     ReconcileCapturePolicy policy =
         lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
     if (manifest.getFormatVersion() != ReusableArtifactManifest.FORMAT_VERSION
@@ -68,7 +76,8 @@ final class AppendOnlySnapshotBaseLoader {
             && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
         || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(
             policy, manifest.getCapturePolicy())) {
-      throw new IllegalArgumentException("append-only snapshot base manifest identity mismatch");
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only snapshot base manifest identity mismatch");
     }
     List<TargetStatsRecord> aggregates = loadAggregates(manifest, input);
     return new Loaded(
@@ -82,7 +91,8 @@ final class AppendOnlySnapshotBaseLoader {
     try {
       return SnapshotCaptureManifest.parseFrom(bytes);
     } catch (InvalidProtocolBufferException error) {
-      throw new IllegalArgumentException("append-only snapshot base manifest is invalid", error);
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only snapshot base manifest is invalid", error);
     }
   }
 
@@ -99,7 +109,8 @@ final class AppendOnlySnapshotBaseLoader {
           || descriptor.getPayloadSha256().size() != 32
           || !MessageDigest.isEqual(
               sha256(recordBytes), descriptor.getPayloadSha256().toByteArray())) {
-        throw new IllegalArgumentException("append-only base aggregate metadata mismatch");
+        throw new AppendOnlyBaseCompatibilityException(
+            "append-only base aggregate metadata mismatch");
       }
       try {
         aggregates.add(
@@ -108,11 +119,12 @@ final class AppendOnlySnapshotBaseLoader {
                 .setSnapshotId(input.snapshotId())
                 .build());
       } catch (InvalidProtocolBufferException error) {
-        throw new IllegalArgumentException("append-only base aggregate is invalid", error);
+        throw new AppendOnlyBaseCompatibilityException(
+            "append-only base aggregate is invalid", error);
       }
     }
     if (aggregates.size() != manifest.getFinalStatsRecordCount()) {
-      throw new IllegalArgumentException("append-only base aggregate count mismatch");
+      throw new AppendOnlyBaseCompatibilityException("append-only base aggregate count mismatch");
     }
     return List.copyOf(aggregates);
   }

@@ -622,7 +622,10 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     verify(blobStore, never()).get(any());
     verify(workerClient)
         .submitSnapshotFinalizeFailure(
-            any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
+            any(),
+            any(),
+            contains("unexpected snapshot file-group descriptor plan-1/group-c"),
+            any());
     verify(workerClient, never())
         .prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any(),
@@ -671,7 +674,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE, result.retryDisposition);
     assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR, result.retryClass);
     verify(workerClient)
-        .submitSnapshotFinalizeFailure(any(), any(), contains("plan not yet visible"));
+        .submitSnapshotFinalizeFailure(any(), any(), contains("plan not yet visible"), any());
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
@@ -691,7 +694,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
             anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
-    when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
+    when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -776,6 +779,107 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void legacyAppendOnlyPlanRequestsFullCapture() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, mock(BlobStore.class), snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob();
+    SnapshotPlanBlobStore.SnapshotPlanBlob legacyPlan =
+        new SnapshotPlanBlobStore.SnapshotPlanBlob();
+    legacyPlan.appendOnlyBase = new SnapshotPlanBlobStore.StoredAppendOnlyBase();
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(appendOnlyFinalizeInput());
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json")).thenReturn(legacyPlan);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    verify(workerClient)
+        .submitSnapshotFinalizeFailure(
+            any(),
+            any(),
+            contains("append-only base is incompatible"),
+            eq(
+                ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                    .FailureKind.SFFK_APPEND_ONLY_BASE_INCOMPATIBLE));
+  }
+
+  @Test
+  void corruptAppendOnlyBaseManifestRequestsFullCapture() throws Exception {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, blobStore, snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob();
+    AppendOnlyBaseFixture fixture = appendOnlyBaseFixture();
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(appendOnlyFinalizeInput());
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
+        .thenReturn(SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of(), fixture.base()));
+    when(blobStore.get(fixture.manifestUri())).thenReturn(new byte[] {1, 2, 3});
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    verify(workerClient)
+        .submitSnapshotFinalizeFailure(
+            any(),
+            any(),
+            contains("manifest metadata mismatch"),
+            eq(
+                ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                    .FailureKind.SFFK_APPEND_ONLY_BASE_INCOMPATIBLE));
+  }
+
+  @Test
+  void transientAppendOnlyBaseReadStaysRetryableWithoutRequestingFullCapture() throws Exception {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, blobStore, snapshotPlanBlobStore, true);
+    ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob();
+    AppendOnlyBaseFixture fixture = appendOnlyBaseFixture();
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(appendOnlyFinalizeInput());
+    when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
+        .thenReturn(SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of(), fixture.base()));
+    when(blobStore.get(fixture.manifestUri()))
+        .thenThrow(new StorageAbortRetryableException("connection reset"));
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.RETRYABLE_FAILURE, result.outcome);
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE, result.retryDisposition);
+    verify(workerClient)
+        .submitSnapshotFinalizeFailure(
+            any(),
+            any(),
+            any(),
+            eq(
+                ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                    .FailureKind.SFFK_UNSPECIFIED));
+  }
+
+  @Test
   void finalizesZeroDeltaAppendFromBaseManifestWithoutFileGroupResults() throws Exception {
     RemoteSnapshotFinalizeWorkerClient workerClient =
         mock(RemoteSnapshotFinalizeWorkerClient.class);
@@ -785,75 +889,14 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         new RemoteSnapshotFinalizeReconcileExecutor(
             workerClient, blobStore, snapshotPlanBlobStore, true);
     ReconcileJobStore.LeasedJob lease = leasedAppendFinalizeJob();
-    String manifestUri = "/accounts/acct/tables/table-1/snapshots/54/manifest.pb";
-    var bundle =
-        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
-            .setArtifact(
-                StatsObjectDescriptor.newBuilder()
-                    .setTargetStorageId("reuse-bundle:snapshot-54-group-0")
-                    .setPayloadUri(
-                        "/accounts/acct/tables/table-1/reuse-bundles/"
-                            + "0000000000000000000000000000000000000000000000000000000000000000.pb")
-                    .setPayloadBytes(100)
-                    .setPayloadSha256(ByteString.copyFrom(new byte[32])))
-            .addFileStats(
-                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
-                    .setFilePath("s3://bucket/base.parquet")
-                    .setSourceFingerprint("source-v1")
-                    .setStatsCaptureSignature("stats-v1"))
-            .build();
-    byte[] manifestBytes =
-        SnapshotCaptureManifest.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId("acct")
-            .setConnectorId("connector-1")
-            .setParentJobId("snapshot-job")
-            .setTableId("table-1")
-            .setSnapshotId(54L)
-            .setSourceFileCount(1)
-            .setFileStatsRecordCount(1)
-            .addFileGroups(baseFileGroup())
-            .setReusableArtifactBundlesComplete(true)
-            .addReusableArtifactBundles(bundle)
-            .setReusableArtifactIndex(testArtifactIndex(1, 0))
-            .build()
-            .toByteArray();
-    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
-    SnapshotPlanBlobStore.AppendOnlyBase base =
-        new SnapshotPlanBlobStore.AppendOnlyBase(
-            54L,
-            manifestUri,
-            manifestBytes.length,
-            java.util.HexFormat.of().formatHex(digest),
-            1,
-            1,
-            0,
-            0,
-            "full-rescan-snapshot-job",
-            "",
-            testArtifactIndex(1, 0));
-    StandaloneSnapshotFinalizeExecutionPayload input =
-        new StandaloneSnapshotFinalizeExecutionPayload(
-            "finalize-job",
-            "lease-1",
-            "snapshot-job",
-            tableId(),
-            55L,
-            true,
-            1,
-            "/snapshot-plan.json",
-            0,
-            "/final-stats.pb",
-            "/capture-manifest.pb",
-            "/reusable-index/",
-            "/stats-generation.pb",
-            "/index-capture-manifests/",
-            null);
+    AppendOnlyBaseFixture fixture = appendOnlyBaseFixture();
+    SnapshotPlanBlobStore.AppendOnlyBase base = fixture.base();
+    StandaloneSnapshotFinalizeExecutionPayload input = appendOnlyFinalizeInput();
 
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(snapshotPlanBlobStore.loadPlan("/snapshot-plan.json"))
         .thenReturn(SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of(), base));
-    when(blobStore.get(manifestUri)).thenReturn(manifestBytes);
+    when(blobStore.get(fixture.manifestUri())).thenReturn(fixture.manifestBytes());
     when(workerClient.prepareAppendOnlySnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
             anyList(), anyList(), anyList(), anyList(), anyList(), any(), any()))
@@ -1007,6 +1050,80 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         null);
   }
 
+  private static StandaloneSnapshotFinalizeExecutionPayload appendOnlyFinalizeInput() {
+    return new StandaloneSnapshotFinalizeExecutionPayload(
+        "finalize-job",
+        "lease-1",
+        "snapshot-job",
+        tableId(),
+        55L,
+        true,
+        1,
+        "/snapshot-plan.json",
+        0,
+        "/final-stats.pb",
+        "/capture-manifest.pb",
+        "/reusable-index/",
+        "/stats-generation.pb",
+        "/index-capture-manifests/",
+        null);
+  }
+
+  private record AppendOnlyBaseFixture(
+      SnapshotPlanBlobStore.AppendOnlyBase base, String manifestUri, byte[] manifestBytes) {}
+
+  /** A valid zero-delta append-only base whose manifest lives at {@code manifestUri}. */
+  private static AppendOnlyBaseFixture appendOnlyBaseFixture() throws Exception {
+    String manifestUri = "/accounts/acct/tables/table-1/snapshots/54/manifest.pb";
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:snapshot-54-group-0")
+                    .setPayloadUri(
+                        "/accounts/acct/tables/table-1/reuse-bundles/"
+                            + "0000000000000000000000000000000000000000000000000000000000000000.pb")
+                    .setPayloadBytes(100)
+                    .setPayloadSha256(ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/base.parquet")
+                    .setSourceFingerprint("source-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId("acct")
+            .setConnectorId("connector-1")
+            .setParentJobId("snapshot-job")
+            .setTableId("table-1")
+            .setSnapshotId(54L)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .addFileGroups(baseFileGroup())
+            .setReusableArtifactBundlesComplete(true)
+            .addReusableArtifactBundles(bundle)
+            .setReusableArtifactIndex(testArtifactIndex(1, 0))
+            .build()
+            .toByteArray();
+    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L,
+            manifestUri,
+            manifestBytes.length,
+            java.util.HexFormat.of().formatHex(digest),
+            1,
+            1,
+            0,
+            0,
+            "full-rescan-snapshot-job",
+            "",
+            testArtifactIndex(1, 0));
+    return new AppendOnlyBaseFixture(base, manifestUri, manifestBytes);
+  }
+
   private static RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess
       preparedSnapshotFinalizeSuccess() {
     return new RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess(
@@ -1115,7 +1232,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     int entries = stats + indexes;
     var index =
         ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
-            .setFormatVersion(1)
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION)
             .setFileStatsRecordCount(stats)
             .setIndexArtifactCount(indexes);
     if (entries > 0) {

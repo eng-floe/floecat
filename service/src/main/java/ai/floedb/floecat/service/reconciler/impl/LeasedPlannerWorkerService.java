@@ -594,7 +594,17 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       SnapshotPlanBlobStore.SnapshotPlanBlob referencedPlan =
           snapshotPlanBlobStore.loadPlan(durableSnapshotTask.fileGroupPlanBlobUri());
       referencedJobs = referencedPlan.toPlannedFileGroupJobs();
-      referencedAppendOnlyBase = referencedPlan.appendOnlyBase().orElse(null);
+      try {
+        referencedAppendOnlyBase = referencedPlan.appendOnlyBase().orElse(null);
+      } catch (IllegalArgumentException error) {
+        // A plan blob written against an older contract cannot be replayed; report it the same way
+        // as the other referenced-plan validations rather than as an unmapped runtime failure.
+        invalidReferencedPlan(
+            "stored append-only base plan is incompatible: "
+                + (error.getMessage() == null
+                    ? error.getClass().getSimpleName()
+                    : error.getMessage()));
+      }
     }
     if (referencedPlanLoaded) {
       validateReferencedPlan(lease, durableSnapshotTask, referencedJobs, referencedAppendOnlyBase);

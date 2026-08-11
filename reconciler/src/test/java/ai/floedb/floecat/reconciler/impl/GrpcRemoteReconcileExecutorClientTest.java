@@ -1879,7 +1879,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     int entries = stats + indexes;
     var index =
         ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
-            .setFormatVersion(1)
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION)
             .setFileStatsRecordCount(stats)
             .setIndexArtifactCount(indexes);
     if (entries > 0) {

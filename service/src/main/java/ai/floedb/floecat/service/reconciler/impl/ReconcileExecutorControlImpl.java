@@ -1218,7 +1218,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         jobId,
                         leaseEpoch,
                         request.getFailure().getResultId(),
-                        request.getFailure().getMessage());
+                        request.getFailure().getMessage(),
+                        request.getFailure().getKind());
                 return SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

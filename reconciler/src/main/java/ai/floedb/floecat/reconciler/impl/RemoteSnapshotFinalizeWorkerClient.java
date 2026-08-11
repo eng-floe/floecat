@@ -68,7 +68,11 @@ public interface RemoteSnapshotFinalizeWorkerClient {
   boolean submitSnapshotFinalizeSuccess(
       RemoteLeasedJob lease, PreparedSnapshotFinalizeSuccess prepared);
 
-  boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
+  boolean submitSnapshotFinalizeFailure(
+      RemoteLeasedJob lease,
+      String resultId,
+      String message,
+      ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind kind);
 
   record PreparedSnapshotFinalizeSuccess(
       String resultId, SnapshotCaptureManifestDescriptor manifestDescriptor) {}

@@ -103,6 +103,69 @@ class GenerationArtifactMapTest {
   }
 
   @Test
+  void legacyIndexFormatReadsAsAbsentInsteadOfFailing() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    ReusableArtifactIndexStore indexes = new ReusableArtifactIndexStore(blobs);
+    String file = "s3://bucket/data.parquet";
+    var index =
+        indexes
+            .append(
+                "/accounts/account-1/tables/table-1/reusable-index/",
+                ReusableArtifactIndexStore.emptyReference(),
+                List.of(
+                    ReusableArtifactBundleReference.newBuilder()
+                        .setArtifact(
+                            StatsObjectDescriptor.newBuilder()
+                                .setTargetStorageId("reuse-bundle:group-1")
+                                .setPayloadUri("/bundles/group-1.pb")
+                                .setPayloadBytes(123L)
+                                .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+                                .build())
+                        .addFileStats(
+                            ReusableStatsArtifactMetadata.newBuilder()
+                                .setFilePath(file)
+                                .setSourceFingerprint("stats-source")
+                                .setStatsCaptureSignature("stats-capture"))
+                        .build()))
+            .toBuilder()
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION - 1)
+            .build();
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(TABLE_ID.getAccountId())
+            .setTableId(TABLE_ID.getId())
+            .setSnapshotId(42L)
+            .setReusableArtifactIndex(index)
+            .build();
+    byte[] manifestBytes = manifest.toByteArray();
+    String manifestUri = contentAddressedUri(manifestBytes);
+    blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
+    GenerationArtifactMap map =
+        new GenerationArtifactMap(
+            new InMemoryPointerStore(),
+            blobs,
+            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+
+    map.register(TABLE_ID, 42L, "generation-1", manifestUri, manifestBytes.length);
+
+    // Reads report the generation as unmapped rather than throwing; the next capture rewrites it.
+    assertThat(map.manifest(TABLE_ID, 42L, "generation-1")).isEmpty();
+    assertThat(map.lookupStats(TABLE_ID, 42L, "generation-1", file)).isEmpty();
+    assertThat(map.countStats(TABLE_ID, 42L, "generation-1")).isZero();
+    assertThat(
+            map.page(
+                    TABLE_ID,
+                    42L,
+                    "generation-1",
+                    ReusableArtifactIndexStore.EntryKind.FILE_STATS,
+                    1,
+                    "")
+                .entries())
+        .isEmpty();
+  }
+
+  @Test
   void registeredGenerationDoesNotSilentlyFallBackWhenItsManifestIsMissing() {
     GenerationArtifactMap map =
         new GenerationArtifactMap(

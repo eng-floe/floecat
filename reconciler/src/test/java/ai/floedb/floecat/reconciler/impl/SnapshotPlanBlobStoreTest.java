@@ -370,6 +370,17 @@ class SnapshotPlanBlobStoreTest {
   }
 
   @Test
+  void legacyAppendOnlyPlanFormatIsRejected() {
+    SnapshotPlanBlobStore.StoredAppendOnlyBase legacy =
+        new SnapshotPlanBlobStore.StoredAppendOnlyBase();
+
+    IllegalArgumentException failure =
+        assertThrows(IllegalArgumentException.class, legacy::toValue);
+
+    assertTrue(failure.getMessage().contains("plan format is incompatible"));
+  }
+
+  @Test
   void persistPlanStoresCompactBundleSelectionsWithoutLegacyFallbacks() {
     SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -562,7 +573,7 @@ class SnapshotPlanBlobStoreTest {
     int entries = stats + indexes;
     var index =
         ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
-            .setFormatVersion(1)
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION)
             .setFileStatsRecordCount(stats)
             .setIndexArtifactCount(indexes);
     if (entries > 0) {

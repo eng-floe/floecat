@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -79,6 +81,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -431,6 +434,106 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyLong(),
             any(),
             anyLong(),
+            anyString());
+  }
+
+  @Test
+  void incompatibleAppendOnlyFailureEnqueuesFullCaptureReconcile() {
+    when(jobs.enqueue(
+            eq(ACCOUNT_ID),
+            eq("connector"),
+            eq(true),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(ReconcileScope.class),
+            any(ReconcileExecutionPolicy.class),
+            eq("")))
+        .thenReturn("full-capture-job");
+
+    assertTrue(
+        service.persistFailure(
+            principal,
+            FINALIZE_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            "append-only base is incompatible",
+            ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+                .SFFK_APPEND_ONLY_BASE_INCOMPATIBLE));
+
+    verify(jobs)
+        .enqueue(
+            eq(ACCOUNT_ID),
+            eq("connector"),
+            eq(true),
+            eq(CaptureMode.METADATA_AND_CAPTURE),
+            any(ReconcileScope.class),
+            any(ReconcileExecutionPolicy.class),
+            eq(""));
+  }
+
+  @Test
+  void incompatibleAppendOnlyFailureEnqueuesOneReplacementWhenTheResultWriteIsRetried() {
+    AtomicInteger finalizeAttempts = new AtomicInteger();
+    doAnswer(
+            invocation -> {
+              if (finalizeAttempts.getAndIncrement() == 0) {
+                throw new StorageAbortRetryableException("idempotency write aborted");
+              }
+              return null;
+            })
+        .when(service.idempotencyStore)
+        .finalizeSuccess(
+            anyString(),
+            anyString(),
+            anyString(),
+            anyString(),
+            any(),
+            any(),
+            any(byte[].class),
+            any(),
+            any());
+
+    assertTrue(
+        service.persistFailure(
+            principal,
+            FINALIZE_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            "append-only base is incompatible",
+            ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+                .SFFK_APPEND_ONLY_BASE_INCOMPATIBLE));
+
+    assertEquals(2, finalizeAttempts.get());
+    verify(jobs, times(1))
+        .enqueue(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(CaptureMode.class),
+            any(ReconcileScope.class),
+            any(ReconcileExecutionPolicy.class),
+            anyString());
+  }
+
+  @Test
+  void ordinaryFinalizeFailureDoesNotEnqueueAFullCaptureReconcile() {
+    assertTrue(
+        service.persistFailure(
+            principal,
+            FINALIZE_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            "descriptor count mismatch",
+            ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+                .SFFK_UNSPECIFIED));
+
+    verify(jobs, never())
+        .enqueue(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(CaptureMode.class),
+            any(ReconcileScope.class),
+            any(ReconcileExecutionPolicy.class),
             anyString());
   }
 

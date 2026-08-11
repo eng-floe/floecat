@@ -2070,7 +2070,10 @@ class GrpcRemoteReconcileExecutorClient
 
   @Override
   public boolean submitSnapshotFinalizeFailure(
-      RemoteLeasedJob lease, String resultId, String message) {
+      RemoteLeasedJob lease,
+      String resultId,
+      String message,
+      SubmitLeasedSnapshotFinalizeResultRequest.FailureKind kind) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     return invokeWorkerControl(
         "submitLeasedSnapshotFinalizeResult",
@@ -2086,6 +2089,11 @@ class GrpcRemoteReconcileExecutorClient
                             SubmitLeasedSnapshotFinalizeResultRequest.Failure.newBuilder()
                                 .setResultId(stableResultId)
                                 .setMessage(message == null ? "" : message)
+                                .setKind(
+                                    kind == null
+                                        ? SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+                                            .SFFK_UNSPECIFIED
+                                        : kind)
                                 .build())
                         .build())
                 .getAccepted());

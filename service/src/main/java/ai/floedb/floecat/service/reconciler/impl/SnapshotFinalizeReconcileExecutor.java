@@ -442,10 +442,14 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
     @Override
     public boolean submitSnapshotFinalizeFailure(
-        RemoteLeasedJob remoteLease, String resultId, String message) {
+        RemoteLeasedJob remoteLease,
+        String resultId,
+        String message,
+        ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+            kind) {
       ReconcileJobStore.LeasedJob lease = remoteLease.lease();
       return finalizeExecutionService.persistFailure(
-          principal(lease), lease.jobId, lease.leaseEpoch, resultId, message);
+          principal(lease), lease.jobId, lease.leaseEpoch, resultId, message, kind);
     }
   }
 

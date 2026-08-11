@@ -67,6 +67,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.jboss.logging.Logger;
 
 /** Validates and publishes fenced snapshot capture artifacts. */
@@ -1006,35 +1007,71 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       String jobId,
       String leaseEpoch,
       String resultId,
-      String message) {
+      String message,
+      SubmitLeasedSnapshotFinalizeResultRequest.FailureKind failureKind) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
     ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
     ResourceId tableId = tableId(lease, snapshotTask);
     String requiredResultId = requireResultId(resultId);
     String effectiveMessage = message == null ? "" : message;
-    byte[] requestBytes = failurePayload(requiredResultId, effectiveMessage).toByteArray();
-    return runIdempotentCreate(
-            () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "SubmitLeasedSnapshotFinalizeResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
-                    () ->
-                        new IdempotencyGuard.CreateResult<>(
-                            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                                .setAccepted(true)
-                                .build(),
-                            tableId),
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
-        .body
-        .getAccepted();
+    SubmitLeasedSnapshotFinalizeResultRequest.FailureKind effectiveFailureKind =
+        failureKind == null
+            ? SubmitLeasedSnapshotFinalizeResultRequest.FailureKind.SFFK_UNSPECIFIED
+            : failureKind;
+    byte[] requestBytes =
+        failurePayload(requiredResultId, effectiveMessage, effectiveFailureKind).toByteArray();
+    // runIdempotentCreate replays the whole supplier on a retryable abort, so the creator must stay
+    // side-effect free; the replacement job is enqueued once, after the result is durably recorded.
+    AtomicBoolean recorded = new AtomicBoolean();
+    boolean accepted =
+        runIdempotentCreate(
+                () ->
+                    MutationOps.createProto(
+                        principalContext.getAccountId(),
+                        "SubmitLeasedSnapshotFinalizeResult",
+                        resultIdempotencyKey(jobId, requiredResultId),
+                        () -> requestBytes,
+                        () -> {
+                          recorded.set(true);
+                          return new IdempotencyGuard.CreateResult<>(
+                              SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
+                                  .setAccepted(true)
+                                  .build(),
+                              tableId);
+                        },
+                        ignored -> MutationMeta.getDefaultInstance(),
+                        idempotencyStore,
+                        nowTs(),
+                        idempotencyTtlSeconds(),
+                        principalContext::getCorrelationId,
+                        SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
+            .body
+            .getAccepted();
+    if (recorded.get()
+        && effectiveFailureKind
+            == SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+                .SFFK_APPEND_ONLY_BASE_INCOMPATIBLE) {
+      enqueueFullCaptureReplacement(lease, snapshotTask);
+    }
+    return accepted;
+  }
+
+  private void enqueueFullCaptureReplacement(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    String replacementJobId =
+        jobs.enqueue(
+            lease.accountId,
+            lease.connectorId,
+            true,
+            lease.captureMode,
+            lease.scope,
+            lease.executionPolicy,
+            "");
+    LOG.warnf(
+        "Append-only snapshot finalize is incompatible; enqueued full-capture reconcile"
+            + " failedJobId=%s replacementJobId=%s tableId=%s snapshotId=%d",
+        lease.jobId, replacementJobId, snapshotTask.tableId(), snapshotTask.snapshotId());
   }
 
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
@@ -1121,10 +1158,16 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   }
 
   private static SubmitLeasedSnapshotFinalizeResultRequest.Failure failurePayload(
-      String resultId, String message) {
+      String resultId,
+      String message,
+      SubmitLeasedSnapshotFinalizeResultRequest.FailureKind failureKind) {
     return SubmitLeasedSnapshotFinalizeResultRequest.Failure.newBuilder()
         .setResultId(resultId)
         .setMessage(message == null ? "" : message)
+        .setKind(
+            failureKind == null
+                ? SubmitLeasedSnapshotFinalizeResultRequest.FailureKind.SFFK_UNSPECIFIED
+                : failureKind)
         .build();
   }
 

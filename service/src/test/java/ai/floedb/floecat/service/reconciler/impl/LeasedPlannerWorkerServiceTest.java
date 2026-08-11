@@ -1944,7 +1944,8 @@ class LeasedPlannerWorkerServiceTest {
   private static ReusableArtifactIndexReference testArtifactIndex(int stats, int indexes) {
     var index =
         ReusableArtifactIndexReference.newBuilder()
-            .setFormatVersion(1)
+            .setFormatVersion(
+                ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore.FORMAT_VERSION)
             .setFileStatsRecordCount(stats)
             .setIndexArtifactCount(indexes);
     if (stats + indexes > 0) {

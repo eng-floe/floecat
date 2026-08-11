@@ -43,7 +43,7 @@ import java.util.function.Consumer;
 
 /** Persistent immutable sorted-run index for reusable file artifacts. */
 public final class ReusableArtifactIndexStore {
-  static final int FORMAT_VERSION = 1;
+  public static final int FORMAT_VERSION = 2;
   static final int TARGET_BLOCK_BYTES = 512 * 1024;
   static final int TARGET_PACK_BYTES = 64 * 1024 * 1024;
   static final int MAX_L0_RUNS = 32;

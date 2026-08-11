@@ -145,6 +145,14 @@ class ReusableArtifactIndexStoreTest {
   }
 
   @Test
+  void legacyReferenceFormatIsRejected() {
+    ReusableArtifactIndexReference legacy =
+        ReusableArtifactIndexReference.newBuilder().setFormatVersion(1).build();
+
+    assertThrows(IllegalArgumentException.class, () -> store.validateReadableReference(legacy));
+  }
+
+  @Test
   void referenceRejectsUncompactedRunLevel() {
     ReusableArtifactIndexReference base =
         store.append(

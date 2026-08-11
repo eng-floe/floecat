@@ -47,6 +47,11 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class SnapshotPlanBlobStore {
   private static final Logger LOG = Logger.getLogger(SnapshotPlanBlobStore.class);
+  // Single version knob for the stored append-only plan: it stamps StoredAppendOnlyBase and salts
+  // the derived plan blob URI. Starts at 3 because v1 and v2 were already used as identity salts.
+  static final int APPEND_ONLY_PLAN_FORMAT_VERSION = 3;
+  private static final String APPEND_ONLY_PLAN_IDENTITY =
+      "append-only-base-v" + APPEND_ONLY_PLAN_FORMAT_VERSION;
   private static final int MAX_CACHED_PLAN_INDEXES = 64;
   private static final int MAX_CACHED_PLAN_FILES = 65_536;
   @Inject BlobStore blobStore;
@@ -524,7 +529,7 @@ public class SnapshotPlanBlobStore {
 
     public List<String> manifestIdentity() {
       return List.of(
-          "append-only-base-v2",
+          APPEND_ONLY_PLAN_IDENTITY,
           Long.toString(snapshotId),
           manifestUri,
           Long.toString(manifestBytes),
@@ -540,6 +545,7 @@ public class SnapshotPlanBlobStore {
   }
 
   static final class StoredAppendOnlyBase {
+    public int formatVersion = 0;
     public long snapshotId = -1L;
     public String manifestUri = "";
     public long manifestBytes = 0L;
@@ -557,6 +563,7 @@ public class SnapshotPlanBlobStore {
         return null;
       }
       StoredAppendOnlyBase stored = new StoredAppendOnlyBase();
+      stored.formatVersion = APPEND_ONLY_PLAN_FORMAT_VERSION;
       stored.snapshotId = value.snapshotId();
       stored.manifestUri = value.manifestUri();
       stored.manifestBytes = value.manifestBytes();
@@ -573,6 +580,10 @@ public class SnapshotPlanBlobStore {
     }
 
     AppendOnlyBase toValue() {
+      if (formatVersion != APPEND_ONLY_PLAN_FORMAT_VERSION) {
+        throw new IllegalArgumentException(
+            "stored append-only base plan format is incompatible: " + formatVersion);
+      }
       return new AppendOnlyBase(
           snapshotId,
           manifestUri,

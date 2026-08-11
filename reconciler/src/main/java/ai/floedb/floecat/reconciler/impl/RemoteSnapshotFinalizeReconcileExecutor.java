@@ -146,8 +146,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
               ? snapshotPlanBlobStore.loadPlan(input.snapshotPlanUri())
               : SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of());
       AppendOnlySnapshotBaseLoader.Loaded appendOnly =
-          new AppendOnlySnapshotBaseLoader(blobStore)
-              .load(lease, input, snapshotPlan.appendOnlyBase().orElse(null));
+          loadAppendOnlyBase(lease, input, snapshotPlan);
       List<ReconcileFileGroupResultDescriptor> descriptors;
       Map<GroupKey, ReconcileFileGroupTask> plannedGroups = Map.of();
       if (input.fileGroupCount() == 0) {
@@ -347,7 +346,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       LOG.errorf(error, "%s jobId=%s", message, lease.jobId);
       if (!terminalSubmissionStarted) {
         workerClient.submitSnapshotFinalizeFailure(
-            remoteLease, resultId(lease, "failure"), message);
+            remoteLease, resultId(lease, "failure"), message, failureKind(error));
       }
       return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, message, error);
     } catch (RuntimeException error) {
@@ -368,9 +367,39 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   ? error.getClass().getSimpleName()
                   : error.getMessage());
       LOG.errorf(error, "%s jobId=%s", message, lease.jobId);
-      workerClient.submitSnapshotFinalizeFailure(remoteLease, resultId(lease, "failure"), message);
+      workerClient.submitSnapshotFinalizeFailure(
+          remoteLease, resultId(lease, "failure"), message, failureKind(error));
       return ExecutionResult.failure(0, 0, 0, 0, 1, 0, 0, message, error);
     }
+  }
+
+  private AppendOnlySnapshotBaseLoader.Loaded loadAppendOnlyBase(
+      ReconcileJobStore.LeasedJob lease,
+      StandaloneSnapshotFinalizeExecutionPayload input,
+      SnapshotPlanBlobStore.SnapshotPlanBlob snapshotPlan) {
+    SnapshotPlanBlobStore.AppendOnlyBase base;
+    try {
+      base = snapshotPlan.appendOnlyBase().orElse(null);
+    } catch (AppendOnlyBaseCompatibilityException error) {
+      throw error;
+    } catch (IllegalArgumentException error) {
+      // A durable plan written against an older contract can never be replayed as-is.
+      throw new AppendOnlyBaseCompatibilityException(
+          "append-only base is incompatible; full capture required", error);
+    }
+    // The loader raises AppendOnlyBaseCompatibilityException for contract violations and leaves
+    // storage failures as their own retryable exceptions.
+    return new AppendOnlySnapshotBaseLoader(blobStore).load(lease, input, base);
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+          .FailureKind
+      failureKind(RuntimeException error) {
+    return error instanceof AppendOnlyBaseCompatibilityException
+        ? ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+            .SFFK_APPEND_ONLY_BASE_INCOMPATIBLE
+        : ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+            .SFFK_UNSPECIFIED;
   }
 
   private Map<GroupKey, ReconcileFileGroupTask> loadPlannedGroups(

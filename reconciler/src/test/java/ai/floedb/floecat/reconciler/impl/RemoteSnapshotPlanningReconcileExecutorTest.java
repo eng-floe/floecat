@@ -1842,6 +1842,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               .setPayloadBytes(legacyBytes.length)
               .setPayloadSha256(ByteString.copyFrom(sha256(legacyBytes)))
               .setInlinePayload(ByteString.copyFrom(legacyBytes));
+      // Keep the current format version so the pre-pack block shape is what gets rejected.
       artifactIndex =
           artifactIndex.toBuilder()
               .setRuns(0, run.toBuilder().setManifest(legacyManifestReference))
