@@ -72,12 +72,12 @@ class CancelledQueryPinCleanupTest {
     CancelledQueryPinCleanup cleanup =
         new CancelledQueryPinCleanup(
             queryStore,
-            cleanup -> {
+            task -> {
               attempts.incrementAndGet();
               if (!accepting.get()) {
                 throw new RejectedExecutionException("saturated");
               }
-              cleanup.run();
+              task.run();
             });
 
     cleanup.release("query", pins);

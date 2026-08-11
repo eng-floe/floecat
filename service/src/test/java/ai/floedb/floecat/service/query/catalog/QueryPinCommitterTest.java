@@ -378,8 +378,9 @@ class QueryPinCommitterTest {
     }
 
     @Override
-    public void registerResolvingPinBlobs(String correlationId, Collection<String> blobUris) {
-      delegate.registerResolvingPinBlobs(correlationId, blobUris);
+    public void registerResolvingPinBlobs(
+        String queryId, ResourceId tableId, Collection<String> blobUris) {
+      delegate.registerResolvingPinBlobs(queryId, tableId, blobUris);
     }
 
     @Override
