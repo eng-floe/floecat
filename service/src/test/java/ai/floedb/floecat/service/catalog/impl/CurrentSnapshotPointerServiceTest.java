@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository.CurrentSnapshotPointerUpdateResult;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
@@ -117,7 +118,12 @@ class CurrentSnapshotPointerServiceTest {
     var tableRepo = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     service.rootWriter =
         new TableRootWriter(
-            roots, new TableRootCommitter(roots), tableRepo, service.snapshotRepo, null, null);
+            roots,
+            new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
+            tableRepo,
+            service.snapshotRepo,
+            null,
+            null);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
         .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
     when(service.snapshotRepo.getById(tableId, 7L)).thenReturn(Optional.of(candidate));
@@ -183,7 +189,12 @@ class CurrentSnapshotPointerServiceTest {
     var tableRepo = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     service.rootWriter =
         new TableRootWriter(
-            roots, new TableRootCommitter(roots), tableRepo, service.snapshotRepo, null, null);
+            roots,
+            new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
+            tableRepo,
+            service.snapshotRepo,
+            null,
+            null);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, first))
         .thenReturn(CurrentSnapshotPointerUpdateResult.UNCHANGED);
     when(service.snapshotRepo.metaForSafe(tableId, 7L))

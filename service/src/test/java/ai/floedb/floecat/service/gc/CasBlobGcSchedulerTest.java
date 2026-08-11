@@ -36,6 +36,8 @@ import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class CasBlobGcSchedulerTest {
@@ -110,6 +112,105 @@ class CasBlobGcSchedulerTest {
         .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
   }
 
+  @Test
+  void retainedContinuationIsNotAbandonedBeforeItCompletes() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+    CompletingContinuationGc gc = new CompletingContinuationGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+      scheduler.tick();
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertEquals(List.of("acct-a", "acct-a", "acct-a", "acct-b"), gc.accountIds);
+  }
+
+  @Test
+  void retainedContinuationCannotStarveAnotherAccountForever() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+    NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    System.setProperty("floecat.gc.cas.max-consecutive-continuation-ticks", "2");
+    try {
+      scheduler.tick();
+      scheduler.tick();
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+      System.clearProperty("floecat.gc.cas.max-consecutive-continuation-ticks");
+    }
+
+    assertTrue(gc.accountIds.contains("acct-b"));
+    assertEquals(1, gc.abandons);
+  }
+
+  @Test
+  void accountPageFetchedAtDeadlineIsRetainedForTheNextTick() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    AtomicInteger listCalls = new AtomicInteger();
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenAnswer(
+            invocation -> {
+              listCalls.incrementAndGet();
+              long releaseAt = System.currentTimeMillis() + 1_100L;
+              while (System.currentTimeMillis() < releaseAt) {
+                Thread.onSpinWait();
+              }
+              return List.of(account("acct-a"), account("acct-b"));
+            });
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    System.setProperty("floecat.gc.cas.max-tick-millis", "1000");
+    try {
+      scheduler.tick();
+      assertTrue(gc.accountIds.isEmpty(), "an expired tick does not start an account sweep");
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+      System.clearProperty("floecat.gc.cas.max-tick-millis");
+    }
+
+    assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
+    assertEquals(1, listCalls.get(), "the retained page is not fetched again on resume");
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -133,6 +234,52 @@ class CasBlobGcSchedulerTest {
         return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
       }
       return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
+    }
+  }
+
+  private static final class CompletingContinuationGc extends CasBlobGc {
+    private final List<String> accountIds = new ArrayList<>();
+    private boolean continuing;
+    private int accountARuns;
+
+    @Override
+    public Result runForAccount(String accountId, long deadlineMs) {
+      accountIds.add(accountId);
+      if ("acct-a".equals(accountId)) {
+        accountARuns++;
+        continuing = accountARuns < 3;
+        return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, continuing);
+      }
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, false);
+    }
+
+    @Override
+    Optional<String> continuationAccountId() {
+      return continuing ? Optional.of("acct-a") : Optional.empty();
+    }
+  }
+
+  private static final class NeverCompletingContinuationGc extends CasBlobGc {
+    private final List<String> accountIds = new ArrayList<>();
+    private String continuingAccount;
+    private int abandons;
+
+    @Override
+    public Result runForAccount(String accountId, long deadlineMs) {
+      accountIds.add(accountId);
+      continuingAccount = accountId;
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);
+    }
+
+    @Override
+    Optional<String> continuationAccountId() {
+      return Optional.ofNullable(continuingAccount);
+    }
+
+    @Override
+    synchronized void abandonContinuation() {
+      abandons++;
+      continuingAccount = null;
     }
   }
 }

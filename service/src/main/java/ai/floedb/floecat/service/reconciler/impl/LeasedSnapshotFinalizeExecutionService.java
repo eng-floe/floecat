@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -31,6 +32,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
@@ -189,7 +191,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           blobStore.put(
               durableManifestUri, validatedManifest.serializedBytes(), "application/x-protobuf");
           publishCaptureArtifacts(lease, tableId, snapshotTask, manifest);
-          var finalizedSnapshot =
+          Snapshot finalizedSnapshot =
               snapshotRepo.recordReuseManifest(
                   tableId,
                   snapshotTask.snapshotId(),
@@ -204,9 +206,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                               snapshotTask.snapshotId(),
                               "full-rescan-" + lease.parentJobId))
                       .build());
-          finalizedSnapshot.ifPresent(
-              snapshot ->
-                  currentSnapshotPointerService.maybeAdvance(tableId, snapshot, lease.jobId));
+          currentSnapshotPointerService.maybeAdvance(tableId, finalizedSnapshot, lease.jobId);
         } finally {
           publishNanos[0] = System.nanoTime() - publishStartNanos;
         }
@@ -461,7 +461,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                           && candidate
                               .getArtifact()
                               .getPayloadUri()
-                              .startsWith(descriptor.getStatsObjectPrefix() + "reuse-bundles/"))
+                              .startsWith(
+                                  descriptor.getStatsObjectPrefix()
+                                      + ReusableArtifactBundleUris.BUNDLE_DIRECTORY))
               .findFirst()
               .orElseThrow(
                   () ->
@@ -787,7 +789,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     for (var bundle : manifest.getReusableArtifactBundlesList()) {
       String matchedPrefix = null;
       for (String statsPrefix : stagedArtifactPrefixes) {
-        if (bundle.getArtifact().getPayloadUri().startsWith(statsPrefix + "reuse-bundles/")) {
+        if (bundle
+            .getArtifact()
+            .getPayloadUri()
+            .startsWith(statsPrefix + ReusableArtifactBundleUris.BUNDLE_DIRECTORY)) {
           if (matchedPrefix != null) {
             throw new IllegalArgumentException(
                 "snapshot reusable bundle matches multiple staged file groups");

@@ -64,6 +64,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -131,7 +132,7 @@ class QueryPinningConsistencyIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject ai.floedb.floecat.storage.spi.PointerStore pointerStore;
+  @Inject TableRootRepository tableRoots;
 
   private final String prefix = getClass().getSimpleName() + "_";
 
@@ -536,23 +537,19 @@ class QueryPinningConsistencyIT {
   }
 
   // ---------------------------------------------------------------------------
-  // Lazy migration: a table with no root (as any table predating roots) has one
-  // synthesized from its legacy families on its first CURRENT read.
+  // Rootless tables are unsupported. Query pinning fails closed instead of rebuilding a root from
+  // legacy pointer families.
   // ---------------------------------------------------------------------------
   @Test
-  void currentReadLazilyMaterializesAMissingTableRoot() {
-    Fixture f = createTableWithSnapshot("lazy-repair");
-    // Simulate a pre-root (legacy) table: drop the root out from under it. The legacy pointer
-    // families still describe the table fully.
-    pointerStore.delete(
-        ai.floedb.floecat.service.repo.model.Keys.tableRootByTable(
-            f.tableId().getAccountId(), f.tableId().getId()));
+  void currentReadRejectsAMissingTableRoot() {
+    Fixture f = createTableWithSnapshot("missing-root");
+    tableRoots.purgeRoot(f.tableId());
 
-    // The first CURRENT read synthesizes and commits the root transparently, then pins it.
     String queryId = beginQuery(f);
-    var described = describe(queryId, f.name(), current());
-    assertEquals(1, described.getSchemas(0).getColumnsCount());
-    assertEquals(f.snap1(), initScanSnapshotId(queryId, f));
+    io.grpc.StatusRuntimeException failure =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class, () -> describe(queryId, f.name(), current()));
+    assertEquals(io.grpc.Status.Code.NOT_FOUND, failure.getStatus().getCode());
   }
 
   private void seedColumnStats(ResourceId tableId, long snapshotId, long columnId, long rowCount) {

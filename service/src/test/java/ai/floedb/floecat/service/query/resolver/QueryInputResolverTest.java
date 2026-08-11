@@ -165,6 +165,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q1"),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
   }
@@ -181,7 +182,9 @@ public class QueryInputResolverTest {
             })
         .when(store)
         .registerResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyCollection());
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
+            org.mockito.ArgumentMatchers.anyCollection());
 
     withStore.resolveInputs(
         "q-worker-registration",
@@ -229,6 +232,7 @@ public class QueryInputResolverTest {
       org.mockito.Mockito.verify(store, org.mockito.Mockito.timeout(1_000))
           .registerResolvingPinBlobs(
               org.mockito.ArgumentMatchers.eq("q-parallel"),
+              org.mockito.ArgumentMatchers.eq(fast),
               org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
     } finally {
       blockingGraph.allowSlowPin.countDown();
@@ -378,6 +382,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-failure"),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
     org.mockito.Mockito.verify(store)
         .releaseResolvingPinBlobs(
@@ -647,6 +652,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.verify(store)
         .registerResolvingPinBlobs(
             org.mockito.ArgumentMatchers.eq("q-reuse"),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
             org.mockito.ArgumentMatchers.argThat(
                 uris ->
                     uris.contains("s3://T2/pinned-table.pb")
@@ -1742,7 +1748,7 @@ public class QueryInputResolverTest {
     org.mockito.Mockito.doAnswer(
             invocation -> {
               @SuppressWarnings("unchecked")
-              java.util.Collection<String> roots = invocation.getArgument(1);
+              java.util.Collection<String> roots = invocation.getArgument(2);
               if (roots.contains("s3://CONCURRENT_CACHE_HANDOFF/table.pb")
                   && sharedRegistrations.incrementAndGet() == 2) {
                 waiterRegistrationStarted.countDown();
@@ -1752,7 +1758,9 @@ public class QueryInputResolverTest {
             })
         .when(store)
         .registerResolvingPinBlobs(
-            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.any(ResourceId.class),
+            org.mockito.ArgumentMatchers.any());
     org.mockito.Mockito.doAnswer(
             invocation -> {
               @SuppressWarnings("unchecked")

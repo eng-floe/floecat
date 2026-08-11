@@ -38,6 +38,8 @@ public final class Keys {
   public static final String SEG_STORAGE_AUTHORITY = "/storage-authority/";
   public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
+  public static final String SEG_INDEX_SIDECARS = "/index-sidecars/";
+  public static final String INDEX_ARTIFACT_DIRECT_GENERATION = "direct";
   public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
   public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
   public static final String SEG_INDEX_CAPTURE_MANIFESTS =
@@ -298,6 +300,10 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/storage-authorities/by-id/";
   }
 
+  public static String storageAuthorityRootPrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/storage-authorities/";
+  }
+
   public static String storageAuthorityPointerByName(String accountId, String displayName) {
     String tid = req("account_id", accountId);
     String name = req("display_name", displayName);
@@ -396,6 +402,11 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/tables/";
   }
 
+  /** Immediate object-store prefix containing every blob family owned by one table. */
+  public static String tableBlobPrefix(String accountId, String tableId) {
+    return tableRootPrefix(accountId) + encode(req("table_id", tableId)) + "/";
+  }
+
   public static String tablePointerByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
     String tid = req("account_id", accountId);
@@ -457,6 +468,22 @@ public final class Keys {
         "/accounts/%s/tables/%s/table/%s.pb", encode(tid), encode(tbid), encode(sha));
   }
 
+  public static String tableDefinitionBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "table/";
+  }
+
+  public static String tableSnapshotBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "snapshots/";
+  }
+
+  public static String tableConstraintsBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "constraints/";
+  }
+
+  public static String tableRootBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "root/";
+  }
+
   // ===== Snapshot =====
 
   public static String snapshotPointerById(String accountId, String tableId, long snapshotId) {
@@ -508,6 +535,11 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/tables/%s/root/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
+  /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
+  public static String snapshotManifestBlobPrefix(String accountId, String tableId) {
+    return tableRootBlobPrefix(accountId, tableId) + "manifest/";
   }
 
   /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
@@ -727,6 +759,10 @@ public final class Keys {
         "/accounts/%s/tables/%s/target-stats/%019d/", encode(tid), encode(tbid), sid);
   }
 
+  public static String tableTargetStatsBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "target-stats/";
+  }
+
   public static String snapshotIndexArtifactDirectoryPointer(
       String accountId, String tableId, long snapshotId) {
     return String.format(
@@ -803,6 +839,10 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
         encode(tid), encode(tbid), sid, encode(target), encode(sha));
+  }
+
+  public static String tableIndexSidecarBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + SEG_INDEX_SIDECARS.substring(1);
   }
 
   public static String snapshotCompatDirectoryPointer(
@@ -1601,7 +1641,37 @@ public final class Keys {
     if (genEnd < 0) {
       return null;
     }
-    return new GenerationKey(snapshotId, pointerKey.substring(genStart, genEnd));
+    return new GenerationKey(snapshotId, percentDecode(pointerKey.substring(genStart, genEnd)));
+  }
+
+  /** Recovers a generation identity from a generation-manifest blob URI. */
+  public static GenerationKey generationFromManifestBlobUri(String manifestUri) {
+    if (manifestUri == null) {
+      return null;
+    }
+    String marker = "/target-stats/";
+    int markerAt = manifestUri.indexOf(marker);
+    if (markerAt < 0) {
+      return null;
+    }
+    int snapshotStart = markerAt + marker.length();
+    int snapshotEnd = manifestUri.indexOf("/manifests/", snapshotStart);
+    if (snapshotEnd < 0) {
+      return null;
+    }
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(manifestUri.substring(snapshotStart, snapshotEnd));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int generationStart = snapshotEnd + "/manifests/".length();
+    int generationEnd = manifestUri.endsWith(".pb") ? manifestUri.length() - 3 : -1;
+    if (generationEnd <= generationStart || manifestUri.indexOf('/', generationStart) >= 0) {
+      return null;
+    }
+    return new GenerationKey(
+        snapshotId, percentDecode(manifestUri.substring(generationStart, generationEnd)));
   }
 
   /** One stats generation's identity within a table, as encoded in its pointer keys. */
@@ -1723,6 +1793,10 @@ public final class Keys {
           seg.length == 6 && "connector".equals(seg[4])
               ? connectorPointerById(account, percentDecode(seg[3]))
               : null;
+      case "storage-authorities" ->
+          seg.length == 6 && "storage-authority".equals(seg[4])
+              ? storageAuthorityPointerById(account, percentDecode(seg[3]))
+              : null;
       case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
       default -> null;
     };
@@ -1739,6 +1813,10 @@ public final class Keys {
         return seg.length == 6 ? tableRootByTable(account, table) : null;
       case "snapshots":
         {
+          // snapshots/current/<sha>.pb
+          if (seg.length == 7 && "current".equals(seg[5])) {
+            return currentSnapshotPointerByTable(account, table);
+          }
           // snapshots/<snapshot_id>/snapshot/<sha>.pb
           Long sid = parseSnapshotId(seg[5]);
           if (sid == null) {

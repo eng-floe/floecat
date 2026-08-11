@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -35,15 +37,13 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -69,6 +69,13 @@ public class CasBlobGcScheduler {
   private final AtomicInteger poisonedAccountsLastTick = new AtomicInteger(0);
   private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
+  private String continuationAccountId = "";
+  private int consecutiveContinuationTicks;
+  private String accountToken = "";
+  private List<Account> accountPage = List.of();
+  private int accountPageIndex;
+  private String accountPageNextToken = "";
+  private final Set<String> accountsSeenThisCycle = new HashSet<>();
 
   private volatile boolean stopping;
 
@@ -131,7 +138,7 @@ public class CasBlobGcScheduler {
     }
 
     var cfg = ConfigProvider.getConfig();
-    boolean enabled = cfg.getOptionalValue("floecat.gc.cas.enabled", Boolean.class).orElse(true);
+    boolean enabled = cfg.getOptionalValue("floecat.gc.cas.enabled", Boolean.class).orElse(false);
     enabledGauge.set(enabled ? 1 : 0);
     if (!enabled) {
       return;
@@ -152,29 +159,48 @@ public class CasBlobGcScheduler {
     gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "tick"));
 
     final long maxTickMillis =
-        cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(4000L);
+        Math.max(
+            1_000L,
+            cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(45_000L));
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
+    final int maxConsecutiveContinuationTicks =
+        Math.max(
+            1,
+            cfg.getOptionalValue("floecat.gc.cas.max-consecutive-continuation-ticks", Integer.class)
+                .orElse(10));
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
     int poisonedThisTick = 0;
     int deleteUnsupportedThisTick = 0;
     try {
-      List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
-
-      // Backlog bookkeeping: forget accounts that no longer exist, and seed the first sight of a
-      // new account with "now" so its age starts at 0 and grows only if it is never cleanly swept.
-      Set<String> present =
-          allAccounts.stream().map(a -> a.getResourceId().getId()).collect(Collectors.toSet());
-      lastCleanSweepMs.keySet().retainAll(present);
-      for (String id : present) {
-        lastCleanSweepMs.putIfAbsent(id, now);
-      }
-
-      Collections.shuffle(allAccounts);
-
-      for (Account account : allAccounts) {
+      while (System.currentTimeMillis() < deadline && !stopping) {
+        String retainedAccountId = gc.continuationAccountId().orElse("");
+        boolean fromPage = retainedAccountId.isBlank();
+        Account account;
+        if (fromPage) {
+          account = nextPagedAccount(accountRepo, accountsPageSize, deadline, gc, now);
+          if (account == null) {
+            break;
+          }
+        } else {
+          account =
+              accountRepo
+                  .getById(
+                      ResourceId.newBuilder()
+                          .setId(retainedAccountId)
+                          .setKind(ResourceKind.RK_ACCOUNT)
+                          .build())
+                  .orElse(null);
+          if (account == null) {
+            gc.abandonContinuation();
+            continuationAccountId = "";
+            consecutiveContinuationTicks = 0;
+            lastCleanSweepMs.remove(retainedAccountId);
+            continue;
+          }
+        }
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
@@ -195,8 +221,12 @@ public class CasBlobGcScheduler {
           gcMetrics.recordPause(
               Duration.ofNanos(System.nanoTime() - accountStart),
               Tag.of(TagKey.RESULT, "account-error"));
+          if (fromPage && advanceAccountCursor(gc)) {
+            break;
+          }
           continue;
         }
+        boolean discoveryCycleComplete = fromPage && advanceAccountCursor(gc);
         if (result.deletesUnsupported()) {
           // Fail-closed skip (store cannot delete by immutable version): nothing was collected,
           // so the account's backlog age must keep climbing, exactly like a poisoned sweep.
@@ -210,7 +240,9 @@ public class CasBlobGcScheduler {
           // A clean, fully-reached sweep resets this account's backlog age.
           lastCleanSweepMs.put(accountId, System.currentTimeMillis());
         }
-        if (!result.deletesUnsupported() && !result.poisoned()) {
+        if (!result.deletesUnsupported()
+            && !result.poisoned()
+            && gc.continuationAccountId().isEmpty()) {
           storageUsageMetrics
               .get()
               .recordGcEstimate(
@@ -225,11 +257,42 @@ public class CasBlobGcScheduler {
         gcMetrics.recordCollection(result.blobsScanned(), Tag.of(TagKey.RESULT, "blobs-scanned"));
         gcMetrics.recordCollection(result.blobsDeleted(), Tag.of(TagKey.RESULT, "blobs-deleted"));
         gcMetrics.recordCollection(result.blobsRescued(), Tag.of(TagKey.RESULT, "blobs-rescued"));
-        gcMetrics.recordCollection(result.referenced(), Tag.of(TagKey.RESULT, "referenced"));
+        gcMetrics.recordCollection(
+            result.referenced(), Tag.of(TagKey.RESULT, "reference-index-insertions"));
+        gcMetrics.recordCollection(
+            result.referenceIndexSaturationPpm(),
+            Tag.of(TagKey.RESULT, "reference-index-saturation-ppm"));
+        gcMetrics.recordCollection(
+            result.referenceIndexEstimatedFalsePositivePpb(),
+            Tag.of(TagKey.RESULT, "reference-index-estimated-fpp-ppb"));
         gcMetrics.recordCollection(result.tablesScanned(), Tag.of(TagKey.RESULT, "tables-scanned"));
         gcMetrics.recordPause(
             Duration.ofNanos(System.nanoTime() - accountStart),
             Tag.of(TagKey.RESULT, "account-run"));
+        var continuing = gc.continuationAccountId();
+        if (continuing.isPresent()) {
+          String continuingAccountId = continuing.get();
+          if (continuingAccountId.equals(continuationAccountId)) {
+            consecutiveContinuationTicks++;
+          } else {
+            continuationAccountId = continuingAccountId;
+            consecutiveContinuationTicks = 1;
+          }
+          // Keep only one local epoch at a time, but cap how long it can monopolize the scheduler.
+          // An oversized account may need a larger cap; the backlog metric exposes that condition.
+          if (consecutiveContinuationTicks >= maxConsecutiveContinuationTicks) {
+            gc.abandonContinuation();
+            continuationAccountId = "";
+            consecutiveContinuationTicks = 0;
+          }
+          break;
+        } else if (accountId.equals(continuationAccountId)) {
+          continuationAccountId = "";
+          consecutiveContinuationTicks = 0;
+        }
+        if (discoveryCycleComplete) {
+          break;
+        }
       }
     } finally {
       poisonedAccountsLastTick.set(poisonedThisTick);
@@ -241,17 +304,59 @@ public class CasBlobGcScheduler {
     }
   }
 
-  private static List<Account> fetchAllAccounts(AccountRepository repo, int pageSize) {
-    List<Account> out = new ArrayList<>();
-    String tok = "";
-    StringBuilder next = new StringBuilder();
-    do {
-      var page = repo.list(pageSize, tok, next);
-      out.addAll(page);
-      tok = next.toString();
-      next.setLength(0);
-    } while (!tok.isBlank());
-    return out;
+  private Account nextPagedAccount(
+      AccountRepository repo, int pageSize, long deadline, CasBlobGc gc, long now) {
+    while (System.currentTimeMillis() < deadline && !stopping) {
+      if (accountPageIndex < accountPage.size()) {
+        return accountPage.get(accountPageIndex);
+      }
+      StringBuilder next = new StringBuilder();
+      List<Account> page = repo.list(pageSize, accountToken, next);
+      accountPage = List.copyOf(page);
+      accountPageIndex = 0;
+      accountPageNextToken = next.toString();
+      for (Account account : accountPage) {
+        String accountId = account.getResourceId().getId();
+        accountsSeenThisCycle.add(accountId);
+        lastCleanSweepMs.putIfAbsent(accountId, now);
+      }
+      if (System.currentTimeMillis() >= deadline || stopping) {
+        return null;
+      }
+      if (!accountPage.isEmpty()) {
+        return accountPage.get(0);
+      }
+      accountToken = accountPageNextToken;
+      accountPageNextToken = "";
+      if (accountToken.isBlank()) {
+        completeAccountDiscoveryCycle(gc);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private boolean advanceAccountCursor(CasBlobGc gc) {
+    accountPageIndex++;
+    if (accountPageIndex < accountPage.size()) {
+      return false;
+    }
+    accountToken = accountPageNextToken;
+    accountPage = List.of();
+    accountPageIndex = 0;
+    accountPageNextToken = "";
+    if (!accountToken.isBlank()) {
+      return false;
+    }
+    completeAccountDiscoveryCycle(gc);
+    return true;
+  }
+
+  private void completeAccountDiscoveryCycle(CasBlobGc gc) {
+    Set<String> present = Set.copyOf(accountsSeenThisCycle);
+    gc.abandonContinuationIfAccountMissing(present);
+    lastCleanSweepMs.keySet().retainAll(present);
+    accountsSeenThisCycle.clear();
   }
 
   public static final class DisabledOrStopping implements Scheduled.SkipPredicate {
@@ -266,7 +371,7 @@ public class CasBlobGcScheduler {
       boolean enabled =
           ConfigProvider.getConfig()
               .getOptionalValue("floecat.gc.cas.enabled", Boolean.class)
-              .orElse(true);
+              .orElse(false);
       return !enabled || stopping || DynamoDbBootstrapReadiness.shouldWaitForBootstrap();
     }
   }

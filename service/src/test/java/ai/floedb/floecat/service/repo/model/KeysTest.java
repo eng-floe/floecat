@@ -109,6 +109,14 @@ class KeysTest {
   }
 
   @Test
+  void generationManifestUriRecoversDecodedGenerationIdentity() {
+    assertEquals(
+        new Keys.GenerationKey(7L, "generation +/one"),
+        Keys.generationFromManifestBlobUri(
+            Keys.snapshotTargetStatsManifestBlobUri("account", "table", 7L, "generation +/one")));
+  }
+
+  @Test
   void snapshotFinalizerStatsPrefixIsStableAcrossReplacementAttempts() {
     assertEquals(
         "/accounts/a/tables/t/target-stats/0000000000000000007/generations/"

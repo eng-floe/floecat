@@ -33,9 +33,13 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
@@ -138,10 +142,24 @@ class ConstraintProviderFactoryTest {
     snapshots.create(snapshot(USER_TABLE, 200L, 2_000L, 2_000L));
     snapshots.maybeAdvanceCurrentSnapshotPointer(
         USER_TABLE, snapshots.getById(USER_TABLE, 200L).orElseThrow());
+    publishSnapshotToRoot(pointers, blobs, tables, snapshots, USER_TABLE, 200L);
 
     ConstraintProvider provider = factory.provider();
     var latest = provider.latestConstraints(USER_TABLE).orElseThrow();
     assertEquals("pk_v200", latest.constraints().get(0).getName());
+  }
+
+  private static void publishSnapshotToRoot(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      ResourceId tableId,
+      long snapshotId) {
+    TableRootRepository roots = new TableRootRepository(pointers, blobs);
+    TableRootCommitter committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
+    new TableRootWriter(roots, committer, tables, snapshots, null, null)
+        .commitSnapshotEntry(tableId, snapshotId);
   }
 
   @Test

@@ -452,6 +452,41 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void ordinaryStatsWritesPublishTheirActiveGenerationLifecycle() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 7081L;
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12L).build(), null));
+
+    String manifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    assertThat(repository.requirePublishedGenerationLive(TABLE_ID, manifestUri).generationId())
+        .isEqualTo(Keys.generationFromManifestBlobUri(manifestUri).generationId());
+  }
+
+  @Test
+  void queryPinRejectsPreLifecycleGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 7082L;
+    String generationId = "pre-lifecycle";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    blobStore.put(
+        manifestUri,
+        com.google.protobuf.StringValue.of(generationId).toByteArray(),
+        "application/x-protobuf");
+
+    assertThatThrownBy(() -> repository.requirePublishedGenerationLive(TABLE_ID, manifestUri))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("generation is unavailable");
+  }
+
+  @Test
   void draftGenerationIsInvisibleUntilPublished() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1899,6 +1934,205 @@ class StatsRepositoryTargetStorageTest {
             TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 2, Long.MAX_VALUE);
     assertThat(repeat.generationsReclaimed()).isZero();
     assertThat(repeat.blobDeleteAttempts()).isZero();
+  }
+
+  @Test
+  void lateProtectionNeverRepublishesAPartiallyDeletedGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 779L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+    repository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, List.of(record));
+    String supersededManifest =
+        repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String generationId =
+        supersededManifest.substring(
+            supersededManifest.lastIndexOf('/') + 1, supersededManifest.length() - 3);
+    String targetPointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            StatsTargetIdentity.storageId(record.getTarget()));
+    String targetBlob = pointerStore.get(targetPointer).orElseThrow().getBlobUri();
+    repository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, List.of(record));
+
+    StatsRepository.GenerationGcResult first =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 1, Long.MAX_VALUE);
+    assertThat(first.pending()).isTrue();
+    assertThat(blobStore.head(targetBlob)).isEmpty();
+
+    repository.deleteUnreferencedGenerations(
+        TABLE_ID, supersededManifest::equals, System.currentTimeMillis(), 0L, 100, Long.MAX_VALUE);
+
+    String lifecyclePointer =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(pointerStore.get(lifecyclePointer).orElseThrow().getBlobUri()).isEqualTo("DELETING");
+  }
+
+  @Test
+  void generationDiscoveryFailsClosedAtItsConfiguredCapacity() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    for (int i = 0; i < 2; i++) {
+      String key =
+          Keys.snapshotTargetStatsGenerationLifecyclePointer(
+              TABLE_ID.getAccountId(), TABLE_ID.getId(), 1L, "generation-" + i);
+      assertThat(
+              pointerStore.compareAndSet(
+                  key, 0L, PointerReferences.opaqueMarkerPointer(key, "PUBLISHED", 1L)))
+          .isTrue();
+    }
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+
+    assertThatThrownBy(
+            () ->
+                repository.deleteUnreferencedGenerations(
+                    TABLE_ID,
+                    ignored -> false,
+                    System.currentTimeMillis(),
+                    0L,
+                    10,
+                    Long.MAX_VALUE,
+                    new StatsRepository.GenerationGcContinuation(1)))
+        .isInstanceOf(StatsRepository.GenerationGcCapacityExceededException.class);
+  }
+
+  @Test
+  void generationGcIgnoresObjectOnlyPreLifecycleOrphan() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 782L;
+    String generationId = "crashed-upload";
+    String orphan =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/target/stats.pb";
+    blobStore.put(orphan, new byte[] {1}, "application/x-protobuf");
+
+    StatsRepository.GenerationGcResult result =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, Long.MAX_VALUE, 0L, 100, Long.MAX_VALUE);
+
+    assertThat(result.generationsReclaimed()).isZero();
+    assertThat(blobStore.head(orphan)).isPresent();
+    assertThat(
+            pointerStore.get(
+                Keys.snapshotTargetStatsDeletedGenerationFencePointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isEmpty();
+  }
+
+  @Test
+  void generationGcNeverDeletesAnObjectYoungerThanTheFrozenPassStart() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 781L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+    repository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, List.of(record));
+    String supersededManifest =
+        repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String generationId =
+        supersededManifest.substring(
+            supersededManifest.lastIndexOf('/') + 1, supersededManifest.length() - 3);
+    repository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, List.of(record));
+    long passStart = System.currentTimeMillis();
+    while (System.currentTimeMillis() <= passStart) {
+      Thread.onSpinWait();
+    }
+    String lateWorkerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/late.pb";
+    blobStore.put(lateWorkerObject, new byte[] {1}, "application/x-protobuf");
+
+    StatsRepository.GenerationGcResult result =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, passStart, 0L, 100, Long.MAX_VALUE);
+
+    assertThat(result.pending()).isTrue();
+    assertThat(blobStore.head(lateWorkerObject)).isPresent();
+    assertThat(blobStore.head(supersededManifest)).isPresent();
+  }
+
+  @Test
+  void generationGcPointerDiscoveryResumesFromItsContinuationToken() {
+    InMemoryPointerStore rawPointers = new InMemoryPointerStore();
+    String generationId = "generation";
+    long snapshotId = 780L;
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(
+            rawPointers.compareAndSet(
+                lifecycle, 0L, PointerReferences.opaqueMarkerPointer(lifecycle, "PUBLISHED", 1L)))
+        .isTrue();
+    for (int i = 0; i < 501; i++) {
+      String key =
+          Keys.snapshotTargetStatsGenerationPointer(
+              TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId, "target-" + i);
+      assertThat(
+              rawPointers.compareAndSet(
+                  key, 0L, PointerReferences.blobPointer(key, "blob-" + i, 1L)))
+          .isTrue();
+    }
+    long deadline = System.currentTimeMillis() + 20L;
+    var observedTokens = new ArrayList<String>();
+    PointerStore pointers =
+        new RepoTestPointerStores.DelegatingPointerStore(rawPointers) {
+          private boolean delayed;
+
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+            if (prefix.equals(Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))) {
+              observedTokens.add(pageToken);
+              if (!delayed && !pageToken.isBlank()) {
+                delayed = true;
+                while (System.currentTimeMillis() <= deadline) {
+                  Thread.onSpinWait();
+                }
+              }
+            }
+            return page;
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    var continuation = new StatsRepository.GenerationGcContinuation();
+
+    StatsRepository.GenerationGcResult first =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 10, deadline, continuation);
+    String savedToken = continuation.pointerContinuationToken();
+    assertThat(first.pending()).isTrue();
+    assertThat(savedToken).isNotBlank();
+
+    observedTokens.clear();
+    StatsRepository.GenerationGcResult resumed =
+        repository.deleteUnreferencedGenerations(
+            TABLE_ID,
+            ignored -> false,
+            System.currentTimeMillis(),
+            0L,
+            10,
+            System.currentTimeMillis() + 5_000L,
+            continuation);
+
+    assertThat(observedTokens).isNotEmpty();
+    assertThat(observedTokens.getFirst()).isEqualTo(savedToken);
+    assertThat(resumed.pending()).isFalse();
+    assertThat(continuation.generations())
+        .containsExactly(new Keys.GenerationKey(snapshotId, generationId));
   }
 
   @Test

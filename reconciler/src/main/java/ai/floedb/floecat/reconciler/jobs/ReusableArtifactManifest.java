@@ -66,7 +66,9 @@ public final class ReusableArtifactManifest {
       String statsPrefix = null;
       for (String candidate :
           groupStatsPrefixes.getOrDefault(artifact.getTargetStorageId(), List.of())) {
-        if (artifact.getPayloadUri().startsWith(candidate + "reuse-bundles/")) {
+        if (artifact
+            .getPayloadUri()
+            .startsWith(candidate + ReusableArtifactBundleUris.BUNDLE_DIRECTORY)) {
           if (statsPrefix != null) {
             throw new IllegalArgumentException(
                 "snapshot capture manifest reuse bundle identity is ambiguous");

@@ -276,6 +276,14 @@ public interface StatsStore {
   }
 
   /**
+   * Durably reserves an unpublished generation before any external worker receives an object-store
+   * upload prefix for it. Implementations that track generations must make this idempotent.
+   */
+  default void beginStatsGeneration(ResourceId tableId, long snapshotId, String generationId) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
    * Registers immutable target-stats objects that a fenced worker already wrote.
    *
    * <p>The implementation creates generation-scoped target mappings without rewriting the blob

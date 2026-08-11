@@ -1339,7 +1339,7 @@ class UserObjectBundleServiceTest {
             RelationPinSet pins =
                 SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
-            queryStore.registerResolvingPinBlobs(queryId, QueryPins.gcRootUris(pins));
+            queryStore.registerResolvingPinBlobs(queryId, TABLE_A, QueryPins.gcRootUris(pins));
             subscriberRef.get().cancelNow();
             return new ResolutionResult(List.of(TABLE_A), pins, null);
           }

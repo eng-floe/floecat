@@ -50,7 +50,7 @@ final class ResolvingPinRoots {
     if (roots.isEmpty()) {
       return;
     }
-    queryStore.registerResolvingPinBlobs(queryId, roots);
+    queryStore.registerResolvingPinBlobs(queryId, pin.getTableId(), roots);
     rootsByPin.put(pin, roots);
   }
 

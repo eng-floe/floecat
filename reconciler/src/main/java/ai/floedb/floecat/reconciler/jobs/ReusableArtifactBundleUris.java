@@ -21,7 +21,8 @@ import java.util.HexFormat;
 
 /** Content-addressing rules for compact reusable artifact bundles. */
 public final class ReusableArtifactBundleUris {
-  private static final String BUNDLE_PATH = "/reuse-bundles/";
+  public static final String BUNDLE_DIRECTORY = "reuse-bundles/";
+  private static final String BUNDLE_PATH = "/" + BUNDLE_DIRECTORY;
 
   private ReusableArtifactBundleUris() {}
 
@@ -42,7 +43,7 @@ public final class ReusableArtifactBundleUris {
     }
     String separator = prefix.endsWith("/") ? "" : "/";
     return uri.equals(
-        prefix + separator + "reuse-bundles/" + HexFormat.of().formatHex(payloadSha256) + ".pb");
+        prefix + separator + BUNDLE_DIRECTORY + HexFormat.of().formatHex(payloadSha256) + ".pb");
   }
 
   public static boolean matchesPayload(String uri, byte[] payload) {

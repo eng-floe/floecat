@@ -515,7 +515,7 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public void registerResolvingPinBlobs(
-        String correlationId, java.util.Collection<String> blobUris) {
+        String correlationId, ResourceId tableId, java.util.Collection<String> blobUris) {
       resolvingPinBlobUris.addAll(blobUris);
     }
 

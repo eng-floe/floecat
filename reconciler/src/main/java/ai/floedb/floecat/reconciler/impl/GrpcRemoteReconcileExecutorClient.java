@@ -41,6 +41,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
@@ -1119,7 +1120,10 @@ class GrpcRemoteReconcileExecutorClient
     byte[] bytes = payload.toByteArray();
     byte[] digest = sha256(bytes);
     String uri =
-        execution.statsObjectPrefix() + "reuse-bundles/" + HexFormat.of().formatHex(digest) + ".pb";
+        execution.statsObjectPrefix()
+            + ReusableArtifactBundleUris.BUNDLE_DIRECTORY
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
     blobStore.put(uri, bytes, "application/x-protobuf");
     var reference =
         ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
