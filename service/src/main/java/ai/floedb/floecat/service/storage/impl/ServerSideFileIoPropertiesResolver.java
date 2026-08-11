@@ -43,6 +43,7 @@ public class ServerSideFileIoPropertiesResolver {
   @Inject StorageAuthorityRepository repo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject StorageAuthorityResolver resolver;
+  @Inject SourceCatalogCredentialVendor sourceCatalogVendor;
 
   public Map<String, String> resolve(Table table, String location) {
     String locationPrefix =
@@ -58,6 +59,27 @@ public class ServerSideFileIoPropertiesResolver {
         "storage_authority", System.nanoTime() - storageAuthorityStartedNanos);
     StoreOperationSummary.put("storage_authority_source", "load");
     var authority = StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
+    if (authority == null) {
+      // No authority covers this location. Before failing, ask the source catalog -- exactly as the
+      // vend RPC does, and for the same reason: a table captured through a delegating Iceberg REST
+      // catalog has no authority to configure, because the catalog vends its own credentials. This
+      // path is what lets such a table be *read back*. Without it capture succeeds through
+      // delegation and every scan of the result dies on NO_MATCHING_STORAGE_AUTHORITY.
+      //
+      // NOTE: this runs once per scan session and builds a connector each time, which for an
+      // Iceberg REST catalog means an OAuth exchange and a fresh HTTP client. The same caching
+      // work already noted on vendFromSourceCatalog -- keyed on the table, bounded by the
+      // credential expiry -- has to cover this call site too, or queries against a delegated
+      // table keep paying a catalog round-trip per scan.
+      ResolveStorageAuthorityResponse vended =
+          sourceCatalogVendor.vendForTable(
+              table, locationPrefix, SourceCatalogCredentialVendor.CredentialUse.QUERY);
+      if (vended != null) {
+        return mergeStorageAuthorityFileIoConfig(vended);
+      }
+      // Nothing vended either: fall through so buildResponse raises the structured
+      // no-matching-authority error rather than silently returning no credentials.
+    }
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(
             authority,

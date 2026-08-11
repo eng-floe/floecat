@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import java.io.Closeable;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1110,5 +1111,50 @@ public interface FloecatConnector extends Closeable {
       describeView(namespaceFq, name).ifPresent(result::add);
     }
     return result;
+  }
+
+  /**
+   * Storage credentials issued by the source catalog itself, for a single table.
+   *
+   * <p>Iceberg REST catalogs that support access delegation return short-lived credentials on
+   * {@code loadTable} when the caller sets {@code X-Iceberg-Access-Delegation}. Where that is
+   * available it removes the need for a separately configured storage authority: the catalog owns
+   * its storage and hands out scoped credentials for it.
+   *
+   * <p><b>Default implementation:</b> returns empty, meaning "this connector cannot vend; use a
+   * storage authority". Correct for every catalog that does not implement delegation — verified as
+   * the case for AWS S3 Tables, whose {@code loadTable} response is byte-identical with and without
+   * the header.
+   *
+   * <p>Returning empty is <em>not</em> an error and callers must treat it as "unavailable" rather
+   * than "denied": a catalog that supports delegation but has not been granted the privilege will
+   * fail the underlying call instead, and that failure should propagate rather than be flattened
+   * into an empty result.
+   */
+  default Optional<VendedStorageCredentials> vendStorageCredentials(
+      String namespaceFq, String tableName) {
+    return Optional.empty();
+  }
+
+  /**
+   * Storage credentials vended by a source catalog, already narrowed to the properties that are
+   * safe to hand to a storage client.
+   *
+   * @param properties storage properties (e.g. {@code s3.access-key-id}). Implementations MUST
+   *     restrict this to storage credentials: a delegated {@code loadTable} also surfaces the
+   *     catalog's own auth token in the same property map, and copying it here would leak the
+   *     catalog credential into the storage path.
+   * @param expiresAt when the credentials stop working, or null if the catalog did not say. Null is
+   *     meaningful — callers that cache must treat it as "do not cache" rather than "never
+   *     expires".
+   */
+  record VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+    public VendedStorageCredentials {
+      properties = properties == null ? Map.of() : Map.copyOf(properties);
+    }
+
+    public boolean isEmpty() {
+      return properties.isEmpty();
+    }
   }
 }

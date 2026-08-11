@@ -23,7 +23,9 @@ import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
 import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
@@ -258,15 +260,43 @@ public class ServerSideStorageConfigResolver {
     if (locationPrefix == null) {
       return config;
     }
-    ResolveStorageAuthorityResponse response =
-        withHeaders(storageAuthorities, correlationId, authorizationToken)
-            .vendStorageCredentials(
-                resolveRequest(
-                    connector.getResourceId().getAccountId(),
-                    locationPrefix,
-                    tableId,
-                    executionJobId,
-                    executionLeaseEpoch));
+
+    // A catalog that vends its own credentials needs no storage authority: loadTable returns
+    // storage-credentials and the catalog client's FileIO uses them. Returning the config untouched
+    // is the same thing the null-locationPrefix branch above already does for non-S3 URIs, which is
+    // how GCS- and Azure-backed connectors run today without an authority -- this makes that
+    // existing path reachable for s3:// when the caller has explicitly asked for delegation.
+    //
+    // Deliberately a fallback rather than a short-circuit. An earlier revision returned here before
+    // the lookup, which meant adding a delegation header to a connector that already had a working
+    // storage authority silently stopped using that authority. Authority now wins, matching
+    // StorageAuthorityServiceImpl, where source-catalog vending is likewise reached only when no
+    // authority covers the location -- the two layers agree on precedence.
+    ResolveStorageAuthorityResponse response;
+    try {
+      response =
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
+              .vendStorageCredentials(
+                  resolveRequest(
+                      connector.getResourceId().getAccountId(),
+                      locationPrefix,
+                      tableId,
+                      executionJobId,
+                      executionLeaseEpoch));
+    } catch (StatusRuntimeException e) {
+      // Match the structured reason, not the status code. INVALID_ARGUMENT is also what
+      // vendStorageCredentials returns for account_id, execution_binding and location_prefix
+      // validation failures, so matching the code alone turned a real configuration error into a
+      // silent fallback whose cause only resurfaced as an opaque FileIO failure much later.
+      //
+      // Only "no authority covers this location" is recoverable by delegation: the catalog client
+      // holds vended credentials of its own, so the untouched config is what it needs.
+      if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
+          && IcebergAccessDelegation.declaresVendedCredentials(config)) {
+        return config;
+      }
+      throw e;
+    }
     if (response == null) {
       return config;
     }

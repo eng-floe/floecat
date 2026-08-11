@@ -50,6 +50,7 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -1713,6 +1714,145 @@ public abstract class IcebergConnector implements FloecatConnector {
         // inside an optional parent struct is conditionally present, not flat-relational NOT NULL.
         collectNotNullConstraints(field.type().asStructType().fields(), path, out);
       }
+    }
+  }
+
+  /**
+   * Storage credential properties copied out of a delegated {@code loadTable}.
+   *
+   * <p>An explicit allowlist rather than a prefix match. The FileIO property map from a delegated
+   * load also contains the catalog's own {@code token}, and an "everything that looks like a
+   * credential" filter would copy it into the storage path -- handing a catalog credential to
+   * whatever reads data files.
+   */
+  private static final List<String> VENDED_STORAGE_KEYS =
+      List.of(
+          "s3.access-key-id",
+          "s3.secret-access-key",
+          "s3.session-token",
+          // Non-secret routing properties. Excluding these was over-correction: the security
+          // rationale above only requires keeping the catalog's own token out, and dropping region
+          // and endpoint leaves the worker to guess. That guess happens to hold for a
+          // default-region AWS bucket, which is why the validated Polaris run worked, and silently
+          // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
+          "s3.region",
+          "s3.endpoint",
+          "s3.path-style-access");
+
+  /** Iceberg's key for when vended session credentials stop working. */
+  private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
+
+  @Override
+  public Optional<VendedStorageCredentials> vendStorageCredentials(
+      String namespaceFq, String tableName) {
+    Table table = loadTableFromSource(namespaceFq, tableName);
+    if (table == null || table.io() == null) {
+      return Optional.empty();
+    }
+    // Prefer the credential channel: Iceberg's REST client puts what loadTable actually vended
+    // into FileIO.credentials(), which is a different place from FileIO.properties(). That
+    // separation is the whole point here -- IcebergConnectorFactory writes the connector's own
+    // configured s3.* into the catalog properties, and Iceberg merges those into every table's
+    // FileIO property map, so a Glue or S3 Tables connector using static aws credentials carries
+    // s3.access-key-id on a table whose catalog never delegated at all. Reading credentials()
+    // answers "did this catalog vend?" by construction instead of by inference.
+    Optional<VendedStorageCredentials> delegated = credentialsFromVendChannel(table);
+    if (delegated.isPresent()) {
+      return delegated;
+    }
+
+    Map<String, String> ioProps = table.io().properties();
+    if (ioProps == null || ioProps.isEmpty()) {
+      return Optional.empty();
+    }
+
+    // Fallback for a catalog or FileIO that predates the credential channel: the properties are
+    // all there is, so presence of a key has to stand in for delegation. Ambiguous by nature --
+    // callers cross-check the result against what the connector was configured with.
+    Map<String, String> vended = filterVendedKeys(ioProps);
+    // A catalog that does not delegate still returns a perfectly good table -- its FileIO simply
+    // carries no credentials. That is "unavailable", not a failure, so fall back to empty and let
+    // the caller use a storage authority.
+    if (!vended.containsKey("s3.access-key-id")) {
+      return Optional.empty();
+    }
+    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(ioProps)));
+  }
+
+  /**
+   * Credentials the catalog actually vended for this table, from Iceberg's dedicated channel.
+   *
+   * <p>{@code SupportsStorageCredentials.credentials()} is populated by the REST client from {@code
+   * LoadTableResponse.credentials()}, so anything here came from the catalog and nothing here came
+   * from the connector's own configuration -- the distinction property-scraping cannot make.
+   * Entries are scoped by prefix; the longest one covering the table's location wins, the same
+   * longest-prefix rule used to select a storage authority.
+   */
+  private static Optional<VendedStorageCredentials> credentialsFromVendChannel(Table table) {
+    if (!(table.io() instanceof org.apache.iceberg.io.SupportsStorageCredentials io)) {
+      return Optional.empty();
+    }
+    List<org.apache.iceberg.io.StorageCredential> credentials;
+    try {
+      credentials = io.credentials();
+    } catch (RuntimeException e) {
+      LOG.debugf("FileIO %s did not supply storage credentials: %s", io.getClass().getName(), e);
+      return Optional.empty();
+    }
+    if (credentials == null || credentials.isEmpty()) {
+      return Optional.empty();
+    }
+    String location = table.location() == null ? "" : table.location();
+    org.apache.iceberg.io.StorageCredential best = null;
+    for (org.apache.iceberg.io.StorageCredential candidate : credentials) {
+      if (candidate == null || candidate.config() == null || candidate.config().isEmpty()) {
+        continue;
+      }
+      String prefix = candidate.prefix() == null ? "" : candidate.prefix();
+      if (!prefix.isEmpty() && !location.startsWith(prefix)) {
+        continue;
+      }
+      if (best == null || prefix.length() > (best.prefix() == null ? 0 : best.prefix().length())) {
+        best = candidate;
+      }
+    }
+    if (best == null) {
+      return Optional.empty();
+    }
+    Map<String, String> vended = filterVendedKeys(best.config());
+    if (!vended.containsKey("s3.access-key-id")) {
+      return Optional.empty();
+    }
+    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(best.config())));
+  }
+
+  private static Map<String, String> filterVendedKeys(Map<String, String> source) {
+    Map<String, String> vended = new LinkedHashMap<>();
+    for (String key : VENDED_STORAGE_KEYS) {
+      String value = source.get(key);
+      if (value != null && !value.isBlank()) {
+        vended.put(key, value);
+      }
+    }
+    return vended;
+  }
+
+  /**
+   * Reads the credential expiry, or null when absent or unparseable.
+   *
+   * <p>Null is deliberately not "never expires": callers are documented to treat it as "do not
+   * cache". Guessing a TTL here would produce credentials that fail mid-read.
+   */
+  private static Instant parseVendedExpiry(Map<String, String> ioProps) {
+    String raw = ioProps.get(VENDED_EXPIRY_KEY);
+    if (raw == null || raw.isBlank()) {
+      return null;
+    }
+    try {
+      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
+    } catch (NumberFormatException e) {
+      LOG.warnf("ignoring unparseable %s from delegated loadTable: %s", VENDED_EXPIRY_KEY, raw);
+      return null;
     }
   }
 }

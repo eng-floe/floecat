@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashSet;
@@ -45,6 +46,12 @@ final class ReconcileFailureClassifier {
       if (cur instanceof StatusRuntimeException sre) {
         Status.Code code = sre.getStatus().getCode();
         if (code == Status.Code.UNAUTHENTICATED || code == Status.Code.PERMISSION_DENIED) {
+          return terminalInternal(sre.getMessage(), sre);
+        }
+        // Matched by structured reason, not by status code: FAILED_PRECONDITION is shared with
+        // lease-precondition failures, which are retryable by design. A catalog that vends an
+        // incomplete session tuple or no expiry will keep doing so, so retrying only loops.
+        if (SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(sre)) {
           return terminalInternal(sre.getMessage(), sre);
         }
       }

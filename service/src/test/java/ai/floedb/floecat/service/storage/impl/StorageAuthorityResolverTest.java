@@ -121,30 +121,41 @@ class StorageAuthorityResolverTest {
     assertFalse(response.getStorageCredentials(0).hasExpiresAt());
   }
 
+  /**
+   * Now a structured status rather than a bare IllegalArgumentException: delegating connectors must
+   * distinguish "no authority covers this location" from the other INVALID_ARGUMENT failures
+   * vendStorageCredentials returns, and fall back only for this one.
+   */
   @Test
   void buildResponseForClientWithoutAuthorityFails() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                null,
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                false));
+    var error =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                resolver.buildResponse(
+                    null,
+                    "s3://warehouse/orders",
+                    java.util.List.of("s3://warehouse/orders"),
+                    "acct",
+                    false));
+    assertTrue(
+        ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+            .isNoMatchingStorageAuthority(error),
+        "must carry the structured no-matching-authority reason, not a bare INVALID_ARGUMENT");
   }
 
   @Test
   void buildResponseForServerSideNoAuthorityFails() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                null,
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                true));
+    var error =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                resolver.buildResponse(
+                    null,
+                    "s3://warehouse/orders",
+                    java.util.List.of("s3://warehouse/orders"),
+                    "acct",
+                    true));
   }
 
   @Test
@@ -168,7 +179,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -214,7 +226,9 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromAmbientSource(
-              StorageAuthority authority, java.util.List<String> sessionScopeLocations) {
+              StorageAuthority authority,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -279,7 +293,8 @@ class StorageAuthorityResolverTest {
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
                 .build(),
-            java.util.List.of("s3://warehouse/orders"));
+            java.util.List.of("s3://warehouse/orders"),
+            false);
 
     assertEquals("temp-akid", credentials.accessKeyId());
     assertEquals(2, clientBuilds.get());
@@ -294,6 +309,49 @@ class StorageAuthorityResolverTest {
     assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse\"]"));
     assertFalse(policy.contains("\"s3:prefix\""));
     assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse/*\"]"));
+  }
+
+  @Test
+  void scopedSessionPolicyForExactObjectOmitsChildWildcard() {
+    String location = "s3://warehouse/orders/data/part-000.parquet";
+    String objectArn = "arn:aws:s3:::warehouse/orders/data/part-000.parquet";
+
+    String prefixPolicy = StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location));
+    // The default (prefix) scope grants the object and everything beneath its key.
+    assertTrue(prefixPolicy.contains("\"" + objectArn + "/*\""));
+
+    String exactPolicy =
+        StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true);
+    // The exact-object scope grants the object itself and nothing beneath it -- no child wildcard
+    // on the object resource, and no child-prefix in the list condition.
+    assertTrue(exactPolicy.contains("\"" + objectArn + "\""));
+    assertFalse(exactPolicy.contains(objectArn + "/*"));
+    assertFalse(exactPolicy.contains("orders/data/part-000.parquet/*"));
+  }
+
+  @Test
+  void exactObjectScopeRefusesKeysCarryingIamWildcardMetacharacters() {
+    // `*` and `?` are legal in an S3 object key and are wildcards in an IAM resource ARN, so a
+    // planned file named part-*.parquet would mint access to every sibling it matches -- the
+    // opposite of what an exact-object scope promises. IAM cannot express a literal `*`, so the
+    // only safe answer is refusal; widening the grant is not an acceptable fallback.
+    for (String key : java.util.List.of("part-*.parquet", "part-00?.parquet", "*")) {
+      String location = "s3://warehouse/orders/data/" + key;
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true),
+          "expected refusal for key " + key);
+    }
+  }
+
+  @Test
+  void wildcardKeysStillAllowedForPrefixScopesWhichNeverPromisedASingleObject() {
+    // Only the exact-object contract is broken by a metacharacter. A prefix scope is broad by
+    // construction, so refusing here would reject working authority configurations for no gain.
+    String policy =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("s3://warehouse/orders/data/part-*.parquet"));
+    assertTrue(policy.contains("arn:aws:s3:::warehouse/orders/data/part-*.parquet"));
   }
 
   @Test

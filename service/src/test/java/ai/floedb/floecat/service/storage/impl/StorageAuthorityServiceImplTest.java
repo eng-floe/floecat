@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -142,6 +143,8 @@ class StorageAuthorityServiceImplTest {
     service.connectorRepo = connectorRepo;
     service.snapshotRepo = snapshotRepo;
     service.reconcileJobs = reconcileJobs;
+    service.sourceCatalogVendor = new SourceCatalogCredentialVendor();
+    service.sourceCatalogVendor.connectorRepo = connectorRepo;
     service.blobStoreType = "s3";
     service.blobBucket = "floecat-dev";
     service.storageAwsRegion = "us-east-1";
@@ -457,6 +460,512 @@ class StorageAuthorityServiceImplTest {
                     .indefinitely());
 
     assertTrue(ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error));
+  }
+
+  /**
+   * The reconcile worker vends by location and sends no {@code table_id}, so the leased job is the
+   * only table identity available. Before this resolution existed the source-catalog fallback was
+   * unreachable from the worker -- the one caller that needs it -- and every delegating catalog
+   * failed with "no storage credential authority is configured".
+   *
+   * <p>Vending is driven to the missing-connector bail-out on purpose: it proves the leased table
+   * was resolved and the fallback entered without needing a live catalog in a unit test.
+   */
+  @Test
+  void executionBoundVendWithoutTableIdResolvesTheLeasedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(connectorRepo).getById(CONNECTOR_ID);
+  }
+
+  /**
+   * A lease with no table bound to it (a discovery planner job, before any table exists) must not
+   * attempt source-catalog vending. Loading no table is the observable proof: the bootstrap scope
+   * path never touches the table repository.
+   */
+  @Test
+  void executionBoundVendWithoutALeasedTableSkipsSourceCatalog() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .vendStorageCredentials(
+                    VendStorageCredentialsRequest.newBuilder()
+                        .setAccountId("acct")
+                        .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                        .setUsage(StorageCredentialUsage.SCU_SERVER)
+                        .setExecutionBinding(
+                            ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                .setReconcileLease(
+                                    ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                        .setJobId("job-1")
+                                        .setLeaseEpoch("lease-1")))
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+  }
+
+  /**
+   * A valid lease for one table must not vend through another table's catalog.
+   *
+   * <p>The lease authorizes the location; preferring an explicit table_id let a caller keep that
+   * location while naming a different table, so the fallback asked the wrong upstream connector and
+   * returned credentials scoped to data the lease never covered.
+   */
+  @Test
+  void explicitTableIdMayNotOverrideTheLeasedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            // lease binds tbl-1; ask for a different table
+                            .setTableId(
+                                ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setKind(ResourceKind.RK_TABLE)
+                                    .setId("tbl-somebody-elses"))
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+  }
+
+  /**
+   * The normal capture path sends both a lease and a matching table_id --
+   * JavaConnectorCaptureEngine passes request.tableId() alongside the execution job, and both
+   * derive from the same fileGroupTask. The guard above must not fire there, or it blocks capture
+   * outright.
+   */
+  @Test
+  void matchingExplicitTableIdIsAccepted() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            // same table the lease binds
+                            .setTableId(TABLE_ID)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    // Reached source-catalog vending, i.e. was NOT rejected as a table mismatch.
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(connectorRepo).getById(CONNECTOR_ID);
+  }
+
+  /**
+   * Credentials with no expiry are refused rather than installed.
+   *
+   * <p>The reconcile worker only registers a refresh provider when it can see an expiry; without
+   * one it embeds the credentials statically and never re-vends, so they expire mid-read with no
+   * recovery. Accepting them here would trade a clear failure at vend time for an opaque 403
+   * partway through a file group.
+   */
+  private static ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials
+      vendedTuple(String accessKey, String secret, String sessionToken, java.time.Instant expiry) {
+    var props = new java.util.LinkedHashMap<String, String>();
+    if (accessKey != null) {
+      props.put("s3.access-key-id", accessKey);
+    }
+    if (secret != null) {
+      props.put("s3.secret-access-key", secret);
+    }
+    if (sessionToken != null) {
+      props.put("s3.session-token", sessionToken);
+    }
+    return new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+        props, expiry);
+  }
+
+  private static final java.time.Instant EXPIRY = java.time.Instant.ofEpochMilli(1786000000000L);
+
+  /**
+   * Every field of the session tuple is required, not just the expiry. Access key plus secret plus
+   * expiry but no session token satisfies isExecutionBoundStorageCredential yet fails
+   * isRefreshableExecutionCredential, so the reconciler embeds it statically and never renews --
+   * recreating the defect the expiry check exists to close.
+   */
+  @Test
+  void incompleteVendedCredentialsAreRefused() {
+    record Case(String name, String ak, String sk, String token, java.time.Instant expiry) {}
+    var cases =
+        java.util.List.of(
+            new Case("no session token", "ASIA", "secret", null, EXPIRY),
+            new Case("no secret", "ASIA", null, "token", EXPIRY),
+            new Case("no access key", null, "secret", "token", EXPIRY),
+            new Case("no expiry", "ASIA", "secret", "token", null),
+            new Case("blank session token", "ASIA", "secret", "  ", EXPIRY));
+
+    for (Case c : cases) {
+      StatusRuntimeException error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  SourceCatalogCredentialVendor.requireUsableCredentials(
+                      vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()),
+                      "tpch_10",
+                      "customer",
+                      SourceCatalogCredentialVendor.CredentialUse.RECONCILE),
+              c.name());
+      assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode(), c.name());
+      // Terminal by structured reason, so the reconciler stops instead of retrying forever.
+      assertTrue(
+          ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+              .isVendedCredentialsNotRefreshable(error),
+          c.name());
+    }
+  }
+
+  @Test
+  void completeVendedCredentialsAreAccepted() {
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("ASIA", "secret", "token", EXPIRY),
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+  }
+
+  @Test
+  void queryUseAcceptsCredentialsThatCannotBeRenewed() {
+    // The renewal requirement is the reconcile worker's: it registers a refresh provider only when
+    // it can see an expiry, and otherwise embeds credentials statically and never re-vends. The
+    // query path hands them to the scan engine for reads that happen now and registers no provider,
+    // so a missing session token or expiry says nothing about whether the read will work. Enforcing
+    // it there would reject perfectly readable credentials -- with a terminal classification, on a
+    // path where nothing retries and there is no job to fail.
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("AKIA", "secret", null, null),
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY);
+  }
+
+  @Test
+  void queryUseStillRequiresACompleteKeyPair() {
+    // Relaxing renewal does not relax usability: without both halves of the key pair there is
+    // nothing to read with, and the failure would otherwise surface as an opaque 403 mid-scan.
+    record Missing(String name, String ak, String sk) {}
+    for (var c :
+        java.util.List.of(
+            new Missing("no secret", "AKIA", null),
+            new Missing("no access key", null, "secret"),
+            new Missing("blank secret", "AKIA", "   "))) {
+      assertThrows(
+          StatusRuntimeException.class,
+          () ->
+              SourceCatalogCredentialVendor.requireUsableCredentials(
+                  vendedTuple(c.ak(), c.sk(), null, null),
+                  "tpch_10",
+                  "customer",
+                  SourceCatalogCredentialVendor.CredentialUse.QUERY),
+          c.name());
+    }
+  }
+
+  /**
+   * Source-catalog vending is entered only for a connector that actually asked its catalog to
+   * delegate. Presence of s3.access-key-id on a FileIO is not that signal -- a Glue or S3 Tables
+   * connector using static aws credentials carries it too -- so the gate keys on the declared
+   * delegation intent.
+   */
+  @Test
+  void connectorDeclaresVendedDelegationOnlyForVendedCredentialsHeader() {
+    assertTrue(
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(
+            delegationConnector("vended-credentials")));
+    assertFalse(
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(
+            delegationConnector("remote-signing")));
+    assertFalse(
+        SourceCatalogCredentialVendor.connectorDeclaresVendedDelegation(discoveryConnector()));
+  }
+
+  private static Connector delegationConnector(String delegationValue) {
+    return Connector.newBuilder()
+        .setResourceId(CONNECTOR_ID)
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setState(ConnectorState.CS_ACTIVE)
+        .putProperties("iceberg.source", "rest")
+        .putProperties("header.X-Iceberg-Access-Delegation", delegationValue)
+        .build();
+  }
+
+  /** Only the non-secret routing keys reach client_safe_config; credentials never do. */
+  @Test
+  void clientSafeRoutingPropertiesKeepsOnlyNonSecretRoutingKeys() {
+    var routing =
+        SourceCatalogCredentialVendor.clientSafeRoutingProperties(
+            java.util.Map.of(
+                "s3.access-key-id", "ASIA",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "token",
+                "s3.region", "eu-west-1",
+                "s3.endpoint", "https://s3.eu-west-1.example",
+                "s3.path-style-access", "true"));
+
+    assertEquals("eu-west-1", routing.get("s3.region"));
+    assertEquals("https://s3.eu-west-1.example", routing.get("s3.endpoint"));
+    assertEquals("true", routing.get("s3.path-style-access"));
+    assertFalse(routing.containsKey("s3.access-key-id"));
+    assertFalse(routing.containsKey("s3.secret-access-key"));
+    assertFalse(routing.containsKey("s3.session-token"));
+  }
+
+  @Test
+  void vendedRoutingCarriesARegionUnderEveryAliasTheAuthorityPathEmits() {
+    // Polaris vends the session triple and no region at all. The reconcile worker has a default
+    // and survived; the query scan engine has none and failed the whole scan with "region is
+    // missing" after planning had already succeeded. The aliases matter as much as the value --
+    // an authority-backed response has always carried all three, and consumers read different ones.
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of(
+                "s3.access-key-id", "ASIA",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "token"),
+            java.util.Map.of());
+
+    assertEquals("us-east-1", routing.get("s3.region"));
+    assertEquals("us-east-1", routing.get("region"));
+    assertEquals("us-east-1", routing.get("client.region"));
+    assertFalse(routing.containsKey("s3.access-key-id"));
+  }
+
+  @Test
+  void vendedRegionWinsOverConnectorAndDeploymentDefault() {
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of("s3.region", "eu-west-1"),
+            java.util.Map.of("s3.region", "ap-south-1"));
+
+    assertEquals("eu-west-1", routing.get("s3.region"));
+    assertEquals("eu-west-1", routing.get("client.region"));
+  }
+
+  @Test
+  void connectorRegionIsUsedWhenTheCatalogVendsNone() {
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing =
+        vendor.routingProperties(
+            java.util.Map.of(), java.util.Map.of("client.region", "eu-west-2"));
+
+    assertEquals("eu-west-2", routing.get("s3.region"));
+    assertEquals("eu-west-2", routing.get("region"));
+  }
+
+  @Test
+  void endpointIsNeverSynthesizedFromDeploymentStorageSettings() {
+    // Region has no safe absent value, so it is defaulted. An endpoint does: absent means standard
+    // AWS S3. Defaulting it from floecat's own storage config would point reads of a real S3
+    // warehouse at floecat's blob store -- LocalStack in dev.
+    var vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    var routing = vendor.routingProperties(java.util.Map.of(), java.util.Map.of());
+
+    assertFalse(routing.containsKey("s3.endpoint"));
+    assertFalse(routing.containsKey("s3.path-style-access"));
+  }
+
+  /**
+   * A PLAN_VIEW bootstrap lease scopes credentials by location, never validating request.table_id
+   * against the lease. Source-catalog vending must therefore not be derived from a caller-supplied
+   * table on that path, or a view-lease holder could steer which catalog vends -- the confused
+   * deputy the leased-table path was built to prevent. Proof: the caller's table is never loaded.
+   */
+  @Test
+  void planViewLeaseCannotVendFromCallerSuppliedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(viewLeaseView()));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setTableId(
+                                ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setKind(ResourceKind.RK_TABLE)
+                                    .setId("tbl-somebody-elses"))
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+  }
+
+  /**
+   * Registering files in place (add_files) leaves an Iceberg table's data outside its own location,
+   * so scoping a lease to the table location alone rejects the very files the lease planned. A
+   * leased file must be readable even from an unrelated prefix.
+   */
+  @Test
+  void leasedFileOutsideTheTableLocationIsInScope() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView(
+                    "job-1",
+                    "acct",
+                    "JS_RUNNING",
+                    java.util.List.of("s3://elsewhere/registered/part-000.parquet"))));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://elsewhere/registered/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    // Admitted: it reached authority resolution. Had the location been out of scope this would be
+    // PERMISSION_DENIED instead.
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    assertTrue(
+        ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+            .isNoMatchingStorageAuthority(error));
+    // ...but source-catalog vending is deliberately NOT consulted. This request carries an
+    // exact-object scope, and a delegating catalog mints its own table-scoped credentials that we
+    // hold no role to narrow -- answering a single-file request with table-wide access. Failing
+    // with the missing-authority error is the honest answer. This assertion previously required
+    // the opposite, pinning exactly that widening as intended.
+    verify(connectorRepo, never()).getById(CONNECTOR_ID);
+  }
+
+  /**
+   * The leased-file allowance is exact membership. Asking for the parent prefix of a leased file
+   * would hand out credentials for everything beside it, so it stays denied.
+   */
+  @Test
+  void parentPrefixOfALeasedFileIsStillOutOfScope() {
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView(
+                    "job-1",
+                    "acct",
+                    "JS_RUNNING",
+                    java.util.List.of("s3://elsewhere/registered/part-000.parquet"))));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://elsewhere/registered/")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
   }
 
   @Test
