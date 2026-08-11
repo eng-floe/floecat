@@ -1914,9 +1914,11 @@ reconcile control RPCs:</p>
     file.</li>
 <li>Snapshot planning reads the compact capture manifest from the newest root-published finalized
     reusable candidate at or before the committed current snapshot. Candidate selection is bounded
-    by the table root and does not scan snapshot history. Once selected, a missing manifest object
-    is retryable and malformed or incomplete content is terminal; neither silently becomes a cold
-    plan. Append-only overlap checks use point lookups in the persistent artifact index through
+    by the table root and does not scan snapshot history. The lightweight snapshot reference carries
+    the current manifest-contract version, so older references are rejected before their manifest
+    objects are fetched or parsed. A missing, unavailable, malformed, incomplete, or unsupported
+    manifest or persistent index is ineligible for reuse and triggers an ordinary full capture.
+    Append-only overlap checks use point lookups in the persistent artifact index through
     Bloom-filtered, batched run probes and scale with delta files and the compacted run count.
     Ordinary full-file planning resolves reuse in bounded file-group batches instead of loading the
     complete index. Planning does not read reusable bundle payloads, source files, or page-index
@@ -1961,6 +1963,10 @@ reconcile control RPCs:</p>
     enforces membership and counts against the resulting immutable planned group. Raising the
     setting increases the descriptor count, pointer-metadata work, request size, and resident
     metadata for one file-group commit.</li>
+<li>Append-only reuse chains checkpoint with a full capture after 16 links by default. The planner
+    persists and authenticates predecessor depth in the immutable plan and manifest, and
+    <code>floecat.reconciler.snapshot-plan.max-append-only-chain-depth</code> configures the maximum. Set it to
+    zero to disable append-only chaining.</li>
 <li>The finalizer reads and verifies each bounded <code>FileGroupResultPayload</code>, derives exact file-stats
     coverage from the immutable data-file execution plans and their attached delete artifacts, and
     merges the embedded aggregate partials. It validates one current bundle reference per file group
@@ -2032,8 +2038,9 @@ reconcile control RPCs:</p>
     unavailable for reuse. A reuse manifest without an artifact index is likewise ineligible and
     falls back to a full capture. Any reusable index that is invalid under the current contract,
     including malformed or digest-invalid index metadata, is discarded and causes a full capture;
-    it is not interpreted through a legacy reader. Malformed capture-manifest metadata remains a
-    terminal invalid-base error.</li>
+    it is not interpreted through a legacy reader. Missing, unavailable, malformed, digest-invalid,
+    incomplete, or unsupported capture manifests likewise make the base ineligible and cause a
+    full capture.</li>
 <li>Bloom-filter references larger than the format's 16 MiB bitset ceiling are rejected before any
     object read. Activation streams and authenticates every referenced external pack before the
     generation becomes visible; generation-to-capture-manifest bindings verify the content digest
