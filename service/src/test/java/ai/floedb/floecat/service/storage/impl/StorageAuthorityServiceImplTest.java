@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -847,10 +848,18 @@ class StorageAuthorityServiceImplTest {
                     .await()
                     .indefinitely());
 
-    // Admitted: it reached authority resolution and source-catalog vending. Had the location been
-    // out of scope this would be PERMISSION_DENIED instead.
+    // Admitted: it reached authority resolution. Had the location been out of scope this would be
+    // PERMISSION_DENIED instead.
     assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
-    verify(connectorRepo).getById(CONNECTOR_ID);
+    assertTrue(
+        ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+            .isNoMatchingStorageAuthority(error));
+    // ...but source-catalog vending is deliberately NOT consulted. This request carries an
+    // exact-object scope, and a delegating catalog mints its own table-scoped credentials that we
+    // hold no role to narrow -- answering a single-file request with table-wide access. Failing
+    // with the missing-authority error is the honest answer. This assertion previously required
+    // the opposite, pinning exactly that widening as intended.
+    verify(connectorRepo, never()).getById(CONNECTOR_ID);
   }
 
   /**

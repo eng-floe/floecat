@@ -310,6 +310,9 @@ public class StorageAuthorityResolver {
     if (scopes.isEmpty()) {
       return null;
     }
+    if (exactObject) {
+      scopes.forEach(scope -> requireLiteralObjectKey(scope.keyPrefix()));
+    }
     ArrayList<String> statements = new ArrayList<>();
     for (S3BucketScope bucketScope : groupByBucket(scopes)) {
       statements.add(bucketScope.listStatementJson(exactObject));
@@ -325,6 +328,30 @@ public class StorageAuthorityResolver {
         .replace('\n', ' ')
         .replaceAll("\\s+", " ")
         .trim();
+  }
+
+  /**
+   * Refuses an exact-object scope whose key carries an IAM wildcard metacharacter.
+   *
+   * <p>An exact-object scope promises credentials for one named file. The key goes into the policy
+   * resource ARN verbatim, and IAM reads {@code *} and {@code ?} there as wildcards -- both are
+   * legal in an S3 object key, so a planned file named {@code part-*.parquet} would silently mint
+   * access to every sibling it matches, which is the opposite of the guarantee.
+   *
+   * <p>Rejection rather than escaping, because IAM has no escape for these: a resource ARN cannot
+   * express a literal {@code *}. Widening the grant is not an acceptable fallback, so a key that
+   * cannot be expressed exactly is refused and the caller configures a storage authority instead.
+   */
+  private static void requireLiteralObjectKey(String keyPrefix) {
+    if (keyPrefix == null || keyPrefix.isEmpty()) {
+      return;
+    }
+    if (keyPrefix.indexOf('*') >= 0 || keyPrefix.indexOf('?') >= 0) {
+      throw new IllegalArgumentException(
+          "Cannot mint an exact-object credential scope for a key containing an IAM wildcard"
+              + " metacharacter (* or ?); the resulting policy would match more than the named"
+              + " object");
+    }
   }
 
   private static List<String> normalizeS3Scopes(List<String> locationPrefixes) {

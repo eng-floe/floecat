@@ -323,8 +323,26 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                 // Deliberately a fallback rather than the first choice -- an existing authority
                 // stays authoritative, so this cannot change behaviour for any catalog that
                 // already works.
+                //
+                // An exact-object scope is the one case that must not take it. That scope exists to
+                // promise credentials for a single named file, and it is enforced by the session
+                // policy this service mints when assuming an authority's role. A delegating catalog
+                // mints its own credentials -- table-scoped, by its own choice -- and we hold no
+                // role to narrow them with, so accepting them here would quietly answer a
+                // single-object request with table-wide access. Refuse instead: the caller gets the
+                // usual missing-authority error, which is the honest answer, and in practice
+                // table-scoped credentials would not have covered the file anyway -- an exact
+                // object scope arises precisely when a leased file sits outside the table location.
+                if (credentialScope.exactObjectScope()) {
+                  LOG.infof(
+                      "source-catalog vending skipped: request needs an exact-object credential"
+                          + " scope for %s, which a delegating catalog cannot express",
+                      credentialScope.responseLocationPrefix());
+                }
                 ResourceId sourceTableId =
-                    sourceCatalogTableId(request, accountId, authorized.job());
+                    credentialScope.exactObjectScope()
+                        ? null
+                        : sourceCatalogTableId(request, accountId, authorized.job());
                 if (sourceTableId != null) {
                   ResolveStorageAuthorityResponse vended =
                       vendFromSourceCatalog(

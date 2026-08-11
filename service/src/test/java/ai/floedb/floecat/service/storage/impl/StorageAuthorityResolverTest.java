@@ -330,6 +330,31 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
+  void exactObjectScopeRefusesKeysCarryingIamWildcardMetacharacters() {
+    // `*` and `?` are legal in an S3 object key and are wildcards in an IAM resource ARN, so a
+    // planned file named part-*.parquet would mint access to every sibling it matches -- the
+    // opposite of what an exact-object scope promises. IAM cannot express a literal `*`, so the
+    // only safe answer is refusal; widening the grant is not an acceptable fallback.
+    for (String key : java.util.List.of("part-*.parquet", "part-00?.parquet", "*")) {
+      String location = "s3://warehouse/orders/data/" + key;
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true),
+          "expected refusal for key " + key);
+    }
+  }
+
+  @Test
+  void wildcardKeysStillAllowedForPrefixScopesWhichNeverPromisedASingleObject() {
+    // Only the exact-object contract is broken by a metacharacter. A prefix scope is broad by
+    // construction, so refusing here would reject working authority configurations for no gain.
+    String policy =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("s3://warehouse/orders/data/part-*.parquet"));
+    assertTrue(policy.contains("arn:aws:s3:::warehouse/orders/data/part-*.parquet"));
+  }
+
+  @Test
   void scopedSessionPolicyForNonRootParsesAsValidJson() throws Exception {
     String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse/orders");
     ObjectMapper mapper =
