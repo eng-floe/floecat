@@ -49,6 +49,9 @@ message SnapshotReuseManifestRef {
   uint64 payload_bytes = 2;
   bytes payload_sha256 = 3;
   string stats_generation_manifest_uri = 4;
+  // Identifies the capture-manifest contract before the manifest object is fetched. References
+  // written before this field existed have version zero and are deliberately not reusable.
+  uint32 format_version = 5;
 }
 
 message CurrentSnapshotPointer {

@@ -1632,6 +1632,7 @@ class GrpcRemoteReconcileExecutorClient
               .setSourceFileCount(appendOnlyBase.sourceFileCount())
               .setFileStatsRecordCount(appendOnlyBase.fileStatsRecordCount())
               .setIndexArtifactCount(appendOnlyBase.indexArtifactCount())
+              .setChainDepth(appendOnlyBase.chainDepth())
               .setStatsGenerationId(appendOnlyBase.statsGenerationId())
               .setIndexGenerationId(appendOnlyBase.indexGenerationId())
               .setReusableArtifactIndex(appendOnlyBase.reusableArtifactIndex()));

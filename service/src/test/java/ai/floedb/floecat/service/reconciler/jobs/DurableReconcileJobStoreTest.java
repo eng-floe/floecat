@@ -6207,6 +6207,7 @@ class DurableReconcileJobStoreTest {
             5,
             5,
             0,
+            0,
             "full-rescan-base-job",
             "",
             testArtifactIndex(5, 0));
@@ -6284,6 +6285,7 @@ class DurableReconcileJobStoreTest {
             "0".repeat(64),
             1,
             1,
+            0,
             0,
             "full-rescan-base-job",
             "",

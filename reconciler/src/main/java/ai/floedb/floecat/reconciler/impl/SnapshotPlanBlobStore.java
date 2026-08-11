@@ -479,6 +479,7 @@ public class SnapshotPlanBlobStore {
       int sourceFileCount,
       int fileStatsRecordCount,
       int indexArtifactCount,
+      int chainDepth,
       String statsGenerationId,
       String indexGenerationId,
       ReusableArtifactIndexReference reusableArtifactIndex) {
@@ -498,6 +499,7 @@ public class SnapshotPlanBlobStore {
           || sourceFileCount <= 0
           || fileStatsRecordCount < 0
           || indexArtifactCount < 0
+          || chainDepth < 0
           || statsGenerationId.isBlank()
           || (indexArtifactCount > 0 && indexGenerationId.isBlank())) {
         throw new IllegalArgumentException("invalid append-only snapshot base");
@@ -522,7 +524,7 @@ public class SnapshotPlanBlobStore {
 
     public List<String> manifestIdentity() {
       return List.of(
-          "append-only-base-v1",
+          "append-only-base-v2",
           Long.toString(snapshotId),
           manifestUri,
           Long.toString(manifestBytes),
@@ -530,6 +532,7 @@ public class SnapshotPlanBlobStore {
           Integer.toString(sourceFileCount),
           Integer.toString(fileStatsRecordCount),
           Integer.toString(indexArtifactCount),
+          Integer.toString(chainDepth),
           statsGenerationId,
           indexGenerationId,
           Base64.getEncoder().encodeToString(reusableArtifactIndex.toByteArray()));
@@ -544,6 +547,7 @@ public class SnapshotPlanBlobStore {
     public int sourceFileCount = 0;
     public int fileStatsRecordCount = 0;
     public int indexArtifactCount = 0;
+    public int chainDepth = 0;
     public String statsGenerationId = "";
     public String indexGenerationId = "";
     public String artifactIndex = "";
@@ -560,6 +564,7 @@ public class SnapshotPlanBlobStore {
       stored.sourceFileCount = value.sourceFileCount();
       stored.fileStatsRecordCount = value.fileStatsRecordCount();
       stored.indexArtifactCount = value.indexArtifactCount();
+      stored.chainDepth = value.chainDepth();
       stored.statsGenerationId = value.statsGenerationId();
       stored.indexGenerationId = value.indexGenerationId();
       stored.artifactIndex =
@@ -576,6 +581,7 @@ public class SnapshotPlanBlobStore {
           sourceFileCount,
           fileStatsRecordCount,
           indexArtifactCount,
+          chainDepth,
           statsGenerationId,
           indexGenerationId,
           artifactIndexReference());

@@ -809,6 +809,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             1,
             1,
             0,
+            0,
             "full-rescan-snapshot-job",
             "",
             testArtifactIndex(1, 0));
@@ -920,6 +921,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             java.util.HexFormat.of().formatHex(digest),
             1,
             1,
+            0,
             0,
             "full-rescan-snapshot-job",
             "",

@@ -338,6 +338,7 @@ class SnapshotPlanBlobStoreTest {
             1,
             0,
             1,
+            3,
             "full-rescan-base-job",
             "full-rescan-base-job",
             testArtifactIndex(0, 1));
@@ -353,6 +354,7 @@ class SnapshotPlanBlobStoreTest {
             1,
             1,
             0,
+            0,
             "full-rescan-other-base-job",
             "",
             testArtifactIndex(1, 0));
@@ -362,6 +364,7 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(
         Optional.of(base), store.loadPlan(persisted.fileGroupPlanBlobUri()).appendOnlyBase());
     assertEquals(0, base.fileStatsRecordCount());
+    assertEquals(3, base.chainDepth());
     assertEquals(1, base.indexArtifactCount());
     assertNotEquals(persisted.fileGroupPlanBlobUri(), persistedOther.fileGroupPlanBlobUri());
   }

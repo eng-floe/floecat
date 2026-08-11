@@ -453,7 +453,9 @@ message AppendOnlySnapshotBase {
   uint32 index_artifact_count = 8;
   string stats_generation_id = 9;
   string index_generation_id = 10;
-  reserved 11;
+  // Number of append-only links already represented by this predecessor. A full-capture
+  // predecessor has depth zero; each delta capture increments the depth.
+  uint32 chain_depth = 11;
   ReusableArtifactIndexReference reusable_artifact_index = 12;
 }
 

@@ -21,8 +21,6 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -51,7 +49,8 @@ public final class ReusableArtifactIndexStore {
   static final int MAX_L0_RUNS = 32;
   static final int MAX_L1_RUNS = 32;
   static final int MAX_BLOOM_BYTES = 16 * 1024 * 1024;
-  private static final int MAX_SINGLE_CACHED_OBJECT_BYTES = 16 * 1024 * 1024;
+  private static final int MAX_SINGLE_CACHED_OBJECT_BYTES =
+      ReusableArtifactIndexObjectCache.MAX_SINGLE_OBJECT_BYTES;
   private static final long MAX_BLOOM_OBJECT_BYTES = 9L + MAX_BLOOM_BYTES;
   private static final long MAX_RUN_MANIFEST_BYTES = MAX_SINGLE_CACHED_OBJECT_BYTES;
   private static final long MAX_DELTA_BUFFER_BYTES = 8L * 1024L * 1024L;
@@ -60,19 +59,12 @@ public final class ReusableArtifactIndexStore {
   private static final int OBJECT_AUTHENTICATION_WINDOW_BYTES = 8 * 1024 * 1024;
   static final int INLINE_OBJECT_BYTES = 64 * 1024;
   private static final int MAX_RUN_LEVEL = 32;
-  private static final int BLOOM_BITS_PER_ENTRY = 20;
-  private static final int BLOOM_HASHES = 14;
-  private static final int MIN_BLOOM_BITS = 1024;
-  private static final long DEFAULT_MAX_CACHED_BYTES = 64L * 1024L * 1024L;
-  private static final long MAX_CACHED_BYTES = configuredMaxCachedBytes();
+  private static final ReusableArtifactIndexObjectCache SHARED_OBJECT_CACHE =
+      new ReusableArtifactIndexObjectCache();
+  private static final long MAX_CACHED_BYTES = SHARED_OBJECT_CACHE.maxBytes();
   private static final String PROTOBUF_CONTENT_TYPE = "application/x-protobuf";
   private static final String FILTER_CONTENT_TYPE = "application/x-floecat-bloom-filter";
   private static final String PACK_CONTENT_TYPE = "application/x-floecat-reusable-index-pack";
-
-  private static final Object SHARED_OBJECT_CACHE_LOCK = new Object();
-  private static final LinkedHashMap<String, CachedObject> SHARED_OBJECT_CACHE =
-      new LinkedHashMap<>(256, 0.75f, true);
-  private static long sharedObjectCacheBytes;
 
   private static final Comparator<IndexedEntry> INDEXED_ENTRY_ORDER =
       (left, right) -> {
@@ -447,7 +439,7 @@ public final class ReusableArtifactIndexStore {
       primeRunMetadata(batch);
       for (ReusableArtifactIndexRunReference run : batch) {
         ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-        BloomFilter filter = loadFilter(run);
+        ReusableArtifactIndexBloomFilter filter = loadFilter(run);
         Map<BlockIdentity, List<String>> blockKeys = new LinkedHashMap<>();
         Map<BlockIdentity, ReusableArtifactIndexBlockReference> blocks = new LinkedHashMap<>();
         keyHashes.forEach(
@@ -570,7 +562,8 @@ public final class ReusableArtifactIndexStore {
     String previousKey = null;
     long stats = 0L;
     long emitted = 0L;
-    BloomFilter filter = BloomFilter.create(Math.toIntExact(expectedEntries));
+    ReusableArtifactIndexBloomFilter filter =
+        ReusableArtifactIndexBloomFilter.create(Math.toIntExact(expectedEntries));
     while (!pendingRuns.isEmpty()) {
       RunCursor cursor = pendingRuns.remove();
       IndexedEntry next = cursor.current();
@@ -606,24 +599,7 @@ public final class ReusableArtifactIndexStore {
       packs.add(buildBlock(pendingBlock));
     }
     List<ReusableArtifactIndexBlockReference> blocks = packs.finish();
-    ReusableArtifactIndexRunManifest manifest =
-        ReusableArtifactIndexRunManifest.newBuilder()
-            .setFormatVersion(FORMAT_VERSION)
-            .addAllBlocks(blocks)
-            .build();
-    ReusableArtifactIndexObjectReference manifestRef =
-        writeObject(
-            prefix + "run-manifests/", ".pb", manifest.toByteArray(), PROTOBUF_CONTENT_TYPE);
-    ReusableArtifactIndexObjectReference filterRef =
-        writeObject(prefix + "filters/", ".bf", filter.bytes(), FILTER_CONTENT_TYPE);
-    return ReusableArtifactIndexRunReference.newBuilder()
-        .setLevel(level)
-        .setManifest(manifestRef)
-        .setFilter(filterRef)
-        .setEntryCount(emitted)
-        .setFileStatsRecordCount(Math.toIntExact(stats))
-        .setIndexArtifactCount(Math.toIntExact(emitted - stats))
-        .build();
+    return finishRun(prefix, level, blocks, filter, emitted, stats);
   }
 
   private ReusableArtifactIndexRunReference writeRun(
@@ -652,6 +628,20 @@ public final class ReusableArtifactIndexStore {
       packs.add(buildBlock(pending));
     }
     List<ReusableArtifactIndexBlockReference> blocks = packs.finish();
+    ReusableArtifactIndexBloomFilter filter =
+        ReusableArtifactIndexBloomFilter.create(
+            entries.stream().map(IndexedEntry::keyHash).toList());
+    long stats = entries.stream().filter(entry -> entry.entry().hasFileStats()).count();
+    return finishRun(prefix, level, blocks, filter, entries.size(), stats);
+  }
+
+  private ReusableArtifactIndexRunReference finishRun(
+      String prefix,
+      int level,
+      List<ReusableArtifactIndexBlockReference> blocks,
+      ReusableArtifactIndexBloomFilter filter,
+      long entryCount,
+      long fileStatsRecordCount) {
     ReusableArtifactIndexRunManifest manifest =
         ReusableArtifactIndexRunManifest.newBuilder()
             .setFormatVersion(FORMAT_VERSION)
@@ -660,18 +650,15 @@ public final class ReusableArtifactIndexStore {
     ReusableArtifactIndexObjectReference manifestRef =
         writeObject(
             prefix + "run-manifests/", ".pb", manifest.toByteArray(), PROTOBUF_CONTENT_TYPE);
-    BloomFilter filter = BloomFilter.create(entries.stream().map(IndexedEntry::keyHash).toList());
     ReusableArtifactIndexObjectReference filterRef =
         writeObject(prefix + "filters/", ".bf", filter.bytes(), FILTER_CONTENT_TYPE);
-    long stats = entries.stream().filter(entry -> entry.entry().hasFileStats()).count();
-    long indexes = entries.size() - stats;
     return ReusableArtifactIndexRunReference.newBuilder()
         .setLevel(level)
         .setManifest(manifestRef)
         .setFilter(filterRef)
-        .setEntryCount(entries.size())
-        .setFileStatsRecordCount(Math.toIntExact(stats))
-        .setIndexArtifactCount(Math.toIntExact(indexes))
+        .setEntryCount(entryCount)
+        .setFileStatsRecordCount(Math.toIntExact(fileStatsRecordCount))
+        .setIndexArtifactCount(Math.toIntExact(entryCount - fileStatsRecordCount))
         .build();
   }
 
@@ -927,9 +914,9 @@ public final class ReusableArtifactIndexStore {
     return Arrays.copyOfRange(packBytes, start, end);
   }
 
-  private BloomFilter loadFilter(ReusableArtifactIndexRunReference run) {
+  private ReusableArtifactIndexBloomFilter loadFilter(ReusableArtifactIndexRunReference run) {
     validateFilterReference(run.getFilter());
-    return BloomFilter.parse(loadObject(run.getFilter()), run.getEntryCount());
+    return ReusableArtifactIndexBloomFilter.parse(loadObject(run.getFilter()), run.getEntryCount());
   }
 
   private byte[] loadObject(ReusableArtifactIndexObjectReference reference) {
@@ -1352,68 +1339,19 @@ public final class ReusableArtifactIndexStore {
   }
 
   static void clearSharedCacheForTests() {
-    synchronized (SHARED_OBJECT_CACHE_LOCK) {
-      SHARED_OBJECT_CACHE.clear();
-      sharedObjectCacheBytes = 0L;
-    }
+    SHARED_OBJECT_CACHE.clear();
   }
 
   private static void cache(String uri, byte[] bytes) {
-    if (bytes == null
-        || bytes.length > MAX_CACHED_BYTES
-        || bytes.length > MAX_SINGLE_CACHED_OBJECT_BYTES) {
-      return;
-    }
-    synchronized (SHARED_OBJECT_CACHE_LOCK) {
-      CachedObject replaced = SHARED_OBJECT_CACHE.remove(uri);
-      if (replaced != null) {
-        sharedObjectCacheBytes -= replaced.bytes().length;
-      }
-      var iterator = SHARED_OBJECT_CACHE.entrySet().iterator();
-      while (sharedObjectCacheBytes > MAX_CACHED_BYTES - bytes.length && iterator.hasNext()) {
-        sharedObjectCacheBytes -= iterator.next().getValue().bytes().length;
-        iterator.remove();
-      }
-      SHARED_OBJECT_CACHE.put(uri, new CachedObject(bytes.clone(), sha256(bytes)));
-      sharedObjectCacheBytes += bytes.length;
-    }
+    SHARED_OBJECT_CACHE.put(uri, bytes);
   }
 
   private static byte[] cached(ReusableArtifactIndexObjectReference reference) {
-    synchronized (SHARED_OBJECT_CACHE_LOCK) {
-      CachedObject cached = SHARED_OBJECT_CACHE.get(reference.getUri());
-      if (cached == null) {
-        return null;
-      }
-      if (cached.bytes().length != reference.getPayloadBytes()
-          || !MessageDigest.isEqual(cached.sha256(), reference.getPayloadSha256().toByteArray())) {
-        throw new IllegalArgumentException("reusable artifact index object metadata mismatch");
-      }
-      return cached.bytes();
-    }
+    return SHARED_OBJECT_CACHE.get(reference);
   }
 
   private static boolean isCached(String uri) {
-    synchronized (SHARED_OBJECT_CACHE_LOCK) {
-      return SHARED_OBJECT_CACHE.containsKey(uri);
-    }
-  }
-
-  private static long configuredMaxCachedBytes() {
-    String configured =
-        System.getProperty("floecat.reusable-artifact-index.cache.max-weight-bytes");
-    if (configured == null || configured.isBlank()) {
-      configured = System.getenv("FLOECAT_REUSABLE_ARTIFACT_INDEX_CACHE_MAX_WEIGHT_BYTES");
-    }
-    if (configured == null || configured.isBlank()) {
-      return DEFAULT_MAX_CACHED_BYTES;
-    }
-    try {
-      long parsed = Long.parseLong(configured);
-      return parsed > 0L ? parsed : DEFAULT_MAX_CACHED_BYTES;
-    } catch (NumberFormatException ignored) {
-      return DEFAULT_MAX_CACHED_BYTES;
-    }
+    return SHARED_OBJECT_CACHE.contains(uri);
   }
 
   private static byte[] hash(String value) {
@@ -1445,8 +1383,6 @@ public final class ReusableArtifactIndexStore {
       int length, byte[] firstKeyHash, byte[] lastKeyHash, int entryCount, byte[] digest) {}
 
   private record BlockIdentity(String objectIdentity, long offset, int length) {}
-
-  private record CachedObject(byte[] bytes, byte[] sha256) {}
 
   private final class RunCursor {
     private final ReusableArtifactIndexRunManifest manifest;
@@ -1538,91 +1474,6 @@ public final class ReusableArtifactIndexStore {
   }
 
   static int bloomBitCount(int entryCount) {
-    if (entryCount <= 0) {
-      throw new IllegalArgumentException("reusable artifact Bloom filter entry count is invalid");
-    }
-    long desiredBits =
-        Math.max(
-            (long) MIN_BLOOM_BITS, Math.multiplyExact((long) entryCount, BLOOM_BITS_PER_ENTRY));
-    long maximumBits = (long) MAX_BLOOM_BYTES * Byte.SIZE;
-    return Math.toIntExact(Math.ceilDiv(Math.min(desiredBits, maximumBits), 64L) * 64L);
-  }
-
-  private record BloomFilter(int bitCount, int hashes, int entryCount, byte[] bits) {
-    static BloomFilter create(List<byte[]> digests) {
-      BloomFilter filter = create(digests.size());
-      digests.forEach(filter::add);
-      return filter;
-    }
-
-    static BloomFilter create(int entryCount) {
-      int bitCount = bloomBitCount(entryCount);
-      int hashes =
-          Math.max(
-              1,
-              Math.min(
-                  BLOOM_HASHES,
-                  (int) Math.round(((double) bitCount / (double) entryCount) * Math.log(2.0d))));
-      byte[] bits = new byte[Math.ceilDiv(bitCount, 8)];
-      return new BloomFilter(bitCount, hashes, entryCount, bits);
-    }
-
-    static BloomFilter parse(byte[] bytes, long expectedEntries) {
-      if (bytes == null || bytes.length < 9) {
-        throw new IllegalArgumentException("reusable artifact Bloom filter is invalid");
-      }
-      ByteBuffer input = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-      int bitCount = input.getInt();
-      int hashes = Byte.toUnsignedInt(input.get());
-      int entryCount = input.getInt();
-      int bitBytes = bitCount > 0 ? Math.ceilDiv(bitCount, 8) : -1;
-      if (bitCount <= 0
-          || bitCount % 64 != 0
-          || hashes <= 0
-          || hashes > BLOOM_HASHES
-          || bitCount > MAX_BLOOM_BYTES * Byte.SIZE
-          || input.remaining() != bitBytes
-          || Integer.toUnsignedLong(entryCount) != expectedEntries) {
-        throw new IllegalArgumentException("reusable artifact Bloom filter shape is invalid");
-      }
-      byte[] bits = new byte[bitBytes];
-      input.get(bits);
-      return new BloomFilter(bitCount, hashes, entryCount, bits);
-    }
-
-    byte[] bytes() {
-      return ByteBuffer.allocate(9 + bits.length)
-          .order(ByteOrder.BIG_ENDIAN)
-          .putInt(bitCount)
-          .put((byte) hashes)
-          .putInt(entryCount)
-          .put(bits)
-          .array();
-    }
-
-    private void add(byte[] digest) {
-      long first = longAt(digest, 0);
-      long second = longAt(digest, 8) | 1L;
-      for (int index = 0; index < hashes; index++) {
-        int bit = (int) Long.remainderUnsigned(first + index * second, bitCount);
-        bits[bit >>> 3] |= (byte) (1 << (bit & 7));
-      }
-    }
-
-    boolean mightContain(byte[] digest) {
-      long first = longAt(digest, 0);
-      long second = longAt(digest, 8) | 1L;
-      for (int index = 0; index < hashes; index++) {
-        int bit = (int) Long.remainderUnsigned(first + index * second, bitCount);
-        if ((bits[bit >>> 3] & (1 << (bit & 7))) == 0) {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    private static long longAt(byte[] digest, int offset) {
-      return ByteBuffer.wrap(digest, offset, Long.BYTES).order(ByteOrder.BIG_ENDIAN).getLong();
-    }
+    return ReusableArtifactIndexBloomFilter.bitCount(entryCount);
   }
 }

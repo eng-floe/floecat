@@ -28,9 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
-import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -147,8 +145,9 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           input.fileGroupCount() > 0 || input.sourceFileCount() > 0
               ? snapshotPlanBlobStore.loadPlan(input.snapshotPlanUri())
               : SnapshotPlanBlobStore.SnapshotPlanBlob.of(List.of());
-      AppendOnlyArtifacts appendOnly =
-          loadAppendOnlyArtifacts(lease, input, snapshotPlan.appendOnlyBase().orElse(null));
+      AppendOnlySnapshotBaseLoader.Loaded appendOnly =
+          new AppendOnlySnapshotBaseLoader(blobStore)
+              .load(lease, input, snapshotPlan.appendOnlyBase().orElse(null));
       List<ReconcileFileGroupResultDescriptor> descriptors;
       Map<GroupKey, ReconcileFileGroupTask> plannedGroups = Map.of();
       if (input.fileGroupCount() == 0) {
@@ -404,85 +403,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     }
     return groupsByKey;
   }
-
-  private AppendOnlyArtifacts loadAppendOnlyArtifacts(
-      ReconcileJobStore.LeasedJob lease,
-      StandaloneSnapshotFinalizeExecutionPayload input,
-      SnapshotPlanBlobStore.AppendOnlyBase base) {
-    if (base == null) {
-      return null;
-    }
-    if (base.snapshotId() == input.snapshotId()
-        || base.sourceFileCount() > input.sourceFileCount()) {
-      throw new IllegalArgumentException("append-only snapshot base is not an earlier subset");
-    }
-    byte[] bytes = blobStore.get(base.manifestUri());
-    if (bytes.length != base.manifestBytes()
-        || !MessageDigest.isEqual(sha256(bytes), base.manifestSha256Bytes())) {
-      throw new IllegalArgumentException("append-only snapshot base manifest metadata mismatch");
-    }
-    final SnapshotCaptureManifest manifest;
-    try {
-      manifest = SnapshotCaptureManifest.parseFrom(bytes);
-    } catch (com.google.protobuf.InvalidProtocolBufferException error) {
-      throw new IllegalArgumentException("append-only snapshot base manifest is invalid", error);
-    }
-    ReusableArtifactManifest.validateReuseBaseSummary(manifest);
-    ReconcileCapturePolicy policy =
-        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
-    if (manifest.getFormatVersion() != 1
-        || !lease.accountId.equals(manifest.getAccountId())
-        || !lease.connectorId.equals(manifest.getConnectorId())
-        || !input.tableId().getId().equals(manifest.getTableId())
-        || base.snapshotId() != manifest.getSnapshotId()
-        || base.sourceFileCount() != manifest.getSourceFileCount()
-        || base.fileStatsRecordCount() != manifest.getFileStatsRecordCount()
-        || base.indexArtifactCount() != manifest.getIndexArtifactCount()
-        || !manifest.hasReusableArtifactIndex()
-        || !base.reusableArtifactIndex().equals(manifest.getReusableArtifactIndex())
-        || !base.statsGenerationId().equals("full-rescan-" + manifest.getParentJobId())
-        || !manifest.getReusableArtifactBundlesComplete()
-        || (base.indexArtifactCount() > 0
-            && !base.indexGenerationId().equals("full-rescan-" + manifest.getParentJobId()))
-        || !RemoteSnapshotPlanningReconcileExecutor.capturePolicyMatches(
-            policy, manifest.getCapturePolicy())) {
-      throw new IllegalArgumentException("append-only snapshot base manifest identity mismatch");
-    }
-    List<TargetStatsRecord> aggregates = new ArrayList<>();
-    for (StatsObjectDescriptor descriptor : manifest.getFinalStatsList()) {
-      byte[] recordBytes = blobStore.get(descriptor.getPayloadUri());
-      if (recordBytes.length != descriptor.getPayloadBytes()
-          || descriptor.getPayloadSha256().size() != 32
-          || !MessageDigest.isEqual(
-              sha256(recordBytes), descriptor.getPayloadSha256().toByteArray())) {
-        throw new IllegalArgumentException("append-only base aggregate metadata mismatch");
-      }
-      try {
-        TargetStatsRecord record = TargetStatsRecord.parseFrom(recordBytes);
-        aggregates.add(
-            record.toBuilder()
-                .setTableId(input.tableId())
-                .setSnapshotId(input.snapshotId())
-                .build());
-      } catch (com.google.protobuf.InvalidProtocolBufferException error) {
-        throw new IllegalArgumentException("append-only base aggregate is invalid", error);
-      }
-    }
-    if (aggregates.size() != manifest.getFinalStatsRecordCount()) {
-      throw new IllegalArgumentException("append-only base aggregate count mismatch");
-    }
-    return new AppendOnlyArtifacts(
-        base,
-        List.copyOf(aggregates),
-        manifest.getRealizedStatsSelectorsList(),
-        manifest.getRealizedIndexSelectorsList());
-  }
-
-  private record AppendOnlyArtifacts(
-      SnapshotPlanBlobStore.AppendOnlyBase base,
-      List<TargetStatsRecord> aggregateRecords,
-      List<String> realizedStatsSelectors,
-      List<String> realizedIndexSelectors) {}
 
   private ValidatedFileGroupArtifacts loadValidatedArtifacts(
       ReconcileJobStore.LeasedJob lease,

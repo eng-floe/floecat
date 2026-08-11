@@ -258,6 +258,7 @@ class LeasedPlannerWorkerServiceTest {
             2,
             2,
             0,
+            0,
             "stats-generation",
             "",
             testArtifactIndex(2, 0));
@@ -280,6 +281,7 @@ class LeasedPlannerWorkerServiceTest {
             "ab".repeat(32),
             2,
             2,
+            0,
             0,
             "stats-generation",
             "",
