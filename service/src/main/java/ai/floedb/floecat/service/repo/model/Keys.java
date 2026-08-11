@@ -1674,39 +1674,6 @@ public final class Keys {
         snapshotId, percentDecode(manifestUri.substring(generationStart, generationEnd)));
   }
 
-  /** Recovers a generation identity from a generation object-store common prefix. */
-  public static GenerationKey generationFromGenerationBlobPrefix(String generationPrefix) {
-    if (generationPrefix == null) {
-      return null;
-    }
-    String marker = "/target-stats/";
-    int markerAt = generationPrefix.indexOf(marker);
-    if (markerAt < 0) {
-      return null;
-    }
-    int snapshotStart = markerAt + marker.length();
-    int snapshotEnd = generationPrefix.indexOf("/generations/", snapshotStart);
-    if (snapshotEnd < 0) {
-      return null;
-    }
-    long snapshotId;
-    try {
-      snapshotId = Long.parseLong(generationPrefix.substring(snapshotStart, snapshotEnd));
-    } catch (RuntimeException e) {
-      return null;
-    }
-    int generationStart = snapshotEnd + "/generations/".length();
-    int generationEnd = generationPrefix.indexOf('/', generationStart);
-    if (generationEnd < 0) {
-      generationEnd = generationPrefix.length();
-    }
-    if (generationEnd <= generationStart) {
-      return null;
-    }
-    return new GenerationKey(
-        snapshotId, percentDecode(generationPrefix.substring(generationStart, generationEnd)));
-  }
-
   /** One stats generation's identity within a table, as encoded in its pointer keys. */
   public record GenerationKey(long snapshotId, String generationId) {}
 

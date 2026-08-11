@@ -770,6 +770,47 @@ class CasBlobGcTest {
   }
 
   @Test
+  void completedGenerationCleanupPassRotatesItsStartingTable() {
+    for (String tableId : List.of("tbl-a", "tbl-b", "tbl-c")) {
+      putPointer(
+          Keys.tablePointerById(ACCOUNT_ID, tableId),
+          Keys.tableBlobUri(ACCOUNT_ID, tableId, "sha-" + tableId));
+    }
+    java.util.ArrayList<String> visited = new java.util.ArrayList<>();
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
+          @Override
+          public GenerationGcResult deleteUnreferencedGenerations(
+              ai.floedb.floecat.common.rpc.ResourceId tableId,
+              java.util.function.Predicate<String> isProtectedManifestUri,
+              long nowMs,
+              long minAgeMs,
+              int maxBlobDeleteAttempts,
+              long deadlineMs,
+              GenerationGcContinuation continuation,
+              GenerationGcClaimGuard claimGuard) {
+            visited.add(tableId.getId());
+            return new GenerationGcResult(0, 0, 0, false);
+          }
+        };
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(List.of("tbl-a", "tbl-b", "tbl-c"), visited);
+    assertEquals(
+        "tbl-b",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+
+    visited.clear();
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals("tbl-b", visited.getFirst());
+    assertEquals(
+        "tbl-c",
+        pointers.get(Keys.casGcGenerationCursorPointer(ACCOUNT_ID)).orElseThrow().getBlobUri());
+  }
+
+  @Test
   void keyWithoutADerivableOwnerIsNeverDeletedInANonDeferringPass() {
     // A candidate that passes a family's segment filter but whose key shape yields no owner
     // pointer (malformed/blank rid) must NOT take the unconditional-delete path in the

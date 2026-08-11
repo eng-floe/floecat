@@ -441,7 +441,7 @@ public class CasBlobGc {
     pass.tableIndex = skippedIndex + 1;
     if (!pass.tableIds.isEmpty()) {
       advanceGenerationCursor(
-          accountId, pass.tableIds.get((skippedIndex + 1) % pass.tableIds.size()));
+          accountId, nextGenerationCursorAfterCompletedTable(pass.tableIds, skippedIndex));
     }
     return true;
   }
@@ -922,7 +922,8 @@ public class CasBlobGc {
         // This is the durable checkpoint used when the scheduler abandons an in-memory continuation
         // to give another account a turn. Advance only after the entire table has completed, so a
         // deadline in the middle of a table always resumes that table rather than skipping ahead.
-        advanceGenerationCursor(accountId, tableIds.get((tableIndex + 1) % tableIds.size()));
+        advanceGenerationCursor(
+            accountId, nextGenerationCursorAfterCompletedTable(tableIds, tableIndex));
       }
       pass.phase = Phase.ACCOUNT_SWEEP;
     }
@@ -1418,6 +1419,17 @@ public class CasBlobGc {
         .get(Keys.casGcGenerationCursorPointer(accountId))
         .map(Pointer::getBlobUri)
         .orElse("");
+  }
+
+  private static String nextGenerationCursorAfterCompletedTable(
+      List<String> rotatedTableIds, int completedIndex) {
+    if (completedIndex + 1 < rotatedTableIds.size()) {
+      return rotatedTableIds.get(completedIndex + 1);
+    }
+    // The list starts at this pass's durable cursor. After a complete circuit, move the next pass
+    // to the successor of that starting table so a shared delete budget rotates fairly instead of
+    // favoring the same early tables forever.
+    return rotatedTableIds.get(rotatedTableIds.size() == 1 ? 0 : 1);
   }
 
   private void advanceGenerationCursor(String accountId, String nextTableId) {
