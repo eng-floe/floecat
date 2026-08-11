@@ -614,6 +614,96 @@ class StorageAuthorityServiceImplTest {
   }
 
   /**
+   * Source-catalog vending is entered only for a connector that actually asked its catalog to
+   * delegate. Presence of s3.access-key-id on a FileIO is not that signal -- a Glue or S3 Tables
+   * connector using static aws credentials carries it too -- so the gate keys on the declared
+   * delegation intent.
+   */
+  @Test
+  void connectorDeclaresVendedDelegationOnlyForVendedCredentialsHeader() {
+    assertTrue(
+        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(
+            delegationConnector("vended-credentials")));
+    assertFalse(
+        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(
+            delegationConnector("remote-signing")));
+    assertFalse(
+        StorageAuthorityServiceImpl.connectorDeclaresVendedDelegation(discoveryConnector()));
+  }
+
+  private static Connector delegationConnector(String delegationValue) {
+    return Connector.newBuilder()
+        .setResourceId(CONNECTOR_ID)
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setState(ConnectorState.CS_ACTIVE)
+        .putProperties("iceberg.source", "rest")
+        .putProperties("header.X-Iceberg-Access-Delegation", delegationValue)
+        .build();
+  }
+
+  /** Only the non-secret routing keys reach client_safe_config; credentials never do. */
+  @Test
+  void clientSafeRoutingPropertiesKeepsOnlyNonSecretRoutingKeys() {
+    var routing =
+        StorageAuthorityServiceImpl.clientSafeRoutingProperties(
+            java.util.Map.of(
+                "s3.access-key-id", "ASIA",
+                "s3.secret-access-key", "secret",
+                "s3.session-token", "token",
+                "s3.region", "eu-west-1",
+                "s3.endpoint", "https://s3.eu-west-1.example",
+                "s3.path-style-access", "true"));
+
+    assertEquals("eu-west-1", routing.get("s3.region"));
+    assertEquals("https://s3.eu-west-1.example", routing.get("s3.endpoint"));
+    assertEquals("true", routing.get("s3.path-style-access"));
+    assertFalse(routing.containsKey("s3.access-key-id"));
+    assertFalse(routing.containsKey("s3.secret-access-key"));
+    assertFalse(routing.containsKey("s3.session-token"));
+  }
+
+  /**
+   * A PLAN_VIEW bootstrap lease scopes credentials by location, never validating request.table_id
+   * against the lease. Source-catalog vending must therefore not be derived from a caller-supplied
+   * table on that path, or a view-lease holder could steer which catalog vends -- the confused
+   * deputy the leased-table path was built to prevent. Proof: the caller's table is never loaded.
+   */
+  @Test
+  void planViewLeaseCannotVendFromCallerSuppliedTable() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(viewLeaseView()));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setTableId(
+                                ResourceId.newBuilder()
+                                    .setAccountId("acct")
+                                    .setKind(ResourceKind.RK_TABLE)
+                                    .setId("tbl-somebody-elses"))
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(tableRepo, org.mockito.Mockito.never()).getById(any());
+  }
+
+  /**
    * Registering files in place (add_files) leaves an Iceberg table's data outside its own location,
    * so scoping a lease to the table location alone rejects the very files the lease planned. A
    * leased file must be readable even from an unrelated prefix.

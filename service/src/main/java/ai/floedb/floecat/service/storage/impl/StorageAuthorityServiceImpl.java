@@ -26,7 +26,6 @@ import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
@@ -37,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -353,7 +353,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   credentialScope.responseLocationPrefix(),
                   credentialScope.sessionScopeLocations(),
                   accountId,
-                  serverSide);
+                  serverSide,
+                  credentialScope.exactObjectScope());
             }),
         correlationId());
   }
@@ -552,7 +553,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       // minted session policy then follow the location actually being read, and a table whose data
       // does live under its own location is unaffected.
       if (isLeasedFilePath(job, requestedLocationPrefix)) {
-        return CredentialScope.forSingleLocation(requestedLocationPrefix);
+        return CredentialScope.forSingleObject(requestedLocationPrefix);
       }
       throw io.grpc.Status.PERMISSION_DENIED
           .withDescription("requested location is outside the leased reconcile storage scope")
@@ -689,14 +690,34 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           .build();
     }
 
-    // No table on the lease. Either the request is not execution-bound at all -- authorized by
-    // table.read on the requested id -- or it is a discovery planner job, where
-    // resolveDiscoveryTableLocation has already checked the requested table against the leased
-    // source and connector before we get here.
+    // No table bound to the lease. A non-execution-bound request (job == null) had its table_id
+    // authorized directly by table.read. An execution-bound request only reaches here with a
+    // validated table on the discovery PLAN_TABLE path, where resolveDiscoveryTableLocation checked
+    // request.table_id against the leased source and connector. Any other execution-bound job -- a
+    // PLAN_VIEW bootstrap lease, say, whose scope comes from resolvePlannerBootstrapLocation and
+    // never inspects request.table_id -- never validated it, so it must not steer which catalog
+    // vends. Refuse to derive a vending table from an unvalidated id.
+    if (job != null && !validatesRequestedTableAgainstLease(job)) {
+      return null;
+    }
     if (request.hasTableId()) {
       return request.getTableId();
     }
     return null;
+  }
+
+  /**
+   * Whether an execution-bound job validates the caller's {@code request.table_id} against its
+   * lease before scope resolution. Only the discovery PLAN_TABLE path does -- it is the single
+   * non-leased case where {@link #resolveDiscoveryTableLocation} runs and rejects a mismatching
+   * table. Mirrors that method's guard so the two cannot drift apart.
+   */
+  private static boolean validatesRequestedTableAgainstLease(ReconcileJobStore.ReconcileJob job) {
+    return job.jobKind == ReconcileJobKind.PLAN_TABLE
+        && job.tableTask != null
+        && job.tableTask.discoveryMode()
+        && (job.tableTask.destinationTableId() == null
+            || job.tableTask.destinationTableId().isBlank());
   }
 
   /**
@@ -744,10 +765,27 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return null;
     }
 
+    // Only a connector that actually asked the catalog to vend can produce vended credentials.
+    // Presence of s3.* on a table's FileIO is not a reliable signal: a Glue or S3 Tables connector
+    // authenticated with static aws credentials writes s3.access-key-id into the same property map
+    // for its own storage access, and those catalogs do not delegate at all. Gate on the declared
+    // delegation intent so their own credentials are never mistaken for vended ones -- they keep
+    // falling back to a storage authority. This also skips a needless connector build and OAuth
+    // exchange for the non-delegating case.
+    if (!connectorDeclaresVendedDelegation(connector)) {
+      LOG.infof(
+          "source-catalog vending skipped: connector %s did not declare vended-credentials"
+              + " delegation",
+          connector.getResourceId().getId());
+      return null;
+    }
+
+    ConnectorConfig resolvedConfig = resolveConnectorCredentials(connector);
+    String configuredAccessKey = resolvedConfig.options().get("s3.access-key-id");
+
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
     Optional<FloecatConnector.VendedStorageCredentials> vended;
-    try (FloecatConnector source =
-        ConnectorFactory.create(resolveConnectorCredentials(connector))) {
+    try (FloecatConnector source = ConnectorFactory.create(resolvedConfig)) {
       vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
     } catch (StatusRuntimeException e) {
       throw e;
@@ -762,6 +800,19 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       LOG.infof(
           "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
               + " (catalog does not delegate)",
+          connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
+      return null;
+    }
+
+    // Delegation was declared, but a catalog that silently ignored the header leaves only the
+    // connector's own configured credentials on the FileIO. If what came back is exactly what we
+    // configured the connector with, nothing was vended -- fall back rather than pass the
+    // connector's static credentials down the vend path as if they were catalog-scoped.
+    String vendedAccessKey = vended.get().properties().get("s3.access-key-id");
+    if (configuredAccessKey != null && configuredAccessKey.equals(vendedAccessKey)) {
+      LOG.infof(
+          "source-catalog vending skipped: connector %s returned its own configured credentials"
+              + " for %s.%s (catalog did not delegate)",
           connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName());
       return null;
     }
@@ -782,7 +833,75 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     LOG.infof(
         "vended storage credentials from source catalog connector=%s table=%s.%s expiresAt=%s",
         connector.getResourceId().getId(), namespaceFq, upstream.getTableDisplayName(), expiresAt);
-    return ResolveStorageAuthorityResponse.newBuilder().addStorageCredentials(credential).build();
+    // Non-secret routing properties must also travel in client_safe_config. The reconcile worker's
+    // execution-bound (refreshable) merge path applies client_safe_config plus the refreshed
+    // credential triple and never reads storage_credentials[0].config, so region and endpoint
+    // placed only there are silently dropped on the path that matters -- leaving the worker to
+    // guess the endpoint for any non-default region or custom-endpoint bucket. Authority-backed
+    // responses carry routing in client-safe config for exactly this reason.
+    return ResolveStorageAuthorityResponse.newBuilder()
+        .putAllClientSafeConfig(clientSafeRoutingProperties(vended.get().properties()))
+        .addStorageCredentials(credential)
+        .build();
+  }
+
+  /**
+   * Non-secret S3 routing keys a vended credential carries, safe to expose in client_safe_config.
+   */
+  private static final List<String> VENDED_ROUTING_KEYS =
+      List.of("s3.region", "s3.endpoint", "s3.path-style-access");
+
+  static Map<String, String> clientSafeRoutingProperties(Map<String, String> props) {
+    LinkedHashMap<String, String> routing = new LinkedHashMap<>();
+    for (String key : VENDED_ROUTING_KEYS) {
+      String value = props.get(key);
+      if (value != null && !value.isBlank()) {
+        routing.put(key, value);
+      }
+    }
+    return routing;
+  }
+
+  private static final String ICEBERG_ACCESS_DELEGATION_PROP = "header.X-Iceberg-Access-Delegation";
+
+  /**
+   * Whether the connector asked its catalog to vend credentials. Mirrors {@code
+   * ServerSideStorageConfigResolver.declaresDelegation}: the header can arrive either directly in
+   * options as {@code header.X-Iceberg-Access-Delegation} or via {@code auth().headerHints()},
+   * which IcebergConnectorFactory turns into the same catalog property.
+   */
+  static boolean connectorDeclaresVendedDelegation(Connector connector) {
+    ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    if (declaresVendedCredentials(config.options().get(ICEBERG_ACCESS_DELEGATION_PROP))) {
+      return true;
+    }
+    if (config.auth() == null) {
+      return false;
+    }
+    return config.auth().headerHints().entrySet().stream()
+        .anyMatch(
+            e ->
+                ICEBERG_ACCESS_DELEGATION_PROP.equalsIgnoreCase("header." + e.getKey())
+                    && declaresVendedCredentials(e.getValue()));
+  }
+
+  /**
+   * Whether the delegation header value asks specifically for vended credentials. {@code
+   * remote-signing} is a valid value that returns no credentials, so any non-blank value will not
+   * do. Mirrors the reconciler's parser: comma-separated, case-insensitive, {@code _}/{@code -}
+   * interchangeable.
+   */
+  private static boolean declaresVendedCredentials(String headerValue) {
+    if (headerValue == null || headerValue.isBlank()) {
+      return false;
+    }
+    for (String token : headerValue.split(",")) {
+      if ("vended-credentials"
+          .equals(token.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-'))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -885,9 +1004,17 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         || "none".equalsIgnoreCase(auth.getScheme())) {
       return base;
     }
+    // Carry the inbound request context, not an empty one. Token-exchange schemes
+    // (RFC8693/AZURE/GCP) need the caller's subject token to mint connector credentials; with an
+    // empty context CredentialResolverSupport cannot resolve them, so a delegating catalog on any
+    // of those auth modes would fail to build before it could vend. The storage RPC has the
+    // inbound authorization/session headers available here, same as the normal connector path.
     return credentialResolver
         .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
-        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .map(
+            c ->
+                CredentialResolverSupport.apply(
+                    base, c, AuthResolutionContexts.fromInboundContext()))
         .orElse(base);
   }
 
@@ -1072,17 +1199,32 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   private record CredentialScope(
       String authorityLookupLocationPrefix,
       String responseLocationPrefix,
-      List<String> sessionScopeLocations) {
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     static CredentialScope forSingleLocation(String locationPrefix) {
       return new CredentialScope(
           locationPrefix,
           locationPrefix,
-          locationPrefix == null ? List.of() : List.of(locationPrefix));
+          locationPrefix == null ? List.of() : List.of(locationPrefix),
+          false);
+    }
+
+    /**
+     * A scope over a single concrete object rather than a prefix. The minted session policy grants
+     * exactly that key -- no child wildcard -- so admitting one leased data file cannot hand out
+     * credentials for anything sharing its path as a prefix.
+     */
+    static CredentialScope forSingleObject(String location) {
+      return new CredentialScope(
+          location, location, location == null ? List.of() : List.of(location), true);
     }
 
     CredentialScope withResponseLocationPrefix(String responseLocationPrefix) {
       return new CredentialScope(
-          authorityLookupLocationPrefix, responseLocationPrefix, sessionScopeLocations);
+          authorityLookupLocationPrefix,
+          responseLocationPrefix,
+          sessionScopeLocations,
+          exactObjectScope);
     }
   }
 

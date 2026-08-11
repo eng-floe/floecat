@@ -55,6 +55,17 @@ public class StorageAuthorityResolver {
       List<String> sessionScopeLocations,
       String accountId,
       boolean serverSide) {
+    return buildResponse(
+        authority, locationPrefix, sessionScopeLocations, accountId, serverSide, false);
+  }
+
+  ResolveStorageAuthorityResponse buildResponse(
+      StorageAuthority authority,
+      String locationPrefix,
+      List<String> sessionScopeLocations,
+      String accountId,
+      boolean serverSide,
+      boolean exactObjectScope) {
     if (authority == null) {
       // Carries a structured reason rather than a bare IllegalArgumentException. Both map to
       // INVALID_ARGUMENT, but so do account_id, execution_binding and location_prefix validation
@@ -73,13 +84,17 @@ public class StorageAuthorityResolver {
         resolveAuthoritySecret(accountId, authority.getResourceId().getId()).orElse(null);
     ResolvedStorageCredentials resolved;
     if (!serverSide) {
-      resolved = mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations);
+      resolved =
+          mintTemporaryCredentials(
+              authority, authoritySecret, sessionScopeLocations, exactObjectScope);
       if (!resolved.hasKnownExpiry()) {
         throw new IllegalArgumentException(
             "Credential vending requires credentials with a known expiry minted from a storage authority role");
       }
     } else {
-      resolved = resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations);
+      resolved =
+          resolveServerSideCredentials(
+              authority, authoritySecret, sessionScopeLocations, exactObjectScope);
     }
 
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
@@ -119,12 +134,21 @@ public class StorageAuthorityResolver {
       StorageAuthority authority,
       AuthCredentials authoritySecret,
       List<String> sessionScopeLocations) {
+    return mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations, false);
+  }
+
+  ResolvedStorageCredentials mintTemporaryCredentials(
+      StorageAuthority authority,
+      AuthCredentials authoritySecret,
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     Optional<ResolvedStorageCredentials> resolved =
         authoritySecret == null
             ? Optional.empty()
             : CredentialResolverSupport.resolveStorageCredentials(authoritySecret);
     if (authority.hasAssumeRoleArn() && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleCredentials(authority, authoritySecret, sessionScopeLocations);
+      return assumeRoleCredentials(
+          authority, authoritySecret, sessionScopeLocations, exactObjectScope);
     }
     if (resolved.isPresent() && resolved.get().hasKnownExpiry()) {
       return resolved.get();
@@ -137,8 +161,17 @@ public class StorageAuthorityResolver {
       StorageAuthority authority,
       AuthCredentials authoritySecret,
       List<String> sessionScopeLocations) {
+    return resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations, false);
+  }
+
+  ResolvedStorageCredentials resolveServerSideCredentials(
+      StorageAuthority authority,
+      AuthCredentials authoritySecret,
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     if (authority.hasAssumeRoleArn() && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleCredentials(authority, authoritySecret, sessionScopeLocations);
+      return assumeRoleCredentials(
+          authority, authoritySecret, sessionScopeLocations, exactObjectScope);
     }
     if (authoritySecret == null) {
       throw new IllegalArgumentException("Unsupported storage credential authority");
@@ -170,18 +203,21 @@ public class StorageAuthorityResolver {
   ResolvedStorageCredentials assumeRoleCredentials(
       StorageAuthority authority,
       AuthCredentials authoritySecret,
-      List<String> sessionScopeLocations) {
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     if (authoritySecret != null
         && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
-      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), sessionScopeLocations);
+      return assumeRoleFromStaticSource(
+          authority, authoritySecret.getAws(), sessionScopeLocations, exactObjectScope);
     }
-    return assumeRoleFromAmbientSource(authority, sessionScopeLocations);
+    return assumeRoleFromAmbientSource(authority, sessionScopeLocations, exactObjectScope);
   }
 
   ResolvedStorageCredentials assumeRoleFromStaticSource(
       StorageAuthority authority,
       AuthCredentials.AwsCredentials source,
-      List<String> sessionScopeLocations) {
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     AwsCredentialsProvider provider =
         source.getSessionToken() == null || source.getSessionToken().isBlank()
             ? StaticCredentialsProvider.create(
@@ -192,12 +228,13 @@ public class StorageAuthorityResolver {
                     source.getSecretAccessKey(),
                     source.getSessionToken()));
 
-    return assumeRole(authority, () -> provider, sessionScopeLocations);
+    return assumeRole(authority, () -> provider, sessionScopeLocations, exactObjectScope);
   }
 
   ResolvedStorageCredentials assumeRoleFromAmbientSource(
-      StorageAuthority authority, List<String> sessionScopeLocations) {
-    return assumeRole(authority, this::ambientCredentialsProvider, sessionScopeLocations);
+      StorageAuthority authority, List<String> sessionScopeLocations, boolean exactObjectScope) {
+    return assumeRole(
+        authority, this::ambientCredentialsProvider, sessionScopeLocations, exactObjectScope);
   }
 
   AwsCredentialsProvider ambientCredentialsProvider() {
@@ -207,7 +244,8 @@ public class StorageAuthorityResolver {
   private ResolvedStorageCredentials assumeRole(
       StorageAuthority authority,
       Supplier<AwsCredentialsProvider> providerFactory,
-      List<String> sessionScopeLocations) {
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
     Integer duration = authority.hasDurationSeconds() ? authority.getDurationSeconds() : null;
     AssumeRoleRequest request =
         AssumeRoleRequest.builder()
@@ -220,7 +258,7 @@ public class StorageAuthorityResolver {
                     "floecat-storage-authority"))
             .externalId(
                 authority.hasAssumeRoleExternalId() ? authority.getAssumeRoleExternalId() : null)
-            .policy(scopedSessionPolicy(sessionScopeLocations))
+            .policy(scopedSessionPolicy(sessionScopeLocations, exactObjectScope))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
@@ -260,6 +298,10 @@ public class StorageAuthorityResolver {
   }
 
   static String scopedSessionPolicy(List<String> locationPrefixes) {
+    return scopedSessionPolicy(locationPrefixes, false);
+  }
+
+  static String scopedSessionPolicy(List<String> locationPrefixes, boolean exactObject) {
     List<S3Location> scopes =
         normalizeS3Scopes(locationPrefixes).stream()
             .map(S3Location::parse)
@@ -270,8 +312,8 @@ public class StorageAuthorityResolver {
     }
     ArrayList<String> statements = new ArrayList<>();
     for (S3BucketScope bucketScope : groupByBucket(scopes)) {
-      statements.add(bucketScope.listStatementJson());
-      statements.add(bucketScope.objectStatementJson());
+      statements.add(bucketScope.listStatementJson(exactObject));
+      statements.add(bucketScope.objectStatementJson(exactObject));
     }
     return """
         {
@@ -358,7 +400,7 @@ public class StorageAuthorityResolver {
   }
 
   private record S3BucketScope(String bucket, List<S3Location> scopes) {
-    String listStatementJson() {
+    String listStatementJson(boolean exactObject) {
       String escapedBucket = jsonEscape(bucket);
       if (scopes.stream().anyMatch(scope -> scope.keyPrefix().isBlank())) {
         return """
@@ -377,7 +419,11 @@ public class StorageAuthorityResolver {
       for (S3Location scope : scopes) {
         String prefix = jsonEscape(scope.listPrefix());
         prefixes.add("\"" + prefix + "\"");
-        prefixes.add("\"" + prefix + "/*\"");
+        // For an exact-object scope the key names a single object, not a prefix, so the
+        // child-prefix clause that would authorize everything beneath it is suppressed.
+        if (!exactObject) {
+          prefixes.add("\"" + prefix + "/*\"");
+        }
       }
       return """
           {
@@ -393,7 +439,7 @@ public class StorageAuthorityResolver {
           .trim();
     }
 
-    String objectStatementJson() {
+    String objectStatementJson(boolean exactObject) {
       LinkedHashSet<String> resources = new LinkedHashSet<>();
       for (S3Location scope : scopes) {
         if (scope.keyPrefix().isBlank()) {
@@ -402,7 +448,10 @@ public class StorageAuthorityResolver {
         }
         String objectArn = jsonEscape("arn:aws:s3:::%s/%s".formatted(bucket, scope.keyPrefix()));
         resources.add("\"" + objectArn + "\"");
-        resources.add("\"" + objectArn + "/*\"");
+        // Exact-object scope grants the object itself and nothing beneath its key.
+        if (!exactObject) {
+          resources.add("\"" + objectArn + "/*\"");
+        }
       }
       return """
           {

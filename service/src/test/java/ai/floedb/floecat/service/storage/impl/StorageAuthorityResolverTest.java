@@ -179,7 +179,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -225,7 +226,9 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromAmbientSource(
-              StorageAuthority authority, java.util.List<String> sessionScopeLocations) {
+              StorageAuthority authority,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -290,7 +293,8 @@ class StorageAuthorityResolverTest {
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
                 .build(),
-            java.util.List.of("s3://warehouse/orders"));
+            java.util.List.of("s3://warehouse/orders"),
+            false);
 
     assertEquals("temp-akid", credentials.accessKeyId());
     assertEquals(2, clientBuilds.get());
@@ -305,6 +309,24 @@ class StorageAuthorityResolverTest {
     assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse\"]"));
     assertFalse(policy.contains("\"s3:prefix\""));
     assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse/*\"]"));
+  }
+
+  @Test
+  void scopedSessionPolicyForExactObjectOmitsChildWildcard() {
+    String location = "s3://warehouse/orders/data/part-000.parquet";
+    String objectArn = "arn:aws:s3:::warehouse/orders/data/part-000.parquet";
+
+    String prefixPolicy = StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location));
+    // The default (prefix) scope grants the object and everything beneath its key.
+    assertTrue(prefixPolicy.contains("\"" + objectArn + "/*\""));
+
+    String exactPolicy =
+        StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true);
+    // The exact-object scope grants the object itself and nothing beneath it -- no child wildcard
+    // on the object resource, and no child-prefix in the list condition.
+    assertTrue(exactPolicy.contains("\"" + objectArn + "\""));
+    assertFalse(exactPolicy.contains(objectArn + "/*"));
+    assertFalse(exactPolicy.contains("orders/data/part-000.parquet/*"));
   }
 
   @Test
