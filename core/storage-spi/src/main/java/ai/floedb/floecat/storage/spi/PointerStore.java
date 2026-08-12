@@ -123,6 +123,11 @@ public interface PointerStore {
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+  default List<Pointer> listPointersByPrefixConsistent(
+      String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+    return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+  }
+
   /**
    * Returns a page token that resumes a {@link #listPointersByPrefix} scan immediately after the
    * given pointer key, as if a previous page had ended exactly at that key. This lets callers that
@@ -139,6 +144,10 @@ public interface PointerStore {
   int deleteByPrefix(String prefix);
 
   int countByPrefix(String prefix);
+
+  default int countByPrefixConsistent(String prefix) {
+    return countByPrefix(prefix);
+  }
 
   boolean isEmpty();
 

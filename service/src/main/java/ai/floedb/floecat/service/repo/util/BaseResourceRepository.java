@@ -502,12 +502,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .toList();
   }
 
+  public List<T> listByPrefixConsistent(
+      String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, true).stream()
+        .map(KeyedValue::value)
+        .toList();
+  }
+
   protected List<KeyedValue<T>> listByPrefixWithKeys(
       String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, false);
+  }
+
+  private List<KeyedValue<T>> listByPrefixWithKeys(
+      String prefix, int limit, String token, StringBuilder nextOut, boolean consistentRead) {
     return observeRepository(
-        "list_by_prefix",
+        consistentRead ? "list_by_prefix_consistent" : "list_by_prefix",
         () -> {
-          var rows = pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
+          var rows =
+              consistentRead
+                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           var ordinaryUris = new ArrayList<String>(rows.size());
           var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
           for (var row : rows) {
@@ -586,6 +601,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   @Override
   public int countByPrefix(String prefix) {
     return observeRepository("count_by_prefix", () -> pointerReads.count(prefix));
+  }
+
+  public int countByPrefixConsistent(String prefix) {
+    return observeRepository(
+        "count_by_prefix_consistent", () -> pointerReads.countConsistent(prefix));
   }
 
   protected static String sha256B64(byte[] data) {
