@@ -905,12 +905,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integrations/" class="md-nav__link">
+      <a href="../catalog-integration-design/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integrations and Overlays
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -928,12 +928,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integration-design/" class="md-nav__link">
+      <a href="../catalog-integrations/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture and Delivery Plan
+    Catalog Integrations and Overlays
     
   </span>
   
@@ -2113,13 +2113,13 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   in resource responses. A typed credential-store resolver is available to follow-on catalog clients. A dedicated
   authentication update RPC replaces configuration and rotates credentials while advancing a
   visible credential generation. Unity integrations accept OAuth or bearer authentication; Iceberg
-  REST integrations accept the structurally valid authentication forms needed by the SQL contract.
+  REST integrations accept every structurally valid authentication form the API supports.
   Vendor/endpoint-specific compatibility is intentionally deferred to adapter selection and
   validation in a follow-on change; this service does not yet perform connectivity validation or
   reconciliation. Catalog endpoint URIs must
   be hierarchical HTTP(S) URLs and cannot contain user-info, secret-bearing query parameters, or
   fragments. Type and endpoint are immutable through update. The API exposes <code>CM_REPLACE</code> and
-  <code>CM_RETURN_EXISTING</code> as primitives for a SQL layer's <code>OR REPLACE</code> and <code>IF NOT EXISTS</code>.
+  <code>CM_RETURN_EXISTING</code> as create-conflict primitives.
   Replacement publishes a new resource identity and atomically swaps the name pointer before the
   old identity is removed. Integration replacement is rejected while overlays depend on the old
   identity. Cascading delete uses a durable fence so retries resume dependent-overlay cleanup before
@@ -2131,22 +2131,22 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   happen before resource publication; definite publication failures remove the unpublished
   generation, and replaced credentials are deleted only after the resource CAS commits. If the
   publication acknowledgement is uncertain, the new secret is retained so a visible integration can
-  never reference a deleted secret. Reclamation of such unreferenced generations is planned for a
-  later PR and is not implemented here.
+  never reference a deleted secret. Durable cleanup records are drained by pointer GC once a
+  generation is provably superseded.
   Get accepts either resource ID or
-  exact SQL name. Reads require
+  exact display name. Reads require
   <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>, and cascading deletion of
   dependent overlays also requires <code>catalog-overlay.write</code>.</li>
-<li><strong>CatalogOverlaysImpl</strong> – Makes an integration and optional upstream namespace filters available
-  as a top-level, read-only SQL catalog. It does not reference or manage a separate Catalog
-  resource. Catalog and overlay repositories share an account-scoped SQL-catalog name reservation,
-  so creates, renames, replacements, and deletes cannot expose duplicate top-level SQL names across
-  the two resource kinds. Creating an overlay atomically publishes its pointers while requiring the integration
+<li><strong>CatalogOverlaysImpl</strong> – Binds an integration and optional upstream namespace filters to the
+  Catalog the overlay owns. Creating an overlay creates that catalog in the same pointer
+  transaction, renaming the overlay renames it, and deleting the overlay deletes it, so the two are
+  never visible separately or under different names. Because the owned catalog is an ordinary
+  Catalog, top-level name uniqueness is the existing catalog by-name uniqueness. Creating an overlay atomically publishes its pointers while requiring the integration
   pointer to remain at its validated version, and advances the integration dependency marker in the
   same transaction. <code>CM_REPLACE</code> atomically swaps in a new overlay identity and may bind it to
   another integration while advancing both dependency markers; <code>CM_RETURN_EXISTING</code>
-  returns the existing object. These are API primitives for the future SQL layer. Get accepts either
-  resource ID or exact SQL name. An empty include list
+  returns the existing object. Get accepts either
+  resource ID or exact display name. An empty include list
   selects all namespaces; paths select subtrees, exclusions
   take precedence, and matching is case-sensitive. The integration binding is immutable through
   update; updates only replace the selected include/exclude lists or rename the overlay. Reads require
@@ -2218,7 +2218,15 @@ definition/snapshot/generation-manifest/constraints blob they reference). A pinn
 its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes are fenced by a
 30 s min-age (<code>floecat.gc.cas.min-age-ms</code>, age since the blob was written), and any failed
 root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
-nothing is deleted that pass (fail closed). <code>PointerGc</code> removes
+nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
+are process-local. In a multi-replica deployment, enable <code>FLOECAT_GC_CAS_ENABLED=true</code> on exactly
+one designated control-plane replica only when all live query contexts are visible to that replica;
+otherwise leave it disabled. A retained account continuation is abandoned after
+<code>floecat.gc.cas.max-consecutive-continuation-ticks</code> so one large account cannot starve every other
+account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
+Snapshot compatibility artifacts under <code>snapshots/&lt;id&gt;/compat/</code> are gateway-managed mutable
+artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
+than this CAS sweep. <code>PointerGc</code> removes
 orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
 terminal jobs. The default finished reconcile-job retention window is 24 h
@@ -2281,6 +2289,22 @@ rows upserted after all batches have been consumed.</p>
 <tr>
 <td><code>floecat.query.*</code></td>
 <td>Default TTL, grace period, max cache size, safety expiry for query contexts.</td>
+</tr>
+<tr>
+<td><code>floecat.query.resolver.max_parallel_inputs</code></td>
+<td>Per-request query-input pin-resolution fan-out. Defaults to <code>8</code>; values are clamped to <code>1</code>–<code>16</code>.</td>
+</tr>
+<tr>
+<td><code>floecat.query.metadata-io.max-concurrency</code></td>
+<td>Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use <code>64</code>; present malformed, blank, or out-of-range values fail startup.</td>
+</tr>
+<tr>
+<td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
+<td>Per-chunk relation-build fan-out for GetUserObjects. Defaults to <code>8</code>.</td>
+</tr>
+<tr>
+<td><code>floecat.catalog.bundle.max_parallel_stats_warms</code></td>
+<td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.idempotency.*</code></td>

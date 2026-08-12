@@ -692,12 +692,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integrations/" class="md-nav__link">
+      <a href="../catalog-integration-design/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integrations and Overlays
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -715,12 +715,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integration-design/" class="md-nav__link">
+      <a href="../catalog-integrations/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture and Delivery Plan
+    Catalog Integrations and Overlays
     
   </span>
   
@@ -1868,6 +1868,10 @@ Databricks SQL execution, and custom file readers for S3.</p>
   connector enumerates all Delta versions that Floecat has not already ingested. When
   <code>SnapshotEnumerationOptions.targetSnapshotIds</code> is supplied, enumeration is limited to that
   explicit version set even when <code>fullRescan=true</code>.</li>
+<li><code>planSnapshotFiles(...)</code> – Produces immutable data-file membership, on-disk deletion-vector
+  attachments, execution schema, and a physical content identity for every Delta add-file.</li>
+<li><code>capturePlannedFileGroup(...)</code> – Captures the missing stats and page-index outputs for an
+  immutable planned subset of the snapshot's data files.</li>
 <li><code>captureSnapshotTargetStats(...)</code> – Captures table/column/file stats for one snapshot and optional
   selector scope, optionally sampling Parquet files for NDV (<code>SamplingNdvProvider</code>,
   <code>ParquetNdvProvider</code>).</li>
@@ -1891,6 +1895,10 @@ Databricks SQL execution, and custom file readers for S3.</p>
   recursing into array/map/struct so element/key/value/field types and <code>containsNull</code> /
   <code>valueContainsNull</code> are preserved in the <code>LogicalType</code> tree (see <code>docs/types.md</code>,
   "Complex types").</li>
+<li><strong>Reuse identity</strong> – Delta data-file content identity is derived from add-file modification time,
+  base row ID, and default row commit version. It is computed from Delta log metadata without
+  reading the data file, stored stats, or page-index sidecars. Deletion-vector path, offset, size,
+  and cardinality are incorporated separately into the stats source fingerprint.</li>
 <li><strong>Constraint mapping</strong> – Snapshot constraints currently emit metadata that is reliably exposed by
   Delta snapshots/table metadata:</li>
 <li><code>CT_NOT_NULL</code> from non-nullable schema fields (including nested struct leaves).</li>
@@ -1922,10 +1930,12 @@ Databricks SQL execution, and custom file readers for S3.</p>
   → describe via REST + Delta Kernel schema inspection
   → enumerateSnapshots
       → Delta Kernel snapshot lineage
+  → planSnapshotFiles
+      → DeltaPlanner traverses _delta_log → immutable data-file/deletion-vector plan
+  → capturePlannedFileGroup
+      → read only the planned data files needed for missing stats/index outputs
   → captureSnapshotTargetStats
       → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
-  → plan
-      → DeltaPlanner traverses _delta_log → ScanBundle entries for data/delete files
 </code></pre></div>
 <p>Connector resources (HTTP clients, S3 client, Delta engine) are closed when <code>close()</code> is invoked.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>

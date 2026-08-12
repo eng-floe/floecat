@@ -785,12 +785,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integrations/" class="md-nav__link">
+      <a href="../catalog-integration-design/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integrations and Overlays
+    Catalog Integration Architecture and Delivery Plan
     
   </span>
   
@@ -808,12 +808,12 @@
   
   
     <li class="md-nav__item">
-      <a href="../catalog-integration-design/" class="md-nav__link">
+      <a href="../catalog-integrations/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
-    Catalog Integration Architecture and Delivery Plan
+    Catalog Integrations and Overlays
     
   </span>
   
@@ -1790,7 +1790,7 @@
 Views, Snapshots, statistics, and query-lifecycle artifacts.</p>
 <div class="highlight"><pre><span></span><code>Account
  ├── CatalogIntegration (external catalog identity)
- │    └── CatalogOverlay (SQL-visible catalog and namespace selection)
+ │    └── CatalogOverlay (upstream namespace selection)
  └── Catalog (locally managed catalog)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
@@ -1831,9 +1831,10 @@ separately and never returned. A typed credential-store resolver derives the int
 from integration identity and credential generation for follow-on clients. The resources remain operationally inert: this API does not perform
 connectivity validation, adapter selection, or reconciliation. Legacy connectors remain unchanged
 and are not part of either new contract.</p>
-<p>An overlay is itself the top-level, read-only SQL catalog; it does not reference a separate Catalog
-resource. Catalogs and overlays atomically reserve names in one account-scoped top-level SQL catalog
-namespace. Overlay creation is conditioned on the current integration pointer version and advances a
+<p>An overlay owns exactly one Catalog, created in the overlay's own pointer transaction and carrying
+the overlay's display name, so top-level name uniqueness is ordinary catalog name uniqueness. That
+catalog is listed and read like any other but is renamed and deleted only through its overlay.
+Overlay creation is conditioned on the current integration pointer version and advances a
 fixed integration dependency marker in the same transaction. Integration deletion checks both the
 strongly consistent dependent-overlay index and that marker, closing concurrent
 overlay-create/integration-delete races. Account deletion removes overlays before integrations.</p>
