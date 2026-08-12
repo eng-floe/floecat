@@ -29,6 +29,12 @@ import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogOverlaysGrpc;
+import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
+import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsResponse;
+import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
+import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
@@ -55,7 +61,7 @@ class ShellAuthInterceptorTest {
       Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER);
 
   @Test
-  void applyAuthInterceptorsAlsoWrapsStorageAuthoritiesStub() throws Exception {
+  void applyAuthInterceptorsWrapsAdditionalServiceStubs() throws Exception {
     AtomicReference<String> observedSession = new AtomicReference<>();
     String serverName = InProcessServerBuilder.generateName();
     Server server =
@@ -63,6 +69,8 @@ class ShellAuthInterceptorTest {
             .directExecutor()
             .intercept(new CaptureSessionHeaderInterceptor(observedSession))
             .addService(new StorageAuthorityService())
+            .addService(new IntegrationService())
+            .addService(new OverlayService())
             .build()
             .start();
     ManagedChannel channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
@@ -82,6 +90,8 @@ class ShellAuthInterceptorTest {
       shell.snapshots = SnapshotServiceGrpc.newBlockingStub(channel);
       shell.viewService = ViewServiceGrpc.newBlockingStub(channel);
       shell.connectors = ConnectorsGrpc.newBlockingStub(channel);
+      shell.integrations = CatalogIntegrationsGrpc.newBlockingStub(channel);
+      shell.overlays = CatalogOverlaysGrpc.newBlockingStub(channel);
       shell.reconcileControl = ReconcileControlGrpc.newBlockingStub(channel);
       shell.queries = QueryServiceGrpc.newBlockingStub(channel);
       shell.queryScan = QueryScanServiceGrpc.newBlockingStub(channel);
@@ -96,6 +106,15 @@ class ShellAuthInterceptorTest {
       shell.storageAuthorities.listStorageAuthorities(
           ListStorageAuthoritiesRequest.getDefaultInstance());
 
+      assertEquals("session-123", observedSession.get());
+
+      observedSession.set(null);
+      shell.integrations.listCatalogIntegrations(
+          ListCatalogIntegrationsRequest.getDefaultInstance());
+      assertEquals("session-123", observedSession.get());
+
+      observedSession.set(null);
+      shell.overlays.listCatalogOverlays(ListCatalogOverlaysRequest.getDefaultInstance());
       assertEquals("session-123", observedSession.get());
     } finally {
       channel.shutdownNow();
@@ -125,6 +144,27 @@ class ShellAuthInterceptorTest {
         ListStorageAuthoritiesRequest request,
         StreamObserver<ListStorageAuthoritiesResponse> responseObserver) {
       responseObserver.onNext(ListStorageAuthoritiesResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class IntegrationService
+      extends CatalogIntegrationsGrpc.CatalogIntegrationsImplBase {
+    @Override
+    public void listCatalogIntegrations(
+        ListCatalogIntegrationsRequest request,
+        StreamObserver<ListCatalogIntegrationsResponse> responseObserver) {
+      responseObserver.onNext(ListCatalogIntegrationsResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class OverlayService extends CatalogOverlaysGrpc.CatalogOverlaysImplBase {
+    @Override
+    public void listCatalogOverlays(
+        ListCatalogOverlaysRequest request,
+        StreamObserver<ListCatalogOverlaysResponse> responseObserver) {
+      responseObserver.onNext(ListCatalogOverlaysResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }

@@ -43,6 +43,12 @@ import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogOverlaysGrpc;
+import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
+import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsResponse;
+import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
+import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
@@ -108,6 +114,22 @@ class CliCommandExecutorTest {
     try (Harness h = new Harness()) {
       assertTrue(h.executor.execute("connectors"));
       assertEquals(1, h.connectorService.listConnectorsCalls.get());
+    }
+  }
+
+  @Test
+  void integrationsRouted() throws Exception {
+    try (Harness h = new Harness()) {
+      assertTrue(h.executor.execute("integrations"));
+      assertEquals(1, h.integrationService.listIntegrationsCalls.get());
+    }
+  }
+
+  @Test
+  void overlaysRouted() throws Exception {
+    try (Harness h = new Harness()) {
+      assertTrue(h.executor.execute("overlays"));
+      assertEquals(1, h.overlayService.listOverlaysCalls.get());
     }
   }
 
@@ -231,6 +253,8 @@ class CliCommandExecutorTest {
     final MinimalTableService tableService = new MinimalTableService();
     final MinimalViewService viewService = new MinimalViewService();
     final MinimalConnectorService connectorService = new MinimalConnectorService();
+    final MinimalIntegrationService integrationService = new MinimalIntegrationService();
+    final MinimalOverlayService overlayService = new MinimalOverlayService();
     final MinimalAccountService accountService = new MinimalAccountService();
     final MinimalQueryService queryService = new MinimalQueryService();
     final MinimalStorageAuthorityService storageAuthorityService =
@@ -247,6 +271,8 @@ class CliCommandExecutorTest {
               .addService(tableService)
               .addService(viewService)
               .addService(connectorService)
+              .addService(integrationService)
+              .addService(overlayService)
               .addService(accountService)
               .addService(queryService)
               .addService(new NullSnapshotService())
@@ -277,6 +303,8 @@ class CliCommandExecutorTest {
           .tables(TableServiceGrpc.newBlockingStub(channel))
           .viewService(ViewServiceGrpc.newBlockingStub(channel))
           .connectors(ConnectorsGrpc.newBlockingStub(channel))
+          .integrations(CatalogIntegrationsGrpc.newBlockingStub(channel))
+          .overlays(CatalogOverlaysGrpc.newBlockingStub(channel))
           .reconcileControl(ReconcileControlGrpc.newBlockingStub(channel))
           .snapshots(SnapshotServiceGrpc.newBlockingStub(channel))
           .statistics(TableStatisticsServiceGrpc.newBlockingStub(channel))
@@ -354,6 +382,34 @@ class CliCommandExecutorTest {
         ListConnectorsRequest request, StreamObserver<ListConnectorsResponse> responseObserver) {
       listConnectorsCalls.incrementAndGet();
       responseObserver.onNext(ListConnectorsResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class MinimalIntegrationService
+      extends CatalogIntegrationsGrpc.CatalogIntegrationsImplBase {
+    final AtomicInteger listIntegrationsCalls = new AtomicInteger();
+
+    @Override
+    public void listCatalogIntegrations(
+        ListCatalogIntegrationsRequest request,
+        StreamObserver<ListCatalogIntegrationsResponse> responseObserver) {
+      listIntegrationsCalls.incrementAndGet();
+      responseObserver.onNext(ListCatalogIntegrationsResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class MinimalOverlayService
+      extends CatalogOverlaysGrpc.CatalogOverlaysImplBase {
+    final AtomicInteger listOverlaysCalls = new AtomicInteger();
+
+    @Override
+    public void listCatalogOverlays(
+        ListCatalogOverlaysRequest request,
+        StreamObserver<ListCatalogOverlaysResponse> responseObserver) {
+      listOverlaysCalls.incrementAndGet();
+      responseObserver.onNext(ListCatalogOverlaysResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }
