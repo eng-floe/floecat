@@ -4,7 +4,7 @@ System objects are the catalog-level row sources that live inside the `_system` 
 
 ### Client contract for GetSystemObjects
 
-**GetSystemObjects never returns namespace/table/view metadata** – it only streams the function/operator/type/cast/collation/aggregate definitions plus any registry hints. The `_system` overlay exposes the actual relations (namespaces, tables, views, `SystemTableNode`s, etc.) for scanning and planner resolution, so duplicate metadata would confuse downstream consumers and could expose synthetic tables twice. Use the `_system` overlay (`SystemGraph`/`CatalogOverlay`) whenever you need the actual relation graph; rely on `GetSystemObjects` solely for the recursive builtin registry data.
+**GetSystemObjects never returns namespace/table/view metadata** – it only streams the function/operator/type/cast/collation/aggregate definitions plus any registry hints. The `_system` overlay exposes the actual relations (namespaces, tables, views, `SystemTableNode`s, etc.) for scanning and planner resolution, so duplicate metadata would confuse downstream consumers and could expose synthetic tables twice. Use the `_system` overlay (`SystemGraph`/`CatalogGraphView`) whenever you need the actual relation graph; rely on `GetSystemObjects` solely for the recursive builtin registry data.
 
 ### System resource identifiers
 
@@ -56,7 +56,7 @@ Both `ServiceLoaderSystemCatalogProvider` and `FloecatInternalProvider` fail fas
 └────────────────────────────────────────────┘
                     ↓
 ┌────────────────────────────────────────────┐
-│ MetaGraph / CatalogOverlay                  │
+│ MetaGraph / CatalogGraphView                  │
 │ (implements SystemObjectGraphView)          │
 │ - resolves `_system` nodes via SystemGraph  │
 │ - delegates to MetadataGraph for user data  │
@@ -64,7 +64,7 @@ Both `ServiceLoaderSystemCatalogProvider` and `FloecatInternalProvider` fail fas
                     ↓
 ┌────────────────────────────────────────────┐
 │ SystemObjectScanContext (ctx)               │
-│ - built with CatalogOverlay/SystemObjectGraph │
+│ - built with CatalogGraphView/SystemObjectGraph │
 └────────────────────────────────────────────┘
                     ↓
 ┌────────────────────────────────────────────┐
@@ -125,7 +125,7 @@ system_tables {
 }
 ```
 - **Namespace resolution** – Objects are mapped to namespaces by canonical name, trimming everything after the final dot. That means `t` resolves to namespace `t` rather than a default schema, so every system function/table/view must be defined with a fully qualified name (e.g., `foo.bar`). If you need to expose unqualified identifiers you must provide a dedicated namespace node whose canonical path matches the identifier you intend to publish; otherwise the node will be skipped during merging because `findNamespaceId` can’t map it to an existing namespace.
-- **`CatalogOverlay` / `MetaGraph`** – The overlay implements `SystemObjectGraphView` and exposes an immutable view over `MetadataGraph` plus the `_system` snapshot from `SystemGraph`. `SystemObjectScanContext` receives this view and uses it for every lookup, so scanners consistently benefit from the metadata graph’s caches.
+- **`CatalogGraphView` / `MetaGraph`** – The overlay implements `SystemObjectGraphView` and exposes an immutable view over `MetadataGraph` plus the `_system` snapshot from `SystemGraph`. `SystemObjectScanContext` receives this view and uses it for every lookup, so scanners consistently benefit from the metadata graph’s caches.
 - **Registry-level engine hints** – `SystemObjectsRegistry` carries a `repeated EngineSpecific engine_specific` section that plugins can use to ship shared dictionaries (pg_opfamily/opclass/amop-like payloads) or other planner-only metadata once per `(engine_kind, engine_version)`. These payloads are filtered by `EngineSpecificRule` and travel alongside the node-level definitions, so the planner and scanners can deserialize them without adding new system tables (see `SystemObjectsRegistry.engine_specific` in `core/proto/src/main/proto/floecat/query/system_objects_registry.proto`).
   * Each `payload_type` identifies one dictionary; the validator enforces uniqueness on the `(payload_type, engine_kind, min_version, max_version)` tuple so you can still ship the same dictionary payload for disjoint version windows but duplicates with the same engine kind and window will be rejected. Treat schema changes as a new `payload_type` (or add a suffix) so the planner knows when you actually mean a new payload.
 
@@ -161,7 +161,7 @@ Constraint view semantics are ANSI-oriented:
 
 1. **Implement `SystemObjectScannerProvider`** (or build this into your `EngineSystemCatalogExtension`). Provide every `SystemObjectDef`/`SchemaColumn` pair, return the matching scanner from `provide(...)`, and let `supports(...)` gate whether your definition overrides a builtin.
 2. **Optional: implement `EngineSystemCatalogExtension`** – it already extends `SystemObjectScannerProvider`, so you can ship both catalog definitions and system tables in one jar. `SystemNodeRegistry` merges your definitions (via the version-aware hooks) and provider overlays with the base `floecat_internal` data so the resulting `_system` graph reflects the requested version.
-3. **Emit rows with `SystemObjectRow`** – `SystemObjectRow` is a cheap wrapper around `Object[]`. Use `SystemObjectScanContext` for every graph lookup (catalog, namespace, table, schema) so you benefit from `CatalogOverlay`’s caches.
+3. **Emit rows with `SystemObjectRow`** – `SystemObjectRow` is a cheap wrapper around `Object[]`. Use `SystemObjectScanContext` for every graph lookup (catalog, namespace, table, schema) so you benefit from `CatalogGraphView`’s caches.
 4. **Register via `META-INF/services/ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider`** (and/or `EngineSystemCatalogExtension`). CDI exposes the provider list through `ServiceLoaderSystemCatalogProvider.providers()`, so downstream services can resolve scanners by ID.
 
 ### Provider version contract
@@ -171,7 +171,7 @@ Providers must keep their definitions and scanners aligned with the version they
 ### Performance & scalability notes
 
 - `SystemGraph` caches snapshots in an access-ordered `LinkedHashMap` sized by `floecat.system.graph.snapshot-cache-size` (default `16`). Each snapshot already buckets namespaces, relations, and node lookups, so repeated `_system` scans never rebuild the graph.
-- `SystemObjectScanContext` keeps the catalog/namespace `ResourceId`s, reuses `CatalogOverlay` enumeration methods, and caches `listNamespaces`, `listTables`, and `columnTypes`. Scanners should not duplicate this caching logic – the context forwards to the cached overlay that already talks to `MetadataGraph`. `SystemNodeRegistry.resourceId` generates deterministic UUIDs for engine/kind/signature tuples, so avoid parsing `ResourceId.id` strings and build every system `ResourceId` via the helper.
-- `CatalogOverlay`/`MetaGraph` implement `SystemObjectGraphView` (`ai.floedb.floecat.systemcatalog.spi.scanner`) so that the core catalog module stays unaware of the full metadata graph. `SystemGraph` answers `_system` requests while `MetadataGraph` handles user objects, but both feed into the same overlay.
+- `SystemObjectScanContext` keeps the catalog/namespace `ResourceId`s, reuses `CatalogGraphView` enumeration methods, and caches `listNamespaces`, `listTables`, and `columnTypes`. Scanners should not duplicate this caching logic – the context forwards to the cached overlay that already talks to `MetadataGraph`. `SystemNodeRegistry.resourceId` generates deterministic UUIDs for engine/kind/signature tuples, so avoid parsing `ResourceId.id` strings and build every system `ResourceId` via the helper.
+- `CatalogGraphView`/`MetaGraph` implement `SystemObjectGraphView` (`ai.floedb.floecat.systemcatalog.spi.scanner`) so that the core catalog module stays unaware of the full metadata graph. `SystemGraph` answers `_system` requests while `MetadataGraph` handles user objects, but both feed into the same overlay.
 - `SystemTableNode.scannerId()` carries the bridge between metadata and row generation. Row-oriented components can look up the correct `SystemObjectScanner` by calling `provide(scannerId, engineKind, engineVersion)` on the discovered providers list.
 - Keep scanners lazy and stateless. Every `SystemObjectScanner` should stream rows, avoid boxing, and match its `SchemaColumn[]` exactly. The shared `SystemObjectScanContext` is the only place scanners should touch metadata – everything else (name resolution, schema parsing, column typing) is already cached.

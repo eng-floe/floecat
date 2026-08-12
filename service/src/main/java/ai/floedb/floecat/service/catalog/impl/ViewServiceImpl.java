@@ -34,7 +34,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
@@ -74,7 +74,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView overlay;
   @Inject EngineHintSchemaCleaner hintCleaner;
 
   private static final Set<String> VIEW_MUTABLE_PATHS =

@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -92,7 +92,7 @@ class SystemScannerResolverTest {
   }
 
   private static SystemScannerResolver buildResolver(
-      CatalogOverlay overlay, Map<String, SystemObjectScanner> scanners) {
+      CatalogGraphView overlay, Map<String, SystemObjectScanner> scanners) {
     SystemScannerResolver resolver = new SystemScannerResolver();
     resolver.graph = overlay;
     resolver.engine = new EngineContextProvider();

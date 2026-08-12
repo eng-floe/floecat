@@ -27,7 +27,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -38,10 +38,10 @@ import java.util.Objects;
 public final class CatalogSurfaceTables {
 
   private final TableRepository tableRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceTables(TableRepository tableRepo, CatalogOverlay overlay) {
+  public CatalogSurfaceTables(TableRepository tableRepo, CatalogGraphView overlay) {
     this.tableRepo = Objects.requireNonNull(tableRepo, "table repository is required");
     this.overlay = overlay;
     this.writePolicy = new CatalogSurfaceWritePolicy(overlay);

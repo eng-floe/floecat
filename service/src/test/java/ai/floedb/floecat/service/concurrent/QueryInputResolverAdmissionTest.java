@@ -29,7 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
@@ -51,7 +51,7 @@ class QueryInputResolverAdmissionTest {
   void pinResolutionWaitsForProcessAdmissionBeforeStartingTheBackend() throws Exception {
     MetadataIoRunner admission = new MetadataIoRunner(1);
     MetadataResourceReader admittedReads = new MetadataResourceReader(admission);
-    CatalogOverlay graph = mock(CatalogOverlay.class);
+    CatalogGraphView graph = mock(CatalogGraphView.class);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("account")

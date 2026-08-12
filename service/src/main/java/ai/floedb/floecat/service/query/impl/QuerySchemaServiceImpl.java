@@ -32,7 +32,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -76,7 +76,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
-  @Inject CatalogOverlay catalogOverlay;
+  @Inject CatalogGraphView catalogOverlay;
   @Inject PinValidator pinValidator;
   @Inject Observability observability;
 
@@ -289,7 +289,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     // Fail hard on a missing/mismatched pinned blob rather than re-reading current catalog state.
     pinValidator.validate(correlationId, pin);
     SnapshotRef snapshotRef = SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
-    CatalogOverlay.SchemaResolution resolved =
+    CatalogGraphView.SchemaResolution resolved =
         catalogOverlay.schemaFor(
             correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats

@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,7 +41,7 @@ import java.util.function.Supplier;
  */
 final class RelationResolutionMemo {
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final String correlationId;
   // Engine captured at construction is threaded through every lookup: re-reading it from the
   // request context per lookup is fragile across executor hops, and an empty engine silently
@@ -56,7 +56,7 @@ final class RelationResolutionMemo {
   private final Map<ResourceId, Optional<NameRef>> canonicalNameCache = new ConcurrentHashMap<>();
 
   RelationResolutionMemo(
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       String correlationId,
       EngineContext engineContext,
       TimingAccumulator timings) {

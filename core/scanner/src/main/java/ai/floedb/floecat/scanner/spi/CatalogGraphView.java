@@ -45,7 +45,7 @@ import java.util.Set;
  *
  * <p>Engine context is resolved implicitly from the request context.
  */
-public interface CatalogOverlay {
+public interface CatalogGraphView {
 
   /** Resolves any graph node for the given resource. Engine context is resolved implicitly. */
   Optional<GraphNode> resolve(ResourceId id);

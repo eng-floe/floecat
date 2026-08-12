@@ -31,7 +31,7 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -48,13 +48,13 @@ import org.junit.jupiter.api.Test;
 class CatalogSurfaceCatalogsTest {
 
   private CatalogRepository catalogRepo;
-  private CatalogOverlay overlay;
+  private CatalogGraphView overlay;
   private CatalogSurfaceCatalogs surface;
 
   @BeforeEach
   void setup() {
     catalogRepo = mock(CatalogRepository.class);
-    overlay = mock(CatalogOverlay.class);
+    overlay = mock(CatalogGraphView.class);
     EngineContextProvider engineContext = mock(EngineContextProvider.class);
 
     when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");

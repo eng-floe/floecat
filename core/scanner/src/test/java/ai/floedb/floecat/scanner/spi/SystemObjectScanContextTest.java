@@ -32,7 +32,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void resolve_throws_whenMissing() {
-    CatalogOverlay view = new ScannerTestOverlay();
+    CatalogGraphView view = new ScannerTestOverlay();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -47,7 +47,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void tryResolve_returnsEmptyWhenMissing() {
-    CatalogOverlay view = new ScannerTestOverlay();
+    CatalogGraphView view = new ScannerTestOverlay();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -131,7 +131,7 @@ class SystemObjectScanContextTest {
   void resolve_propagatesExceptionFromView() {
     RuntimeException ex = new IllegalStateException("boom");
 
-    CatalogOverlay view =
+    CatalogGraphView view =
         new ScannerTestOverlay() {
           @Override
           public Optional<GraphNode> resolve(ResourceId id) {

@@ -31,7 +31,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -61,7 +61,7 @@ import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
 @ApplicationScoped
-public final class MetaGraph implements CatalogOverlay, TopologyGraph {
+public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   private static final Logger LOG = Logger.getLogger(MetaGraph.class);
 
@@ -484,7 +484,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     int max = Math.min(items.size(), normalizeLimit(limit));
 
     List<NameRef> subset = items.subList(0, max);
-    Map<String, CatalogOverlay.QualifiedRelation> merged =
+    Map<String, CatalogGraphView.QualifiedRelation> merged =
         collectSystemRelationsForNames(subset, ctx, tables);
 
     List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
@@ -494,7 +494,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
               tables
                   ? userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token)
                   : userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
-      for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
+      for (CatalogGraphView.QualifiedRelation userRelation : userResult.relations()) {
         merged.put(canonicalName(userRelation.name()), userRelation);
       }
     }
@@ -542,7 +542,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     final boolean userPhase = !sysToken && token != null && !token.isBlank();
     final String userToken = userPhase ? decodeUserToken(token) : "";
 
-    var merged = new ArrayList<CatalogOverlay.QualifiedRelation>(Math.min(max, 64));
+    var merged = new ArrayList<CatalogGraphView.QualifiedRelation>(Math.min(max, 64));
 
     // System-relation total for the combined count. On a user-phase page the system rows were all
     // emitted on earlier pages, so only their count is needed here — skip the sorted collect (with
@@ -552,14 +552,14 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     if (userPhase) {
       systemTotal = countSystemRelationsInNamespace(prefix, ctx, tables);
     } else {
-      List<CatalogOverlay.QualifiedRelation> systemAll =
+      List<CatalogGraphView.QualifiedRelation> systemAll =
           new ArrayList<>(
               collectSystemRelationsInNamespace(prefix, ctx, tables, Integer.MAX_VALUE));
       systemAll.sort(Comparator.comparing(rel -> canonicalName(rel.name())));
       systemTotal = systemAll.size();
 
       String lastSystemName = "";
-      for (CatalogOverlay.QualifiedRelation rel : systemAll) {
+      for (CatalogGraphView.QualifiedRelation rel : systemAll) {
         String name = canonicalName(rel.name());
         if (!sysResume.isBlank() && name.compareTo(sysResume) <= 0) {
           continue;
@@ -590,7 +590,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
             tables
                 ? userGraph.resolveTables(correlationId, prefix, room, userToken)
                 : userGraph.resolveViews(correlationId, prefix, room, userToken));
-    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
+    for (CatalogGraphView.QualifiedRelation rel : user.relations()) {
       if (merged.size() >= max) {
         break;
       }
@@ -786,15 +786,15 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   }
 
   /**
-   * Converts a UserGraph resolve result to a CatalogOverlay resolve result.
+   * Converts a UserGraph resolve result to a CatalogGraphView resolve result.
    *
    * @param delegate the user graph resolve result
    * @return the catalog overlay resolve result
    */
   private ResolveResult toResolveResult(UserGraph.ResolveResult delegate) {
-    List<CatalogOverlay.QualifiedRelation> relations =
+    List<CatalogGraphView.QualifiedRelation> relations =
         delegate.relations().stream()
-            .map(rel -> new CatalogOverlay.QualifiedRelation(rel.name(), rel.resourceId()))
+            .map(rel -> new CatalogGraphView.QualifiedRelation(rel.name(), rel.resourceId()))
             .toList();
     return new ResolveResult(relations, delegate.totalSize(), delegate.nextToken());
   }
@@ -842,9 +842,9 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     }
   }
 
-  private Map<String, CatalogOverlay.QualifiedRelation> collectSystemRelationsForNames(
+  private Map<String, CatalogGraphView.QualifiedRelation> collectSystemRelationsForNames(
       List<NameRef> refs, EngineContext ctx, boolean tables) {
-    Map<String, CatalogOverlay.QualifiedRelation> result = new LinkedHashMap<>();
+    Map<String, CatalogGraphView.QualifiedRelation> result = new LinkedHashMap<>();
     for (NameRef ref : refs) {
       Optional<ResourceId> sysId =
           tables
@@ -859,15 +859,15 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
               ? systemGraph.tableName(sysId.get(), ctx).orElse(ref)
               : systemGraph.viewName(sysId.get(), ctx).orElse(ref);
       NameRef alias = SystemCatalogTranslator.aliasToUserCatalog(ref, systemName);
-      CatalogOverlay.QualifiedRelation relation =
-          new CatalogOverlay.QualifiedRelation(alias, sysId.get());
+      CatalogGraphView.QualifiedRelation relation =
+          new CatalogGraphView.QualifiedRelation(alias, sysId.get());
       result.put(canonicalName(alias), relation);
     }
     return result;
   }
 
   private List<NameRef> unresolvedUserRefs(
-      List<NameRef> refs, Map<String, CatalogOverlay.QualifiedRelation> systemMatches) {
+      List<NameRef> refs, Map<String, CatalogGraphView.QualifiedRelation> systemMatches) {
     if (systemMatches.isEmpty()) {
       return refs;
     }
@@ -902,7 +902,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return count;
   }
 
-  private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
+  private List<CatalogGraphView.QualifiedRelation> collectSystemRelationsInNamespace(
       NameRef prefix, EngineContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
         systemGraph.resolveNamespace(
@@ -913,7 +913,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
     List<RelationNode> nodes =
         systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx);
-    List<CatalogOverlay.QualifiedRelation> out = new ArrayList<>(Math.min(nodes.size(), max));
+    List<CatalogGraphView.QualifiedRelation> out = new ArrayList<>(Math.min(nodes.size(), max));
 
     for (RelationNode n : nodes) {
       if (out.size() >= max) {
@@ -926,14 +926,14 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
             SystemCatalogTranslator.aliasToUserCatalog(prefix, systemName).toBuilder()
                 .setResourceId(t.id())
                 .build();
-        out.add(new CatalogOverlay.QualifiedRelation(alias, t.id()));
+        out.add(new CatalogGraphView.QualifiedRelation(alias, t.id()));
       } else if (!tables && n instanceof ViewNode v) {
         NameRef systemName = systemGraph.viewName(v.id(), ctx).orElse(NameRef.getDefaultInstance());
         NameRef alias =
             SystemCatalogTranslator.aliasToUserCatalog(prefix, systemName).toBuilder()
                 .setResourceId(v.id())
                 .build();
-        out.add(new CatalogOverlay.QualifiedRelation(alias, v.id()));
+        out.add(new CatalogGraphView.QualifiedRelation(alias, v.id()));
       }
     }
 

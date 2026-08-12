@@ -26,7 +26,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import io.grpc.StatusRuntimeException;
@@ -40,9 +40,9 @@ public final class CatalogSurfaceWritePolicy {
 
   private static final String PATH_DELIM = "\u001F";
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
 
-  public CatalogSurfaceWritePolicy(CatalogOverlay overlay) {
+  public CatalogSurfaceWritePolicy(CatalogGraphView overlay) {
     this.overlay = Objects.requireNonNull(overlay, "catalog overlay is required");
   }
 

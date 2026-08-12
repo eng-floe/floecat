@@ -23,12 +23,12 @@ import java.util.Set;
 
 /**
  * Lightweight topology view of a catalog: names, IDs, and kinds -- available entirely from pointer
- * metadata (no blob fetch, no S3). {@link CatalogOverlay} exposes these ref-listing methods to
+ * metadata (no blob fetch, no S3). {@link CatalogGraphView} exposes these ref-listing methods to
  * scanners and traversal callers; this interface remains the shared ref shape and cache
  * invalidation hook.
  *
  * <p>Scanners that only need to enumerate objects should prefer {@link
- * CatalogOverlay#listRelationRefs} / {@link CatalogOverlay#listNamespaceRefs} over full object
+ * CatalogGraphView#listRelationRefs} / {@link CatalogGraphView#listNamespaceRefs} over full object
  * listing methods that force object materialization.
  */
 public interface TopologyGraph {

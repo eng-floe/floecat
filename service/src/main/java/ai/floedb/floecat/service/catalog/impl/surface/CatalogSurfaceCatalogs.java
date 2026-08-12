@@ -24,7 +24,7 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -48,11 +48,13 @@ public final class CatalogSurfaceCatalogs {
       "System catalog (global; visible from all catalogs)";
 
   private final CatalogRepository catalogRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final EngineContextProvider engineContext;
 
   public CatalogSurfaceCatalogs(
-      CatalogRepository catalogRepo, CatalogOverlay overlay, EngineContextProvider engineContext) {
+      CatalogRepository catalogRepo,
+      CatalogGraphView overlay,
+      EngineContextProvider engineContext) {
     this.catalogRepo = catalogRepo;
     this.overlay = overlay;
     this.engineContext = engineContext;

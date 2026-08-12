@@ -32,7 +32,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -52,7 +52,7 @@ class CatalogServiceImplSystemCatalogTest {
 
   private CatalogServiceImpl svc;
   private CatalogRepository catalogRepo;
-  private CatalogOverlay overlay;
+  private CatalogGraphView overlay;
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
   private UserGraph metadataGraph;
@@ -65,7 +65,7 @@ class CatalogServiceImplSystemCatalogTest {
     PrincipalProvider principal = mock(PrincipalProvider.class);
     Authorizer authz = mock(Authorizer.class);
     engineContext = mock(EngineContextProvider.class);
-    overlay = mock(CatalogOverlay.class);
+    overlay = mock(CatalogGraphView.class);
     markerStore = mock(MarkerStore.class);
     metadataGraph = mock(UserGraph.class);
 

@@ -44,7 +44,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -62,7 +62,7 @@ import org.jboss.logging.Logger;
 public class DirectoryServiceImpl extends BaseServiceImpl implements DirectoryService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject CatalogOverlay catalogOverlay;
+  @Inject CatalogGraphView catalogOverlay;
 
   private static final Logger LOG = Logger.getLogger(DirectoryService.class);
 

@@ -36,7 +36,7 @@ import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -93,7 +93,7 @@ public class UserObjectBundleService {
 
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final QueryInputResolver inputResolver;
   private final QueryContextStore queryStore;
   private final EngineContextProvider engineContext;
@@ -146,7 +146,7 @@ public class UserObjectBundleService {
 
   @Inject
   public UserObjectBundleService(
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       CancelledQueryPinCleanup cancelledQueryPinCleanup,
@@ -212,7 +212,7 @@ public class UserObjectBundleService {
   }
 
   UserObjectBundleService(
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       StatsProviderFactory statsFactory,

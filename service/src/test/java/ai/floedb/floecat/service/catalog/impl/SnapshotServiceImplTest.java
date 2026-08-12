@@ -37,7 +37,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -66,7 +66,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -111,7 +111,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -152,7 +152,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -280,7 +280,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -331,7 +331,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -378,7 +378,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -434,7 +434,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -525,7 +525,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -595,7 +595,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -657,7 +657,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
@@ -718,7 +718,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -822,7 +822,7 @@ class SnapshotServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(node));

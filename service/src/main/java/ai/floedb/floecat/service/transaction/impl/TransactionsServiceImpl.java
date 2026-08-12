@@ -43,7 +43,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -137,7 +137,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject UserGraph metadataGraph;
   @Inject TableRootWriter rootWriter;
   @Inject RootResyncQueue rootResyncQueue;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView overlay;
   private volatile java.util.concurrent.Executor postCommitExecutor =
       java.util.concurrent.ForkJoinPool.commonPool();
 

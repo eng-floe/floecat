@@ -33,7 +33,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -73,7 +73,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
   @Inject EngineContextProvider engineContext;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView overlay;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
       Set.of("display_name", "description", "connector_ref", "properties", "policy_ref");

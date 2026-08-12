@@ -27,7 +27,7 @@ import ai.floedb.floecat.flight.SystemTableFlightProducerBase;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -82,7 +82,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   private static final Logger LOG = Logger.getLogger(SystemTableFlightProducer.class);
 
-  @Inject CatalogOverlay graph;
+  @Inject CatalogGraphView graph;
   @Inject SystemScannerResolver scannerResolver;
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;

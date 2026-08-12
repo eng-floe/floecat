@@ -31,7 +31,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -58,7 +58,7 @@ class TableConstraintsServiceImplRootCommitTest {
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
-    service.overlay = mock(CatalogOverlay.class);
+    service.overlay = mock(CatalogGraphView.class);
     service.rootWriter = mock(TableRootWriter.class);
     TestPrincipals.stubPrincipal(service.principal, service.authz);
 

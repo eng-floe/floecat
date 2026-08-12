@@ -868,7 +868,7 @@ class TransactionIntentApplierSupportTest {
    * each test exercises its actual pointer/claim assertion. (The guard now fails closed on a null
    * overlay, so tests must supply one.)
    */
-  private static ai.floedb.floecat.scanner.spi.CatalogOverlay permissiveOverlay() {
+  private static ai.floedb.floecat.scanner.spi.CatalogGraphView permissiveOverlay() {
     // Permit-all overlay: resolves any catalog/namespace/table id as a writable user object so the
     // apply-time write-eligibility guard passes and each test exercises its actual pointer/claim
     // assertion. (The guard now fails closed on a null overlay, so tests must supply one.) The

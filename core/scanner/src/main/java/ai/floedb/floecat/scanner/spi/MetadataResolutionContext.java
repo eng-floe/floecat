@@ -27,7 +27,7 @@ import java.util.function.Supplier;
 /** Shared context holding the overlay + catalog identity for metadata resolution. */
 public interface MetadataResolutionContext {
 
-  CatalogOverlay overlay();
+  CatalogGraphView overlay();
 
   ResourceId catalogId();
 
@@ -61,12 +61,12 @@ public interface MetadataResolutionContext {
   }
 
   static MetadataResolutionContext of(
-      CatalogOverlay overlay, ResourceId catalogId, EngineContext engineContext) {
+      CatalogGraphView overlay, ResourceId catalogId, EngineContext engineContext) {
     return of(overlay, catalogId, engineContext, StatsProvider.NONE);
   }
 
   static MetadataResolutionContext of(
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       ResourceId catalogId,
       EngineContext engineContext,
       StatsProvider statsProvider) {
@@ -75,14 +75,14 @@ public interface MetadataResolutionContext {
 
   final class DefaultMetadataResolutionContext implements MetadataResolutionContext {
 
-    private final CatalogOverlay overlay;
+    private final CatalogGraphView overlay;
     private final ResourceId catalogId;
     private final EngineContext engineContext;
     private final StatsProvider statsProvider;
     private final ConcurrentMap<Object, Object> memoizedValues;
 
     public DefaultMetadataResolutionContext(
-        CatalogOverlay overlay,
+        CatalogGraphView overlay,
         ResourceId catalogId,
         EngineContext engineContext,
         StatsProvider statsProvider) {
@@ -94,7 +94,7 @@ public interface MetadataResolutionContext {
     }
 
     @Override
-    public CatalogOverlay overlay() {
+    public CatalogGraphView overlay() {
       return overlay;
     }
 

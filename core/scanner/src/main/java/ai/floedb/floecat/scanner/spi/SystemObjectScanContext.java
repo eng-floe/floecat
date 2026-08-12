@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  * is safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
  */
 public record SystemObjectScanContext(
-    CatalogOverlay graph,
+    CatalogGraphView graph,
     NameRef name,
     ResourceId queryDefaultCatalogId,
     EngineContext engineContext,
@@ -59,7 +59,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext) {
@@ -74,7 +74,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext,
@@ -90,7 +90,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext,
@@ -111,7 +111,7 @@ public record SystemObjectScanContext(
   }
 
   @Override
-  public CatalogOverlay overlay() {
+  public CatalogGraphView overlay() {
     return graph;
   }
 

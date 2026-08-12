@@ -34,7 +34,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SqlDefinition;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
@@ -63,14 +63,14 @@ final class RelationBundleBuilder {
 
   static final String BUILD_FAILED_CODE = "catalog_bundle.build_failed";
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final EngineRelationDecorator engineRelationDecorator;
   private final SystemExecutionResolver systemExecutionResolver;
   private final PinValidator pinValidator;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
 
   RelationBundleBuilder(
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       EngineRelationDecorator engineRelationDecorator,
       SystemExecutionResolver systemExecutionResolver,
       PinValidator pinValidator) {
@@ -427,7 +427,7 @@ final class RelationBundleBuilder {
     // pin before the relation entered worker fan-out.
     SnapshotRef snapshotRef =
         SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    CatalogOverlay.SchemaResolution resolved =
+    CatalogGraphView.SchemaResolution resolved =
         overlay.schemaFor(
             correlationId,
             relationId,

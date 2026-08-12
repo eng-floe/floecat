@@ -35,7 +35,7 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -107,7 +107,7 @@ class CatalogSurfaceWritePolicyTest {
 
   @Test
   void requireWritableSystemIdsRejectBeforeOverlayLookup() {
-    CatalogOverlay mockedOverlay = mock(CatalogOverlay.class);
+    CatalogGraphView mockedOverlay = mock(CatalogGraphView.class);
     var policy = new CatalogSurfaceWritePolicy(mockedOverlay);
     var systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
     var systemNamespaceId =
@@ -163,7 +163,7 @@ class CatalogSurfaceWritePolicyTest {
 
   @Test
   void requireWritableDeleteChecksIgnoreOverlayResolutionFailuresWhenCallerDoesNotCare() {
-    CatalogOverlay throwingOverlay = mock(CatalogOverlay.class);
+    CatalogGraphView throwingOverlay = mock(CatalogGraphView.class);
     var throwingPolicy = new CatalogSurfaceWritePolicy(throwingOverlay);
     when(throwingOverlay.resolve(tableId))
         .thenThrow(new IllegalStateException("overlay unavailable"));

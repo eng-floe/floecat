@@ -24,7 +24,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -50,7 +50,7 @@ class TableIndexServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.overlay = mock(CatalogGraphView.class);
 
     var tableId =
         ResourceId.newBuilder()

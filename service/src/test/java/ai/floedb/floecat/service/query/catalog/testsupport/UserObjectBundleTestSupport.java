@@ -34,7 +34,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -70,7 +70,7 @@ public final class UserObjectBundleTestSupport {
             .build());
   }
 
-  public static class FakeCatalogOverlay implements CatalogOverlay {
+  public static class FakeCatalogOverlay implements CatalogGraphView {
     private final Map<String, GraphNode> nodes = new HashMap<>();
     private final Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> schemas =
         new HashMap<>();

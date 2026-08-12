@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -43,14 +43,14 @@ public final class ConstraintProviderFactory {
   private final ConstraintRepository repository;
   private final SnapshotRepository snapshots;
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final ConstraintProvider systemProvider;
 
   @Inject
   public ConstraintProviderFactory(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       SystemConstraintProvider systemProvider) {
     this(repository, snapshots, overlay, (ConstraintProvider) systemProvider);
   }
@@ -58,7 +58,7 @@ public final class ConstraintProviderFactory {
   static ConstraintProviderFactory forTesting(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       ConstraintProvider systemProvider) {
     return new ConstraintProviderFactory(repository, snapshots, overlay, systemProvider);
   }
@@ -66,7 +66,7 @@ public final class ConstraintProviderFactory {
   private ConstraintProviderFactory(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       ConstraintProvider systemProvider) {
     this.repository = repository;
     this.snapshots = snapshots;
@@ -99,12 +99,12 @@ public final class ConstraintProviderFactory {
 
     private final ConstraintProvider userProvider;
     private final ConstraintProvider systemProvider;
-    private final CatalogOverlay overlay;
+    private final CatalogGraphView overlay;
 
     private RoutedConstraintProvider(
         ConstraintProvider userProvider,
         ConstraintProvider systemProvider,
-        CatalogOverlay overlay) {
+        CatalogGraphView overlay) {
       this.userProvider = userProvider;
       this.systemProvider = systemProvider;
       this.overlay = overlay;

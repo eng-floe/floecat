@@ -24,7 +24,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.List;
 
 /** Light helper overlay used only by scanner module tests. */
-public class ScannerTestOverlay extends BaseTestCatalogOverlay {
+public class ScannerTestOverlay extends BaseTestCatalogGraphView {
 
   public ScannerTestOverlay addNode(GraphNode node) {
     super.addNode(node);

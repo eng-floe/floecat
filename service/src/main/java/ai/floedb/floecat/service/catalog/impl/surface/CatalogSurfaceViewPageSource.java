@@ -19,7 +19,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import java.util.List;
 
@@ -29,7 +29,7 @@ final class CatalogSurfaceViewPageSource
   static final String TOKEN_PREFIX = "view:";
 
   private final ViewRepository repo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView overlay;
   private final String accountId;
   private final NamespaceNode namespace;
   private final ResourceId namespaceId;
@@ -37,7 +37,7 @@ final class CatalogSurfaceViewPageSource
 
   CatalogSurfaceViewPageSource(
       ViewRepository repo,
-      CatalogOverlay overlay,
+      CatalogGraphView overlay,
       String accountId,
       NamespaceNode namespace,
       ResourceId namespaceId) {

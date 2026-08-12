@@ -45,7 +45,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -80,7 +80,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView overlay;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject StatsOrchestrator statsOrchestrator;
 
