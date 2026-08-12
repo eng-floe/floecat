@@ -1905,7 +1905,7 @@
 implemented in the current PR stack.</p>
 <p>This document records both the target architecture and the boundary of each stacked change. It is
 aligned with the Catalog Integration and Catalog Overlay SQL specification. It distinguishes code
-already present below this change, code in the following PR, and work that remains deferred.</p>
+implemented in the following stacked changes from work that remains deferred.</p>
 <h2 id="stack-implementation-map">Stack implementation map<a class="headerlink" href="#stack-implementation-map" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1927,7 +1927,7 @@ already present below this change, code in the following PR, and work that remai
 <td>Connectivity validation, discovery, capture, reconciliation, and query visibility</td>
 </tr>
 <tr>
-<td>#439, this document</td>
+<td>#446, this document</td>
 <td>Architecture decisions and delivery boundaries</td>
 <td>Production behavior</td>
 </tr>
@@ -2149,8 +2149,8 @@ or authentication combinations must fail explicitly.</p>
    idempotency, dependency, cascade, and cleanup primitives.</li>
 <li><strong>Complete — #425:</strong> CLI coverage for those APIs, including typed authentication and write-only
    credential input for create and rotation commands.</li>
-<li><strong>This change — #439:</strong> keep the architecture and delivery record aligned with implemented code.</li>
-<li><strong>Implemented in the following PR — #440:</strong> neutral catalog-access SPI and Iceberg REST vertical
+<li><strong>This change — #446:</strong> keep the architecture and delivery record aligned with implemented code.</li>
+<li><strong>Implemented later in the stack — #440:</strong> neutral catalog-access SPI and Iceberg REST vertical
    slice.</li>
 <li><strong>Next:</strong> Integration-to-SPI adapter and SQL-required validation/discovery RPCs.</li>
 <li><strong>Later:</strong> canonical capture/bindings, scheduling, query visibility, garbage collection,
