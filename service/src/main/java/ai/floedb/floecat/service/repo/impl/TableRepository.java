@@ -101,6 +101,17 @@ public class TableRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  public List<Table> listConsistent(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+  }
+
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }

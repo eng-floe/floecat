@@ -112,6 +112,17 @@ public class NamespaceRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  public List<Namespace> listConsistent(
+      String accountId,
+      String catalogId,
+      List<String> parentSegmentsOrEmpty,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+  }
+
   public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.countByPrefix(prefix);
@@ -136,6 +147,19 @@ public class NamespaceRepository {
     for (Namespace ns : namespaces) {
       ids.add(ns.getResourceId());
     }
+    return ids;
+  }
+
+  public List<ResourceId> listIdsConsistent(String accountId, String catalogId) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
+    List<ResourceId> ids = new java.util.ArrayList<>();
+    String token = "";
+    do {
+      var next = new StringBuilder();
+      List<Namespace> namespaces = repo.listByPrefixConsistent(prefix, 200, token, next);
+      for (Namespace ns : namespaces) ids.add(ns.getResourceId());
+      token = next.toString();
+    } while (!token.isBlank());
     return ids;
   }
 

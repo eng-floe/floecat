@@ -464,11 +464,17 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   @Override
   public Uni<Page> queryByPartitionKeyPrefix(
       String pk, String skPrefix, int limit, Optional<String> pageToken) {
+    return queryByPartitionKeyPrefix(pk, skPrefix, limit, pageToken, false);
+  }
+
+  @Override
+  public Uni<Page> queryByPartitionKeyPrefix(
+      String pk, String skPrefix, int limit, Optional<String> pageToken, boolean consistentRead) {
     if (pk == null || pk.isBlank()) {
       throw new IllegalArgumentException("partition key must be provided for query");
     }
 
-    var qb = QueryRequest.builder().tableName(table).limit(limit);
+    var qb = QueryRequest.builder().tableName(table).limit(limit).consistentRead(consistentRead);
 
     if (skPrefix == null || skPrefix.isEmpty()) {
       qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))

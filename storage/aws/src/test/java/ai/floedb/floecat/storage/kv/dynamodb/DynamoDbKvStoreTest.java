@@ -438,7 +438,7 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
-  void queryByPartitionKeyPrefix_without_prefix_returns_all_in_pk() {
+  void queryByPartitionKeyPrefix_consistent_without_prefix_returns_all_in_pk() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
@@ -447,8 +447,12 @@ public class DynamoDbKvStoreTest {
     put(store, "pk2", "c", 1L);
 
     var page =
-        store.queryByPartitionKeyPrefix("pk1", null, 10, Optional.empty()).await().indefinitely();
+        store
+            .queryByPartitionKeyPrefix("pk1", null, 10, Optional.empty(), true)
+            .await()
+            .indefinitely();
     assertEquals(2, page.items().size());
+    assertTrue(handler.lastQueryRequest.consistentRead());
   }
 
   @Test

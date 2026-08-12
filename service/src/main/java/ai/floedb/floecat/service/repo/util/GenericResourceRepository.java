@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
@@ -283,13 +284,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    */
   public void create(T value) {
     createWithMeta(value, PointerConditions.none(), null)
-        .orElseThrow(() -> new AbortRetryableException("create conditions changed"));
+        .orElseThrow(() -> accountDeletionInProgress(value));
   }
 
   /** Creates a resource and returns metadata for the exact canonical pointer that committed. */
   public ResourceWithMeta<T> createWithMeta(T value) {
     return createWithMeta(value, PointerConditions.none(), null)
-        .orElseThrow(() -> new AbortRetryableException("create conditions changed"));
+        .orElseThrow(() -> accountDeletionInProgress(value));
   }
 
   /**
@@ -302,7 +303,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       T value, Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory) {
     return createWithMeta(
             value, PointerConditions.none(), Objects.requireNonNull(completionFactory))
-        .orElseThrow(() -> new AbortRetryableException("create conditions changed"));
+        .orElseThrow(() -> accountDeletionInProgress(value));
   }
 
   /**
@@ -312,8 +313,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * resource. The factory receives the exact body/meta pair that will commit.
    *
    * <p>Returns empty when a required version, a required absence, or a marker version no longer
-   * holds; the caller decides whether that is a conflict or a lost race. A create that commits (or
-   * replays a byte-identical prior create) always returns a value.
+   * holds, including the implicit account-deletion fence that every create asserts; the caller
+   * decides whether that is a conflict or a lost race. A create that commits (or replays a
+   * byte-identical prior create) always returns a value.
    */
   public Optional<ResourceWithMeta<T>> createWithMeta(
       T value,
@@ -330,6 +332,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       throw new NameConflictException("canonical pointer bound to different blob: " + canonicalKey);
     }
     return Optional.of(new ResourceWithMeta<>(value, commit.meta()));
+  }
+
+  private NotFoundException accountDeletionInProgress(T value) {
+    return new NotFoundException(
+        "account deletion in progress: " + schema.keyFromValue.apply(value).accountId());
   }
 
   /** Resolves a secondary pointer and returns the body with its exact canonical metadata. */
@@ -364,7 +371,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "create",
         () -> {
           PreparedCreate prepared = prepareCreate(value);
+          K resourceKey = schema.keyFromValue.apply(value);
           Set<String> effectiveRequiredAbsent = new HashSet<>(conditions.requiredAbsent());
+          effectiveRequiredAbsent.add(Keys.accountDeletionMarker(resourceKey.accountId()));
           List<PointerStore.CasOp> ops =
               new ArrayList<>(
                   prepared.ops.size()
@@ -654,15 +663,26 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           uniqueKeys.addAll(secondaries.values());
           List<String> pointerKeys = new ArrayList<>(uniqueKeys);
 
-          List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+          String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+            throw new NotFoundException("account deletion in progress: " + key.accountId());
+          }
+          List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size() + 1);
           for (String pointerKey : pointerKeys) {
             ops.add(
                 new PointerStore.CasUpsert(
                     pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
           }
+          ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+
           if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, value);
             return true;
+          }
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+            throw new NotFoundException("account deletion in progress: " + key.accountId());
           }
           return classifyCreateIfAbsentConflict(
               canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
@@ -941,6 +961,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<PointerStore.CasOp> ops = new ArrayList<>(prepared.ops);
           Pointer committedCanonical = prepared.committedCanonical;
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
+          String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
+          if (batchedKeys.add(accountDeletionMarker)) {
+            ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+          }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "update");
           for (PointerStore.CasOp companion : companions) {
             if (!batchedKeys.add(companion.key())) {
@@ -961,6 +985,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) return Optional.empty();
           if (!markerVersionsStillMatch(markerVersions)) return Optional.empty();
           classifyCompanionConflict(companions);
           classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
@@ -1119,6 +1144,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           addPointerDeletes(pointerVersionsToDelete, batchedKeys, ops);
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
+          String accountDeletionMarker = Keys.accountDeletionMarker(currentKey.accountId());
+          if (batchedKeys.add(accountDeletionMarker)) {
+            ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+          }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "replacement");
 
           if (!mutationPointerStore.compareAndSetBatch(ops)) {

@@ -343,9 +343,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   public Uni<EntityPage<Pointer>> listByPrefix(
       String prefix, int limit, Optional<String> pageToken) {
+    return listByPrefix(prefix, limit, pageToken, false);
+  }
+
+  public Uni<EntityPage<Pointer>> listByPrefix(
+      String prefix, int limit, Optional<String> pageToken, boolean consistentRead) {
     var prefixKey = prefixKey(prefix);
     return kv.queryByPartitionKeyPrefix(
-            prefixKey.partitionKey(), prefixKey.sortKey(), limit, pageToken)
+            prefixKey.partitionKey(), prefixKey.sortKey(), limit, pageToken, consistentRead)
         .map(
             page ->
                 new EntityPage<>(
@@ -365,9 +370,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
    */
   public Uni<EntityPage<String>> listKeysByPrefix(
       String prefix, int limit, Optional<String> pageToken) {
+    return listKeysByPrefix(prefix, limit, pageToken, false);
+  }
+
+  public Uni<EntityPage<String>> listKeysByPrefix(
+      String prefix, int limit, Optional<String> pageToken, boolean consistentRead) {
     var prefixKey = prefixKey(prefix);
     return kv.queryByPartitionKeyPrefix(
-            prefixKey.partitionKey(), prefixKey.sortKey(), limit, pageToken)
+            prefixKey.partitionKey(), prefixKey.sortKey(), limit, pageToken, consistentRead)
         .map(
             page ->
                 new EntityPage<>(

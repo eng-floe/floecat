@@ -157,6 +157,11 @@ public final class Keys {
     return "/accounts/by-name/";
   }
 
+  /** Durable fence that prevents new account-scoped writes once deletion begins. */
+  public static String accountDeletionMarker(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/deleting";
+  }
+
   public static String accountBlobUri(String accountId, String sha256) {
     String tid = req("account_id", accountId);
     String sha = req("sha256", sha256);

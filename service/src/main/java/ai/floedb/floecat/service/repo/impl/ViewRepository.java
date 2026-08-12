@@ -100,6 +100,17 @@ public class ViewRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  public List<View> listConsistent(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+  }
+
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }

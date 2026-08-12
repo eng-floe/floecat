@@ -33,6 +33,7 @@ import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -53,6 +54,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -64,6 +66,7 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -405,42 +408,86 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
+                  var deletionMeta = accountDeletionMeta(accountId.getId());
                   MutationMeta meta;
                   try {
                     meta = accountRepo.metaFor(accountId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
-                    var safe = accountRepo.metaForSafe(accountId);
+                    var safe = deletionMeta.orElseGet(() -> accountRepo.metaForSafe(accountId));
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && safe.getPointerVersion() == 0L) {
+                    if (callerCares && deletionMeta.isEmpty()) {
                       throw GrpcErrors.notFound(corr, ACCOUNT, Map.of("id", accountId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
+                    if (deletionMeta.isEmpty()) {
+                      ensureAccountDeletionFence(accountId.getId(), safe);
+                    }
+                    // A prior delete may have committed before descendant cleanup failed.
+                    cleanupAccountResources(accountId);
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  var out =
-                      MutationOps.deleteWithPreconditions(
-                          () -> meta,
-                          request.getPrecondition(),
-                          expected -> accountRepo.deleteWithPrecondition(accountId, expected),
-                          () -> accountRepo.metaForSafe(accountId),
-                          corr,
-                          "account",
-                          Map.of("id", accountId.getId()));
-
-                  if (out.getPointerVersion() == meta.getPointerVersion()
-                      && out.getEtag().equals(meta.getEtag())) {
-                    cleanupAccountResources(accountId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+                  MutationMeta fencedMeta = ensureAccountDeletionFence(accountId.getId(), meta);
+                  if (!accountRepo.deleteWithPrecondition(
+                      accountId, fencedMeta.getPointerVersion())) {
+                    var current = accountRepo.metaForSafe(accountId);
+                    if (current.getPointerVersion() == 0L) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "account deletion raced another delete");
+                    }
+                    clearAccountDeletionFence(accountId.getId());
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        corr, current, request.getPrecondition());
+                    throw new BaseResourceRepository.AbortRetryableException(
+                        "account changed while deletion fence was installed");
                   }
-
-                  return DeleteAccountResponse.newBuilder().setMeta(out).build();
+                  cleanupAccountResources(accountId);
+                  return DeleteAccountResponse.newBuilder().setMeta(fencedMeta).build();
                 }),
             correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private java.util.Optional<MutationMeta> accountDeletionMeta(String accountId) {
+    return pointerStore.get(Keys.accountDeletionMarker(accountId)).map(this::decodeDeletionMeta);
+  }
+
+  private MutationMeta ensureAccountDeletionFence(String accountId, MutationMeta meta) {
+    String key = Keys.accountDeletionMarker(accountId);
+    var existing = pointerStore.get(key);
+    if (existing.isPresent()) return decodeDeletionMeta(existing.get());
+    String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
+    Pointer marker = PointerReferences.opaqueMarkerPointer(key, payload, 1L);
+    if (pointerStore.compareAndSet(key, 0L, marker)) return meta;
+    return pointerStore
+        .get(key)
+        .map(this::decodeDeletionMeta)
+        .orElseThrow(
+            () ->
+                new BaseResourceRepository.AbortRetryableException(
+                    "account deletion fence not visible"));
+  }
+
+  private MutationMeta decodeDeletionMeta(Pointer marker) {
+    try {
+      return MutationMeta.parseFrom(Base64.getDecoder().decode(marker.getBlobUri()));
+    } catch (Exception e) {
+      throw new BaseResourceRepository.CorruptionException(
+          "invalid account deletion fence: " + marker.getKey(), e);
+    }
+  }
+
+  private void clearAccountDeletionFence(String accountId) {
+    String key = Keys.accountDeletionMarker(accountId);
+    pointerStore
+        .get(key)
+        .ifPresent(marker -> pointerStore.compareAndDelete(key, marker.getVersion()));
   }
 
   private void cleanupAccountResources(ResourceId accountId) {
@@ -468,13 +515,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private void cleanupConnectors(String accountId, AccountCleanupSummary summary) {
     for (var connector :
-        listAllPages((token, next) -> connectorRepo.list(accountId, 200, token, next))) {
+        listAllPages((token, next) -> connectorRepo.listConsistent(accountId, 200, token, next))) {
       var connectorId = connector.getResourceId();
       CLEANUP_LOG.infof(
           "account_delete_cleanup_connector account_id=%s connector_id=%s",
           accountId, connectorId.getId());
-      connectorRepo.delete(connectorId);
       credentialResolver.delete(accountId, connectorId.getId());
+      if (!connectorRepo.delete(connectorId) && connectorRepo.getById(connectorId).isPresent()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "connector changed during account cleanup");
+      }
       summary.connectorsDeleted++;
       summary.credentialsDeleted++;
     }
@@ -482,7 +532,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private void cleanupCatalogs(String accountId, AccountCleanupSummary summary) {
     for (var catalog :
-        listAllPages((token, next) -> catalogRepo.list(accountId, 200, token, next))) {
+        listAllPages((token, next) -> catalogRepo.listConsistent(accountId, 200, token, next))) {
       cleanupCatalog(catalog, summary);
     }
   }
@@ -493,12 +543,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
         catalogId.getAccountId(), catalogId.getId());
     var namespaces =
-        new ArrayList<>(namespaceRepo.listIds(catalogId.getAccountId(), catalogId.getId()));
+        new ArrayList<>(
+            namespaceRepo.listIdsConsistent(catalogId.getAccountId(), catalogId.getId()));
     namespaces.sort(Comparator.comparingInt(this::namespaceDepth).reversed());
     for (var namespaceId : namespaces) {
       cleanupNamespace(namespaceId, summary);
     }
-    catalogRepo.delete(catalogId);
+    if (!catalogRepo.delete(catalogId) && catalogRepo.getById(catalogId).isPresent()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "catalog changed during account cleanup");
+    }
     metadataGraph.invalidate(catalogId);
     summary.catalogsDeleted++;
   }
@@ -514,7 +568,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         namespaceId.getAccountId(), namespaceId.getId(), namespace.getCatalogId().getId());
     cleanupViews(namespace, summary);
     cleanupTables(namespace, summary);
-    namespaceRepo.delete(namespaceId);
+    if (!namespaceRepo.delete(namespaceId) && namespaceRepo.getById(namespaceId).isPresent()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "namespace changed during account cleanup");
+    }
     metadataGraph.invalidate(namespaceId);
     markerStore.bumpCatalogMarker(namespace.getCatalogId());
     bumpParentNamespaceMarkers(namespace);
@@ -526,7 +583,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     for (var table :
         listAllPages(
             (token, next) ->
-                tableRepo.list(
+                tableRepo.listConsistent(
                     namespace.getResourceId().getAccountId(),
                     namespace.getCatalogId().getId(),
                     namespace.getResourceId().getId(),
@@ -542,7 +599,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     for (var view :
         listAllPages(
             (token, next) ->
-                viewRepo.list(
+                viewRepo.listConsistent(
                     namespace.getResourceId().getAccountId(),
                     namespace.getCatalogId().getId(),
                     namespace.getResourceId().getId(),
@@ -553,7 +610,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       CLEANUP_LOG.infof(
           "account_delete_cleanup_view account_id=%s namespace_id=%s view_id=%s",
           viewId.getAccountId(), namespace.getResourceId().getId(), viewId.getId());
-      viewRepo.delete(viewId);
+      if (!viewRepo.delete(viewId) && viewRepo.getById(viewId).isPresent()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "view changed during account cleanup");
+      }
       metadataGraph.invalidate(viewId);
       summary.viewsDeleted++;
     }
@@ -582,10 +642,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     CLEANUP_LOG.infof(
         "account_delete_cleanup_table account_id=%s namespace_id=%s table_id=%s",
         tableId.getAccountId(), table.getNamespaceId().getId(), tableId.getId());
-    tableRepo.delete(tableId);
+    purgeSnapshotsAndStats(tableId, summary);
+    if (!tableRepo.delete(tableId) && tableRepo.getById(tableId).isPresent()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "table changed during account cleanup");
+    }
     metadataGraph.invalidate(tableId);
     markerStore.bumpNamespaceMarker(table.getNamespaceId());
-    purgeSnapshotsAndStats(tableId, summary);
     summary.tablesDeleted++;
   }
 
