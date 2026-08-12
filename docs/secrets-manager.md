@@ -14,10 +14,21 @@ Each secret is tagged with:
 
 These tags support ABAC-style policies.
 
-Connector AuthCredentials and storage-authority source credentials are written to Secrets Manager
-and removed from the corresponding persisted resource records. Connector responses mask sensitive
-auth fields, and storage-authority resolution only returns client-safe config plus any temporary
-credentials minted for a specific table/location match.
+Connector AuthCredentials, catalog-integration credentials, and storage-authority source
+credentials are written to Secrets Manager and removed from the corresponding persisted resource
+records. Catalog integrations persist only typed non-secret authentication configuration,
+configured state, and a credential generation. Their internal secret key is derived from the
+integration ID and generation and is not part of the protobuf resource. Connector responses mask sensitive auth fields, and storage-authority
+resolution only returns client-safe config plus any temporary credentials minted for a specific
+table/location match.
+
+Catalog-integration credential replacement uses publish-before-retire ordering: the new secret is
+written with the atomic `putIfAbsent` primitive before the resource CAS, and the old secret is
+removed only after that CAS commits. Competing rotations allocate distinct immutable generations. A
+definite publication failure removes the unpublished generation. An acknowledgement-uncertain
+publication may leave an unreferenced generation because the service deliberately does not risk
+deleting a secret that a committed resource may reference. Durable cleanup records are drained by
+pointer GC once the generation is provably superseded.
 
 Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
 secrets are the only credential source used for client credential vending.

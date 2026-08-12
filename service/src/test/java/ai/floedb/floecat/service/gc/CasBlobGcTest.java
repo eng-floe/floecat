@@ -112,6 +112,22 @@ class CasBlobGcTest {
   }
 
   @Test
+  void keepsCurrentIntegrationBlobAndDeletesSupersededBlob() {
+    String integrationCurrent =
+        Keys.catalogIntegrationBlobUri(ACCOUNT_ID, "integration-1", "sha-current");
+    String integrationOld = Keys.catalogIntegrationBlobUri(ACCOUNT_ID, "integration-1", "sha-old");
+    for (String blob : List.of(integrationCurrent, integrationOld)) {
+      blobs.put(blob, "data".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    }
+    putPointer(Keys.catalogIntegrationPointerById(ACCOUNT_ID, "integration-1"), integrationCurrent);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(integrationCurrent).isPresent());
+    assertFalse(blobs.head(integrationOld).isPresent());
+  }
+
+  @Test
   void estimatesKnownReferencedBytesFromPointersAlreadyScannedByTheMark() {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
     String connectorBlob = Keys.connectorBlobUri(ACCOUNT_ID, "connector-1", "sha-connector");

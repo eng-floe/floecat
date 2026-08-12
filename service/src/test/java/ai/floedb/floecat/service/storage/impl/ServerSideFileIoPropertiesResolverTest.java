@@ -279,6 +279,12 @@ class ServerSideFileIoPropertiesResolverTest {
     public void put(String accountId, String secretType, String secretId, byte[] payload) {}
 
     @Override
+    public boolean putIfAbsent(
+        String accountId, String secretType, String secretId, byte[] payload) {
+      return true;
+    }
+
+    @Override
     public Optional<byte[]> get(String accountId, String secretType, String secretId) {
       return Optional.of(
           AuthCredentials.newBuilder()

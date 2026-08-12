@@ -86,6 +86,12 @@ class StorageAuthorityResolverTest {
           public void put(String accountId, String secretType, String secretId, byte[] payload) {}
 
           @Override
+          public boolean putIfAbsent(
+              String accountId, String secretType, String secretId, byte[] payload) {
+            return true;
+          }
+
+          @Override
           public Optional<byte[]> get(String accountId, String secretType, String secretId) {
             return Optional.of(
                 AuthCredentials.newBuilder()
@@ -858,6 +864,12 @@ class StorageAuthorityResolverTest {
     public void put(String accountId, String secretType, String secretId, byte[] payload) {}
 
     @Override
+    public boolean putIfAbsent(
+        String accountId, String secretType, String secretId, byte[] payload) {
+      return true;
+    }
+
+    @Override
     public Optional<byte[]> get(String accountId, String secretType, String secretId) {
       return Optional.of(
           AuthCredentials.newBuilder()
@@ -879,6 +891,12 @@ class StorageAuthorityResolverTest {
   private static class EmptySecretsManager implements SecretsManager {
     @Override
     public void put(String accountId, String secretType, String secretId, byte[] payload) {}
+
+    @Override
+    public boolean putIfAbsent(
+        String accountId, String secretType, String secretId, byte[] payload) {
+      return true;
+    }
 
     @Override
     public Optional<byte[]> get(String accountId, String secretType, String secretId) {

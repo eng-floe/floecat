@@ -44,9 +44,11 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -79,6 +81,7 @@ import org.jboss.logging.Logger;
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
   @Inject CatalogRepository catalogRepo;
+  @Inject CatalogIntegrationRepository catalogIntegrationRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject TableRootRepository tableRootRepo;
@@ -91,6 +94,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
   @Inject DefaultCredentialResolver credentialResolver;
+  @Inject CatalogIntegrationCredentialCleanup catalogIntegrationCredentialCleanup;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -495,11 +499,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     var summary = new AccountCleanupSummary(accountKey);
     CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
     try {
+      cleanupCatalogIntegrations(accountKey, summary);
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s catalog_integrations=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
           summary.accountId,
+          summary.catalogIntegrationsDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
           summary.catalogsDeleted,
@@ -510,6 +516,33 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
+    }
+  }
+
+  private void cleanupCatalogIntegrations(String accountId, AccountCleanupSummary summary) {
+    for (var integration :
+        listAllPages(
+            (token, next) -> catalogIntegrationRepo.listConsistent(accountId, 200, token, next))) {
+      var id = integration.getResourceId();
+      var meta = catalogIntegrationRepo.metaForSafe(id);
+      if (meta.getPointerVersion() == 0L) continue;
+      long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
+      long fenceVersion = catalogIntegrationRepo.cascadeDeletionFenceVersion(id);
+      boolean credentialCleanupScheduled =
+          catalogIntegrationCredentialCleanup.schedule(integration);
+      boolean deleted =
+          fenceVersion == 0L
+              ? catalogIntegrationRepo.deleteWithPreconditionAndOverlayMarker(
+                  id, meta.getPointerVersion(), markerVersion)
+              : catalogIntegrationRepo.deleteWithPreconditionAndOverlayMarkerAndFence(
+                  id, meta.getPointerVersion(), markerVersion, fenceVersion);
+      if (!deleted) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "catalog integration changed during account cleanup");
+      }
+      summary.catalogIntegrationsDeleted++;
+      catalogIntegrationCredentialCleanup.cleanIfSuperseded(integration);
+      if (credentialCleanupScheduled) summary.credentialsDeleted++;
     }
   }
 
@@ -685,6 +718,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int connectorsDeleted;
+    private int catalogIntegrationsDeleted;
     private int credentialsDeleted;
     private int catalogsDeleted;
     private int namespacesDeleted;

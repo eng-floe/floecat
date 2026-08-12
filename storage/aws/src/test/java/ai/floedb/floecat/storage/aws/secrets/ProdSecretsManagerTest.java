@@ -41,10 +41,62 @@ import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.CreateSecretResponse;
+import software.amazon.awssdk.services.secretsmanager.model.DeleteSecretRequest;
+import software.amazon.awssdk.services.secretsmanager.model.DeleteSecretResponse;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
+import software.amazon.awssdk.services.secretsmanager.model.InvalidRequestException;
+import software.amazon.awssdk.services.secretsmanager.model.ResourceExistsException;
 import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerTest {
+
+  @Test
+  void pendingDeletionReadsAsUnavailableSoCredentialGenerationCanAdvance() {
+    ClientHandle pending =
+        ClientHandle.secretsFailure(
+            InvalidRequestException.builder()
+                .message("The secret was marked for deletion")
+                .build());
+    ProdSecretsManager manager =
+        new ProdSecretsManager(pending.secretsClient, ClientHandle.sts().stsClient);
+
+    assertTrue(manager.get("acct", "catalog-integrations", "id:2").isEmpty());
+    manager.shutdown();
+  }
+
+  @Test
+  void immediateDeleteBypassesRecoveryWindow() {
+    ClientHandle available = ClientHandle.secretsValue("unused");
+    ProdSecretsManager manager =
+        new ProdSecretsManager(available.secretsClient, ClientHandle.sts().stsClient);
+
+    manager.deleteImmediately("acct", "catalog-integrations", "id:2");
+
+    assertTrue(Boolean.TRUE.equals(available.deleteRequest.forceDeleteWithoutRecovery()));
+    assertEquals(null, available.deleteRequest.recoveryWindowInDays());
+    manager.shutdown();
+  }
+
+  @Test
+  void putIfAbsentDoesNotOverwriteExistingSecret() {
+    ClientHandle available = ClientHandle.secretsValue("unused");
+    ClientHandle existing =
+        ClientHandle.secretsFailure(
+            ResourceExistsException.builder().message("already exists").build());
+    ClientHandle stsClient = ClientHandle.sts();
+    FakeAwsClients awsClients = new FakeAwsClients();
+
+    ProdSecretsManager first =
+        new ProdSecretsManager(awsClients, available.secretsClient, stsClient.stsClient);
+    ProdSecretsManager second =
+        new ProdSecretsManager(awsClients, existing.secretsClient, ClientHandle.sts().stsClient);
+
+    assertTrue(first.putIfAbsent("acct", "catalog-integrations", "id:1", "a".getBytes()));
+    assertFalse(second.putIfAbsent("acct", "catalog-integrations", "id:1", "b".getBytes()));
+    first.shutdown();
+    second.shutdown();
+  }
 
   @Test
   void get_refreshes_direct_secrets_client_after_closed_pool() {
@@ -448,6 +500,7 @@ class ProdSecretsManagerTest {
     private int closeCount;
     private ClientHandle boundStsClient;
     private final ProviderHandle provider = new ProviderHandle();
+    private DeleteSecretRequest deleteRequest;
     private final SecretsManagerClient secretsClient;
     private final StsClient stsClient;
 
@@ -494,6 +547,15 @@ class ProdSecretsManagerTest {
             throw failure;
           }
           yield GetSecretValueResponse.builder().secretString(secretString).build();
+        }
+        case "createSecret" -> {
+          if (failure != null) throw failure;
+          yield CreateSecretResponse.builder().build();
+        }
+        case "deleteSecret" -> {
+          deleteRequest = (DeleteSecretRequest) args[0];
+          if (failure != null) throw failure;
+          yield DeleteSecretResponse.builder().build();
         }
         case "close" -> {
           closed = true;

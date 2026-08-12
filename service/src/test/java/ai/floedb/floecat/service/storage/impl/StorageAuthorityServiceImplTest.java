@@ -1627,6 +1627,13 @@ class StorageAuthorityServiceImplTest {
     }
 
     @Override
+    public boolean putIfAbsent(
+        String accountId, String secretType, String secretId, byte[] payload) {
+      put(accountId, secretType, secretId, payload);
+      return true;
+    }
+
+    @Override
     public Optional<byte[]> get(String accountId, String secretType, String secretId) {
       lastSecretId = secretId;
       return Optional.of(

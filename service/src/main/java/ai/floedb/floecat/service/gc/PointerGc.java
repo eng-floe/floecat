@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -38,6 +39,7 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
@@ -57,6 +59,11 @@ public class PointerGc {
     int deleted = 0;
     int missingBlobs = 0;
     int staleSecondaries = 0;
+
+    CatalogIntegrationCredentialCleanup.Result credentialResult =
+        credentialCleanup.drain(deadlineMs, pageSize);
+    scanned += credentialResult.scanned();
+    deleted += credentialResult.deleted();
 
     Result byId =
         scanPrefix(
@@ -195,6 +202,34 @@ public class PointerGc {
     deleted += connectorsByName.deleted;
     missingBlobs += connectorsByName.missingBlobs;
     staleSecondaries += connectorsByName.staleSecondaries;
+
+    Result integrationsById =
+        scanPrefix(
+            Keys.catalogIntegrationPointerByIdPrefix(accountId),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> true,
+            nowMs,
+            minAgeMs);
+    scanned += integrationsById.scanned;
+    deleted += integrationsById.deleted;
+    missingBlobs += integrationsById.missingBlobs;
+    staleSecondaries += integrationsById.staleSecondaries;
+
+    Result integrationsByName =
+        scanPrefix(
+            Keys.catalogIntegrationPointerByNamePrefix(accountId),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> true,
+            nowMs,
+            minAgeMs);
+    scanned += integrationsByName.scanned;
+    deleted += integrationsByName.deleted;
+    missingBlobs += integrationsByName.missingBlobs;
+    staleSecondaries += integrationsByName.staleSecondaries;
 
     Result catalogsByName =
         scanPrefix(
@@ -439,6 +474,12 @@ public class PointerGc {
 
     if ("connectors".equals(scope) && parts.length >= 5 && "connector".equals(parts[4])) {
       return Keys.connectorPointerById(accountId, decode(parts[3]));
+    }
+
+    if ("catalog-integrations".equals(scope)
+        && parts.length >= 5
+        && "integration".equals(parts[4])) {
+      return Keys.catalogIntegrationPointerById(accountId, decode(parts[3]));
     }
 
     return null;

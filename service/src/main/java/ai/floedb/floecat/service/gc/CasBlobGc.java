@@ -733,6 +733,14 @@ public class CasBlobGc {
               storageEstimate);
       pointersScanned +=
           collectPointers(
+              Keys.catalogIntegrationPointerByIdPrefix(accountId),
+              referenced,
+              null,
+              pageSize,
+              null,
+              storageEstimate);
+      pointersScanned +=
+          collectPointers(
               Keys.storageAuthorityPointerByIdPrefix(accountId),
               referenced,
               null,
@@ -1071,6 +1079,21 @@ public class CasBlobGc {
       blobsScanned += connectors.scanned();
       blobsDeleted += connectors.deleted();
       blobsRescued += connectors.rescued();
+
+      var catalogIntegrations =
+          deleteUnreferenced(
+              Keys.catalogIntegrationRootPrefix(accountId),
+              referenced,
+              walkedPinRoots,
+              walkFailures,
+              key -> key.contains("/integration/"),
+              null,
+              pageSize,
+              nowMs,
+              minAgeMs);
+      blobsScanned += catalogIntegrations.scanned();
+      blobsDeleted += catalogIntegrations.deleted();
+      blobsRescued += catalogIntegrations.rescued();
 
       var storageAuthorities =
           deleteUnreferenced(
