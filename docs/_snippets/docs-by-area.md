@@ -1,4 +1,4 @@
 - **Core platform**: architecture, service, caching, metadata graph, reconciler
-- **Integrations**: connectors (Iceberg, Delta), Arrow Flight, client CLI
+- **Integrations**: [catalog integration design](catalog-integration-design.md), connectors (Iceberg, Delta), Arrow Flight, client CLI
 - **Storage and security**: storage backends, secrets manager, external authentication
 - **Operations and observability**: operations, telemetry, troubleshooting
