@@ -49,7 +49,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -72,7 +72,7 @@ class TableServiceImplSystemTableTest {
   private TopologyGraph topology;
   private UserGraph metadataGraph;
 
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
 
   @BeforeEach
   void setup() {
@@ -86,13 +86,13 @@ class TableServiceImplSystemTableTest {
     topology = mock(TopologyGraph.class);
     metadataGraph = mock(UserGraph.class);
 
-    overlay = new TestCatalogOverlay();
+    graphView = new TestCatalogGraphView();
 
     // Wire required fields (package-private access: test in same package)
     svc.tableRepo = tableRepo;
     svc.principal = principal;
     svc.authz = authz;
-    svc.overlay = overlay;
+    svc.graphView = graphView;
     svc.hintCleaner = hintCleaner;
     svc.topology = topology;
     svc.metadataGraph = metadataGraph;
@@ -122,7 +122,7 @@ class TableServiceImplSystemTableTest {
         new SystemTableNode.EngineSystemTableNode(
             sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
-    overlay.addNode(node);
+    graphView.addNode(node);
 
     StatusRuntimeException ex =
         assertThrows(
@@ -158,7 +158,7 @@ class TableServiceImplSystemTableTest {
         new SystemTableNode.EngineSystemTableNode(
             sysTableId, 1L, "engine-v", "engine_sys_pc", nsId, List.of(), null, null);
 
-    overlay.addNode(node);
+    graphView.addNode(node);
 
     var req =
         DeleteTableRequest.newBuilder()
@@ -200,7 +200,7 @@ class TableServiceImplSystemTableTest {
         new SystemTableNode.EngineSystemTableNode(
             sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
-    overlay.addNode(node);
+    graphView.addNode(node);
 
     StatusRuntimeException ex =
         assertThrows(
@@ -237,7 +237,7 @@ class TableServiceImplSystemTableTest {
             .setId("tbl_user_1")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new CatalogNode(
             systemCatalogId,
             "blob://test/v1",
@@ -247,7 +247,7 @@ class TableServiceImplSystemTableTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -257,7 +257,7 @@ class TableServiceImplSystemTableTest {
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of()));
-    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+    graphView.addNode(userTableNode(tableId, userCatalogId, namespaceId));
 
     when(tableRepo.metaFor(tableId)).thenReturn(MutationMeta.getDefaultInstance());
     when(tableRepo.getById(tableId))
@@ -307,7 +307,7 @@ class TableServiceImplSystemTableTest {
             .setId("tbl_user_props")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -317,7 +317,7 @@ class TableServiceImplSystemTableTest {
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of()));
-    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+    graphView.addNode(userTableNode(tableId, userCatalogId, namespaceId));
 
     Table current =
         Table.newBuilder()
@@ -377,7 +377,7 @@ class TableServiceImplSystemTableTest {
             .setId("tbl_user_retry")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -387,7 +387,7 @@ class TableServiceImplSystemTableTest {
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of()));
-    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+    graphView.addNode(userTableNode(tableId, userCatalogId, namespaceId));
 
     Table current =
         Table.newBuilder()
@@ -441,7 +441,7 @@ class TableServiceImplSystemTableTest {
             .setId("tbl_user_precondition")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -451,7 +451,7 @@ class TableServiceImplSystemTableTest {
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of()));
-    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+    graphView.addNode(userTableNode(tableId, userCatalogId, namespaceId));
 
     Table current =
         Table.newBuilder()

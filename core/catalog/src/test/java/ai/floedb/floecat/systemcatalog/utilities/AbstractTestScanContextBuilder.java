@@ -20,23 +20,23 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 
 abstract class AbstractTestScanContextBuilder {
 
   protected final ResourceId catalogId;
-  protected final TestCatalogOverlay overlay = new TestCatalogOverlay();
+  protected final TestCatalogGraphView graphView = new TestCatalogGraphView();
 
   protected AbstractTestScanContextBuilder(ResourceId catalogId) {
     this.catalogId = catalogId;
   }
 
-  public TestCatalogOverlay overlay() {
-    return overlay;
+  public TestCatalogGraphView graphView() {
+    return graphView;
   }
 
   public SystemObjectScanContext build() {
     return new SystemObjectScanContext(
-        overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+        graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
   }
 }

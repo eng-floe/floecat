@@ -24,7 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  * UserObjectBundleService} driver resolves through. Verifies single-flight memoization (present and
  * empty-negative), name normalization collapsing to one key, and that every hit/miss and
  * resolve-nanos lands in the shared {@link TimingAccumulator}. A counting {@link
- * FakeCatalogOverlay} proves the resolve ran at most once per key.
+ * FakeCatalogGraphView} proves the resolve ran at most once per key.
  */
 class RelationResolutionMemoTest {
 
@@ -54,16 +54,16 @@ class RelationResolutionMemoTest {
 
   private static final NameRef NAME = NameRef.newBuilder().setCatalog("cat").setName("x").build();
 
-  private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
   private TimingAccumulator timings;
   private RelationResolutionMemo memo;
 
   @BeforeEach
   void setUp() {
-    overlay.clear();
-    overlay.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
+    graphView.clear();
+    graphView.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
     timings = new TimingAccumulator();
-    memo = new RelationResolutionMemo(overlay, CID, ENGINE, timings);
+    memo = new RelationResolutionMemo(graphView, CID, ENGINE, timings);
   }
 
   @Test
@@ -74,7 +74,7 @@ class RelationResolutionMemoTest {
     assertThat(first).contains(TABLE);
     assertThat(second).contains(TABLE);
     // Resolved once, then served from the memo.
-    assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
+    assertThat(graphView.resolveNameCount(NAME)).isEqualTo(1);
     assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();
@@ -92,8 +92,8 @@ class RelationResolutionMemoTest {
 
     assertThat(first).isEmpty();
     assertThat(second).isEmpty();
-    // A negative result is cached too: the overlay is not re-queried on the second miss-key lookup.
-    assertThat(overlay.resolveNameCount(unknown)).isEqualTo(1);
+    // A negative result is cached too: the graph view is not re-queried on the second miss-key lookup.
+    assertThat(graphView.resolveNameCount(unknown)).isEqualTo(1);
     assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();
@@ -115,9 +115,9 @@ class RelationResolutionMemoTest {
     assertThat(memo.resolveNode(unknown)).isEmpty();
     assertThat(memo.resolveNode(unknown)).isEmpty();
 
-    // Each distinct id resolves through the overlay exactly once.
-    assertThat(overlay.resolveCount(TABLE)).isEqualTo(1);
-    assertThat(overlay.resolveCount(unknown)).isEqualTo(1);
+    // Each distinct id resolves through the graph view exactly once.
+    assertThat(graphView.resolveCount(TABLE)).isEqualTo(1);
+    assertThat(graphView.resolveCount(unknown)).isEqualTo(1);
     assertThat(memo.nodeEntries()).isEqualTo(2);
 
     Recording rec = flush();
@@ -127,20 +127,20 @@ class RelationResolutionMemoTest {
   }
 
   @Test
-  void canonicalNameUsesAndMemoizesTheOverlayNamingBoundary() {
+  void canonicalNameUsesAndMemoizesTheGraphViewNamingBoundary() {
     AtomicInteger tableNameCalls = new AtomicInteger();
-    FakeCatalogOverlay namingOverlay =
-        new FakeCatalogOverlay() {
+    FakeCatalogGraphView namingGraphView =
+        new FakeCatalogGraphView() {
           @Override
           public Optional<NameRef> tableName(ResourceId id) {
             tableNameCalls.incrementAndGet();
             return super.tableName(id);
           }
         };
-    namingOverlay.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
+    namingGraphView.registerTable(TABLE, UserObjectBundleTestSupport.schemaFor("id_x"), NAME);
     RelationResolutionMemo nameMemo =
-        new RelationResolutionMemo(namingOverlay, CID, ENGINE, new TimingAccumulator());
-    RelationNode relation = (RelationNode) namingOverlay.resolve(TABLE).orElseThrow();
+        new RelationResolutionMemo(namingGraphView, CID, ENGINE, new TimingAccumulator());
+    RelationNode relation = (RelationNode) namingGraphView.resolve(TABLE).orElseThrow();
 
     assertThat(nameMemo.canonicalName(relation)).isEqualTo(NAME);
     assertThat(nameMemo.canonicalName(relation)).isEqualTo(NAME);
@@ -151,14 +151,14 @@ class RelationResolutionMemoTest {
   void normalizationCollapsesWhitespaceVariantsToOneKey() {
     NameRef padded = NameRef.newBuilder().setCatalog("  cat  ").setName("  x  ").build();
 
-    Optional<ResourceId> exact = memo.resolveName(NAME); // miss: hits the overlay
+    Optional<ResourceId> exact = memo.resolveName(NAME); // miss: hits the graph view
     Optional<ResourceId> whitespace = memo.resolveName(padded); // hit: same normalized key
 
     assertThat(exact).contains(TABLE);
     assertThat(whitespace).contains(TABLE);
-    // Only the first (exact) ref reached the overlay; the padded variant collapsed onto its key.
-    assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
-    assertThat(overlay.resolveNameCount(padded)).isEqualTo(0);
+    // Only the first (exact) ref reached the graph view; the padded variant collapsed onto its key.
+    assertThat(graphView.resolveNameCount(NAME)).isEqualTo(1);
+    assertThat(graphView.resolveNameCount(padded)).isEqualTo(0);
     assertThat(memo.nameEntries()).isEqualTo(1);
 
     Recording rec = flush();

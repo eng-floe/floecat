@@ -41,7 +41,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -59,16 +59,16 @@ class CatalogSurfaceViewsTest {
   private final ResourceId namespaceId = id(ResourceKind.RK_NAMESPACE, "ns");
 
   private ViewRepository viewRepo;
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
   private CatalogSurfaceViews surface;
 
   @BeforeEach
   void setup() {
     viewRepo = mock(ViewRepository.class);
-    overlay = new TestCatalogOverlay();
-    surface = new CatalogSurfaceViews(viewRepo, overlay);
+    graphView = new TestCatalogGraphView();
+    surface = new CatalogSurfaceViews(viewRepo, graphView);
 
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -91,8 +91,8 @@ class CatalogSurfaceViewsTest {
               return List.of(userView);
             });
     when(viewRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(1);
-    overlay.addRelation(namespaceId, viewNode("z_system", GraphNodeOrigin.SYSTEM));
-    overlay.addRelation(namespaceId, viewNode("a_system", GraphNodeOrigin.SYSTEM));
+    graphView.addRelation(namespaceId, viewNode("z_system", GraphNodeOrigin.SYSTEM));
+    graphView.addRelation(namespaceId, viewNode("a_system", GraphNodeOrigin.SYSTEM));
 
     var firstPage =
         surface.listViews(
@@ -168,7 +168,7 @@ class CatalogSurfaceViewsTest {
             Optional.empty(),
             Map.<Long, Map<EngineHintKey, EngineHint>>of(),
             Map.<EngineHintKey, EngineHint>of());
-    overlay.addRelation(namespaceId, systemView);
+    graphView.addRelation(namespaceId, systemView);
     when(viewRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), anyInt(), anyString(), any()))
         .thenAnswer(invocation -> List.of());
     when(viewRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(0);
@@ -206,7 +206,7 @@ class CatalogSurfaceViewsTest {
   @Test
   void getViewReadsSystemViewFromCatalogSurfaceWithoutRepoLookup() {
     var systemView = viewNode("engine_views", GraphNodeOrigin.SYSTEM);
-    overlay.addRelation(namespaceId, systemView);
+    graphView.addRelation(namespaceId, systemView);
 
     var response =
         surface.getView(

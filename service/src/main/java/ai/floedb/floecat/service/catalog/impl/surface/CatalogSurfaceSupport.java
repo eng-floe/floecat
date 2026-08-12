@@ -21,7 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import java.text.Normalizer;
@@ -32,12 +32,12 @@ final class CatalogSurfaceSupport {
   private CatalogSurfaceSupport() {}
 
   static NamespaceNode requireVisibleNamespace(
-      CatalogOverlay overlay, ResourceId namespaceId, String corr) {
+      CatalogGraphView graphView, ResourceId namespaceId, String corr) {
     if (namespaceId == null) {
       throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", "<missing_namespace_id>"));
     }
     ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-    return overlay
+    return graphView
         .resolve(namespaceId)
         .filter(NamespaceNode.class::isInstance)
         .map(NamespaceNode.class::cast)
@@ -45,9 +45,9 @@ final class CatalogSurfaceSupport {
   }
 
   static CatalogNode requireVisibleCatalog(
-      CatalogOverlay overlay, ResourceId catalogId, String field, String corr) {
+      CatalogGraphView graphView, ResourceId catalogId, String field, String corr) {
     ensureKind(catalogId, ResourceKind.RK_CATALOG, field, corr);
-    return overlay
+    return graphView
         .resolve(catalogId)
         .filter(CatalogNode.class::isInstance)
         .map(CatalogNode.class::cast)

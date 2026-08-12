@@ -40,7 +40,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             Optional.empty(),
             Optional.empty(),
             Map.of());
-    overlay.addNode(catalog);
+    graphView.addNode(catalog);
   }
 
   public static TestTableScanContextBuilder builder(String catalogName) {
@@ -79,7 +79,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of());
-    overlay.addNode(ns);
+    graphView.addNode(ns);
     return ns;
   }
 
@@ -112,8 +112,8 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             Map.of(),
             Map.of());
 
-    overlay.addRelation(ns.id(), table);
-    overlay.setTableSchema(tableId, buildSchema(fieldIds, types));
+    graphView.addRelation(ns.id(), table);
+    graphView.setTableSchema(tableId, buildSchema(fieldIds, types));
     return table;
   }
 
@@ -121,7 +121,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
   public UserTableNode addTableWithSchema(
       NamespaceNode ns, String name, List<SchemaColumn> schema) {
     UserTableNode table = addTable(ns, name, Map.of(), Map.of());
-    overlay.setTableSchema(table.id(), schema);
+    graphView.setTableSchema(table.id(), schema);
     return table;
   }
 

@@ -42,7 +42,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -77,7 +77,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
   @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
@@ -90,7 +90,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(overlay);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */
@@ -753,7 +753,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
     return builder.build();
   }
 
-  /** Ensures the request table is visible through overlay resolution (user or system). */
+  /** Ensures the request table is visible through graph-view resolution (user or system). */
   private void ensureTableVisible(ResourceId tableId) {
     var writePolicy = catalogSurfaceWritePolicy();
     writePolicy.requireVisibleTable(tableId, correlationId());
@@ -771,7 +771,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }
-    return overlay.catalog(userTable.catalogId()).map(CatalogNode::displayName).orElse("");
+    return graphView.catalog(userTable.catalogId()).map(CatalogNode::displayName).orElse("");
   }
 
   /** Ensures the target snapshot exists before strict snapshot-scoped writes proceed. */

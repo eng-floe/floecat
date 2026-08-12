@@ -24,7 +24,7 @@ import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -72,7 +72,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
 
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject CatalogOverlay graph;
+  @Inject CatalogGraphView graph;
   @Inject EngineContextProvider engineContext;
   @Inject SystemScannerResolver scanners;
   @Inject QueryContextStore queryStore;

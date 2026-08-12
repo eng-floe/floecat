@@ -101,8 +101,8 @@ class ColumnsScannerTest {
     ResourceId catalogId = rid("marketing", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("namespace", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("orders-id", ResourceKind.RK_TABLE);
-    var overlay = new NamespaceListingFailsOverlay();
-    overlay.addNode(
+    var graphView = new NamespaceListingFailsGraphView();
+    graphView.addNode(
         new CatalogNode(
             catalogId,
             "blob://test/v1",
@@ -112,7 +112,7 @@ class ColumnsScannerTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay.addRelation(
+    graphView.addRelation(
         namespaceId,
         new UserTableNode(
             tableId,
@@ -131,7 +131,7 @@ class ColumnsScannerTest {
             List.of(),
             Map.of(),
             Map.of()));
-    overlay.setTableSchema(
+    graphView.setTableSchema(
         tableId,
         List.of(
             SchemaColumn.newBuilder()
@@ -140,10 +140,10 @@ class ColumnsScannerTest {
                 .setFieldId(1)
                 .setNullable(false)
                 .build()));
-    overlay.withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"));
+    graphView.withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"));
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
 
     var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
@@ -289,7 +289,7 @@ class ColumnsScannerTest {
     return ResourceId.newBuilder().setAccountId("account").setId(id).setKind(kind).build();
   }
 
-  private static final class NamespaceListingFailsOverlay extends TestRefCatalogOverlay {
+  private static final class NamespaceListingFailsGraphView extends TestRefCatalogGraphView {
     @Override
     public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
       throw new AssertionError("ref scan should not materialize namespaces");

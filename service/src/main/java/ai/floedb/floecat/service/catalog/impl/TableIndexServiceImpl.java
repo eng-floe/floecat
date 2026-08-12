@@ -35,7 +35,7 @@ import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -68,7 +68,7 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
 
   private static final Logger LOG = Logger.getLogger(TableIndexService.class);
   private static final String DEFAULT_INDEX_CONTENT_TYPE = "application/x-parquet";
@@ -248,7 +248,7 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
     var pc = principal.get();
     authz.require(pc, "table.write");
 
-    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(state.tableId, correlationId());
+    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(state.tableId, correlationId());
 
     snapshots
         .getById(state.tableId, state.snapshotId)

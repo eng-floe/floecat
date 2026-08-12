@@ -45,7 +45,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -80,7 +80,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject StatsOrchestrator statsOrchestrator;
 
@@ -116,9 +116,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
     ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
-    // Overlay is the source of truth for visibility in the current engine context.
+    // The graph view is the source of truth for visibility in the current engine context.
     GraphNode node =
-        overlay
+        graphView
             .resolve(tableId)
             .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
@@ -129,7 +129,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private void ensureTableWritable(ResourceId tableId, String corr) {
-    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(tableId, corr);
+    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {

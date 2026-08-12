@@ -19,7 +19,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import java.util.List;
 
@@ -29,7 +29,7 @@ final class CatalogSurfaceViewPageSource
   static final String TOKEN_PREFIX = "view:";
 
   private final ViewRepository repo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final String accountId;
   private final NamespaceNode namespace;
   private final ResourceId namespaceId;
@@ -37,12 +37,12 @@ final class CatalogSurfaceViewPageSource
 
   CatalogSurfaceViewPageSource(
       ViewRepository repo,
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       String accountId,
       NamespaceNode namespace,
       ResourceId namespaceId) {
     this.repo = repo;
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.accountId = accountId;
     this.namespace = namespace;
     this.namespaceId = namespaceId;
@@ -75,7 +75,7 @@ final class CatalogSurfaceViewPageSource
 
   @Override
   public List<ViewNode> systemNodes() {
-    return overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
+    return graphView.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
         .toList();

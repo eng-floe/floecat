@@ -37,7 +37,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -201,7 +201,7 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void serialPlanningStaysOnTheCallerThreadWhenOverlayOptsOutOfConcurrency() {
+  void serialPlanningStaysOnTheCallerThreadWhenGraphViewOptsOutOfConcurrency() {
     Thread callerThread = Thread.currentThread();
     var threadConfinedGraph = new CallerThreadOnlyGraph(callerThread);
     var threadConfinedResolver = new QueryInputResolver(threadConfinedGraph);
@@ -218,7 +218,7 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void cancellableSerialPlanningStaysOnTheCallerThreadWhenOverlayOptsOutOfConcurrency() {
+  void cancellableSerialPlanningStaysOnTheCallerThreadWhenGraphViewOptsOutOfConcurrency() {
     Thread callerThread = Thread.currentThread();
     var threadConfinedGraph = new CallerThreadOnlyGraph(callerThread);
     var threadConfinedResolver = new QueryInputResolver(threadConfinedGraph);
@@ -1824,7 +1824,7 @@ public class QueryInputResolverTest {
   // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
 
-  static class FakeGraph extends TestCatalogOverlay {
+  static class FakeGraph extends TestCatalogGraphView {
 
     private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();

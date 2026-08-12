@@ -45,7 +45,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
@@ -90,7 +90,7 @@ class RelationBundleBuilderTest {
 
   private static final EngineContext ENGINE = EngineContext.of("pg", "16.0");
 
-  private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
 
   private final QueryContext ctx =
       QueryContext.builder()
@@ -110,7 +110,7 @@ class RelationBundleBuilderTest {
           .build();
 
   // A PinValidator that fails loudly if reached: these tests use TABLE-kind graph nodes (not
-  // UserTableNode), so buildRelation reads schema straight from the overlay and never validates a
+  // UserTableNode), so buildRelation reads schema straight from the graph view and never validates a
   // pin. Mirrors the test-only UserObjectBundleService constructor.
   private final PinValidator throwingPinValidator =
       new PinValidator(null, RootRepairRequests.disabled()) {
@@ -122,8 +122,8 @@ class RelationBundleBuilderTest {
 
   @BeforeEach
   void setUp() {
-    overlay.clear();
-    overlay.registerCatalog(CATALOG, "cat");
+    graphView.clear();
+    graphView.registerCatalog(CATALOG, "cat");
   }
 
   private record TestBuilder(
@@ -160,7 +160,7 @@ class RelationBundleBuilderTest {
         new EngineRelationDecorator(provider, engineSpecificEnabled);
     return new TestBuilder(
         new RelationBundleBuilder(
-            overlay,
+            graphView,
             engineRelationDecorator,
             new SystemExecutionResolver(
                 FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build()),
@@ -169,17 +169,17 @@ class RelationBundleBuilderTest {
   }
 
   private MetadataResolutionContext resolutionContext(StatsProvider stats) {
-    return MetadataResolutionContext.of(overlay, CATALOG, ENGINE, stats);
+    return MetadataResolutionContext.of(graphView, CATALOG, ENGINE, stats);
   }
 
   private ResolvedRelation resolved(ResourceId id, TableReferenceCandidate candidate) {
-    RelationNode node = (RelationNode) overlay.resolve(id).orElseThrow();
+    RelationNode node = (RelationNode) graphView.resolve(id).orElseThrow();
     return new ResolvedRelation(
         candidate,
         id,
         node,
         QueryInput.newBuilder().setTableId(id).build(),
-        overlay.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static TableReferenceCandidate fullCandidate() {
@@ -231,7 +231,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void buildAssemblesRelationInfoWithColumnsStatsKindAndOrigin() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -310,7 +310,7 @@ class RelationBundleBuilderTest {
             "sys://path",
             "",
             endpoint);
-    overlay.registerRelation(
+    graphView.registerRelation(
         sysId,
         node,
         UserObjectBundleTestSupport.schemaFor("sys_col"),
@@ -365,7 +365,7 @@ class RelationBundleBuilderTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId, view, schema, NameRef.newBuilder().setCatalog("cat").setName("view_x").build());
 
     EngineMetadataDecoratorProvider provider =
@@ -409,11 +409,11 @@ class RelationBundleBuilderTest {
             .setId("TABLE_Y")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setName("x").build());
-    overlay.registerTable(
+    graphView.registerTable(
         tableY,
         UserObjectBundleTestSupport.schemaFor("id_y"),
         NameRef.newBuilder().setName("y").build());
@@ -464,11 +464,11 @@ class RelationBundleBuilderTest {
             .setId("TABLE_Y")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setName("x").build());
-    overlay.registerTable(
+    graphView.registerTable(
         tableY,
         UserObjectBundleTestSupport.schemaFor("id_y"),
         NameRef.newBuilder().setName("y").build());
@@ -517,7 +517,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void cancellationInterruptsAnActiveDecoratorWorker() throws Exception {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setName("x").build());
@@ -579,7 +579,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void columnFailureTaxonomyPayloadRequiredMissing() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -607,7 +607,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void columnFailureTaxonomyTypeNotSupported() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -647,7 +647,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void columnFailureTaxonomyEngineExtensionCode() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -684,11 +684,11 @@ class RelationBundleBuilderTest {
 
   @Test
   void buildFailureMapsToBuildErrorWithResourceId() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
-    overlay.failSchemaFor(TABLE);
+    graphView.failSchemaFor(TABLE);
 
     RelationBundleBuilder.BuildResult result =
         builder(ctxIgnored -> Optional.empty(), false)
@@ -709,14 +709,14 @@ class RelationBundleBuilderTest {
   }
 
   @Test
-  void nullOverlaySchemaBuildsAnEmptyColumnList() {
-    // Generic RelationNode implementations use the overlay schema path. A connector that has no
+  void nullGraphViewSchemaBuildsAnEmptyColumnList() {
+    // Generic RelationNode implementations use the graph-view schema path. A connector that has no
     // schema must produce a valid empty payload rather than a build-error resolution.
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
-    overlay.returnNullSchemaFor(TABLE);
+    graphView.returnNullSchemaFor(TABLE);
 
     RelationBundleBuilder.BuildResult result =
         builder(ctxIgnored -> Optional.empty(), false)
@@ -734,7 +734,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void payloadTokenStampedForFullCacheablePayload() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -764,7 +764,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void payloadTokenBlankedForProjectedPayloadButIdentityPreserved() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         List.of(
             SchemaColumn.newBuilder().setName("id_x").setNullable(true).build(),
@@ -803,7 +803,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void payloadTokenBlankedWhenColumnDecorationFails() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -833,7 +833,7 @@ class RelationBundleBuilderTest {
 
   @Test
   void buildIdentityOnlyAssemblesSlimPayloadWithoutColumns() {
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());

@@ -30,7 +30,7 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -111,7 +111,7 @@ public class QueryInputResolver {
   // dependent on graph/store collaborators while production reads the deployment setting once.
   private final int maxParallelInputResolutions;
 
-  private final CatalogOverlay metadataGraph;
+  private final CatalogGraphView metadataGraph;
   // Admits one complete table-pin chain. Its root/snapshot repositories intentionally stay direct;
   // admitting their leaves too would acquire the same process-wide permit twice for one operation.
   private final RepositoryReads.ReadPolicy pinResolutionReads;
@@ -123,14 +123,14 @@ public class QueryInputResolver {
 
   @Inject
   public QueryInputResolver(
-      CatalogOverlay metadataGraph,
+      CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads) {
     this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
   }
 
   private QueryInputResolver(
-      CatalogOverlay metadataGraph,
+      CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
       int maxParallelInputResolutions) {
@@ -141,7 +141,7 @@ public class QueryInputResolver {
   }
 
   /** Compatibility constructor for direct callers that own their metadata execution policy. */
-  public QueryInputResolver(CatalogOverlay metadataGraph, QueryContextStore queryStore) {
+  public QueryInputResolver(CatalogGraphView metadataGraph, QueryContextStore queryStore) {
     this(
         metadataGraph,
         queryStore,
@@ -150,7 +150,7 @@ public class QueryInputResolver {
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
-  public QueryInputResolver(CatalogOverlay metadataGraph) {
+  public QueryInputResolver(CatalogGraphView metadataGraph) {
     this(metadataGraph, null);
   }
 
@@ -426,7 +426,7 @@ public class QueryInputResolver {
         // Resolve each input to its id and the table pins it contributes (a table yields its own
         // pin; a view yields its base tables' pins). planInput reads the metadata graph and the
         // shared current-snapshot memo; it does not touch `resolved` or `pinByTableId`. Inputs
-        // resolve independently, so overlays that support concurrent resolution fan them out;
+        // resolve independently, so graph views that support concurrent resolution fan them out;
         // otherwise the fan-out runs serially on the caller thread. Results merge in input order.
         planInputs(state, inputs, resolvedNames, cancelled);
 
@@ -486,7 +486,7 @@ public class QueryInputResolver {
   }
 
   /**
-   * Resolve the inputs and gather their plans in input order. When the overlay supports concurrent
+   * Resolve the inputs and gather their plans in input order. When the graph view supports concurrent
    * resolution the units fan out; otherwise MetadataFanout runs them serially on the caller thread.
    * Tasks report to a thread-safe accumulator instead of the request's diagnostics (which is not
    * guaranteed thread-safe); its per-key totals — snapshot-lookup calls and time, memo hits/misses

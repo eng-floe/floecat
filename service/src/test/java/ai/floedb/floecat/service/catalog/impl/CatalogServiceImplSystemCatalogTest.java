@@ -32,7 +32,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -52,7 +52,7 @@ class CatalogServiceImplSystemCatalogTest {
 
   private CatalogServiceImpl svc;
   private CatalogRepository catalogRepo;
-  private CatalogOverlay overlay;
+  private CatalogGraphView graphView;
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
   private UserGraph metadataGraph;
@@ -65,7 +65,7 @@ class CatalogServiceImplSystemCatalogTest {
     PrincipalProvider principal = mock(PrincipalProvider.class);
     Authorizer authz = mock(Authorizer.class);
     engineContext = mock(EngineContextProvider.class);
-    overlay = mock(CatalogOverlay.class);
+    graphView = mock(CatalogGraphView.class);
     markerStore = mock(MarkerStore.class);
     metadataGraph = mock(UserGraph.class);
 
@@ -73,7 +73,7 @@ class CatalogServiceImplSystemCatalogTest {
     svc.principal = principal;
     svc.authz = authz;
     svc.engineContext = engineContext;
-    svc.overlay = overlay;
+    svc.graphView = graphView;
     svc.markerStore = markerStore;
     svc.metadataGraph = metadataGraph;
 
@@ -83,7 +83,7 @@ class CatalogServiceImplSystemCatalogTest {
     when(pc.getAccountId()).thenReturn("acct");
     when(engineContext.isPresent()).thenReturn(true);
     when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");
-    when(overlay.catalog(any())).thenReturn(Optional.empty());
+    when(graphView.catalog(any())).thenReturn(Optional.empty());
     doNothing().when(authz).require(any(), anyString());
   }
 
@@ -123,7 +123,7 @@ class CatalogServiceImplSystemCatalogTest {
   @Test
   void deleteCatalog_missingUserCatalog_isIdempotent() {
     // Delete of an already-gone user catalog (no precondition) is a best-effort no-op, not
-    // NOT_FOUND: the delete guard must not require the catalog to resolve through the overlay
+    // NOT_FOUND: the delete guard must not require the catalog to resolve through the graph view
     // before the repository fallback runs.
     ResourceId id =
         ResourceId.newBuilder()

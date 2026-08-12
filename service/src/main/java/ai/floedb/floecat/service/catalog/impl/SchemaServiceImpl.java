@@ -22,7 +22,7 @@ import ai.floedb.floecat.catalog.rpc.SchemaService;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -46,7 +46,7 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject LogicalSchemaMapper logicalSchema;
-  @Inject CatalogOverlay catalogOverlay;
+  @Inject CatalogGraphView graphView;
 
   private static final Logger LOG = Logger.getLogger(SchemaService.class);
 
@@ -63,8 +63,8 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
                   var tableId = request.getTableId();
                   ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId());
 
-                  CatalogOverlay.SchemaResolution resolved =
-                      catalogOverlay.schemaFor(
+                  CatalogGraphView.SchemaResolution resolved =
+                      graphView.schemaFor(
                           correlationId(),
                           tableId,
                           request.hasSnapshot() ? request.getSnapshot() : null);

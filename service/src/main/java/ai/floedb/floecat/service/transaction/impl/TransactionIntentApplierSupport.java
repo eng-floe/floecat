@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -86,7 +86,7 @@ public class TransactionIntentApplierSupport {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -680,17 +680,17 @@ public class TransactionIntentApplierSupport {
     if (SystemResourceIdGenerator.isSystemId(table.getResourceId())) {
       return tableImmutableConflict(table.getResourceId().getId());
     }
-    if (overlay == null) {
-      // The overlay is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
+    if (graphView == null) {
+      // The graph view is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
       // production. A guard whose purpose is closing write-eligibility gaps must not default to
-      // "allow" on its own null case — treat an absent overlay as retryable rather than applied.
+      // "allow" on its own null case — treat an absent graph view as retryable rather than applied.
       return ApplyOutcome.retryable(
           "TABLE_WRITE_ELIGIBILITY_UNAVAILABLE",
-          "catalog overlay unavailable for write-eligibility check");
+          "catalog graph view unavailable for write-eligibility check");
     }
 
     try {
-      var writePolicy = new CatalogSurfaceWritePolicy(overlay);
+      var writePolicy = new CatalogSurfaceWritePolicy(graphView);
       if (checkExistingTable) {
         writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
       }
@@ -708,7 +708,7 @@ public class TransactionIntentApplierSupport {
       return ApplyOutcome.conflict(
           "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
     } catch (RuntimeException unexpected) {
-      // Overlay resolution can fail transiently (storage/cache errors). Do not turn that into a
+      // Graph-view resolution can fail transiently (storage/cache errors). Do not turn that into a
       // terminal conflict that abandons an otherwise-valid transaction; let it be retried.
       return ApplyOutcome.retryable(
           "TABLE_WRITE_ELIGIBILITY_ERROR",

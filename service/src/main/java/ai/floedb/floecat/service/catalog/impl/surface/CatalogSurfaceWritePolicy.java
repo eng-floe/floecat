@@ -26,7 +26,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import io.grpc.StatusRuntimeException;
@@ -40,10 +40,10 @@ public final class CatalogSurfaceWritePolicy {
 
   private static final String PATH_DELIM = "\u001F";
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
 
-  public CatalogSurfaceWritePolicy(CatalogOverlay overlay) {
-    this.overlay = Objects.requireNonNull(overlay, "catalog overlay is required");
+  public CatalogSurfaceWritePolicy(CatalogGraphView graphView) {
+    this.graphView = Objects.requireNonNull(graphView, "catalog graph view is required");
   }
 
   /**
@@ -65,7 +65,7 @@ public final class CatalogSurfaceWritePolicy {
   }
 
   public CatalogNode requireVisibleCatalog(ResourceId catalogId, String field, String corr) {
-    return CatalogSurfaceSupport.requireVisibleCatalog(overlay, catalogId, field, corr);
+    return CatalogSurfaceSupport.requireVisibleCatalog(graphView, catalogId, field, corr);
   }
 
   public CatalogNode requireWritableCatalog(ResourceId catalogId, String corr) {
@@ -79,7 +79,7 @@ public final class CatalogSurfaceWritePolicy {
   }
 
   public NamespaceNode requireVisibleNamespace(ResourceId namespaceId, String corr) {
-    return CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
+    return CatalogSurfaceSupport.requireVisibleNamespace(graphView, namespaceId, corr);
   }
 
   public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String corr) {
@@ -99,9 +99,9 @@ public final class CatalogSurfaceWritePolicy {
   /**
    * Delete-path guard for catalogs. Rejects system catalogs (immutable) but, unlike {@link
    * #requireWritableCatalog}, does <b>not</b> require the catalog to currently resolve through the
-   * overlay: an unresolved target is left for the repository fallback, which deletes idempotently
+   * graph view: an unresolved target is left for the repository fallback, which deletes idempotently
    * (and enforces any caller precondition). System catalogs are identified purely by id, so no
-   * overlay lookup is needed here.
+   * graph-view lookup is needed here.
    */
   public void requireDeletableCatalog(ResourceId catalogId, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
@@ -119,7 +119,7 @@ public final class CatalogSurfaceWritePolicy {
   public void requireDeletableNamespace(ResourceId namespaceId, String corr) {
     CatalogSurfaceSupport.ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
     rejectSystemId(namespaceId, "namespace", corr);
-    overlay
+    graphView
         .resolve(namespaceId)
         .filter(NamespaceNode.class::isInstance)
         .map(NamespaceNode.class::cast)
@@ -140,7 +140,7 @@ public final class CatalogSurfaceWritePolicy {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
     }
     CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-    return overlay
+    return graphView
         .resolve(tableId)
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
@@ -166,7 +166,7 @@ public final class CatalogSurfaceWritePolicy {
       throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
     }
     CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-    return overlay
+    return graphView
         .resolve(viewId)
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
@@ -216,7 +216,7 @@ public final class CatalogSurfaceWritePolicy {
     CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
     try {
-      return overlay.resolve(tableId).orElse(null);
+      return graphView.resolve(tableId).orElse(null);
     } catch (RuntimeException e) {
       return null;
     }
@@ -232,7 +232,7 @@ public final class CatalogSurfaceWritePolicy {
     CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
 
     try {
-      return overlay.resolve(viewId).orElse(null);
+      return graphView.resolve(viewId).orElse(null);
     } catch (RuntimeException e) {
       return null;
     }
@@ -264,7 +264,7 @@ public final class CatalogSurfaceWritePolicy {
     if (catalogId == null) {
       return List.of();
     }
-    return overlay.listSystemNamespaces(catalogId);
+    return graphView.listSystemNamespaces(catalogId);
   }
 
   private SystemPathMatch systemNamespacePathMatch(

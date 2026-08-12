@@ -23,25 +23,25 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.List;
 
-/** Light helper overlay used only by scanner module tests. */
-public class ScannerTestOverlay extends BaseTestCatalogOverlay {
+/** Light graph-view helper used only by scanner module tests. */
+public class ScannerTestGraphView extends BaseTestCatalogGraphView {
 
-  public ScannerTestOverlay addNode(GraphNode node) {
+  public ScannerTestGraphView addNode(GraphNode node) {
     super.addNode(node);
     return this;
   }
 
-  public ScannerTestOverlay addRelation(ResourceId namespaceId, RelationNode node) {
+  public ScannerTestGraphView addRelation(ResourceId namespaceId, RelationNode node) {
     super.addRelation(namespaceId, node);
     return this;
   }
 
-  public ScannerTestOverlay addFunction(ResourceId namespaceId, FunctionNode fn) {
+  public ScannerTestGraphView addFunction(ResourceId namespaceId, FunctionNode fn) {
     super.addFunction(namespaceId, fn);
     return this;
   }
 
-  public ScannerTestOverlay setTableSchema(ResourceId tableId, List<SchemaColumn> schema) {
+  public ScannerTestGraphView setTableSchema(ResourceId tableId, List<SchemaColumn> schema) {
     super.setTableSchema(tableId, schema);
     return this;
   }

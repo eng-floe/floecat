@@ -20,14 +20,14 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-class TestRefCatalogOverlay extends TestCatalogOverlay {
+class TestRefCatalogGraphView extends TestCatalogGraphView {
 
   private final List<TopologyGraph.NamespaceRef> namespaceRefs = new ArrayList<>();
   private final Map<ResourceId, List<TopologyGraph.RelationRef>> relationRefsByNamespace =
@@ -40,13 +40,13 @@ class TestRefCatalogOverlay extends TestCatalogOverlay {
   private String relationRefsByNameFailure;
   private Set<String> namespaceNames = Set.of();
 
-  TestRefCatalogOverlay withNamespaceRef(
+  TestRefCatalogGraphView withNamespaceRef(
       ResourceId namespaceId, String name, ResourceId catalogId, List<String> pathSegments) {
     namespaceRefs.add(new TopologyGraph.NamespaceRef(namespaceId, name, catalogId, pathSegments));
     return this;
   }
 
-  TestRefCatalogOverlay withRelationRef(
+  TestRefCatalogGraphView withRelationRef(
       ResourceId namespaceId, ResourceId relationId, String name, ResourceKind kind) {
     relationRefsByNamespace
         .computeIfAbsent(namespaceId, ignored -> new ArrayList<>())
@@ -54,22 +54,22 @@ class TestRefCatalogOverlay extends TestCatalogOverlay {
     return this;
   }
 
-  TestRefCatalogOverlay failNamespaceRefs(String message) {
+  TestRefCatalogGraphView failNamespaceRefs(String message) {
     namespaceRefsFailure = message;
     return this;
   }
 
-  TestRefCatalogOverlay failNamespaceRefsByName(String message) {
+  TestRefCatalogGraphView failNamespaceRefsByName(String message) {
     namespaceRefsByNameFailure = message;
     return this;
   }
 
-  TestRefCatalogOverlay failRelationRefs(String message) {
+  TestRefCatalogGraphView failRelationRefs(String message) {
     relationRefsFailure = message;
     return this;
   }
 
-  TestRefCatalogOverlay failRelationRefsByName(String message) {
+  TestRefCatalogGraphView failRelationRefsByName(String message) {
     relationRefsByNameFailure = message;
     return this;
   }

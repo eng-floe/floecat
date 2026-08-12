@@ -31,7 +31,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
@@ -70,12 +70,12 @@ class ConstraintProviderFactoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
-    CatalogOverlay overlay = mock(CatalogOverlay.class);
-    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
-            repository, snapshots, overlay, ConstraintProvider.NONE);
+            repository, snapshots, graphView, ConstraintProvider.NONE);
     long snapshotId = 101L;
     repository.putSnapshotConstraints(
         USER_TABLE, snapshotId, constraints(USER_TABLE, snapshotId, "pk_users"));
@@ -95,11 +95,11 @@ class ConstraintProviderFactoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
-    CatalogOverlay overlay = mock(CatalogOverlay.class);
-    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
-            repository, snapshots, overlay, ConstraintProvider.NONE);
+            repository, snapshots, graphView, ConstraintProvider.NONE);
     ConstraintProvider provider = factory.provider();
 
     assertTrue(provider.constraints(USER_TABLE, OptionalLong.empty()).isEmpty());
@@ -113,12 +113,12 @@ class ConstraintProviderFactoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
-    CatalogOverlay overlay = mock(CatalogOverlay.class);
-    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
-            repository, snapshots, overlay, ConstraintProvider.NONE);
+            repository, snapshots, graphView, ConstraintProvider.NONE);
     repository.putSnapshotConstraints(USER_TABLE, 100L, constraints(USER_TABLE, 100L, "pk_v100"));
     repository.putSnapshotConstraints(USER_TABLE, 200L, constraints(USER_TABLE, 200L, "pk_v200"));
     tables.create(
@@ -169,12 +169,12 @@ class ConstraintProviderFactoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
-    CatalogOverlay overlay = mock(CatalogOverlay.class);
-    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
-            repository, snapshots, overlay, ConstraintProvider.NONE);
+            repository, snapshots, graphView, ConstraintProvider.NONE);
     repository.putSnapshotConstraints(USER_TABLE, 100L, constraints(USER_TABLE, 100L, "pk_v100"));
 
     ConstraintProvider provider = factory.provider();
@@ -193,13 +193,13 @@ class ConstraintProviderFactoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
-    CatalogOverlay overlay = mock(CatalogOverlay.class);
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
     GraphNode systemNode = mock(GraphNode.class);
     when(systemNode.origin()).thenReturn(GraphNodeOrigin.SYSTEM);
     when(systemNode.kind()).thenReturn(GraphNodeKind.TABLE);
     when(systemNode.id()).thenReturn(SYSTEM_TABLE);
-    when(overlay.resolve(SYSTEM_TABLE)).thenReturn(Optional.of(systemNode));
-    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(SYSTEM_TABLE)).thenReturn(Optional.of(systemNode));
+    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
     long snapshotId = 202L;
     repository.putSnapshotConstraints(
@@ -225,7 +225,7 @@ class ConstraintProviderFactoryTest {
         };
 
     ConstraintProviderFactory factory =
-        ConstraintProviderFactory.forTesting(repository, snapshots, overlay, systemProvider);
+        ConstraintProviderFactory.forTesting(repository, snapshots, graphView, systemProvider);
     ConstraintProvider provider = factory.provider();
 
     var system = provider.constraints(SYSTEM_TABLE, OptionalLong.of(snapshotId)).orElseThrow();

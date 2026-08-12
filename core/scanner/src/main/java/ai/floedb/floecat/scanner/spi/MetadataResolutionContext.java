@@ -24,10 +24,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
-/** Shared context holding the overlay + catalog identity for metadata resolution. */
+/** Shared context holding the catalog graph view and catalog identity for metadata resolution. */
 public interface MetadataResolutionContext {
 
-  CatalogOverlay overlay();
+  CatalogGraphView graphView();
 
   ResourceId catalogId();
 
@@ -61,32 +61,32 @@ public interface MetadataResolutionContext {
   }
 
   static MetadataResolutionContext of(
-      CatalogOverlay overlay, ResourceId catalogId, EngineContext engineContext) {
-    return of(overlay, catalogId, engineContext, StatsProvider.NONE);
+      CatalogGraphView graphView, ResourceId catalogId, EngineContext engineContext) {
+    return of(graphView, catalogId, engineContext, StatsProvider.NONE);
   }
 
   static MetadataResolutionContext of(
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       ResourceId catalogId,
       EngineContext engineContext,
       StatsProvider statsProvider) {
-    return new DefaultMetadataResolutionContext(overlay, catalogId, engineContext, statsProvider);
+    return new DefaultMetadataResolutionContext(graphView, catalogId, engineContext, statsProvider);
   }
 
   final class DefaultMetadataResolutionContext implements MetadataResolutionContext {
 
-    private final CatalogOverlay overlay;
+    private final CatalogGraphView graphView;
     private final ResourceId catalogId;
     private final EngineContext engineContext;
     private final StatsProvider statsProvider;
     private final ConcurrentMap<Object, Object> memoizedValues;
 
     public DefaultMetadataResolutionContext(
-        CatalogOverlay overlay,
+        CatalogGraphView graphView,
         ResourceId catalogId,
         EngineContext engineContext,
         StatsProvider statsProvider) {
-      this.overlay = Objects.requireNonNull(overlay, "overlay");
+      this.graphView = Objects.requireNonNull(graphView, "graphView");
       this.catalogId = Objects.requireNonNull(catalogId, "catalogId");
       this.engineContext = engineContext == null ? EngineContext.empty() : engineContext;
       this.statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
@@ -94,8 +94,8 @@ public interface MetadataResolutionContext {
     }
 
     @Override
-    public CatalogOverlay overlay() {
-      return overlay;
+    public CatalogGraphView graphView() {
+      return graphView;
     }
 
     @Override

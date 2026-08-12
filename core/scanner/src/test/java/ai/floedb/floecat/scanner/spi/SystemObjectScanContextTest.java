@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.ScannerTestOverlay;
+import ai.floedb.floecat.scanner.utils.ScannerTestGraphView;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -32,7 +32,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void resolve_throws_whenMissing() {
-    CatalogOverlay view = new ScannerTestOverlay();
+    CatalogGraphView view = new ScannerTestGraphView();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -47,7 +47,7 @@ class SystemObjectScanContextTest {
 
   @Test
   void tryResolve_returnsEmptyWhenMissing() {
-    CatalogOverlay view = new ScannerTestOverlay();
+    CatalogGraphView view = new ScannerTestGraphView();
 
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
@@ -80,7 +80,7 @@ class SystemObjectScanContextTest {
             Map.of(), // engineHints
             Map.of()); // columnHints
 
-    ScannerTestOverlay view = new ScannerTestOverlay();
+    ScannerTestGraphView view = new ScannerTestGraphView();
     view.addNode(node);
 
     SystemObjectScanContext ctx =
@@ -114,7 +114,7 @@ class SystemObjectScanContextTest {
             Map.of(), // engineHints
             Map.of()); // columnHints
 
-    ScannerTestOverlay view = new ScannerTestOverlay();
+    ScannerTestGraphView view = new ScannerTestGraphView();
     view.addNode(node);
 
     SystemObjectScanContext ctx =
@@ -131,8 +131,8 @@ class SystemObjectScanContextTest {
   void resolve_propagatesExceptionFromView() {
     RuntimeException ex = new IllegalStateException("boom");
 
-    CatalogOverlay view =
-        new ScannerTestOverlay() {
+    CatalogGraphView view =
+        new ScannerTestGraphView() {
           @Override
           public Optional<GraphNode> resolve(ResourceId id) {
             throw ex;
@@ -172,7 +172,7 @@ class SystemObjectScanContextTest {
             Map.of(),
             Map.of());
 
-    ScannerTestOverlay view = new ScannerTestOverlay();
+    ScannerTestGraphView view = new ScannerTestGraphView();
     view.addRelation(ResourceId.getDefaultInstance(), t);
 
     SystemObjectScanContext ctx =
@@ -205,7 +205,7 @@ class SystemObjectScanContextTest {
             Map.of(), // columnHints
             Map.of()); // engineHints
 
-    ScannerTestOverlay view = new ScannerTestOverlay();
+    ScannerTestGraphView view = new ScannerTestGraphView();
     view.addRelation(ResourceId.getDefaultInstance(), v);
 
     SystemObjectScanContext ctx =
@@ -231,7 +231,7 @@ class SystemObjectScanContextTest {
             Map.of(), // properties
             Map.of()); // engineHints
 
-    ScannerTestOverlay view = new ScannerTestOverlay();
+    ScannerTestGraphView view = new ScannerTestGraphView();
     view.addNode(n);
 
     SystemObjectScanContext ctx =
@@ -250,7 +250,8 @@ class SystemObjectScanContextTest {
     ResourceId catalog = ResourceId.newBuilder().setId("cat").build();
 
     SystemObjectScanContext ctx =
-        new SystemObjectScanContext(new ScannerTestOverlay(), name, catalog, EngineContext.empty());
+        new SystemObjectScanContext(
+            new ScannerTestGraphView(), name, catalog, EngineContext.empty());
 
     assertThat(ctx.name()).isEqualTo(name);
     assertThat(ctx.queryDefaultCatalogId()).isEqualTo(catalog);

@@ -40,7 +40,7 @@ import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -80,7 +80,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject StatsOrchestrator statsOrchestrator;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
   @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
@@ -347,7 +347,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     var pc = principal.get();
     authz.require(pc, "table.write");
 
-    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(state.tableId, correlationId());
+    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(state.tableId, correlationId());
 
     snapshots
         .getById(state.tableId, state.snapshotId)

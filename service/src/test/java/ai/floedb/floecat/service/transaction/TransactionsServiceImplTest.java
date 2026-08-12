@@ -45,7 +45,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -669,14 +669,14 @@ class TransactionsServiceImplTest {
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
     var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
     var resolver = Mockito.mock(NameResolver.class);
-    var overlay = Mockito.mock(CatalogOverlay.class);
+    var graphView = Mockito.mock(CatalogGraphView.class);
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
     inject(service, "pointerStore", pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
-    inject(service, "overlay", overlay);
+    inject(service, "graphView", graphView);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -693,7 +693,7 @@ class TransactionsServiceImplTest {
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
     when(pointerStore.get(pointerKey))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(pointerKey).setVersion(7L).build()));
-    when(overlay.resolve(
+    when(graphView.resolve(
             ResourceId.newBuilder()
                 .setAccountId(accountId)
                 .setId(tableId)
@@ -852,13 +852,13 @@ class TransactionsServiceImplTest {
     var intentRepo = Mockito.mock(TransactionIntentRepository.class);
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
     var blobStore = Mockito.mock(BlobStore.class);
-    var overlay = Mockito.mock(CatalogOverlay.class);
+    var graphView = Mockito.mock(CatalogGraphView.class);
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
     inject(service, "pointerStore", pointerStore);
     inject(service, "blobStore", blobStore);
-    inject(service, "overlay", overlay);
+    inject(service, "graphView", graphView);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -884,7 +884,7 @@ class TransactionsServiceImplTest {
     when(pointerStore.get(targetKey))
         .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
-    when(overlay.resolve(
+    when(graphView.resolve(
             ResourceId.newBuilder()
                 .setAccountId(accountId)
                 .setId(tableId)
