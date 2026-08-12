@@ -238,21 +238,16 @@ public class StorageAuthorityResolver {
       List<String> sessionScopeLocations,
       boolean exactObjectScope) {
     AssumeRoleCacheKey key =
-        AssumeRoleCacheKey.of(
-            authority, authoritySecret, sessionScopeLocations, exactObjectScope);
+        AssumeRoleCacheKey.of(authority, authoritySecret, sessionScopeLocations, exactObjectScope);
     return cachedAssumeRole(
         key,
         () -> {
           if (authoritySecret != null
               && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
             return assumeRoleFromStaticSource(
-                authority,
-                authoritySecret.getAws(),
-                sessionScopeLocations,
-                exactObjectScope);
+                authority, authoritySecret.getAws(), sessionScopeLocations, exactObjectScope);
           }
-          return assumeRoleFromAmbientSource(
-              authority, sessionScopeLocations, exactObjectScope);
+          return assumeRoleFromAmbientSource(authority, sessionScopeLocations, exactObjectScope);
         });
   }
 
@@ -433,8 +428,7 @@ public class StorageAuthorityResolver {
     RuntimeException lastFailure = null;
     for (int attempt = 1; attempt <= ASSUME_ROLE_MAX_ATTEMPTS; attempt++) {
       try {
-        return assumeRoleOnce(
-            authority, providerFactory, sessionScopeLocations, exactObjectScope);
+        return assumeRoleOnce(authority, providerFactory, sessionScopeLocations, exactObjectScope);
       } catch (RuntimeException error) {
         if (!retryableAssumeRoleFailure(error) || attempt == ASSUME_ROLE_MAX_ATTEMPTS) {
           if (retryableAssumeRoleFailure(error)) {

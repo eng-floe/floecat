@@ -287,15 +287,9 @@ class StorageAuthorityResolverTest {
             .build();
 
     assumeRoleResolver.assumeRoleCredentials(
-        authority,
-        source,
-        java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"),
-        false);
+        authority, source, java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"), false);
     assumeRoleResolver.assumeRoleCredentials(
-        authority,
-        source,
-        java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"),
-        false);
+        authority, source, java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"), false);
 
     assertEquals(1, resolutions.get());
   }
