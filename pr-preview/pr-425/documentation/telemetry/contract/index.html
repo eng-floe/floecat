@@ -2328,6 +2328,42 @@
 <td>component, operation</td>
 </tr>
 <tr>
+<td>floecat.service.metadata_io.admission.saturated_waits.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Metadata-I/O admissions that found the concurrency ceiling saturated on arrival.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.metadata_io.admission.waiters</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Threads waiting for metadata-I/O admission.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.metadata_io.permits.capacity</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Configured process-wide metadata-I/O concurrency ceiling.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.metadata_io.permits.in_use</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Metadata-I/O admission permits held by in-flight store calls.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
 <td>floecat.service.reconcile.cancel_job.total</td>
 <td>COUNTER</td>
 <td></td>

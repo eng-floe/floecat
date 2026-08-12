@@ -1819,8 +1819,8 @@ written with the atomic <code>putIfAbsent</code> primitive before the resource C
 removed only after that CAS commits. Competing rotations allocate distinct immutable generations. A
 definite publication failure removes the unpublished generation. An acknowledgement-uncertain
 publication may leave an unreferenced generation because the service deliberately does not risk
-deleting a secret that a committed resource may reference. Reclamation is planned for a later PR;
-no reclamation mechanism is implemented in this change.</p>
+deleting a secret that a committed resource may reference. Durable cleanup records are drained by
+pointer GC once the generation is provably superseded.</p>
 <p>Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
 secrets are the only credential source used for client credential vending.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>

@@ -1871,6 +1871,8 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
 <li><code>enumerateSnapshots(...)</code> → <code>SnapshotBundle</code>s containing per-snapshot metadata.
     Connectors receive <code>SnapshotEnumerationOptions</code> with <code>fullRescan</code>, <code>knownSnapshotIds</code>, and
     optional <code>targetSnapshotIds</code> for scoped enumeration.</li>
+<li><code>planSnapshotFiles(...)</code> → optional immutable <code>SnapshotFilePlan</code> containing data files, delete
+    files, execution schema, and connector-native physical content identities.</li>
 <li><code>captureSnapshotTargetStats(...)</code> → targeted stats capture for one snapshot and optional selector
     hints (<code>#&lt;column_id&gt;</code> and/or connector-native names/paths).</li>
 <li><code>captureSnapshotTargetStatsDirect(...)</code> → optional connector-native snapshot capture that
@@ -1947,6 +1949,7 @@ session-zone semantics, convert explicitly before encoding stats.</p>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">listTables</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">namespaceFq</span><span class="p">);</span>
 <span class="w">  </span><span class="n">TableDescriptor</span><span class="w"> </span><span class="nf">describe</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">namespaceFq</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tableName</span><span class="p">);</span>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SnapshotBundle</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">enumerateSnapshots</span><span class="p">(...);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">SnapshotFilePlan</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">planSnapshotFiles</span><span class="p">(...);</span>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">TargetStatsRecord</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">captureSnapshotTargetStats</span><span class="p">(...);</span>
 <span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">DirectSnapshotStatsCapture</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">captureSnapshotTargetStatsDirect</span><span class="p">(...);</span>
 <span class="w">  </span><span class="n">FileGroupCaptureResult</span><span class="w"> </span><span class="nf">capturePlannedFileGroup</span><span class="p">(...);</span>
@@ -1961,11 +1964,19 @@ avoids unnecessary recapture.</p>
 <p>For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
-<code>TableDescriptor</code>, <code>SnapshotBundle</code>, and <code>ScanBundle</code> are immutable records; connectors populate them
-with canonical metadata that the reconciler ingests. <code>SnapshotBundle.fileStats</code> is optional but
-should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,
-and per-column stats for planner scan paths. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
-maps so downstream APIs can mirror Iceberg’s REST contract.</p>
+<code>TableDescriptor</code>, <code>SnapshotBundle</code>, <code>SnapshotFilePlan</code>, and <code>ScanBundle</code> are immutable records;
+connectors populate them with canonical metadata that the reconciler ingests. A
+<code>SnapshotBundle.parentId</code> of <code>-1</code> means the source snapshot has no predecessor. Snapshot bundles
+also carry manifest-list URIs, sequence numbers, summary maps, and metadata locations.</p>
+<p>Every <code>SnapshotFileEntry</code> and attached <code>SnapshotIcebergDeleteFile</code> supplies a stable
+<code>contentIdentity</code> derived only from immutable physical source metadata. It must change when the
+underlying file content identity changes and remain stable across snapshots that reference the same
+physical content. The reconciler combines it with file metadata, schema, partition, delete-vector,
+delete-file, and capture-policy state to produce stats and index compatibility fingerprints. An
+empty data-file content identity disables cross-snapshot reuse for that execution plan. Connectors
+should also identify attached delete files so their auxiliary fingerprints are bound to immutable
+source identity. Generating either identity must not read source file content, stats blobs, or index
+sidecars.</p>
 <p><code>ConnectorConfig</code> encodes:
 - Kind + source/destination selectors (<code>SourceSelector</code>, <code>DestinationTarget</code>).
 - URI and arbitrary <code>properties</code> map.
@@ -1996,7 +2007,9 @@ maps so downstream APIs can mirror Iceberg’s REST contract.</p>
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
       → enumerateSnapshots (metadata only)
-      → captureSnapshotTargetStats (stats capture per snapshot/selector scope)
+      → planSnapshotFiles (immutable file membership and physical identities)
+      → capturePlannedFileGroup (file-group stats and index capture)
+      → captureSnapshotTargetStatsDirect (connector-native direct stats when supported)
   ← close() cleans up HTTP/S3/DB connections
 </code></pre></div>
 <code>ConnectorFactory.create</code> is invoked both in <code>ConnectorsImpl.validate</code> (short-lived) and in the
