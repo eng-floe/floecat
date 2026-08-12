@@ -32,6 +32,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -81,11 +82,25 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       String requestHash,
       Timestamp createdAt,
       Timestamp expiresAt) {
+    return createPending(
+        accountId, key, opName, requestHash, ResourceId.getDefaultInstance(), createdAt, expiresAt);
+  }
+
+  @Override
+  public boolean createPending(
+      String accountId,
+      String key,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
     var rec =
         IdempotencyRecord.newBuilder()
             .setOpName(opName)
             .setRequestHash(requestHash)
             .setStatus(IdempotencyRecord.Status.PENDING)
+            .setResourceId(resourceId)
             .setCreatedAt(createdAt)
             .setExpiresAt(expiresAt)
             .build();
@@ -114,7 +129,7 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
   }
 
   @Override
-  public void finalizeSuccess(
+  public PointerStore.CasUpsert prepareSuccess(
       String accountId,
       String key,
       String opName,
@@ -124,6 +139,14 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       byte[] payloadBytes,
       Timestamp createdAt,
       Timestamp expiresAt) {
+    Pointer current =
+        ptr.get(key)
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "idempotency pending pointer missing: key=" + key));
+    IdempotencyRecord pending = readRecord(current);
+    requireMatchingPending(pending, opName, requestHash, resourceId, createdAt, expiresAt, key);
     var rec =
         IdempotencyRecord.newBuilder()
             .setOpName(opName)
@@ -138,29 +161,117 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     String uri = Keys.idempotencyBlobUri(accountId, key, "success-" + UUID.randomUUID());
     blobs.put(uri, rec.toByteArray(), "application/x-protobuf");
+    var next =
+        PointerReferences.asBlobPointer(
+                Pointer.newBuilder()
+                    .setKey(key)
+                    .setExpiresAt(expiresAt)
+                    .setVersion(current.getVersion() + 1L),
+                uri)
+            .build();
+    return new PointerStore.CasUpsert(key, current.getVersion(), next);
+  }
 
-    Pointer previous = null;
-    boolean updated = false;
+  @Override
+  public void finalizeSuccess(
+      String accountId,
+      String key,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      MutationMeta meta,
+      byte[] payloadBytes,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
+
     for (int i = 0; i < CAS_MAX; i++) {
       var current = ptr.get(key).orElse(null);
-      long expected = current != null ? current.getVersion() : 0L;
-      var next =
-          PointerReferences.asBlobPointer(
-                  Pointer.newBuilder().setKey(key).setExpiresAt(expiresAt).setVersion(expected + 1),
-                  uri)
-              .build();
-      if (ptr.compareAndSet(key, expected, next)) {
-        previous = current;
-        updated = true;
-        break;
+      if (current != null) {
+        IdempotencyRecord record = readRecord(current);
+        if (record.getStatus() == IdempotencyRecord.Status.SUCCEEDED) {
+          requireMatchingSuccess(record, opName, requestHash, resourceId, meta, payloadBytes, key);
+          return;
+        }
       }
+      PointerStore.CasUpsert prepared =
+          prepareSuccess(
+              accountId,
+              key,
+              opName,
+              requestHash,
+              resourceId,
+              meta,
+              payloadBytes,
+              createdAt,
+              expiresAt);
+      if (ptr.compareAndSetBatch(java.util.List.of(prepared))) {
+        if (current != null && !current.getBlobUri().equals(prepared.next().getBlobUri())) {
+          blobs.delete(current.getBlobUri());
+        }
+        return;
+      }
+      blobs.delete(prepared.next().getBlobUri());
     }
-    if (!updated) {
-      blobs.delete(uri);
-      throw new StorageAbortRetryableException("idempotency pointer not yet visible: key=" + key);
+    throw new StorageAbortRetryableException("idempotency pointer not yet stable: key=" + key);
+  }
+
+  private IdempotencyRecord readRecord(Pointer pointer) {
+    try {
+      byte[] bytes = blobs.get(pointer.getBlobUri());
+      if (bytes == null) {
+        throw new StorageAbortRetryableException(
+            "idempotency blob not yet visible: " + pointer.getBlobUri());
+      }
+      return IdempotencyRecord.parseFrom(bytes);
+    } catch (StorageNotFoundException missing) {
+      throw new StorageAbortRetryableException(
+          "idempotency blob not yet visible: " + pointer.getBlobUri());
+    } catch (StorageAbortRetryableException retryable) {
+      throw retryable;
+    } catch (Exception e) {
+      throw new CorruptionException(
+          "failed to parse idempotency record: " + pointer.getBlobUri(), e);
     }
-    if (previous != null && !previous.getBlobUri().equals(uri)) {
-      blobs.delete(previous.getBlobUri());
+  }
+
+  private static void requireMatchingPending(
+      IdempotencyRecord record,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      Timestamp createdAt,
+      Timestamp expiresAt,
+      String key) {
+    boolean reservedIdentityMatches =
+        !record.hasResourceId()
+            || record.getResourceId().equals(ResourceId.getDefaultInstance())
+            || record.getResourceId().equals(resourceId);
+    if (record.getStatus() != IdempotencyRecord.Status.PENDING
+        || !record.getOpName().equals(opName)
+        || !record.getRequestHash().equals(requestHash)
+        || !reservedIdentityMatches
+        || !record.getCreatedAt().equals(createdAt)
+        || !record.getExpiresAt().equals(expiresAt)) {
+      throw new StorageAbortRetryableException(
+          "idempotency pending record changed before completion: key=" + key);
+    }
+  }
+
+  private static void requireMatchingSuccess(
+      IdempotencyRecord record,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      MutationMeta meta,
+      byte[] payloadBytes,
+      String key) {
+    if (!record.getOpName().equals(opName)
+        || !record.getRequestHash().equals(requestHash)
+        || !record.getResourceId().equals(resourceId)
+        || !record.getMeta().equals(meta)
+        || !Objects.deepEquals(record.getPayload().toByteArray(), payloadBytes)) {
+      throw new CorruptionException(
+          "idempotency success record changed before completion: key=" + key, null);
     }
   }
 
