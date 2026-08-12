@@ -1272,6 +1272,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Resource Model &amp; Storage Layout">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#blob-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      Blob keys
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointer-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pointer keys
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -1605,6 +1629,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Resource Model &amp; Storage Layout">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#blob-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      Blob keys
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointer-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pointer keys
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -1633,50 +1681,139 @@
 
 <h1 id="storage-layout">Storage Layout<a class="headerlink" href="#storage-layout" title="Permanent link">&para;</a></h1>
 <h2 id="resource-model-storage-layout">Resource Model &amp; Storage Layout<a class="headerlink" href="#resource-model-storage-layout" title="Permanent link">&para;</a></h2>
-<p>Floecat stores every entity twice: the immutable protobuf payload lives in a BlobStore while a
-PointerStore entry (with versions) exposes hierarchical lookup and CAS updates. This design keeps
-history in blobs while enabling fast name-based resolution via pointers.</p>
-<p>This list is authoritative and should remain in sync with <code>service/src/main/java/ai/floedb/floecat/service/repo/model/Keys.java</code>.</p>
-<p>Blobs follow deterministic prefixes:</p>
+<p>Floecat normally stores catalog entities as immutable protobuf payloads in a BlobStore and exposes
+them through versioned PointerStore entries for hierarchical lookup and CAS updates. Operational
+state also uses pointer-only indexes, content-addressed blobs, and small inline payloads as described
+below. This design keeps history in blobs while enabling fast name-based resolution via pointers.</p>
+<p>This inventory is authoritative and should remain in sync with
+<code>service/src/main/java/ai/floedb/floecat/service/repo/model/Keys.java</code>. Values shown in braces are
+percent-encoded path segments unless the description says otherwise. Snapshot IDs and sortable
+timestamps marked <code>:019d</code> are zero-padded to 19 decimal digits. Snapshot <code>by-time</code> keys store the
+inverted timestamp and snapshot ID (<code>Long.MAX_VALUE - value</code>) so ascending scans return newest
+entries first.</p>
+<h3 id="blob-keys">Blob keys<a class="headerlink" href="#blob-keys" title="Permanent link">&para;</a></h3>
+<p>Resource and transaction blobs:</p>
 <div class="highlight"><pre><span></span><code>/accounts/{account_id}/account/{sha}.pb
 /accounts/{account_id}/catalogs/{catalog_id}/catalog/{sha}.pb
+/accounts/{account_id}/storage-authorities/{authority_id}/storage-authority/{sha}.pb
 /accounts/{account_id}/namespaces/{namespace_id}/namespace/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/table/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/snapshot/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/target-stats/{target_id}/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/file-stats/{file_path}/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id}/{sha}.pb
 /accounts/{account_id}/views/{view_id}/view/{sha}.pb
 /accounts/{account_id}/connectors/{connector_id}/connector/{sha}.pb
-/accounts/{account_id}/idempotency/{key}/idempotency.pb
-/accounts/{account_id}/idempotency/{key}/idempotency-{suffix}.pb
+/accounts/{account_id}/transactions/{tx_id}/transaction/{sha}.pb
+/accounts/{account_id}/transactions/{tx_id}/intent/{sha}.pb
+/accounts/{account_id}/transactions/{tx_id}/objects/{sha}.bin
+/accounts/{account_id}/transactions/{tx_id}/delete/{encoded_target_pointer_key}
 </code></pre></div>
-<p>Pointers capture hierarchy and name lookups:</p>
+<p>Table, snapshot, stats, constraints, and index blobs:</p>
+<div class="highlight"><pre><span></span><code>/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/snapshot/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/snapshots/current/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/root/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/root/manifest/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/manifests/{generation_id}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/{target_id_sha256}/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/index-artifacts/{target_id_sha256}/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/index-sidecars/{snapshot_id:019d}/{target_id}/{sha}.parquet
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/run-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/filters/{sha}.bf
+/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/packs/{sha}.pack
+/accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id:019d}/{sha}.pb
+</code></pre></div>
+<p><code>{target_id_sha256}</code> is the lowercase SHA-256 hex digest of the logical target identity. Reusable
+artifact-index objects at or below the inline threshold are embedded in their protobuf references
+and therefore have no blob key.</p>
+<p>Idempotency and reconcile blobs:</p>
+<div class="highlight"><pre><span></span><code>/accounts/{account_id}/idempotency/{key}/idempotency.pb
+/accounts/{account_id}/idempotency/{key}/idempotency-{suffix}.pb
+/accounts/{account_id}/reconcile/jobs/{job_id}/job-{suffix}.json
+/accounts/{account_id}/reconcile/jobs/{job_id}/result-{suffix}.json
+/accounts/{account_id}/reconcile/jobs/{job_id}/result-payloads/v1/snapshot-plans/{parent_job_id}/executions/{lease_epoch_sha256}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/worker-uploads/{job_id}/{lease_epoch_sha256}/...
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/...
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reuse-manifests/{manifest_sha256}.pb
+</code></pre></div>
+<h3 id="pointer-keys">Pointer keys<a class="headerlink" href="#pointer-keys" title="Permanent link">&para;</a></h3>
+<p>Catalog hierarchy, lookup indexes, and maintenance markers:</p>
 <div class="highlight"><pre><span></span><code>/accounts/by-id/{account_id}
 /accounts/by-name/{account_name}
 /accounts/{account_id}
 /accounts/{account_id}/catalogs/by-id/{catalog_id}
 /accounts/{account_id}/catalogs/by-name/{catalog_name}
+/accounts/{account_id}/storage-authorities/by-id/{authority_id}
+/accounts/{account_id}/storage-authorities/by-name/{authority_name}
 /accounts/{account_id}/namespaces/by-id/{namespace_id}
-/accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-path/{path}
+/accounts/{account_id}/catalogs/{catalog_id}/namespaces/by-path/{path...}
 /accounts/{account_id}/tables/by-id/{table_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/tables/by-name/{table_name}
 /accounts/{account_id}/views/by-id/{view_id}
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/views/by-name/{view_name}
-/accounts/{account_id}/tables/{table_id}/snapshots/by-id/{snapshot_id}
-/accounts/{account_id}/tables/{table_id}/snapshots/by-time/{timestamp}-{snapshot_id}
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/targets/{target_id}
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/files/{file_path}
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/constraints
-/accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id}
+/accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/relations/by-name/{relation_name}
 /accounts/{account_id}/connectors/by-id/{connector_id}
 /accounts/{account_id}/connectors/by-name/{connector_name}
-/accounts/{account_id}/idempotency/{operation}/{key}
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
+/accounts/{account_id}/gc/cas/generation-cursor
+/accounts/{account_id}/root-resyncs/by-table/{table_id}
 </code></pre></div>
-<p>Stats target identity is encoded in <code>{target_id}</code> and is the storage key component for all
-persisted table/column/expression stats at a given <code>(table_id, snapshot_id)</code>.</p>
+<p>Transaction and idempotency pointers:</p>
+<div class="highlight"><pre><span></span><code>/accounts/{account_id}/transactions/by-id/{tx_id}
+/accounts/{account_id}/transactions/by-target/{encoded_target_pointer_key}
+/accounts/{account_id}/transactions/{tx_id}/intents/{encoded_target_pointer_key}
+/accounts/{account_id}/idempotency/{operation}/{key}
+</code></pre></div>
+<p>Snapshot, stats-generation, constraint, compatibility, and index pointers:</p>
+<div class="highlight"><pre><span></span><code>/accounts/{account_id}/tables/{table_id}/snapshots/by-id/{snapshot_id:019d}
+/accounts/{account_id}/tables/{table_id}/snapshots/by-time/{inverted_timestamp:019d}-{inverted_snapshot_id:019d}
+/accounts/{account_id}/tables/{table_id}/snapshots/current
+/accounts/{account_id}/tables/{table_id}/root/current
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/targets-active
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/targets/{target_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/protections/{protection_id}/...
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/lifecycle
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/artifact-map
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/publication-intent
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/prepared-file-groups/{job_id}/{lease_epoch_sha256}
+/accounts/by-id/{account_id}/reconcile/deleted-stats-generations/{table_id}/{snapshot_id}/{generation_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/target-generations/{generation_id}/index-artifacts/{target_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/active-generation
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifest
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/compat/iceberg-rest/...
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/stats/constraints
+/accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id:019d}
+</code></pre></div>
+<p>Stats are generation-scoped. There is no standalone <code>file-stats</code> blob or pointer family: logical
+table, column, expression, and file target identities all enter through <code>{target_id}</code> in the active
+generation, while their blobs use <code>{target_id_sha256}</code>.</p>
+<p>Reconcile job pointers:</p>
+<div class="highlight"><pre><span></span><code>/accounts/{account_id}/reconcile/jobs/by-id/{job_id}
+/accounts/by-id/reconcile/jobs/by-id/{job_id}
+/accounts/{account_id}/reconcile/finalized-snapshots/by-id/{table_id}/{snapshot_id:019d}
+/accounts/by-id/reconcile/jobs/dirty-parents/{account_id}/{parent_job_id}
+/accounts/by-id/reconcile/jobs/cancellation-cleanup/{account_id}/{root_job_id}
+/accounts/{account_id}/reconcile/jobs/projections/by-id/{job_id}
+/accounts/{account_id}/reconcile/jobs/root-summaries/by-account/{sortable_job_token}
+/accounts/{account_id}/reconcile/jobs/root-summaries/by-connector/{connector_id}/{sortable_job_token}
+/accounts/{account_id}/reconcile/jobs/gc-quarantine/canonical/{canonical_key_hash}
+/accounts/{account_id}/reconcile/jobs/by-parent/{parent_job_id}/{job_id}
+/accounts/{account_id}/reconcile/jobs/by-connector/{connector_id}/{sortable_job_token}
+/accounts/by-id/reconcile/jobs/by-state/{state}/{sortable_timestamp:019d}/{account_id}/{job_id}
+/accounts/{account_id}/reconcile/jobs/by-state/{state}/{sortable_timestamp:019d}/{job_id}
+/accounts/{account_id}/reconcile/jobs/terminal-retention/{terminal_timestamp:019d}/{job_id}
+/accounts/{account_id}/reconcile/jobs/by-connector-state/{connector_id}/{state}/{sortable_timestamp:019d}/{job_id}
+/accounts/{account_id}/reconcile/job-leases/by-id/{job_id}
+/accounts/by-id/reconcile/job-leases/by-expiry/{expiry_timestamp:019d}/accounts/{account_id}/jobs/{job_id}
+/accounts/by-id/reconcile/jobs/ready/{due_timestamp:019d}/{account_id}/{lane_key}/{job_id}
+/accounts/by-id/reconcile/jobs/ready/by-execution-class/{execution_class}/{due_timestamp:019d}/{account_id}/{job_id}
+/accounts/by-id/reconcile/jobs/ready/by-execution-lane/{execution_lane}/{due_timestamp:019d}/{account_id}/{job_id}
+/accounts/by-id/reconcile/jobs/ready/by-pinned-executor/{executor_id}/{due_timestamp:019d}/{account_id}/{job_id}
+/accounts/by-id/reconcile/jobs/ready/by-job-kind/{job_kind}/{due_timestamp:019d}/{account_id}/{job_id}
+/accounts/{account_id}/reconcile/dedupe/{dedupe_key_hash}
+/accounts/{account_id}/reconcile/snapshot-owners/{table_id}/{snapshot_id:019d}
+/accounts/{account_id}/reconcile/snapshot-coverage-claims/{connector_id}/{source_namespace}/{source_table}/{table_id}/{snapshot_id:019d}/{source_revision}/{semantics_hash}
+/accounts/{account_id}/reconcile/lanes/{lane_key}
+/accounts/{account_id}/reconcile/jobs/gc-blob-cleanup/{job_id}
+</code></pre></div>
 <p>Constraint storage semantics:</p>
 <ul>
 <li>The persisted constraints unit is per table per snapshot (<code>.../constraints/by-snapshot/{snapshot_id}</code>).</li>
