@@ -4,7 +4,8 @@
 
 `client-cli/` packages a Picocli-based interactive shell backed by the same gRPC stubs used by the
 service. It is the quickest way for developers and operators to explore catalogs, namespaces, tables,
-connectors, storage authorities, and query-lifecycle workflows without writing bespoke clients.
+catalog integrations, overlays, legacy connectors, storage authorities, and query-lifecycle
+workflows without writing bespoke clients.
 
 The CLI runs as a Quarkus application, depends on generated RPC stubs, and includes helpers for
 fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing for column lists
@@ -53,6 +54,10 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
   while `query fetch-scan <query_id> <table_id>` requests the connector-provided `ScanFile` lists for
   an individual table.
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
+- `integrations` / `integration <subcommand>` – Manage upstream catalog identity, authentication,
+  and write-only credentials.
+- `overlays` / `overlay <subcommand>` – Define a top-level catalog backed by an integration,
+  optionally filtering namespaces.
 - `storage-authorities` / `storage-authority <subcommand>` – Manage storage credential authorities
   used by the Iceberg REST gateway to vend temporary object-store credentials.
 
@@ -87,6 +92,18 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
+
+Integration and overlay records currently provide CRUD configuration and credential lifecycle
+only. They do not connect to the upstream catalog, reconcile metadata, or affect query execution.
+To exercise the resource model from the Shell, create an integration and overlay:
+
+```text
+integration create lakehouse iceberg-rest https://catalog.example/v1 \
+  --auth-type bearer --cred token=secret
+overlay create sales-overlay lakehouse --include prod.sales
+```
+
+Legacy connector commands remain the operational path for external catalog connectivity.
 
 `connector jobs` shows a parent-job summary table by default. Use
 `connector jobs --child <parent-job-id>` to render the descendant job tree rooted at that job.

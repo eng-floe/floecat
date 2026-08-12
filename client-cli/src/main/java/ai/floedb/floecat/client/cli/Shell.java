@@ -31,6 +31,8 @@ import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.client.cli.util.AuthHeaderInterceptor;
 import ai.floedb.floecat.client.cli.util.OidcClientCredentialsTokenProvider;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogOverlaysGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
@@ -63,9 +65,12 @@ import picocli.CommandLine;
 @CommandLine.Command(
     name = "floecat-shell",
     version = "floecat-shell 0.1",
-    description = "Interactive CLI to browse and manage catalogs/namespaces/tables/connectors")
+    description =
+        "Interactive CLI to manage catalogs, integrations, overlays, tables, and connectors")
 @jakarta.inject.Singleton
 public class Shell implements Runnable {
+
+  static final String SENSITIVE_HISTORY_PATTERN = "*--cred *:*--cred-head *";
 
   @CommandLine.Option(
       names = {"-h", "--help"},
@@ -185,6 +190,14 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations;
+
+  @Inject
+  @GrpcClient("floecat")
+  CatalogOverlaysGrpc.CatalogOverlaysBlockingStub overlays;
+
+  @Inject
+  @GrpcClient("floecat")
   ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
 
   @Inject
@@ -250,6 +263,8 @@ public class Shell implements Runnable {
               .tables(tables)
               .viewService(viewService)
               .connectors(connectors)
+              .integrations(integrations)
+              .overlays(overlays)
               .reconcileControl(reconcileControl)
               .snapshots(snapshots)
               .statistics(statistics)
@@ -282,6 +297,10 @@ public class Shell implements Runnable {
               "table",
               "connectors",
               "connector",
+              "integrations",
+              "integration",
+              "overlays",
+              "overlay",
               "resolve",
               "describe",
               "snapshots",
@@ -302,6 +321,7 @@ public class Shell implements Runnable {
               .parser(parser)
               .completer(completer)
               .variable(LineReader.HISTORY_FILE, historyPath)
+              .variable(LineReader.HISTORY_IGNORE, SENSITIVE_HISTORY_PATTERN)
               .option(LineReader.Option.HISTORY_TIMESTAMPED, true)
               .build();
       Runtime.getRuntime()
@@ -559,6 +579,21 @@ public class Shell implements Runnable {
          query end <query_id> [--commit|--abort]
          query get <query_id>
          query fetch-scan <query_id> <table_id>
+         integrations
+         integration get <name|id>
+         integration create <name> <iceberg-rest|unity> <uri> --auth-type <type>
+             [--auth k=v ...] [--cred k=v ...]
+         integration update <name|id> --display <name> [--etag <etag>]
+         integration update-auth <name|id> --auth-type <type>
+             [--auth k=v ...] [--cred k=v ...] [--etag <etag>]
+         integration delete <name|id> [--cascade] [--etag <etag>]
+         overlays [--integration <name|id>]
+         overlay get <name|id>
+         overlay create <name> <integration>
+             [--include ns[,ns...]] [--exclude ns[,ns...]]
+         overlay update <name|id> [--display <name>]
+             [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
+         overlay delete <name|id> [--etag <etag>]
          connectors
          connector list [--kind <KIND>]
          connector get <display_name|id>
@@ -698,6 +733,8 @@ public class Shell implements Runnable {
     snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
     viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
     connectors = ConnectorsGrpc.newBlockingStub(overrideChannel);
+    integrations = CatalogIntegrationsGrpc.newBlockingStub(overrideChannel);
+    overlays = CatalogOverlaysGrpc.newBlockingStub(overrideChannel);
     reconcileControl = ReconcileControlGrpc.newBlockingStub(overrideChannel);
     queries = QueryServiceGrpc.newBlockingStub(overrideChannel);
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
@@ -881,6 +918,8 @@ public class Shell implements Runnable {
     snapshots = snapshots.withInterceptors(authInterceptor);
     viewService = viewService.withInterceptors(authInterceptor);
     connectors = connectors.withInterceptors(authInterceptor);
+    integrations = integrations.withInterceptors(authInterceptor);
+    overlays = overlays.withInterceptors(authInterceptor);
     reconcileControl = reconcileControl.withInterceptors(authInterceptor);
     queries = queries.withInterceptors(authInterceptor);
     queryScan = queryScan.withInterceptors(authInterceptor);

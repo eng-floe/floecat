@@ -76,6 +76,7 @@ nav:
       - Arrow Flight: arrow-flight.md
   - Catalog and Metadata:
       - Catalog Integration Architecture and Delivery Plan: catalog-integration-design.md
+      - Catalog Integrations and Overlays: catalog-integrations.md
       - Metadata Graph: metadata-graph.md
       - System Objects: system-objects.md
       - System Scans: system-scans.md
