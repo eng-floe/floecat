@@ -5,7 +5,7 @@ implemented in the current PR stack.
 
 This document records both the target architecture and the boundary of each stacked change. It is
 aligned with the Catalog Integration and Catalog Overlay SQL specification. It distinguishes code
-already present below this change, code in the following PR, and work that remains deferred.
+implemented in the following stacked changes from work that remains deferred.
 
 ## Stack implementation map
 
@@ -13,7 +13,7 @@ already present below this change, code in the following PR, and work that remai
 | --- | --- | --- |
 | #424, Catalog Integration and Overlay APIs | CRUD resources, typed authentication, write-only credential storage and rotation, shared SQL catalog-name reservation, idempotency, optimistic concurrency, dependencies, cascade deletion, and atomic persistence primitives | Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility |
 | #425, Shell CLI | Integration and Overlay CRUD commands, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions | Connectivity validation, discovery, capture, reconciliation, and query visibility |
-| #439, this document | Architecture decisions and delivery boundaries | Production behavior |
+| #446, this document | Architecture decisions and delivery boundaries | Production behavior |
 | #440, catalog-access SPI | Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table loading, OAuth2, SigV4, and renewable AWS credential support | Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture |
 
 ## Goals
@@ -231,8 +231,8 @@ or authentication combinations must fail explicitly.
    idempotency, dependency, cascade, and cleanup primitives.
 2. **Complete — #425:** CLI coverage for those APIs, including typed authentication and write-only
    credential input for create and rotation commands.
-3. **This change — #439:** keep the architecture and delivery record aligned with implemented code.
-4. **Implemented in the following PR — #440:** neutral catalog-access SPI and Iceberg REST vertical
+3. **This change — #446:** keep the architecture and delivery record aligned with implemented code.
+4. **Implemented later in the stack — #440:** neutral catalog-access SPI and Iceberg REST vertical
    slice.
 5. **Next:** Integration-to-SPI adapter and SQL-required validation/discovery RPCs.
 6. **Later:** canonical capture/bindings, scheduling, query visibility, garbage collection,
