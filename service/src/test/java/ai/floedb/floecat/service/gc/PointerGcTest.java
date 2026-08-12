@@ -117,6 +117,25 @@ class PointerGcTest {
     assertTrue(pointers.get(statsPtr).isEmpty());
   }
 
+  @Test
+  void deletesStaleCatalogOverlaySecondaryPointer() {
+    System.setProperty("floecat.gc.pointer.min-age-ms", "0");
+    String currentBlob = Keys.catalogOverlayBlobUri(ACCOUNT_ID, "overlay-1", "sha-current");
+    String staleBlob = Keys.catalogOverlayBlobUri(ACCOUNT_ID, "overlay-1", "sha-stale");
+    blobs.put(currentBlob, "current".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(staleBlob, "stale".getBytes(StandardCharsets.UTF_8), "text/plain");
+    String canonical = Keys.catalogOverlayPointerById(ACCOUNT_ID, "overlay-1");
+    String secondary =
+        Keys.catalogOverlayPointerByIntegration(ACCOUNT_ID, "integration-1", "overlay-1");
+    putPointer(canonical, currentBlob);
+    putPointer(secondary, staleBlob);
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(pointers.get(canonical).isPresent());
+    assertTrue(pointers.get(secondary).isEmpty());
+  }
+
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
     pointers.compareAndSet(key, 0L, ptr);

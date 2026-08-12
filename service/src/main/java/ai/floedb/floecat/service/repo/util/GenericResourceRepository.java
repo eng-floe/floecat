@@ -180,10 +180,24 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    */
   public List<ResourceWithMeta<T>> listByPrefixWithMeta(
       String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithMeta(prefix, limit, token, nextOut, false);
+  }
+
+  /** Strongly consistent variant used by lifecycle scans whose emptiness is load-bearing. */
+  public List<ResourceWithMeta<T>> listByPrefixWithMetaConsistent(
+      String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithMeta(prefix, limit, token, nextOut, true);
+  }
+
+  private List<ResourceWithMeta<T>> listByPrefixWithMeta(
+      String prefix, int limit, String token, StringBuilder nextOut, boolean consistentRead) {
     return observeRepository(
-        "list_by_prefix_with_meta",
+        consistentRead ? "list_by_prefix_with_meta_consistent" : "list_by_prefix_with_meta",
         () -> {
-          List<Pointer> pointers = pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
+          List<Pointer> pointers =
+              consistentRead
+                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           List<ResourceWithMeta<T>> values = new ArrayList<>(pointers.size());
           Timestamp now = Timestamps.fromMillis(clock.millis());
           for (Pointer selectedPointer : pointers) {
@@ -1046,6 +1060,22 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       T replacementValue,
       PointerConditions conditions,
       Map<String, Long> pointerVersionsToDelete) {
+    return replaceIdentityWithMeta(
+        currentValue,
+        expectedCanonicalVersion,
+        replacementValue,
+        conditions,
+        pointerVersionsToDelete,
+        List.of());
+  }
+
+  public Optional<ResourceWithMeta<T>> replaceIdentityWithMeta(
+      T currentValue,
+      long expectedCanonicalVersion,
+      T replacementValue,
+      PointerConditions conditions,
+      Map<String, Long> pointerVersionsToDelete,
+      List<PointerStore.CasOp> companions) {
     Map<String, Long> requiredPointerVersions = conditions.requiredVersions();
     Set<String> requiredAbsentPointers = conditions.requiredAbsent();
     Map<String, Long> markerVersions = conditions.markerVersions();
@@ -1144,6 +1174,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
           }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "replacement");
+          for (PointerStore.CasOp companion : companions) {
+            if (!batchedKeys.add(companion.key())) {
+              throw new IllegalArgumentException(
+                  "companion operation duplicates pointer: " + companion.key());
+            }
+            ops.add(companion);
+          }
 
           if (!mutationPointerStore.compareAndSetBatch(ops)) {
             return Optional.empty();

@@ -48,6 +48,7 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -69,6 +70,7 @@ import org.jboss.logging.Logger;
 public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
   @Inject ViewRepository viewRepo;
+  @Inject CatalogRepository catalogRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -96,7 +98,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(overlay);
+    return new CatalogSurfaceWritePolicy(overlay, catalogRepo);
   }
 
   @Override

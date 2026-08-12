@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -57,6 +58,7 @@ class AccountServiceImplTest {
     service.accountRepo = mock(AccountRepository.class);
     service.catalogRepo = mock(CatalogRepository.class);
     service.catalogIntegrationRepo = mock(CatalogIntegrationRepository.class);
+    service.catalogOverlayRepo = mock(CatalogOverlayRepository.class);
     service.namespaceRepo = mock(NamespaceRepository.class);
     service.tableRepo = mock(TableRepository.class);
     service.tableRootRepo = mock(TableRootRepository.class);
@@ -90,21 +92,21 @@ class AccountServiceImplTest {
   @Test
   void descendantCleanupFailureRetriesBehindDurableDeletionFence() {
     MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
-    ResourceId connectorId =
+    ResourceId overlayId =
         ResourceId.newBuilder()
             .setAccountId("acct")
-            .setId("connector")
-            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("overlay")
+            .setKind(ResourceKind.RK_CATALOG_OVERLAY)
             .build();
-    Connector connector = Connector.newBuilder().setResourceId(connectorId).build();
+    CatalogOverlay overlay = CatalogOverlay.newBuilder().setResourceId(overlayId).build();
     when(service.accountRepo.metaFor(accountId))
         .thenReturn(meta)
         .thenThrow(new BaseResourceRepository.NotFoundException("deleted"));
     when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
-    when(service.connectorRepo.listConsistent(eq("acct"), eq(200), anyString(), any()))
-        .thenReturn(List.of(connector), List.of(connector));
-    when(service.connectorRepo.delete(connectorId)).thenReturn(false, true);
-    when(service.connectorRepo.getById(connectorId)).thenReturn(Optional.of(connector));
+    when(service.catalogOverlayRepo.listConsistent(eq("acct"), eq(200), anyString(), any()))
+        .thenReturn(List.of(overlay), List.of(overlay));
+    when(service.catalogOverlayRepo.delete(overlayId)).thenReturn(false, true);
+    when(service.catalogOverlayRepo.getById(overlayId)).thenReturn(Optional.of(overlay));
 
     var response =
         service
@@ -115,7 +117,7 @@ class AccountServiceImplTest {
     assertEquals(meta, response.getMeta());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
     verify(service.accountRepo).deleteWithPrecondition(accountId, 7L);
-    verify(service.connectorRepo, org.mockito.Mockito.times(2)).delete(connectorId);
+    verify(service.catalogOverlayRepo, org.mockito.Mockito.times(2)).delete(overlayId);
   }
 
   private static void installBasePrincipal(

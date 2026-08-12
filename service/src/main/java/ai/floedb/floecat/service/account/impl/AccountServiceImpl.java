@@ -49,6 +49,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -82,6 +83,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject AccountRepository accountRepo;
   @Inject CatalogRepository catalogRepo;
   @Inject CatalogIntegrationRepository catalogIntegrationRepo;
+  @Inject CatalogOverlayRepository catalogOverlayRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject TableRootRepository tableRootRepo;
@@ -499,12 +501,14 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     var summary = new AccountCleanupSummary(accountKey);
     CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
     try {
+      cleanupCatalogOverlays(accountKey, summary);
       cleanupCatalogIntegrations(accountKey, summary);
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s catalog_integrations=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s catalog_overlays=%d catalog_integrations=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
           summary.accountId,
+          summary.catalogOverlaysDeleted,
           summary.catalogIntegrationsDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
@@ -516,6 +520,19 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
+    }
+  }
+
+  private void cleanupCatalogOverlays(String accountId, AccountCleanupSummary summary) {
+    for (var overlay :
+        listAllPages(
+            (token, next) -> catalogOverlayRepo.listConsistent(accountId, 200, token, next))) {
+      if (catalogOverlayRepo.delete(overlay.getResourceId())) {
+        summary.catalogOverlaysDeleted++;
+      } else if (catalogOverlayRepo.getById(overlay.getResourceId()).isPresent()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "catalog overlay changed during account cleanup");
+      }
     }
   }
 
@@ -718,6 +735,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int connectorsDeleted;
+    private int catalogOverlaysDeleted;
     private int catalogIntegrationsDeleted;
     private int credentialsDeleted;
     private int catalogsDeleted;

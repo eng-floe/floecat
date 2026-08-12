@@ -393,7 +393,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(overlay);
+    return new CatalogSurfaceWritePolicy(overlay, catalogRepo);
   }
 
   private Catalog applyCatalogSpecPatch(

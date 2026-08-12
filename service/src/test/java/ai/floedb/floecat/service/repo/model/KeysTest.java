@@ -183,6 +183,9 @@ class KeysTest {
         Keys.catalogIntegrationPointerById("a c", "int 1"),
         Keys.ownerPointerKeyForBlob(Keys.catalogIntegrationBlobUri("a c", "int 1", "sha")));
     assertEquals(
+        Keys.catalogOverlayPointerById("a c", "over 1"),
+        Keys.ownerPointerKeyForBlob(Keys.catalogOverlayBlobUri("a c", "over 1", "sha")));
+    assertEquals(
         Keys.tableRootByTable("a c", "tbl 1"),
         Keys.ownerPointerKeyForBlob(Keys.tableRootBlobUri("a c", "tbl 1", "sha")));
     assertEquals(

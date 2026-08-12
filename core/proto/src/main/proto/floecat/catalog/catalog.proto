@@ -31,6 +31,10 @@ message Catalog {
   optional string connector_ref = 4;
   optional string policy_ref = 5;
   google.protobuf.Timestamp created_at = 6;
+  // Set when this catalog is owned by a catalog overlay. An owned catalog is listed and read like
+  // any other catalog, but is created, renamed, and deleted only through its overlay and rejects
+  // direct mutation. Unset for directly managed catalogs.
+  optional ai.floedb.floecat.common.ResourceId overlay_id = 7;
   map<string,string> properties = 99;
 }
 
