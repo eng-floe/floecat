@@ -43,10 +43,12 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -74,6 +76,7 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
+  @Inject CatalogIntegrationRepository catalogIntegrationRepo;
   @Inject TableRootRepository tableRootRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -84,6 +87,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject DefaultCredentialResolver credentialResolver;
   @Inject SecretsManager secretsManager;
   @Inject Instance<DurableReconcileJobStore> durableReconcileJobStore;
+  @Inject CatalogIntegrationCredentialCleanup catalogIntegrationCredentialCleanup;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -534,6 +538,11 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
               Keys.storageAuthorityPointerByIdPrefix(accountKey),
               accountKey,
               ResourceKind.RK_STORAGE_AUTHORITY);
+      List<ResourceId> catalogIntegrations =
+          listCanonicalResourceIds(
+              Keys.catalogIntegrationPointerByIdPrefix(accountKey),
+              accountKey,
+              ResourceKind.RK_CATALOG_INTEGRATION);
       List<ResourceId> connectors =
           listCanonicalResourceIds(
               Keys.connectorPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CONNECTOR);
@@ -550,8 +559,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           listCanonicalResourceIds(
               Keys.viewPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_VIEW);
 
+      List<ai.floedb.floecat.integration.rpc.CatalogIntegration>
+          integrationsWithScheduledCredentialCleanup =
+              scheduleCatalogIntegrationCredentialCleanup(catalogIntegrations, summary);
       cleanupStorageAuthorityCredentials(accountKey, storageAuthorities, summary);
       cleanupConnectorCredentials(accountKey, connectors, summary);
+      summary.catalogIntegrationsDeleted = catalogIntegrations.size();
       summary.catalogsDeleted = catalogs.size();
       summary.namespacesDeleted = namespaces.size();
       summary.tablesDeleted = tables.size();
@@ -568,21 +581,25 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       summary.accountPointersDeleted +=
           pointerStore.deleteByPrefixExcluding(accountPrefix, deletionFence);
       assertAccountPointerSweepComplete(accountPrefix, deletionFence);
+      integrationsWithScheduledCredentialCleanup.forEach(
+          catalogIntegrationCredentialCleanup::cleanIfSuperseded);
       // The durable root pointers are gone; purge their read-your-writes cache entries as well.
       for (ResourceId tableId : tables) {
         tableRootRepo.purgeRoot(tableId);
       }
       invalidateAll(storageAuthorities);
       invalidateAll(connectors);
+      invalidateAll(catalogIntegrations);
       invalidateAll(catalogs);
       invalidateAll(namespaces);
       invalidateAll(tables);
       invalidateAll(views);
       summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
           summary.accountId,
           summary.accountPointersDeleted,
+          summary.catalogIntegrationsDeleted,
           summary.storageAuthoritiesDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
@@ -596,6 +613,31 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
     }
+  }
+
+  private List<ai.floedb.floecat.integration.rpc.CatalogIntegration>
+      scheduleCatalogIntegrationCredentialCleanup(
+          List<ResourceId> integrationIds, AccountCleanupSummary summary) {
+    var scheduled = new ArrayList<ai.floedb.floecat.integration.rpc.CatalogIntegration>();
+    for (ResourceId integrationId : integrationIds) {
+      try {
+        catalogIntegrationRepo
+            .getById(integrationId)
+            .filter(catalogIntegrationCredentialCleanup::schedule)
+            .ifPresent(
+                integration -> {
+                  scheduled.add(integration);
+                  summary.credentialsDeleted++;
+                });
+      } catch (BaseResourceRepository.CorruptionException corruption) {
+        CLEANUP_LOG.warnf(
+            corruption,
+            "account_delete_cleanup_skipping_corrupt_catalog_integration account_id=%s integration_id=%s",
+            integrationId.getAccountId(),
+            integrationId.getId());
+      }
+    }
+    return List.copyOf(scheduled);
   }
 
   private void cleanupStorageAuthorityCredentials(
@@ -699,6 +741,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int accountPointersDeleted;
+    private int catalogIntegrationsDeleted;
     private int storageAuthoritiesDeleted;
     private int connectorsDeleted;
     private int credentialsDeleted;

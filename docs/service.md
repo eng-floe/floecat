@@ -27,7 +27,7 @@ query lifecycle / scan bundle logic.
 │  ├─ Interceptors (context, localization, metering)                         │
 │  ├─ Security (PrincipalProvider, Authorizer)                               │
 │  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Account,           │
-│  │            Directory, Statistics, Connectors, QueryService)             │
+│  │       Directory, Statistics, Integrations, Connectors, QueryService)      │
 │  ├─ QueryService (QueryContextStore, QueryServiceImpl)                     │
 │  ├─ Repositories (CatalogRepository, NamespaceRepository, TableRepository, │
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
@@ -47,7 +47,7 @@ query lifecycle / scan bundle logic.
   production identity providers.
 - `service/repo` – Resource repositories layering pointer/blob stores and parsing protobuf payloads;
   includes key generation utilities (`Keys`, `ResourceKey`) and value normalizers.
-- `service/catalog` / `directory` / `account` / `statistics` / `connector` – gRPC service
+- `service/catalog` / `directory` / `account` / `statistics` / `integration` / `connector` – gRPC service
   implementations.
 - `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
@@ -79,7 +79,39 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   client-streaming `PutTargetStats` to batch writes per stream.
 - **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
-- **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
+- **AccountServiceImpl** – Administers accounts and enforces conventional permissions. Account
+  deletion installs a durable write fence, then uses strongly consistent enumeration to remove
+  catalog integrations before legacy connectors and local catalog descendants. Retrying a
+  committed account delete resumes cleanup using the deletion record's original mutation metadata.
+- **CatalogIntegrationsImpl** – Provides CRUD for external catalog identity records. The contract is
+  intentionally independent of legacy Connectors. It persists typed non-secret authentication
+  configuration for OAuth client credentials, bearer tokens, AWS assume-role/access-key, and AWS
+  SigV4. Secret values are accepted only in write-only credential messages, stored through the
+  SecretsManager under a deterministic integration-ID/credential-generation key, and never included
+  in resource responses. A typed credential-store resolver is available to follow-on catalog clients. A dedicated
+  authentication update RPC replaces configuration and rotates credentials while advancing a
+  visible credential generation. Unity integrations accept OAuth or bearer authentication; Iceberg
+  REST integrations accept every structurally valid authentication form the API supports.
+  Vendor/endpoint-specific compatibility is intentionally deferred to adapter selection and
+  validation in a follow-on change; this service does not yet perform connectivity validation or
+  reconciliation. Catalog endpoint URIs must
+  be hierarchical HTTP(S) URLs and cannot contain user-info, secret-bearing query parameters, or
+  fragments. Type and endpoint are immutable through update. The API exposes `CM_REPLACE` and
+  `CM_RETURN_EXISTING` as create-conflict primitives.
+  Replacement publishes a new resource identity and atomically swaps the name pointer before the
+  old identity is removed. Idempotent creates publish the
+  immutable success receipt in the same pointer transaction as the resource, so a retry never
+  rebuilds its response from subsequently mutable state. Creates carrying credentials support
+  idempotency. Secret values are excluded from durable request fingerprints and receipts, so the
+  first successfully published credential value wins for retries of the same key. Credential writes
+  happen before resource publication; definite publication failures remove the unpublished
+  generation, and replaced credentials are deleted only after the resource CAS commits. If the
+  publication acknowledgement is uncertain, the new secret is retained so a visible integration can
+  never reference a deleted secret. Durable cleanup records are drained after the generation is
+  provably superseded.
+  Get accepts either resource ID or
+  exact display name. Reads require
+  `catalog-integration.read`; writes require `catalog-integration.write`.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
   `CaptureNow` maps to reconciler capture modes:

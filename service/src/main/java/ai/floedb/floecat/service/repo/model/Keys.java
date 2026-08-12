@@ -56,6 +56,8 @@ public final class Keys {
   public static final String SEG_IDEMPOTENCY = "/idempotency/";
   public static final String SEG_MARKERS = "/markers/";
   public static final String SEG_TRANSACTIONS = "/transactions/";
+  public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
+      "/catalog-integration-credential-cleanup/";
 
   private static String req(String name, String v) {
     if (v == null || v.isBlank()) {
@@ -99,6 +101,20 @@ public final class Keys {
 
   public static String encodeSegment(String s) {
     return encode(s);
+  }
+
+  public static String catalogIntegrationCredentialCleanupPrefix() {
+    return SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP;
+  }
+
+  public static String catalogIntegrationCredentialCleanupPointer(
+      String accountId, String integrationId, long generation) {
+    return SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP
+        + encode(req("account_id", accountId))
+        + "/"
+        + encode(req("integration_id", integrationId))
+        + "/"
+        + reqPositive("generation", generation);
   }
 
   private static String joinPathSegments(List<String> segments) {
@@ -1025,6 +1041,58 @@ public final class Keys {
         "/accounts/%s/connectors/%s/connector/%s.pb", encode(tid), encode(cid), encode(sha));
   }
 
+  // ===== Catalog Integration =====
+
+  public static String catalogIntegrationPointerById(String accountId, String integrationId) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/by-id/" + encode(iid);
+  }
+
+  public static String catalogIntegrationPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/by-id/";
+  }
+
+  public static String catalogIntegrationRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/";
+  }
+
+  public static String catalogIntegrationPointerByName(String accountId, String displayName) {
+    String tid = req("account_id", accountId);
+    String name = req("display_name", displayName);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/by-name/" + encode(name);
+  }
+
+  public static String catalogIntegrationPointerByNamePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/by-name/";
+  }
+
+  /** Fixed-key generation marker advanced by every overlay creation for this integration. */
+  public static String catalogIntegrationOverlaysMarker(String accountId, String integrationId) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/overlays-marker/" + encode(iid);
+  }
+
+  public static String catalogIntegrationDeletionMarker(String accountId, String integrationId) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    return "/accounts/" + encode(tid) + "/catalog-integrations/deleting/" + encode(iid);
+  }
+
+  public static String catalogIntegrationBlobUri(
+      String accountId, String integrationId, String sha256) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/catalog-integrations/%s/integration/%s.pb",
+        encode(tid), encode(iid), encode(sha));
+  }
+
   // ===== Idempotency =====
 
   public static String idempotencyKey(String accountId, String operation, String key) {
@@ -1855,6 +1923,10 @@ public final class Keys {
       case "storage-authorities" ->
           seg.length == 6 && "storage-authority".equals(seg[4])
               ? storageAuthorityPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "catalog-integrations" ->
+          seg.length == 6 && "integration".equals(seg[4])
+              ? catalogIntegrationPointerById(account, percentDecode(seg[3]))
               : null;
       case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
       default -> null;

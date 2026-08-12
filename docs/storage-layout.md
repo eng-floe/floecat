@@ -26,6 +26,7 @@ Resource and transaction blobs:
 /accounts/{account_id}/tables/{table_id}/table/{sha}.pb
 /accounts/{account_id}/views/{view_id}/view/{sha}.pb
 /accounts/{account_id}/connectors/{connector_id}/connector/{sha}.pb
+/accounts/{account_id}/catalog-integrations/{integration_id}/integration/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/transaction/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/intent/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/objects/{sha}.bin
@@ -89,11 +90,29 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/relations/by-name/{relation_name}
 /accounts/{account_id}/connectors/by-id/{connector_id}
 /accounts/{account_id}/connectors/by-name/{connector_name}
+/accounts/{account_id}/catalog-integrations/by-id/{integration_id}
+/accounts/{account_id}/catalog-integrations/by-name/{integration_name}
+/accounts/{account_id}/catalog-integrations/overlays-marker/{integration_id}
+/accounts/{account_id}/catalog-integrations/deleting/{integration_id}
+/accounts/{account_id}/deleting
+/catalog-integration-credential-cleanup/{account_id}/{integration_id}/{generation}
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 ```
+
+Catalog integration secret payloads are stored outside the resource blob through SecretsManager:
+
+```
+accounts/{account_id}/catalog-integrations/{integration_id}:{credential_generation}
+```
+
+The key is derived internally from the persisted integration identity and credential generation; it
+is not present in the resource payload. A new secret is written before publishing the matching
+generation; an old secret is deleted only after the resource mutation commits. Definite failures
+delete an unpublished generation. Durable cleanup records retain other candidates until pointer GC
+can prove that their generation is no longer referenced.
 
 Transaction and idempotency pointers:
 

@@ -36,6 +36,12 @@ public class MarkerStore {
     return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);
   }
 
+  public long catalogIntegrationOverlaysMarkerVersion(ResourceId integrationId) {
+    String key =
+        Keys.catalogIntegrationOverlaysMarker(integrationId.getAccountId(), integrationId.getId());
+    return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);
+  }
+
   public long namespaceMarkerVersion(ResourceId namespaceId) {
     String key = Keys.namespaceChildrenMarker(namespaceId.getAccountId(), namespaceId.getId());
     return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);

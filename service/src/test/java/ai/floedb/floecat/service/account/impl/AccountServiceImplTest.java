@@ -32,9 +32,11 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -64,6 +66,7 @@ class AccountServiceImplTest {
   void setUp() {
     service = new AccountServiceImpl();
     service.accountRepo = mock(AccountRepository.class);
+    service.catalogIntegrationRepo = mock(CatalogIntegrationRepository.class);
     service.tableRootRepo = mock(TableRootRepository.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
@@ -77,6 +80,7 @@ class AccountServiceImplTest {
     service.secretsManager = mock(SecretsManager.class);
     service.durableReconcileJobStore = mock(Instance.class);
     when(service.durableReconcileJobStore.isResolvable()).thenReturn(false);
+    service.catalogIntegrationCredentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(

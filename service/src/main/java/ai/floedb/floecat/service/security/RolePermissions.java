@@ -33,8 +33,17 @@ public final class RolePermissions {
       "storage-authority.resolve-internal";
   public static final String RECONCILE_EXECUTOR_CONTROL_INTERNAL =
       "reconcile-executor-control.internal";
+  public static final String CATALOG_INTEGRATION_READ = "catalog-integration.read";
+  public static final String CATALOG_INTEGRATION_WRITE = "catalog-integration.write";
+  public static final String CATALOG_INTEGRATION_USE = "catalog-integration.use";
   private static final List<String> READ_PERMS =
-      List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
+      List.of(
+          "account.read",
+          "catalog.read",
+          "namespace.read",
+          "table.read",
+          "view.read",
+          CATALOG_INTEGRATION_READ);
   private static final List<String> FULL_PERMS =
       List.of(
           "account.read",
@@ -47,6 +56,9 @@ public final class RolePermissions {
           "view.read",
           "view.write",
           "connector.manage",
+          CATALOG_INTEGRATION_READ,
+          CATALOG_INTEGRATION_WRITE,
+          CATALOG_INTEGRATION_USE,
           "system-objects.read",
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
@@ -60,7 +72,10 @@ public final class RolePermissions {
           "catalog.write",
           "namespace.read",
           "namespace.write",
-          "connector.create");
+          "connector.create",
+          CATALOG_INTEGRATION_READ,
+          CATALOG_INTEGRATION_WRITE,
+          CATALOG_INTEGRATION_USE);
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> RECONCILE_WORKER_PERMS =
       List.of(
@@ -74,6 +89,8 @@ public final class RolePermissions {
           "view.read",
           "view.write",
           "connector.manage",
+          CATALOG_INTEGRATION_READ,
+          CATALOG_INTEGRATION_USE,
           "system-objects.read",
           STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RECONCILE_EXECUTOR_CONTROL_INTERNAL);

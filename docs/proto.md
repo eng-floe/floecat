@@ -21,8 +21,8 @@ running until its job trees drain while the new deployment writes and executes i
 Snapshot plans require one immutable file execution plan for every declared file path, so planner,
 executor, and finalizer implementations within one cohort must implement the same contract.
 
-The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
-`connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
+The contract files are organised by domain (`common/`, `catalog/`, `integration/`, `query/`,
+`execution/`, `connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
 under the `ai.floedb.floecat.*.rpc` packages and are consumed by the Quarkus service, connectors,
 CLI, and reconciler.
 
@@ -36,6 +36,11 @@ CLI, and reconciler.
   schemas also cover per-file statistics and index artifact metadata.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
+- **`integration/catalog_integration.proto`** – External catalog identity CRUD,
+  typed catalog authentication configuration, write-only credential payloads, non-secret
+  configured/generation state, and credential rotation. This contract is
+  independent of Connector and deliberately contain no connectivity-validation or reconciliation
+  operations.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
   snapshot pin metadata sent down to the SQL planner.
 - **`query/system_objects_registry.proto`** – `GetSystemObjects` plus message definitions for builtin functions,
@@ -66,6 +71,7 @@ CLI, and reconciler.
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
+| `CatalogIntegrations` | Integration CRUD. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
 | `QuerySchemaService` | `DescribeInputs`. |
 | `QueryScanService` | `InitScan`, `StreamDeleteFiles`, `StreamDataFiles`, `CloseScan`. |
@@ -76,8 +82,9 @@ CLI, and reconciler.
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
 | `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
-Each RPC requires a populated `account_id` within the `ResourceId`s; the Quarkus service checks this
-before hitting repository storage.
+Resource IDs supplied to integration RPCs must include an `account_id` matching the
+authenticated principal's account. The service rejects blank or cross-account IDs before hitting
+repository storage.
 
 ### Planner Lifecycle & Execution Scan Schemas
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:

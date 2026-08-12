@@ -1,0 +1,192 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.integration;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.integration.rpc";
+
+import "floecat/common/common.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+enum CatalogIntegrationType {
+  CIT_UNSPECIFIED = 0;
+  CIT_ICEBERG_REST = 1;
+  CIT_UNITY = 2;
+}
+
+message OAuthClientCredentialsAuthentication {
+  string client_id = 1;
+  optional string token_uri = 2;
+  repeated string scopes = 3;
+}
+
+message BearerAuthentication {}
+
+message AwsAssumeRoleAuthentication {
+  string role_arn = 1;
+  optional string external_id = 2;
+  optional string role_session_name = 3;
+}
+
+message AwsAccessKeyAuthentication {
+  string access_key_id = 1;
+}
+
+message AwsDefaultAuthentication {}
+
+message AwsSigV4Authentication {
+  oneof credentials {
+    AwsDefaultAuthentication aws_default = 1;
+    AwsAssumeRoleAuthentication aws_assume_role = 2;
+    AwsAccessKeyAuthentication aws_access_key = 3;
+  }
+  string region = 4;
+  optional string signing_name = 5;
+}
+
+// Persistable, non-secret authentication configuration and credential state.
+message CatalogAuthentication {
+  oneof configuration {
+    OAuthClientCredentialsAuthentication oauth_client_credentials = 1;
+    BearerAuthentication bearer = 2;
+    AwsAssumeRoleAuthentication aws_assume_role = 3;
+    AwsAccessKeyAuthentication aws_access_key = 4;
+    AwsSigV4Authentication aws_sigv4 = 5;
+  }
+  // Server-managed response state for separately stored secret material. Requests must leave these
+  // fields unset. Authentication modes using ambient or assumed credentials report false/zero.
+  bool credentials_configured = 20;
+  uint64 credential_generation = 21;
+}
+
+message SecretValue {
+  string value = 1;
+}
+
+message AwsAccessKeySecret {
+  string secret_access_key = 1;
+  optional string session_token = 2;
+}
+
+// Write-only secret material. This message is never stored in a CatalogIntegration resource.
+message CatalogIntegrationCredentials {
+  oneof credential {
+    SecretValue oauth_client_secret = 1;
+    SecretValue bearer_token = 2;
+    AwsAccessKeySecret aws_access_key = 3;
+  }
+}
+
+message CatalogIntegration {
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  CatalogIntegrationType type = 3;
+  // HTTP(S) catalog endpoint URL. User-info, secret-bearing query parameters, and fragments are rejected.
+  string catalog_uri = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  CatalogAuthentication authentication = 7;
+}
+
+message CatalogIntegrationSpec {
+  optional string display_name = 1;
+  CatalogIntegrationType type = 2;
+  // HTTP(S) catalog endpoint URL. User-info, secret-bearing query parameters, and fragments are rejected.
+  optional string catalog_uri = 3;
+  CatalogAuthentication authentication = 4;
+}
+
+message CatalogIntegrationEntry {
+  CatalogIntegration integration = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message CreateCatalogIntegrationRequest {
+  CatalogIntegrationSpec spec = 1;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
+  // Non-default modes replace the existing identity, or return the existing resource unchanged.
+  // Non-default modes cannot be combined with idempotency; replacement is itself state-idempotent.
+  ai.floedb.floecat.common.CreateMode create_mode = 3;
+  // Write-only credential material matching spec.authentication when that mode requires a secret.
+  // It may be combined with idempotency. Secret values are excluded from the request fingerprint;
+  // retries with the same key return the first successfully published credentials.
+  CatalogIntegrationCredentials credentials = 4;
+}
+message CreateCatalogIntegrationResponse {
+  CatalogIntegration integration = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message GetCatalogIntegrationRequest {
+  oneof selector {
+    ai.floedb.floecat.common.ResourceId integration_id = 1;
+    string display_name = 2;
+  }
+}
+message GetCatalogIntegrationResponse {
+  CatalogIntegration integration = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message ListCatalogIntegrationsRequest {
+  ai.floedb.floecat.common.PageRequest page = 1;
+}
+message ListCatalogIntegrationsResponse {
+  repeated CatalogIntegrationEntry entries = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message UpdateCatalogIntegrationRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+  // Only display_name is mutable. Type and catalog_uri identify the connection and are immutable.
+  CatalogIntegrationSpec spec = 2;
+  ai.floedb.floecat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
+}
+message UpdateCatalogIntegrationResponse {
+  CatalogIntegration integration = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message UpdateCatalogIntegrationAuthenticationRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+  CatalogAuthentication authentication = 2;
+  // Optional write-only credential material matching authentication.
+  CatalogIntegrationCredentials credentials = 3;
+  ai.floedb.floecat.common.Precondition precondition = 4;
+}
+message UpdateCatalogIntegrationAuthenticationResponse {
+  CatalogIntegration integration = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message DeleteCatalogIntegrationRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 2;
+}
+message DeleteCatalogIntegrationResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+}
+
+service CatalogIntegrations {
+  rpc GetCatalogIntegration(GetCatalogIntegrationRequest) returns (GetCatalogIntegrationResponse);
+  rpc ListCatalogIntegrations(ListCatalogIntegrationsRequest) returns (ListCatalogIntegrationsResponse);
+  rpc CreateCatalogIntegration(CreateCatalogIntegrationRequest) returns (CreateCatalogIntegrationResponse);
+  rpc UpdateCatalogIntegration(UpdateCatalogIntegrationRequest) returns (UpdateCatalogIntegrationResponse);
+  rpc UpdateCatalogIntegrationAuthentication(UpdateCatalogIntegrationAuthenticationRequest) returns (UpdateCatalogIntegrationAuthenticationResponse);
+  rpc DeleteCatalogIntegration(DeleteCatalogIntegrationRequest) returns (DeleteCatalogIntegrationResponse);
+}

@@ -7,7 +7,8 @@ Views, Snapshots, statistics, and query-lifecycle artifacts.
 
 ```
 Account
- └── Catalog (logical catalog-of-catalogs)
+ ├── CatalogIntegration (external catalog identity)
+ └── Catalog (locally managed catalog)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
            │    └── Snapshot (immutable upstream checkpoints)
@@ -45,9 +46,13 @@ manifest entry without its `stats_generation_ref` is not yet query-visible — a
 to the newest finalized snapshot at or before it instead, so logical metadata can move current
 without exposing an unfinalized scan.
 
-The gRPC service (Quarkus) enforces tenancy, authorization, and idempotency while orchestrating
-connectors that ingest upstream metadata, reconciling it into the canonical blob/pointer stores, and
-serving execution-ready scan bundles.
+The gRPC service (Quarkus) enforces tenancy, authorization, idempotency, and transactional CRUD for
+catalog integrations. Catalog integrations include typed, non-secret authentication
+configuration plus write-only credential create/rotation primitives; secret payloads are stored
+separately and never returned. A typed credential-store resolver derives the internal secret key
+from integration identity and credential generation for follow-on clients. The resources remain operationally inert: this API does not perform
+connectivity validation, adapter selection, or reconciliation. Legacy connectors remain unchanged
+and are not part of the new contract.
 
 ## Components
 

@@ -42,6 +42,7 @@ enum ResourceKind {
   RK_AGGREGATE = 14;
   RK_TRANSACTION = 15;
   RK_STORAGE_AUTHORITY = 16;
+  RK_CATALOG_INTEGRATION = 17;
 }
 
 message ResourceId {
@@ -188,6 +189,14 @@ message Error {
 
 message IdempotencyKey {
   string key = 1;
+}
+
+// API create-conflict behavior. The default preserves ordinary create semantics; the non-default
+// modes replace the existing resource identity, or return the existing resource unchanged.
+enum CreateMode {
+  CM_ERROR_IF_EXISTS = 0;
+  CM_REPLACE = 1;
+  CM_RETURN_EXISTING = 2;
 }
 
 message Precondition {

@@ -136,6 +136,12 @@ public class ProdSecretsManager implements SecretsManager {
   }
 
   @Override
+  public boolean putIfAbsent(String accountId, String secretType, String secretId, byte[] payload) {
+    return withClient(
+        accountId, client -> putIfAbsentOnce(client, accountId, secretType, secretId, payload));
+  }
+
+  @Override
   public Optional<byte[]> get(String accountId, String secretType, String secretId) {
     return withClient(accountId, client -> getOnce(client, accountId, secretType, secretId));
   }
@@ -160,6 +166,16 @@ public class ProdSecretsManager implements SecretsManager {
         });
   }
 
+  @Override
+  public void deleteImmediately(String accountId, String secretType, String secretId) {
+    withClient(
+        accountId,
+        client -> {
+          deleteImmediatelyOnce(client, accountId, secretType, secretId);
+          return null;
+        });
+  }
+
   private void putOnce(
       SecretsManagerClient client,
       String accountId,
@@ -180,6 +196,25 @@ public class ProdSecretsManager implements SecretsManager {
     }
   }
 
+  private boolean putIfAbsentOnce(
+      SecretsManagerClient client,
+      String accountId,
+      String secretType,
+      String secretId,
+      byte[] payload) {
+    ensureAwsCredentialsAvailable();
+    String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
+    String encoded = encodePayload(payload);
+    List<Tag> tags = buildTags(accountId, secretName);
+    try {
+      client.createSecret(
+          CreateSecretRequest.builder().name(secretName).secretString(encoded).tags(tags).build());
+      return true;
+    } catch (ResourceExistsException exists) {
+      return false;
+    }
+  }
+
   private Optional<byte[]> getOnce(
       SecretsManagerClient client, String accountId, String secretType, String secretId) {
     ensureAwsCredentialsAvailable();
@@ -195,6 +230,9 @@ public class ProdSecretsManager implements SecretsManager {
       return Optional.of(decodePayload(response.secretString()));
     } catch (ResourceNotFoundException missing) {
       return Optional.empty();
+    } catch (InvalidRequestException unavailable) {
+      if (isPendingDeletion(unavailable)) return Optional.empty();
+      throw unavailable;
     }
   }
 
@@ -240,6 +278,28 @@ public class ProdSecretsManager implements SecretsManager {
       }
       throw invalidState;
     }
+  }
+
+  private void deleteImmediatelyOnce(
+      SecretsManagerClient client, String accountId, String secretType, String secretId) {
+    ensureAwsCredentialsAvailable();
+    String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
+    try {
+      client.deleteSecret(
+          DeleteSecretRequest.builder()
+              .secretId(secretName)
+              .forceDeleteWithoutRecovery(true)
+              .build());
+    } catch (ResourceNotFoundException ignored) {
+    }
+  }
+
+  private static boolean isPendingDeletion(InvalidRequestException failure) {
+    String message = failure.getMessage();
+    if (message == null) return false;
+    String normalized = message.toLowerCase(java.util.Locale.ROOT);
+    return normalized.contains("marked for deletion")
+        || normalized.contains("scheduled for deletion");
   }
 
   private static List<Tag> buildTags(String accountId, String secretName) {

@@ -71,6 +71,13 @@ class DefaultCredentialResolverTest {
     }
 
     @Override
+    public boolean putIfAbsent(
+        String accountId, String secretType, String secretId, byte[] payload) {
+      put(accountId, secretType, secretId, payload);
+      return true;
+    }
+
+    @Override
     public Optional<byte[]> get(String accountId, String secretType, String secretId) {
       lastSecretType = secretType;
       lastSecretId = secretId;
