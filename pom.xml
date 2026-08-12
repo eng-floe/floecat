@@ -103,6 +103,7 @@
       <module>core/metadata-admission-runtime</module>
       <module>core/stats</module>
       <module>core/catalog</module>
+      <module>core/catalog-access-spi</module>
       <module>core/scanner</module>
       <module>core/metagraph</module>
       <module>core/connectors/spi</module>
@@ -110,6 +111,9 @@
       <module>core/storage-spi</module>
       <module>core/reconciler-spi</module>
       <module>core/arrow</module>
+
+      <!-- Catalog access -->
+      <module>catalog-access/iceberg-rest</module>
       
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
