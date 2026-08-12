@@ -411,7 +411,9 @@ perform a post-completion final lease confirmation after that RPC has durably co
 - Accepted snapshot-finalize results are published independently of the originating worker lease.
   Publication recovery and throughput are tuned with
   `floecat.reconciler.snapshot-finalize-publication.tick-every`, `page-size`, and
-  `max-parallelism`.
+  `max-parallelism`. A transient publication failure never discards the accepted result: the intent
+  stays pending and is retried under capped backoff, so another instance resumes it if this one
+  dies. Only a payload the service proves invalid fails the job terminally.
 - Executor toggles:
   - `floecat.reconciler.executor.remote-default.enabled`
   - `floecat.reconciler.executor.remote-planner.enabled`

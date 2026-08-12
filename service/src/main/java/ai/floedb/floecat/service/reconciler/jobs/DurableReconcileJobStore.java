@@ -144,7 +144,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
-  private static final long DEFAULT_LEASE_MS = 600_000L;
+  private static final long DEFAULT_LEASE_MS = 120_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;

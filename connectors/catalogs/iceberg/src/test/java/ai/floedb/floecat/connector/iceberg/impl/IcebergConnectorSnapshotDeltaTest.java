@@ -7,6 +7,7 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +17,7 @@ import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
@@ -38,6 +40,52 @@ class IcebergConnectorSnapshotDeltaTest {
     assertTrue(delta.isEmpty());
     assertFalse(additionsRead.get());
     assertFalse(removalsRead.get());
+  }
+
+  @Test
+  void nonAppendOperationBlocksReuseEvenWhenManifestsReportNoRemovals() {
+    AtomicBoolean additionsRead = new AtomicBoolean();
+    AtomicBoolean removalsRead = new AtomicBoolean();
+    Snapshot base = snapshot(50L, null, List.of(), new AtomicBoolean(), new AtomicBoolean());
+    // A delete snapshot whose fully deleted manifest was dropped from the manifest list rather than
+    // rewritten with DELETED entries: no manifest attributable to this snapshot reports a removal.
+    Snapshot target =
+        snapshot(
+            10L,
+            50L,
+            DataOperations.DELETE,
+            List.of(manifest(10L, 0, 0)),
+            additionsRead,
+            removalsRead);
+    IcebergConnector connector = connector(table(base, target));
+
+    var delta =
+        connector.planSnapshotFileDelta("ns", "table", ResourceId.getDefaultInstance(), 50L, 10L);
+
+    assertTrue(delta.isEmpty());
+    assertFalse(additionsRead.get());
+    assertFalse(removalsRead.get());
+  }
+
+  @Test
+  void appendOperationWithCleanManifestsProducesAnAppendOnlyDelta() {
+    AtomicBoolean additionsRead = new AtomicBoolean();
+    Snapshot base = snapshot(50L, null, List.of(), new AtomicBoolean(), new AtomicBoolean());
+    Snapshot target =
+        snapshot(10L, 50L, List.of(manifest(10L, 1, 0)), additionsRead, new AtomicBoolean());
+    IcebergConnector connector = connector(table(base, target));
+
+    var delta =
+        connector.planSnapshotFileDelta("ns", "table", ResourceId.getDefaultInstance(), 50L, 10L);
+
+    assertTrue(delta.isPresent());
+    assertTrue(delta.get().appendOnly());
+    assertEquals(0, delta.get().removedDataFilePaths().size());
+    assertTrue(additionsRead.get());
+    // Both paths should continue to expose the same Iceberg schema. The planner compares their JSON
+    // structures so harmless object-field ordering or whitespace differences do not disable reuse.
+    assertEquals(
+        org.apache.iceberg.SchemaParser.toJson(new Schema()), delta.get().executionSchemaJson());
   }
 
   private static IcebergConnector connector(Table table) {
@@ -65,6 +113,22 @@ class IcebergConnectorSnapshotDeltaTest {
       List<ManifestFile> dataManifests,
       AtomicBoolean additionsRead,
       AtomicBoolean removalsRead) {
+    return snapshot(
+        snapshotId,
+        parentSnapshotId,
+        DataOperations.APPEND,
+        dataManifests,
+        additionsRead,
+        removalsRead);
+  }
+
+  private static Snapshot snapshot(
+      long snapshotId,
+      Long parentSnapshotId,
+      String operation,
+      List<ManifestFile> dataManifests,
+      AtomicBoolean additionsRead,
+      AtomicBoolean removalsRead) {
     return (Snapshot)
         Proxy.newProxyInstance(
             Snapshot.class.getClassLoader(),
@@ -73,6 +137,7 @@ class IcebergConnectorSnapshotDeltaTest {
                 switch (method.getName()) {
                   case "snapshotId" -> snapshotId;
                   case "parentId" -> parentSnapshotId;
+                  case "operation" -> operation;
                   case "schemaId" -> null;
                   case "dataManifests" -> dataManifests;
                   case "deleteManifests" -> List.of();

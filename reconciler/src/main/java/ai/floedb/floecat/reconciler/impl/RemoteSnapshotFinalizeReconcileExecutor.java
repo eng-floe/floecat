@@ -757,10 +757,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
   static DeduplicatedSnapshotArtifacts deduplicateSnapshotArtifacts(
       List<StatsObjectDescriptor> descriptors,
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> bundles) {
-    if (descriptors == null || descriptors.isEmpty()) {
-      return new DeduplicatedSnapshotArtifacts(
-          List.of(), bundles == null ? List.of() : List.copyOf(bundles));
-    }
     List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference> references =
         bundles == null ? List.of() : List.copyOf(bundles);
     Map<String, Map<String, ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata>>
@@ -808,7 +804,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     }
 
     Map<String, StatsObjectDescriptor> byTarget = new java.util.TreeMap<>();
-    for (StatsObjectDescriptor descriptor : descriptors) {
+    for (StatsObjectDescriptor descriptor :
+        descriptors == null ? List.<StatsObjectDescriptor>of() : descriptors) {
       if (descriptor == null || descriptor.getTargetStorageId().isBlank()) {
         throw new IllegalArgumentException("invalid snapshot file stats descriptor");
       }
@@ -861,7 +858,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       for (var metadata : bundle.getFileStatsList()) {
         String target =
             StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(metadata.getFilePath()));
-        if (!ownerByTarget.containsKey(target) || ownerByTarget.get(target) == index) {
+        Integer owner = ownerByTarget.get(target);
+        if (owner != null && owner == index) {
           builder.addFileStats(metadata);
         }
       }

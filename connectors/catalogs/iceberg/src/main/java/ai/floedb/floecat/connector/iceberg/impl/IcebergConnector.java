@@ -65,6 +65,7 @@ import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionField;
@@ -814,7 +815,9 @@ public abstract class IcebergConnector implements FloecatConnector {
 
     for (int i = lineage.size() - 1; i >= 0; i--) {
       Snapshot change = lineage.get(i);
-      if (hasDataFileRemovals(change, table.io()) || hasDeleteArtifactChanges(change, table.io())) {
+      if (!isAppendOperation(change)
+          || hasDataFileRemovals(change, table.io())
+          || hasDeleteArtifactChanges(change, table.io())) {
         return Optional.empty();
       }
     }
@@ -833,6 +836,17 @@ public abstract class IcebergConnector implements FloecatConnector {
             List.of(),
             false,
             SchemaParser.toJson(schemaForSnapshot(table, target))));
+  }
+
+  /**
+   * Authoritative append-only classification for a single snapshot. Manifest delete counts alone
+   * are not sufficient: Iceberg may drop a fully deleted manifest from the manifest list instead of
+   * rewriting it with DELETED entries, in which case no manifest attributable to this snapshot
+   * reports the removal. {@code operation} is written by every Iceberg snapshot producer, so a
+   * non-{@code append} operation fails the gate before the manifest scans run.
+   */
+  private static boolean isAppendOperation(Snapshot snapshot) {
+    return DataOperations.APPEND.equals(snapshot.operation());
   }
 
   private static boolean hasDataFileRemovals(Snapshot snapshot, FileIO io) {

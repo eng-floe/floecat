@@ -492,6 +492,88 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
+  void dropsBundleStatsMetadataWithoutACommittedDescriptor() {
+    String capturedPath = "s3://bucket/captured.parquet";
+    String inheritedPath = "s3://bucket/inherited.parquet";
+    byte[] sha256 = new byte[32];
+    sha256[0] = 7;
+    StatsObjectDescriptor committed =
+        statsDescriptor(fileStatsTarget(capturedPath), "/stats/a-bundle.pb", sha256);
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(committed.toBuilder().setTargetStorageId("reuse-bundle:a"))
+            .addFileStats(reusableStatsMetadata(capturedPath))
+            .addFileStats(reusableStatsMetadata(inheritedPath))
+            .build();
+
+    var deduplicated =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+            List.of(committed), List.of(bundle));
+
+    var normalized = deduplicated.reuseBundles().getFirst();
+    assertEquals(1, normalized.getFileStatsCount());
+    assertEquals(capturedPath, normalized.getFileStats(0).getFilePath());
+  }
+
+  @Test
+  void dropsRepeatedBundleStatsMetadataWithoutACommittedDescriptor() {
+    String unownedPath = "s3://bucket/unowned.parquet";
+    byte[] firstSha256 = new byte[32];
+    firstSha256[0] = 1;
+    byte[] secondSha256 = new byte[32];
+    secondSha256[0] = 2;
+    StatsObjectDescriptor firstCommitted =
+        statsDescriptor(
+            fileStatsTarget("s3://bucket/first.parquet"), "/stats/a-bundle.pb", firstSha256);
+    StatsObjectDescriptor secondCommitted =
+        statsDescriptor(
+            fileStatsTarget("s3://bucket/second.parquet"), "/stats/b-bundle.pb", secondSha256);
+    var firstBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(firstCommitted.toBuilder().setTargetStorageId("reuse-bundle:a"))
+            .addFileStats(reusableStatsMetadata("s3://bucket/first.parquet"))
+            .addFileStats(reusableStatsMetadata(unownedPath))
+            .build();
+    var secondBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(secondCommitted.toBuilder().setTargetStorageId("reuse-bundle:b"))
+            .addFileStats(reusableStatsMetadata("s3://bucket/second.parquet"))
+            .addFileStats(reusableStatsMetadata(unownedPath))
+            .build();
+
+    var deduplicated =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+            List.of(firstCommitted, secondCommitted), List.of(firstBundle, secondBundle));
+
+    assertEquals(
+        List.of("s3://bucket/first.parquet"),
+        deduplicated.reuseBundles().get(0).getFileStatsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+            .toList());
+    assertEquals(
+        List.of("s3://bucket/second.parquet"),
+        deduplicated.reuseBundles().get(1).getFileStatsList().stream()
+            .map(ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata::getFilePath)
+            .toList());
+  }
+
+  @Test
+  void dropsBundleStatsMetadataWhenThereAreNoCommittedDescriptors() {
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(statsDescriptor("reuse-bundle:a", "/stats/a-bundle.pb", new byte[32]))
+            .addFileStats(reusableStatsMetadata("s3://bucket/unowned.parquet"))
+            .build();
+
+    var deduplicated =
+        RemoteSnapshotFinalizeReconcileExecutor.deduplicateSnapshotArtifacts(
+            List.of(), List.of(bundle));
+
+    assertTrue(deduplicated.fileStats().isEmpty());
+    assertEquals(0, deduplicated.reuseBundles().getFirst().getFileStatsCount());
+  }
+
+  @Test
   void acceptsEmptyFileGroupWithoutStatsPartials() {
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
@@ -1214,6 +1296,21 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .setGroupId("snapshot-54-group-0")
         .setStatsObjectPrefix("/accounts/acct/tables/table-1/")
         .setSucceededFileCount(1)
+        .build();
+  }
+
+  private static String fileStatsTarget(String filePath) {
+    return ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(filePath));
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata
+      reusableStatsMetadata(String filePath) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+        .setFilePath(filePath)
+        .setSourceFingerprint("source-fingerprint")
+        .setStatsCaptureSignature("stats-signature")
+        .addRealizedStatsSelectors("#1")
         .build();
   }
 

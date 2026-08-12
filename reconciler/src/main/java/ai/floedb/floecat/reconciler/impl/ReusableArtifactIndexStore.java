@@ -1214,7 +1214,7 @@ public final class ReusableArtifactIndexStore {
       throw new IllegalArgumentException("reusable artifact index pack is too large");
     }
     long length = Integer.toUnsignedLong(reference.getLength());
-    if (reference.getLength() < 0
+    if (reference.getOffset() < 0
         || reference.getOffset() > reference.getObject().getPayloadBytes()
         || length > reference.getObject().getPayloadBytes() - reference.getOffset()) {
       throw new IllegalArgumentException("reusable artifact block range is invalid");

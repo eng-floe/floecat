@@ -517,6 +517,11 @@ public interface FloecatConnector extends Closeable {
   /**
    * Plans source file changes between two snapshots without enumerating target snapshot membership.
    * Connectors should return empty when they cannot prove a complete delta.
+   *
+   * <p>Reuse callers treat an append-only delta as proof that every base file still belongs to the
+   * target snapshot, so classification must fail closed: derive it from an authoritative record of
+   * what each snapshot did (Iceberg's snapshot operation, Delta's commit actions) rather than from
+   * counters that a removal pattern can leave absent.
    */
   default Optional<SnapshotFileDelta> planSnapshotFileDelta(
       String namespaceFq,

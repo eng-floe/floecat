@@ -36,6 +36,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class SnapshotFinalizePublicationScheduler {
   private static final Logger LOG = Logger.getLogger(SnapshotFinalizePublicationScheduler.class);
+  private static final long RETRY_STATE_TTL_MS = 600_000L;
 
   @Inject ReconcileJobStore jobs;
   @Inject LeasedSnapshotFinalizeExecutionService publicationService;
@@ -114,13 +115,30 @@ public class SnapshotFinalizePublicationScheduler {
         pageToken = "";
       }
     }
+    pruneStaleRetries(now);
+  }
+
+  /**
+   * Drops backoff records that are long overdue and still not in flight. Those belong to intents
+   * that no longer appear in any page — cleared or published by another instance — so keeping them
+   * would grow the map without bound. Dropping an overdue record for an intent that is merely
+   * backlogged only forfeits its remaining (already elapsed) backoff.
+   */
+  private void pruneStaleRetries(long now) {
+    retries
+        .entrySet()
+        .removeIf(
+            entry ->
+                !inFlight.contains(entry.getKey())
+                    && entry.getValue().nextAttemptAtMs() + RETRY_STATE_TTL_MS < now);
   }
 
   private void publish(ReconcileJobStore.SnapshotFinalizeCommitIntent intent) {
     try {
-      if (publicationService.publishAcceptedSnapshotFinalize(intent.jobId())) {
-        retries.remove(intent.jobId());
-      }
+      // Both outcomes resolve this jobId locally: true published it, false means another instance
+      // cleared or requeued the intent. Either way any recorded backoff state is now stale.
+      publicationService.publishAcceptedSnapshotFinalize(intent.jobId());
+      retries.remove(intent.jobId());
     } catch (IllegalArgumentException e) {
       retries.remove(intent.jobId());
       jobs.markFailedTerminal(
@@ -135,26 +153,13 @@ public class SnapshotFinalizePublicationScheduler {
           0L);
       LOG.warnf(e, "Rejected accepted snapshot finalizer result jobId=%s", intent.jobId());
     } catch (RuntimeException e) {
+      // Transient publication failures must never discard a durably accepted result: markFailed
+      // clears the finalize intent and requeues the job, throwing away completed capture work. The
+      // intent stays accepted and this instance keeps retrying under capped backoff; if the process
+      // dies, another instance picks the same intent up from pendingSnapshotFinalizeCommits. Only a
+      // proven-invalid payload (IllegalArgumentException above) is promoted to a terminal failure.
       RetryState prior = retries.get(intent.jobId());
       int attempts = prior == null ? 1 : prior.attempts() + 1;
-      if (attempts >= 8) {
-        retries.remove(intent.jobId());
-        jobs.markFailed(
-            intent.jobId(),
-            intent.leaseEpoch(),
-            System.currentTimeMillis(),
-            "Snapshot finalizer publication failed: " + message(e),
-            0L,
-            0L,
-            1L,
-            0L,
-            0L);
-        LOG.warnf(
-            e,
-            "Snapshot finalizer publication exhausted local retries; requeued jobId=%s",
-            intent.jobId());
-        return;
-      }
       long delayMs = Math.min(30_000L, 250L << Math.min(16, attempts - 1));
       retries.put(intent.jobId(), new RetryState(attempts, System.currentTimeMillis() + delayMs));
       LOG.warnf(

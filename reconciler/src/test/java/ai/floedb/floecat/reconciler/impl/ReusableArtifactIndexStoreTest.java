@@ -628,6 +628,47 @@ class ReusableArtifactIndexStoreTest {
     assertThrows(IllegalArgumentException.class, () -> entries(store, corrupt));
   }
 
+  @Test
+  void negativeBlockOffsetsAreRejectedWithoutReadingBlockBytes() throws Exception {
+    ReusableArtifactIndexReference index =
+        store.append(
+            "/runs/",
+            ReusableArtifactIndexStore.emptyReference(),
+            List.of(statsBundle("base", List.of("s3://bucket/file.parquet"))));
+    var run = index.getRuns(0);
+    ReusableArtifactIndexRunManifest manifest =
+        ReusableArtifactIndexRunManifest.parseFrom(run.getManifest().getInlinePayload());
+    // uint64 offset: an all-ones wire value reads back as a negative long, which would otherwise
+    // inflate the payloadBytes - offset headroom and pass the upper-bound check.
+    byte[] mutated =
+        manifest.toBuilder()
+            .setBlocks(0, manifest.getBlocks(0).toBuilder().setOffset(-1L))
+            .build()
+            .toByteArray();
+    ReusableArtifactIndexReference corrupt =
+        index.toBuilder()
+            .setRuns(
+                0,
+                run.toBuilder()
+                    .setManifest(
+                        run.getManifest().toBuilder()
+                            .setInlinePayload(ByteString.copyFrom(mutated))
+                            .setPayloadBytes(mutated.length)
+                            .setPayloadSha256(
+                                ByteString.copyFrom(
+                                    java.security.MessageDigest.getInstance("SHA-256")
+                                        .digest(mutated)))))
+            .build();
+    ReusableArtifactIndexStore.clearSharedCacheForTests();
+    blobs.resetGetCount();
+
+    IllegalArgumentException error =
+        assertThrows(IllegalArgumentException.class, () -> entries(store, corrupt));
+
+    assertTrue(error.getMessage().contains("block range is invalid"));
+    assertEquals(0, blobs.rangeCount());
+  }
+
   private static List<ReusableArtifactIndexEntry> entries(
       ReusableArtifactIndexStore store, ReusableArtifactIndexReference index) {
     List<ReusableArtifactIndexEntry> entries = new ArrayList<>();

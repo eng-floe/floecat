@@ -267,7 +267,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             resolutions.incrementAndGet();
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
@@ -286,11 +287,112 @@ class StorageAuthorityResolverTest {
             .build();
 
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"));
+        authority,
+        source,
+        java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"),
+        false);
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"));
+        authority,
+        source,
+        java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"),
+        false);
 
     assertEquals(1, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheSeparatesPrefixAndExactObjectScopes() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/orders"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/orders"), true);
+
+    assertEquals(2, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheIgnoresSecretMapEntryOrdering() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials.Builder base =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"));
+    // Protobuf does not order map entries on the wire, so these two logically identical secrets can
+    // serialize to different bytes purely from insertion order.
+    AuthCredentials forward =
+        base.clone()
+            .putProperties("alpha", "1")
+            .putProperties("beta", "2")
+            .putHeaders("x-one", "a")
+            .putHeaders("x-two", "b")
+            .build();
+    AuthCredentials reversed =
+        base.clone()
+            .putProperties("beta", "2")
+            .putProperties("alpha", "1")
+            .putHeaders("x-two", "b")
+            .putHeaders("x-one", "a")
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, forward, java.util.List.of("s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, reversed, java.util.List.of("s3://warehouse/one"), false);
+
+    assertEquals(1, resolutions.get());
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority,
+        base.clone().putProperties("alpha", "changed").build(),
+        java.util.List.of("s3://warehouse/one"),
+        false);
+
+    assertEquals(2, resolutions.get());
   }
 
   @Test
@@ -302,7 +404,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             int resolution = resolutions.incrementAndGet();
             return new ResolvedStorageCredentials(
                 "temp-akid-" + resolution,
@@ -324,15 +427,15 @@ class StorageAuthorityResolverTest {
             .build();
 
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/one"));
+        authority, source, java.util.List.of("s3://warehouse/one"), false);
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/two"));
+        authority, source, java.util.List.of("s3://warehouse/two"), false);
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/three"));
+        authority, source, java.util.List.of("s3://warehouse/three"), false);
 
     assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/one"));
+        authority, source, java.util.List.of("s3://warehouse/one"), false);
     assertEquals(4, resolutions.get());
     assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
   }
@@ -350,7 +453,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             int resolution = resolutions.incrementAndGet();
             if (resolution <= 2) {
               firstTwoStarted.countDown();
@@ -390,18 +494,18 @@ class StorageAuthorityResolverTest {
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/one")));
+                      authority, source, java.util.List.of("s3://warehouse/one"), false));
       java.util.concurrent.Future<?> second =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/two")));
+                      authority, source, java.util.List.of("s3://warehouse/two"), false));
       assertTrue(firstTwoStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> third =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/three")));
+                      authority, source, java.util.List.of("s3://warehouse/three"), false));
 
       assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
       assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
@@ -430,7 +534,8 @@ class StorageAuthorityResolverTest {
           ResolvedStorageCredentials assumeRoleFromStaticSource(
               StorageAuthority authority,
               AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations) {
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
             String location = sessionScopeLocations.getFirst();
             java.util.concurrent.CountDownLatch release = null;
             if (location.endsWith("/one")) {
@@ -475,19 +580,19 @@ class StorageAuthorityResolverTest {
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/one")));
+                      authority, source, java.util.List.of("s3://warehouse/one"), false));
       assertTrue(firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> second =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/two")));
+                      authority, source, java.util.List.of("s3://warehouse/two"), false));
       assertTrue(secondStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> third =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/three")));
+                      authority, source, java.util.List.of("s3://warehouse/three"), false));
 
       assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
       releaseSecond.countDown();

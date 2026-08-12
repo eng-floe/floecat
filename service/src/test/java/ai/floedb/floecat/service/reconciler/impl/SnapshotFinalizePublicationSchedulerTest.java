@@ -7,7 +7,12 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -47,6 +52,93 @@ class SnapshotFinalizePublicationSchedulerTest {
     verify(scheduler.jobs, times(2)).pendingSnapshotFinalizeCommits(3, "");
     verify(scheduler.publicationService).publishAcceptedSnapshotFinalize("first");
     verify(scheduler.publicationService).publishAcceptedSnapshotFinalize("second");
+  }
+
+  @Test
+  void transientPublicationFailuresKeepTheAcceptedIntentAndRetry() throws Exception {
+    var scheduler = new SnapshotFinalizePublicationScheduler();
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.publicationService = mock(LeasedSnapshotFinalizeExecutionService.class);
+    List<Runnable> scheduled = new ArrayList<>();
+    set(scheduler, "executor", (java.util.concurrent.Executor) scheduled::add);
+    set(scheduler, "pageSize", 1);
+    set(scheduler, "maxParallelism", 1);
+    var only = intent("only");
+    when(scheduler.jobs.pendingSnapshotFinalizeCommits(1, ""))
+        .thenReturn(new ReconcileJobStore.SnapshotFinalizeCommitPage(List.of(only), ""));
+    when(scheduler.publicationService.publishAcceptedSnapshotFinalize("only"))
+        .thenThrow(new IllegalStateException("storage unavailable"));
+
+    // Far more attempts than the previous local retry budget, all transient.
+    for (int attempt = 0; attempt < 12; attempt++) {
+      scheduler.tick();
+      while (!scheduled.isEmpty()) {
+        scheduled.removeFirst().run();
+      }
+      expireRetryBackoff(scheduler);
+    }
+
+    verify(scheduler.publicationService, times(12)).publishAcceptedSnapshotFinalize("only");
+    verify(scheduler.jobs, never())
+        .markFailed(
+            anyString(),
+            anyString(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+    verify(scheduler.jobs, never())
+        .markFailedTerminal(
+            anyString(),
+            anyString(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+  }
+
+  @Test
+  void invalidPayloadsStillFailTerminally() throws Exception {
+    var scheduler = new SnapshotFinalizePublicationScheduler();
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.publicationService = mock(LeasedSnapshotFinalizeExecutionService.class);
+    List<Runnable> scheduled = new ArrayList<>();
+    set(scheduler, "executor", (java.util.concurrent.Executor) scheduled::add);
+    set(scheduler, "pageSize", 1);
+    set(scheduler, "maxParallelism", 1);
+    when(scheduler.jobs.pendingSnapshotFinalizeCommits(1, ""))
+        .thenReturn(new ReconcileJobStore.SnapshotFinalizeCommitPage(List.of(intent("bad")), ""));
+    when(scheduler.publicationService.publishAcceptedSnapshotFinalize("bad"))
+        .thenThrow(new IllegalArgumentException("manifest mismatch"));
+
+    scheduler.tick();
+    scheduled.removeFirst().run();
+
+    verify(scheduler.jobs)
+        .markFailedTerminal(
+            eq("bad"),
+            anyString(),
+            anyLong(),
+            contains("manifest mismatch"),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void expireRetryBackoff(SnapshotFinalizePublicationScheduler scheduler)
+      throws Exception {
+    Field field = scheduler.getClass().getDeclaredField("retries");
+    field.setAccessible(true);
+    ((java.util.Map<String, Object>) field.get(scheduler)).clear();
   }
 
   private static ReconcileJobStore.SnapshotFinalizeCommitIntent intent(String jobId) {

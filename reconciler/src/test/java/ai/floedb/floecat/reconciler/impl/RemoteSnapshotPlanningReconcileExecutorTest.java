@@ -105,6 +105,20 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void appendOnlySchemaComparisonIgnoresJsonFormattingButRejectsSchemaChanges() {
+    String base = "{\"type\":\"struct\",\"fields\":[]}";
+
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(
+            base, "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}"));
+    assertFalse(
+        RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(
+            base, "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}"));
+    assertFalse(RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(base, "not-json"));
+    assertFalse(RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent("not-json", "not-json"));
+  }
+
+  @Test
   void reuseManifestIdentityRequiresAccountAndConnector() {
     SnapshotCaptureManifest valid =
         SnapshotCaptureManifest.newBuilder()
@@ -434,7 +448,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 snapshotTask()));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
         .thenReturn(Optional.empty());
-    String schemaJson = "{\"type\":\"struct\",\"fields\":[]}";
+    String baseSchemaJson = "{\"type\":\"struct\",\"fields\":[]}";
+    String executionSchemaJson = "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}";
 
     ReconcileFileExecutionPlan priorPlan =
         ReconcileFileExecutionPlan.of(
@@ -499,7 +514,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 Snapshot.newBuilder()
                     .setTableId(tableId())
                     .setSnapshotId(baseSnapshotId)
-                    .setSchemaJson(schemaJson)
+                    .setSchemaJson(baseSchemaJson)
                     .setReuseManifestRef(
                         SnapshotReuseManifestRef.newBuilder()
                             .setFormatVersion(1)
@@ -512,7 +527,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
         .thenReturn(
             Optional.of(
                 new FloecatConnector.SnapshotFileDelta(
-                    List.of(snapshotFile("file-2", 10L)), List.of(), false, schemaJson)));
+                    List.of(snapshotFile("file-2", 10L)), List.of(), false, executionSchemaJson)));
     when(blobStore.get(uri)).thenReturn(manifestBytes);
     when(workerClient.submitAppendOnlyPlanSnapshotSuccess(any(), any(), any(), any(), any()))
         .thenReturn(true);

@@ -41,6 +41,8 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -64,6 +66,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
+  private static final ObjectMapper SCHEMA_JSON = new ObjectMapper();
   private static final long ESTIMATED_FILE_OVERHEAD_BYTES = 4L * 1024L * 1024L;
   private static final int MAX_CACHED_REUSE_MANIFESTS = 256;
   private static final long MAX_CACHED_REUSE_MANIFEST_BYTES = 64L * 1024L * 1024L;
@@ -604,9 +607,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return Optional.empty();
     }
     String baseSchema = historical.snapshot().getSchemaJson();
-    if (baseSchema.isBlank()
-        || delta.executionSchemaJson().isBlank()
-        || !baseSchema.equals(delta.executionSchemaJson())) {
+    if (!schemasEquivalent(baseSchema, delta.executionSchemaJson())) {
       LOG.infof(
           "Append-only delta rejected for schema change tableId=%s snapshotId=%d baseSnapshotId=%d",
           task.tableId(), task.snapshotId(), historical.snapshot().getSnapshotId());
@@ -668,6 +669,29 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         additions.size(),
         groups.size());
     return Optional.of(new EnrichedFileGroups(groups, sourceFileCount, historical.base()));
+  }
+
+  /**
+   * Compares schema JSON structurally so harmless serialization differences do not disable reuse.
+   */
+  static boolean schemasEquivalent(String baseSchema, String targetSchema) {
+    if (baseSchema == null
+        || targetSchema == null
+        || baseSchema.isBlank()
+        || targetSchema.isBlank()) {
+      return false;
+    }
+    try {
+      var parsedBase = SCHEMA_JSON.readTree(baseSchema);
+      var parsedTarget = SCHEMA_JSON.readTree(targetSchema);
+      return parsedBase != null
+          && parsedBase.isObject()
+          && parsedTarget != null
+          && parsedTarget.isObject()
+          && parsedBase.equals(parsedTarget);
+    } catch (JsonProcessingException error) {
+      return false;
+    }
   }
 
   private boolean persistentIndexOverlapsPlans(

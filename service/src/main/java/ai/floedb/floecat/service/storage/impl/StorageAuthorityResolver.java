@@ -26,6 +26,7 @@ import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -37,6 +38,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -541,9 +543,48 @@ public class StorageAuthorityResolver {
         boolean exactObjectScope) {
       return new AssumeRoleCacheKey(
           sha256(authority.toByteArray()),
-          sha256(authoritySecret == null ? new byte[0] : authoritySecret.toByteArray()),
+          sha256(canonicalBytes(authoritySecret)),
           List.copyOf(normalizeS3Scopes(sessionScopeLocations)),
           exactObjectScope);
+    }
+
+    /**
+     * Fingerprints the source credential over a canonical form. {@code AuthCredentials} carries
+     * {@code map<string,string>} properties and headers, and protobuf serialization does not order
+     * map entries, so {@code toByteArray()} alone can hash two logically identical secrets to
+     * different digests and defeat the cache. Sorting the map entries out into a stable
+     * representation removes that dependence on serialization order.
+     */
+    private static byte[] canonicalBytes(AuthCredentials authoritySecret) {
+      if (authoritySecret == null) {
+        return new byte[0];
+      }
+      AuthCredentials withoutMaps =
+          authoritySecret.toBuilder().clearProperties().clearHeaders().build();
+      StringBuilder canonical = new StringBuilder();
+      canonical.append(HexFormat.of().formatHex(withoutMaps.toByteArray()));
+      appendSortedEntries(canonical, "p", authoritySecret.getPropertiesMap());
+      appendSortedEntries(canonical, "h", authoritySecret.getHeadersMap());
+      return canonical.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void appendSortedEntries(
+        StringBuilder canonical, String prefix, Map<String, String> entries) {
+      // Length-prefixed so keys or values containing the separator cannot forge another entry.
+      new TreeMap<>(entries)
+          .forEach(
+              (key, value) ->
+                  canonical
+                      .append('|')
+                      .append(prefix)
+                      .append(':')
+                      .append(key.length())
+                      .append(':')
+                      .append(key)
+                      .append(':')
+                      .append(value.length())
+                      .append(':')
+                      .append(value));
     }
   }
 
