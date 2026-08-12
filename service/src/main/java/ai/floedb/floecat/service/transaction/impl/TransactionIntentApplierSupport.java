@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -87,6 +88,7 @@ public class TransactionIntentApplierSupport {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogGraphView graphView;
+  @Inject CatalogRepository catalogRepo;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -744,7 +746,7 @@ public class TransactionIntentApplierSupport {
     }
 
     try {
-      var writePolicy = new CatalogSurfaceWritePolicy(graphView);
+      var writePolicy = new CatalogSurfaceWritePolicy(graphView, catalogRepo);
       if (checkExistingTable) {
         writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
       }

@@ -1,0 +1,124 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.integration;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.integration.rpc";
+
+import "floecat/common/common.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// A namespace path ordered from the external catalog root to the namespace leaf.
+message NamespacePath {
+  repeated string segments = 1;
+}
+
+// A catalog overlay selects upstream namespaces from a catalog integration and owns the Floecat
+// catalog they are exposed beneath.
+message CatalogOverlay {
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+  string display_name = 2;
+  ai.floedb.floecat.common.ResourceId integration_id = 3;
+  // Selection paths are expressed in the external catalog's namespace space. An empty include
+  // list selects all namespaces. A selected path includes that namespace and all descendants.
+  // Paths are deduplicated and matched case-sensitively.
+  repeated NamespacePath include_namespaces = 4;
+  // Exclusions apply to the named namespace and all descendants and take precedence over includes.
+  repeated NamespacePath exclude_namespaces = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  // The catalog this overlay owns, assigned by the server at create time. Selected upstream
+  // namespaces are exposed beneath it. Not settable through CatalogOverlaySpec.
+  ai.floedb.floecat.common.ResourceId catalog_id = 8;
+}
+
+message CatalogOverlaySpec {
+  optional string display_name = 1;
+  ai.floedb.floecat.common.ResourceId integration_id = 2;
+  // Selection paths are expressed in the external catalog's namespace space. An empty include
+  // list selects all namespaces. A selected path includes that namespace and all descendants.
+  // Paths are deduplicated and matched case-sensitively.
+  repeated NamespacePath include_namespaces = 3;
+  // Exclusions apply to the named namespace and all descendants and take precedence over includes.
+  repeated NamespacePath exclude_namespaces = 4;
+}
+
+message CatalogOverlayEntry {
+  CatalogOverlay overlay = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message CreateCatalogOverlayRequest {
+  CatalogOverlaySpec spec = 1;
+  ai.floedb.floecat.common.IdempotencyKey idempotency = 2;
+  // Non-default modes replace the existing identity, or return the existing resource unchanged.
+  // Non-default modes cannot be combined with idempotency; replacement is itself state-idempotent.
+  ai.floedb.floecat.common.CreateMode create_mode = 3;
+}
+message CreateCatalogOverlayResponse {
+  CatalogOverlay overlay = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message GetCatalogOverlayRequest {
+  oneof selector {
+    ai.floedb.floecat.common.ResourceId overlay_id = 1;
+    string display_name = 2;
+  }
+}
+message GetCatalogOverlayResponse {
+  CatalogOverlay overlay = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message ListCatalogOverlaysRequest {
+  ai.floedb.floecat.common.PageRequest page = 1;
+  optional ai.floedb.floecat.common.ResourceId integration_id = 2;
+}
+message ListCatalogOverlaysResponse {
+  repeated CatalogOverlayEntry entries = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message UpdateCatalogOverlayRequest {
+  ai.floedb.floecat.common.ResourceId overlay_id = 1;
+  // display_name and the namespace-selection lists are mutable. integration_id is immutable.
+  // A list selected by update_mask is replaced in full.
+  CatalogOverlaySpec spec = 2;
+  ai.floedb.floecat.common.Precondition precondition = 3;
+  google.protobuf.FieldMask update_mask = 4;
+}
+message UpdateCatalogOverlayResponse {
+  CatalogOverlay overlay = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message DeleteCatalogOverlayRequest {
+  ai.floedb.floecat.common.ResourceId overlay_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 2;
+}
+message DeleteCatalogOverlayResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+}
+
+service CatalogOverlays {
+  rpc GetCatalogOverlay(GetCatalogOverlayRequest) returns (GetCatalogOverlayResponse);
+  rpc ListCatalogOverlays(ListCatalogOverlaysRequest) returns (ListCatalogOverlaysResponse);
+  rpc CreateCatalogOverlay(CreateCatalogOverlayRequest) returns (CreateCatalogOverlayResponse);
+  rpc UpdateCatalogOverlay(UpdateCatalogOverlayRequest) returns (UpdateCatalogOverlayResponse);
+  rpc DeleteCatalogOverlay(DeleteCatalogOverlayRequest) returns (DeleteCatalogOverlayResponse);
+}

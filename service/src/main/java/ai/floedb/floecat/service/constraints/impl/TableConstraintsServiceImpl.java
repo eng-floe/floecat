@@ -51,6 +51,7 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -73,6 +74,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
     implements TableConstraintsService {
 
   @Inject SnapshotRepository snapshots;
+  @Inject CatalogRepository catalogRepo;
   @Inject ConstraintRepository constraints;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -90,7 +92,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
   }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */

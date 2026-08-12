@@ -90,6 +90,29 @@ public class CatalogRepository {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  /**
+   * Pointer operations that would create this catalog, for a caller that must commit it in the same
+   * atomic transaction as another resource. Overlay creation uses this so an overlay and the
+   * catalog it owns become visible together.
+   */
+  public List<PointerStore.CasOp> prepareCreateOps(Catalog catalog) {
+    return repo.prepareCreateOps(catalog);
+  }
+
+  /**
+   * Pointer operations that would rename or otherwise update this catalog, for a caller committing
+   * it alongside another resource. Overlay rename uses this so the overlay and the catalog it owns
+   * never carry different names.
+   */
+  public List<PointerStore.CasOp> prepareUpdateOps(Catalog catalog, long expectedPointerVersion) {
+    return repo.prepareUpdateOps(catalog, expectedPointerVersion);
+  }
+
+  /** Pointer operations that would delete this catalog, for an owning resource's cascade. */
+  public List<PointerStore.CasOp> prepareDeleteOps(ResourceId catalogId) {
+    return repo.prepareDeleteOps(new CatalogKey(catalogId.getAccountId(), catalogId.getId()));
+  }
+
   public List<Catalog> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefixConsistent(
@@ -98,6 +121,13 @@ public class CatalogRepository {
 
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  }
+
+  /** Body and metadata resolved from the same canonical pointer version. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Catalog>> getByIdWithMeta(
+      ResourceId catalogResourceId) {
+    return repo.getByKeyWithMeta(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {

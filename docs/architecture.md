@@ -8,6 +8,7 @@ Views, Snapshots, statistics, and query-lifecycle artifacts.
 ```
 Account
  ├── CatalogIntegration (external catalog identity)
+ │    └── CatalogOverlay (upstream namespace selection)
  └── Catalog (locally managed catalog)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
@@ -47,12 +48,20 @@ to the newest finalized snapshot at or before it instead, so logical metadata ca
 without exposing an unfinalized scan.
 
 The gRPC service (Quarkus) enforces tenancy, authorization, idempotency, and transactional CRUD for
-catalog integrations. Catalog integrations include typed, non-secret authentication
+catalog integrations and overlays. Catalog integrations include typed, non-secret authentication
 configuration plus write-only credential create/rotation primitives; secret payloads are stored
 separately and never returned. A typed credential-store resolver derives the internal secret key
 from integration identity and credential generation for follow-on clients. The resources remain operationally inert: this API does not perform
 connectivity validation, adapter selection, or reconciliation. Legacy connectors remain unchanged
-and are not part of the new contract.
+and are not part of either new contract.
+
+An overlay owns exactly one Catalog, created in the overlay's own pointer transaction and carrying
+the overlay's display name, so top-level name uniqueness is ordinary catalog name uniqueness. That
+catalog is listed and read like any other but is renamed and deleted only through its overlay.
+Overlay creation is conditioned on the current integration pointer version and advances a
+fixed integration dependency marker in the same transaction. Integration deletion checks both the
+strongly consistent dependent-overlay index and that marker, closing concurrent
+overlay-create/integration-delete races. Account deletion removes overlays before integrations.
 
 ## Components
 

@@ -36,9 +36,9 @@ CLI, and reconciler.
   schemas also cover per-file statistics and index artifact metadata.
 - **`connector/connector.proto`** – Connector management RPCs plus reconciliation job tracking and
   validation routines.
-- **`integration/catalog_integration.proto`** – External catalog identity CRUD,
-  typed catalog authentication configuration, write-only credential payloads, non-secret
-  configured/generation state, and credential rotation. This contract is
+- **`integration/*.proto`** – External catalog identity and catalog overlay CRUD APIs,
+  including segment-based namespace filters, typed catalog authentication configuration, write-only
+  credential payloads, non-secret configured/generation state, and credential rotation. These contracts are
   independent of Connector and deliberately contain no connectivity-validation or reconciliation
   operations.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
@@ -72,6 +72,7 @@ CLI, and reconciler.
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `CatalogIntegrations` | Integration CRUD. |
+| `CatalogOverlays` | Overlay CRUD, including filtering by integration. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`. |
 | `QuerySchemaService` | `DescribeInputs`. |
 | `QueryScanService` | `InitScan`, `StreamDeleteFiles`, `StreamDataFiles`, `CloseScan`. |
@@ -82,9 +83,14 @@ CLI, and reconciler.
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
 | `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
-Resource IDs supplied to integration RPCs must include an `account_id` matching the
+Resource IDs supplied to integration and overlay RPCs must include an `account_id` matching the
 authenticated principal's account. The service rejects blank or cross-account IDs before hitting
 repository storage.
+
+`NamespacePath` represents an upstream namespace as root-to-leaf path segments for overlay include
+and exclude filters. Empty includes select all namespaces; exclusions take precedence. Segment text
+is preserved exactly, paths are deduplicated and deterministically ordered, and matching is
+case-sensitive. Each path selects that namespace subtree.
 
 ### Planner Lifecycle & Execution Scan Schemas
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:

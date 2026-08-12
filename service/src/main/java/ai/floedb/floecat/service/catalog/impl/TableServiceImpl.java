@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -74,6 +75,7 @@ import org.jboss.logging.Logger;
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
   @Inject TableRepository tableRepo;
+  @Inject CatalogRepository catalogRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -111,7 +113,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
   }
 
   @Override

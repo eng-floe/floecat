@@ -741,6 +741,14 @@ public class CasBlobGc {
               storageEstimate);
       pointersScanned +=
           collectPointers(
+              Keys.catalogOverlayPointerByIdPrefix(accountId),
+              referenced,
+              null,
+              pageSize,
+              null,
+              storageEstimate);
+      pointersScanned +=
+          collectPointers(
               Keys.storageAuthorityPointerByIdPrefix(accountId),
               referenced,
               null,
@@ -1094,6 +1102,21 @@ public class CasBlobGc {
       blobsScanned += catalogIntegrations.scanned();
       blobsDeleted += catalogIntegrations.deleted();
       blobsRescued += catalogIntegrations.rescued();
+
+      var catalogOverlays =
+          deleteUnreferenced(
+              Keys.catalogOverlayRootPrefix(accountId),
+              referenced,
+              walkedPinRoots,
+              walkFailures,
+              key -> key.contains("/overlay/"),
+              null,
+              pageSize,
+              nowMs,
+              minAgeMs);
+      blobsScanned += catalogOverlays.scanned();
+      blobsDeleted += catalogOverlays.deleted();
+      blobsRescued += catalogOverlays.rescued();
 
       var storageAuthorities =
           deleteUnreferenced(

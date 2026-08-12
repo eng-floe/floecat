@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -76,6 +77,7 @@ import org.jboss.logging.Logger;
 public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotService {
 
   @Inject SnapshotRepository snapshotRepo;
+  @Inject CatalogRepository catalogRepo;
   @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -129,7 +131,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private void ensureTableWritable(ResourceId tableId, String corr) {
-    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(tableId, corr);
+    new CatalogSurfaceWritePolicy(graphView, catalogRepo).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {

@@ -22,6 +22,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -36,6 +37,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -135,6 +137,48 @@ class CatalogSurfaceWritePolicyTest {
     assertStatus(
         Status.Code.PERMISSION_DENIED,
         () -> writePolicy.requireWritableView(viewId, CORRELATION_ID));
+  }
+
+  @Test
+  void requireWritableResourcesRejectOverlayOwnedCatalogAndDescendants() {
+    var catalogs = mock(CatalogRepository.class);
+    var policy = new CatalogSurfaceWritePolicy(graphView, catalogs);
+    var overlayId = id(ResourceKind.RK_CATALOG_OVERLAY, "overlay");
+    when(catalogs.getById(catalogId))
+        .thenReturn(
+            Optional.of(
+                Catalog.newBuilder()
+                    .setResourceId(catalogId)
+                    .setDisplayName("external")
+                    .setOverlayId(overlayId)
+                    .build()));
+    graphView.addNode(catalogNode(catalogId, "external"));
+    graphView.addNode(namespaceNode(namespaceId, "public", GraphNodeOrigin.USER));
+    graphView.addRelation(namespaceId, userTableNode(tableId));
+    graphView.addRelation(namespaceId, viewNode(viewId, GraphNodeOrigin.USER));
+
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableCatalog(catalogId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireDeletableCatalog(catalogId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableNamespace(namespaceId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireDeletableNamespace(namespaceId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED, () -> policy.requireWritableTable(tableId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableTableForDelete(tableId, CORRELATION_ID, false));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED, () -> policy.requireWritableView(viewId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableViewForDelete(viewId, CORRELATION_ID, false));
   }
 
   @Test

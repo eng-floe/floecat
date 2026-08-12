@@ -43,6 +43,7 @@ enum ResourceKind {
   RK_TRANSACTION = 15;
   RK_STORAGE_AUTHORITY = 16;
   RK_CATALOG_INTEGRATION = 17;
+  RK_CATALOG_OVERLAY = 18;
 }
 
 message ResourceId {

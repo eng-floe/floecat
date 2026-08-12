@@ -543,6 +543,11 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
               Keys.catalogIntegrationPointerByIdPrefix(accountKey),
               accountKey,
               ResourceKind.RK_CATALOG_INTEGRATION);
+      List<ResourceId> catalogOverlays =
+          listCanonicalResourceIds(
+              Keys.catalogOverlayPointerByIdPrefix(accountKey),
+              accountKey,
+              ResourceKind.RK_CATALOG_OVERLAY);
       List<ResourceId> connectors =
           listCanonicalResourceIds(
               Keys.connectorPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CONNECTOR);
@@ -565,6 +570,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       cleanupStorageAuthorityCredentials(accountKey, storageAuthorities, summary);
       cleanupConnectorCredentials(accountKey, connectors, summary);
       summary.catalogIntegrationsDeleted = catalogIntegrations.size();
+      summary.catalogOverlaysDeleted = catalogOverlays.size();
       summary.catalogsDeleted = catalogs.size();
       summary.namespacesDeleted = namespaces.size();
       summary.tablesDeleted = tables.size();
@@ -590,15 +596,17 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       invalidateAll(storageAuthorities);
       invalidateAll(connectors);
       invalidateAll(catalogIntegrations);
+      invalidateAll(catalogOverlays);
       invalidateAll(catalogs);
       invalidateAll(namespaces);
       invalidateAll(tables);
       invalidateAll(views);
       summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
           summary.accountId,
           summary.accountPointersDeleted,
+          summary.catalogOverlaysDeleted,
           summary.catalogIntegrationsDeleted,
           summary.storageAuthoritiesDeleted,
           summary.connectorsDeleted,
@@ -741,6 +749,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int accountPointersDeleted;
+    private int catalogOverlaysDeleted;
     private int catalogIntegrationsDeleted;
     private int storageAuthoritiesDeleted;
     private int connectorsDeleted;
