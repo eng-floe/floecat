@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/fixed-roles/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/catalog-integration-design/">
       
       
-        <link rel="prev" href="../external-authentication/">
+        <link rel="prev" href="../arrow-flight/">
       
       
-        <link rel="next" href="../log/">
+        <link rel="next" href="../catalog-integrations/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Fixed Roles - Floecat Documentation</title>
+        <title>Catalog Integration Architecture and Delivery Plan - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#fixed-roles" class="md-skip">
+        <a href="#catalog-integration-architecture-and-delivery-plan" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Fixed Roles
+              Catalog Integration Architecture and Delivery Plan
             
           </span>
         </div>
@@ -644,8 +644,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -656,13 +658,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -678,7 +678,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -689,10 +689,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../catalog-integration-design/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -703,6 +725,158 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#stack-implementation-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Stack implementation map
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resource-and-ownership-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Resource and ownership model
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resource and ownership model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog integration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog overlay
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#catalog-access-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-captured-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Canonical captured metadata
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refresh-and-reconciliation-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      Refresh and reconciliation ownership
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle-and-garbage-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lifecycle and garbage collection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remaining-api-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Remaining API evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-connector-disposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Connector disposition
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delivery-plan-and-pr-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      Delivery plan and PR boundaries
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1214,8 +1388,6 @@
       
   
   
-    
-  
   
   
     
@@ -1228,11 +1400,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
           <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
@@ -1248,7 +1422,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             Storage and Security
@@ -1397,32 +1571,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Fixed Roles
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
         
   
   
@@ -1433,44 +1585,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#role-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role Matrix
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
-    <span class="md-ellipsis">
-      Behavior Notes
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1654,18 +1768,132 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#role-matrix" class="md-nav__link">
+  <a href="#stack-implementation-map" class="md-nav__link">
     <span class="md-ellipsis">
-      Role Matrix
+      Stack implementation map
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
+  <a href="#goals" class="md-nav__link">
     <span class="md-ellipsis">
-      Behavior Notes
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resource-and-ownership-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Resource and ownership model
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resource and ownership model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog integration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog overlay
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#catalog-access-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-captured-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Canonical captured metadata
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refresh-and-reconciliation-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      Refresh and reconciliation ownership
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle-and-garbage-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lifecycle and garbage collection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remaining-api-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Remaining API evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-connector-disposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Connector disposition
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#delivery-plan-and-pr-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      Delivery plan and PR boundaries
     </span>
   </a>
   
@@ -1687,7 +1915,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/mc-catalog-integrations-cli/docs/fixed-roles.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/mc-catalog-integrations-cli/docs/catalog-integration-design.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1695,80 +1923,265 @@
   
 
 
-<h1 id="fixed-roles">Fixed Roles<a class="headerlink" href="#fixed-roles" title="Permanent link">&para;</a></h1>
-<p>This document defines the fixed role names recognized by Floecat and the permissions each role grants.</p>
-<p>Source of truth: <code>service/src/main/java/ai/floedb/floecat/service/security/RolePermissions.java</code>.</p>
-<h2 id="role-matrix">Role Matrix<a class="headerlink" href="#role-matrix" title="Permanent link">&para;</a></h2>
+<h1 id="catalog-integration-architecture-and-delivery-plan">Catalog Integration Architecture and Delivery Plan<a class="headerlink" href="#catalog-integration-architecture-and-delivery-plan" title="Permanent link">&para;</a></h1>
+<p>Status: accepted; the resource, authentication, CLI, and first catalog-access layers are
+implemented in the current PR stack.</p>
+<p>This document records both the target architecture and the boundary of each stacked change. It is
+aligned with the Catalog Integration and Catalog Overlay SQL specification. It distinguishes code
+already present below this change, code in the following PR, and work that remains deferred.</p>
+<h2 id="stack-implementation-map">Stack implementation map<a class="headerlink" href="#stack-implementation-map" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Role name</th>
-<th>Purpose</th>
-<th>Granted permissions</th>
+<th>Change</th>
+<th>Implemented boundary</th>
+<th>Explicitly not implemented</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>default</code></td>
-<td>Baseline read-only tenant access. Used when no roles are provided in normal (<code>oidc</code>) mode.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code>, <code>catalog-overlay.read</code></td>
+<td>#424, Catalog Integration and Overlay APIs</td>
+<td>CRUD resources, typed authentication, write-only credential storage and rotation, shared SQL catalog-name reservation, idempotency, optimistic concurrency, dependencies, cascade deletion, and atomic persistence primitives</td>
+<td>Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility</td>
 </tr>
 <tr>
-<td><code>administrator</code></td>
-<td>Full tenant-scoped administration of metadata, catalog integrations, catalog overlays, and legacy connectors.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td>#425, Shell CLI</td>
+<td>Integration and Overlay CRUD commands, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions</td>
+<td>Connectivity validation, discovery, capture, reconciliation, and query visibility</td>
 </tr>
 <tr>
-<td><code>developer</code></td>
-<td>Development-role equivalent of <code>administrator</code>.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td>#439, this document</td>
+<td>Architecture decisions and delivery boundaries</td>
+<td>Production behavior</td>
 </tr>
 <tr>
-<td><code>platform-admin</code> (or configured value of <code>floecat.auth.platform-admin.role</code>)</td>
-<td>Platform-level account management role from IdP.</td>
-<td><code>account.read</code>, <code>account.write</code>, <code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>init-account</code></td>
-<td>Bootstrap role used to initialize account + initial resources.</td>
-<td><code>account.read</code>, <code>account.write</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>connector.create</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code></td>
-</tr>
-<tr>
-<td><code>delete-account</code></td>
-<td>Narrow internal role used to trigger account teardown. Floecat performs the implied cleanup internally.</td>
-<td><code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>system-objects</code></td>
-<td>Minimal role for SystemObjects/GetSystemObjects access.</td>
-<td><code>system-objects.read</code></td>
-</tr>
-<tr>
-<td><code>reconcile-worker</code></td>
-<td>Dedicated machine principal for reconciler background gRPC work.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
+<td>#440, catalog-access SPI</td>
+<td>Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table loading, OAuth2, SigV4, and renewable AWS credential support</td>
+<td>Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture</td>
 </tr>
 </tbody>
 </table>
-<h2 id="behavior-notes">Behavior Notes<a class="headerlink" href="#behavior-notes" title="Permanent link">&para;</a></h2>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<p>The catalog integration model provides a SQL-compatible way to:</p>
 <ul>
-<li>Role comparison is case-insensitive.</li>
-<li>Unknown roles are ignored.</li>
-<li>If no effective roles are present:</li>
-<li><code>oidc</code> mode falls back to <code>default</code>.</li>
-<li><code>dev</code> mode falls back to <code>developer</code>.</li>
-<li>In <code>dev</code> mode, <code>account.write</code> is always added.</li>
-<li><code>init-account</code> also bypasses strict account existence validation during inbound context building.</li>
-<li><code>account.delete</code> is the dedicated destructive permission for account teardown. It is intentionally
-  separate from broad catalog/table/connector management permissions.</li>
-<li><code>catalog-integration.write</code> administers integration records, while <code>catalog-integration.use</code>
-  permits an integration to be bound to an overlay without granting integration-management
-  authority. Cascading integration deletion additionally requires <code>catalog-overlay.write</code> because
-  it deletes the dependent overlay resources.</li>
-<li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
-  <code>catalog-integration.use</code>. The overlay is itself a top-level SQL catalog, so no <code>catalog.write</code>
-  permission or separate Catalog resource is involved.</li>
+<li>authenticate Floecat to an upstream catalog;</li>
+<li>select upstream namespaces beneath a read-only SQL catalog name;</li>
+<li>discover and validate upstream objects without depending on Connector resources; and</li>
+<li>eventually capture external metadata once while exposing it through one or more overlays.</li>
 </ul>
+<p>The Integration path does not use, wrap, synthesize, or fall back to Connector resources.
+Connectors currently remain a separate operational path and are retired through an explicit later
+migration, not through runtime fallback.</p>
+<h2 id="resource-and-ownership-model">Resource and ownership model<a class="headerlink" href="#resource-and-ownership-model" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>CatalogIntegration                 connection and authentication
+ ├── captured namespace/table      future shared metadata and statistics
+ ├── CatalogOverlay &quot;sales&quot;        top-level SQL catalog and namespace selection
+ └── CatalogOverlay &quot;finance&quot;      another projection of the same integration
+</code></pre></div>
+<h3 id="catalog-integration">Catalog integration<a class="headerlink" href="#catalog-integration" title="Permanent link">&para;</a></h3>
+<p><code>CatalogIntegration</code> owns the upstream protocol, HTTP(S) endpoint, non-secret authentication
+configuration, credential lifecycle, and eventually the canonical identity of captured external
+objects. Its immutable resource ID is operational identity; its display name is mutable SQL-facing
+metadata.</p>
+<p>The API currently supports Iceberg REST and Unity integration types. Authentication is required and
+is represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS assume
+role, AWS access keys, and AWS SigV4. Unity currently accepts only OAuth client credentials or
+bearer authentication. The base service validates structural compatibility; endpoint/provider
+support is intentionally left to the catalog-access adapter and provider.</p>
+<p>Type and catalog URI are immutable through update. <code>CREATE OR REPLACE</code> creates a new resource
+identity. It is rejected while overlays depend on the existing integration because replacement
+must not silently retarget those overlays.</p>
+<h3 id="authentication-and-credentials">Authentication and credentials<a class="headerlink" href="#authentication-and-credentials" title="Permanent link">&para;</a></h3>
+<p>Persisted resources contain only non-secret authentication configuration,
+<code>credentials_configured</code>, and a server-managed credential generation. Secret values are supplied
+on create or through the dedicated authentication-update RPC and are never returned.</p>
+<p>The service derives its internal secret key from integration ID and credential generation. No
+secret-manager reference is exposed in the public resource. <code>CatalogIntegrationCredentialStore</code>
+provides the typed service-side resolution primitive required by a later catalog-access adapter.</p>
+<p>Credential publication has these guarantees:</p>
+<ul>
+<li>a new immutable generation is reserved with atomic <code>putIfAbsent</code> before the resource CAS;</li>
+<li>the old generation is retired only after the new resource generation is published;</li>
+<li>a definite publication failure removes the prepared secret;</li>
+<li>an acknowledgement-uncertain publication retains the secret because the resource CAS may have
+  succeeded; and</li>
+<li>idempotent create may carry credentials, excludes secret bytes from its fingerprint, and returns
+  the first successfully published value for that key.</li>
+</ul>
+<p>Reclamation of retained, unreachable credential generations is not implemented in this stack. A
+later orphan-reclamation PR will add that mechanism; this document does not claim it exists today.</p>
+<h3 id="catalog-overlay">Catalog overlay<a class="headerlink" href="#catalog-overlay" title="Permanent link">&para;</a></h3>
+<p><code>CatalogOverlay</code> is the read-only top-level SQL catalog backed by one integration. It does not point
+to, create, mutate, empty, or delete a separate Floecat <code>Catalog</code> resource. Its display name is the
+SQL catalog name.</p>
+<p>Catalog and CatalogOverlay create, rename, replacement, and delete operations use one shared
+account-level name reservation, so they cannot expose the same top-level SQL name. An overlay keeps
+an immutable integration binding through update. Replacement may choose a different binding
+because it creates a new overlay identity.</p>
+<h2 id="namespace-selection">Namespace selection<a class="headerlink" href="#namespace-selection" title="Permanent link">&para;</a></h2>
+<p>The SQL contract's include/exclude namespace paths are the target model; they are not placeholders
+for a separate prefix-remapping contract.</p>
+<ul>
+<li>Paths are ordered from external catalog root to namespace leaf and matched case-sensitively.</li>
+<li>An empty include list selects the whole external namespace tree.</li>
+<li>An included path selects that namespace and all descendants.</li>
+<li>An excluded path removes that namespace and all descendants; exclusion wins.</li>
+<li>Paths are normalized and deduplicated without flattening segment boundaries.</li>
+<li>Newly discovered namespaces matching the stored selection become eligible automatically once
+  discovery is wired to overlays.</li>
+<li>Several overlays may select the same upstream object without requiring duplicate capture.</li>
+</ul>
+<p>The current API and CLI implement storage and mutation of these selections. They do not yet make
+the selected namespaces query-visible.</p>
+<h2 id="catalog-access-boundary">Catalog access boundary<a class="headerlink" href="#catalog-access-boundary" title="Permanent link">&para;</a></h2>
+<p>PR #440 implements the Connector-independent boundary anticipated by this design:</p>
+<div class="highlight"><pre><span></span><code>CatalogConnectionConfig
+CatalogAuthentication
+ResolvedCatalogCredentials
+CatalogClient
+CatalogClientProvider
+CatalogClientFactory
+CatalogCapabilities
+</code></pre></div>
+<p>No SPI type imports Connector protobufs or carries a Connector resource ID. Provider lookup is by
+catalog protocol and fails explicitly for missing or duplicate providers.</p>
+<p>The Iceberg REST provider in #440 implements:</p>
+<ul>
+<li>connection validation using a namespace-list request;</li>
+<li>structured namespace and table enumeration;</li>
+<li>provider-neutral table metadata and stable Iceberg table UUID identity when available;</li>
+<li>anonymous, OAuth2, and AWS SigV4 client authentication;</li>
+<li>separate catalog-signing and storage credential scopes; and</li>
+<li>renewable, process-local AWS credential registrations with serialized refresh and terminal
+  failure handling.</li>
+</ul>
+<p>The SPI validates persistable configuration so secrets, credential-provider handles, user-info,
+and secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
+separately through <code>ResolvedCatalogCredentials</code>.</p>
+<p>The remaining adapter must translate the Integration protobuf authentication variants and resolved
+<code>CatalogIntegrationCredentials</code> onto the SPI's authentication schemes. Integration authentication
+is currently required, so the adapter need not select the SPI's <code>NONE</code> scheme. It must also perform
+provider-specific compatibility checks. #440 does not yet call
+<code>CatalogIntegrationCredentialStore</code>, expose Integration validation/discovery RPCs, or schedule
+work.</p>
+<p>The catalog client owns external I/O only. Capture planning, Floecat persistence, overlay binding,
+scheduling, and query resolution remain outside it.</p>
+<h2 id="canonical-captured-metadata">Canonical captured metadata<a class="headerlink" href="#canonical-captured-metadata" title="Permanent link">&para;</a></h2>
+<p>This section is target design, not current implementation. External metadata will be captured once
+per integration rather than copied per overlay. A canonical key is:</p>
+<div class="highlight"><pre><span></span><code>(account_id, integration_id, object_kind, upstream_object_id)
+</code></pre></div>
+<p>Provider-stable object IDs are preferred. When a provider has no stable ID, the normalized full
+upstream path is an explicitly unstable identity and rename is observed as delete plus create.
+Display names and overlay selection are never part of canonical identity.</p>
+<p>Canonical tables will own schemas, snapshots, manifests, file groups, and statistics. A lightweight
+overlay binding will associate a canonical object with its SQL-visible path. This requires a new
+integration-owned external-object reference rather than adding an integration ID to the existing
+Connector-rooted <code>UpstreamRef</code>.</p>
+<h2 id="refresh-and-reconciliation-ownership">Refresh and reconciliation ownership<a class="headerlink" href="#refresh-and-reconciliation-ownership" title="Permanent link">&para;</a></h2>
+<p>This section is also deferred target design. Overlays will state user-facing freshness and
+retention demand; integrations will own upstream work. For active overlays on one integration, the
+scheduler will compute one effective plan:</p>
+<ul>
+<li>capture scope is the union of selected namespaces;</li>
+<li>refresh interval is the shortest requested interval;</li>
+<li>retained history satisfies the longest requested retention; and</li>
+<li>pausing an overlay removes its visibility and demand, while pausing an integration stops all new
+  upstream work.</li>
+</ul>
+<p>A future integration configuration generation and capture-plan generation will fence every planned
+and leased job. Stale work may finish external I/O but must not publish results after configuration,
+selection, pause, replacement, or deletion changes.</p>
+<h2 id="lifecycle-and-garbage-collection">Lifecycle and garbage collection<a class="headerlink" href="#lifecycle-and-garbage-collection" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Current stack</th>
+<th>Later behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rename integration or overlay</td>
+<td>Atomic rename with optimistic preconditions and shared SQL-name checks for overlays</td>
+<td>No additional behavior required</td>
+</tr>
+<tr>
+<td>Replace integration</td>
+<td>New identity; rejected while dependent overlays exist</td>
+<td>Validation may run before publication</td>
+</tr>
+<tr>
+<td>Rotate credentials</td>
+<td>Atomic new credential generation; old generation retired after publication</td>
+<td>Reclaim acknowledgement-uncertain orphan generations</td>
+</tr>
+<tr>
+<td>Delete overlay</td>
+<td>Removes resource pointers and integration dependency atomically</td>
+<td>Fence jobs, remove bindings, retain shared captures still in use</td>
+</tr>
+<tr>
+<td>Delete integration</td>
+<td>Rejected while overlays exist</td>
+<td>Fence integration-owned jobs and captured publication</td>
+</tr>
+<tr>
+<td>Cascade integration delete</td>
+<td>Durable deletion fence, dependent overlay deletion, resource deletion, and credential cleanup</td>
+<td>Remove bindings and make unreferenced captures GC-eligible</td>
+</tr>
+<tr>
+<td>Delete account</td>
+<td>Integration credentials are included in account cleanup</td>
+<td>Include future bindings and captures</td>
+</tr>
+</tbody>
+</table>
+<p>Captured metadata GC is not implemented. Future capture data becomes eligible only when no retained
+binding or query pin references it, no current-generation job can publish to it, and its retention
+grace period has elapsed.</p>
+<h2 id="remaining-api-evolution">Remaining API evolution<a class="headerlink" href="#remaining-api-evolution" title="Permanent link">&para;</a></h2>
+<p>The lower PRs already provide the SQL-facing CRUD and credential primitives. Remaining changes are:</p>
+<ol>
+<li>Wire Integration resources and the typed credential resolver to the catalog-access SPI.</li>
+<li>Add validation, capability, namespace-listing, and object-listing service RPCs required by the
+   SQL functions.</li>
+<li>Add integration-scoped canonical object identity and lightweight overlay bindings.</li>
+<li>Add overlay policy/state and integration-owned scheduling with generation fencing.</li>
+<li>Add query visibility, retained capture GC, credential orphan reclamation, migration, and
+   Connector retirement in separately reviewed changes.</li>
+</ol>
+<p>Because backwards compatibility is not a project requirement at this stage, contracts should be
+replaced when semantics differ rather than accumulating aliases or hidden fallback behavior.</p>
+<h2 id="legacy-connector-disposition">Legacy Connector disposition<a class="headerlink" href="#legacy-connector-disposition" title="Permanent link">&para;</a></h2>
+<p>Connectors currently remain operational as a separate API while the Integration path is completed.
+This is temporary coexistence, not a compatibility layer:</p>
+<ul>
+<li>Integration and Overlay services do not create or read Connector resources.</li>
+<li>The catalog-access SPI does not import Connector protos or delegate to Connector services.</li>
+<li>Future Integration validation and reconciliation must not call Connector RPCs.</li>
+<li>Migration and Connector removal require their own reviewed change.</li>
+</ul>
+<p>There is deliberately no runtime fallback from an Integration to a Connector. Unsupported provider
+or authentication combinations must fail explicitly.</p>
+<h2 id="delivery-plan-and-pr-boundaries">Delivery plan and PR boundaries<a class="headerlink" href="#delivery-plan-and-pr-boundaries" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Complete — #424:</strong> CRUD, SQL identity, authentication/credential lifecycle, atomic storage,
+   idempotency, dependency, cascade, and cleanup primitives.</li>
+<li><strong>Complete — #425:</strong> CLI coverage for those APIs, including typed authentication and write-only
+   credential input for create and rotation commands.</li>
+<li><strong>This change — #439:</strong> keep the architecture and delivery record aligned with implemented code.</li>
+<li><strong>Implemented in the following PR — #440:</strong> neutral catalog-access SPI and Iceberg REST vertical
+   slice.</li>
+<li><strong>Next:</strong> Integration-to-SPI adapter and SQL-required validation/discovery RPCs.</li>
+<li><strong>Later:</strong> canonical capture/bindings, scheduling, query visibility, garbage collection,
+   migration, and Connector removal.</li>
+</ol>
+<p>The CLI currently resolves Integration and Overlay display names by listing the corresponding
+resource type. The duplication is isolated and does not require expanding the API until another
+consumer needs a generic resolver.</p>
 
 
 
