@@ -297,6 +297,19 @@ public interface StatsStore {
     throw new UnsupportedOperationException("prewritten stats objects are not supported");
   }
 
+  /**
+   * Binds a generation to the immutable capture manifest whose block index is its complete,
+   * structurally shared file-artifact map.
+   */
+  default void registerGenerationArtifactMap(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String captureManifestUri,
+      long captureManifestBytes) {
+    throw new UnsupportedOperationException("generation artifact maps are not supported");
+  }
+
   /** Registers worker-written records and publishes their generation without reading the blobs. */
   default void publishPrewrittenStatsGeneration(
       ResourceId tableId,

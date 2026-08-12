@@ -108,6 +108,11 @@ public interface ReconcilerBackend {
     return Optional.empty();
   }
 
+  default Optional<FloecatConnector.SnapshotFileDelta> fetchSnapshotFileDelta(
+      ReconcileContext ctx, ResourceId tableId, long baseSnapshotId, long targetSnapshotId) {
+    return Optional.empty();
+  }
+
   /**
    * Captures requested outputs for one planned file group.
    *

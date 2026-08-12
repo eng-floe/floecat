@@ -576,6 +576,25 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public Optional<FloecatConnector.SnapshotFileDelta> fetchSnapshotFileDelta(
+      ReconcileContext ctx, ResourceId tableId, long baseSnapshotId, long targetSnapshotId) {
+    if (baseSnapshotId < 0 || targetSnapshotId < 0 || targetSnapshotId == baseSnapshotId) {
+      return Optional.empty();
+    }
+    return withSourceConnector(
+        ctx,
+        tableId,
+        Optional.empty(),
+        (source, sourceCtx) ->
+            source.planSnapshotFileDelta(
+                sourceCtx.sourceNamespace(),
+                sourceCtx.sourceTable(),
+                tableId,
+                baseSnapshotId,
+                targetSnapshotId));
+  }
+
+  @Override
   public CaptureEngineResult capturePlannedFileGroup(
       ReconcileContext ctx, PlannedFileGroupCaptureRequest request) {
     if (request == null

@@ -71,6 +71,13 @@ interface RemotePlannerWorkerClient {
       List<PlannedFileGroupJob> fileGroupJobs,
       List<TargetStatsRecord> directStats);
 
+  boolean submitAppendOnlyPlanSnapshotSuccess(
+      RemoteLeasedJob lease,
+      ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> fileGroupJobs,
+      List<TargetStatsRecord> directStats,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase);
+
   boolean submitPlanSnapshotFailure(
       RemoteLeasedJob lease,
       ReconcileExecutor.ExecutionResult.FailureKind failureKind,

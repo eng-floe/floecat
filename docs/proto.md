@@ -98,8 +98,27 @@ engine release.
   allows `SS_CURRENT`. Planner RPCs interpret `as_of` timestamps when enumerating snapshots.
 - **Snapshot artifact reuse state** – `Snapshot.reuse_manifest_ref` identifies the finalized
   `SnapshotCaptureManifest` by URI, byte length, SHA-256, and stats-generation manifest URI. It is
-  service-owned and is not part of `SnapshotSpec`. `SnapshotManifestEntry.reuse_stats_generation_ref`
-  heads the compact stats generation used by that manifest.
+  service-owned and is not part of `SnapshotSpec`. Its `format_version` must match the current
+  capture-manifest contract; older references are rejected before their blobs are read.
+  `SnapshotManifestEntry.reuse_stats_generation_ref` heads the compact stats generation used by
+  that manifest.
+- **External reusable-index compatibility** – external planner and finalizer deployments must
+  regenerate bindings for `ReusableArtifactIndexReference` format 1 and its immutable sorted-run,
+  run-manifest, and block messages. The old trie-root representation has no compatibility reader.
+  `AppendOnlySnapshotBase.reusable_artifact_index` is an opaque inherited input that must be
+  authenticated when present. External finalizers submit the current
+  `reusable_artifact_bundles` delta and construct the complete structurally shared
+  `SnapshotCaptureManifest.reusable_artifact_index`; unchanged immutable runs remain referenced and
+  bounded level compaction replaces merged runs. Roughly 512 KiB logical data blocks are packed
+  into content-addressed objects of up to 64 MiB; block references carry byte ranges and hashes so
+  point lookup can use object-store range reads. Run objects up to 64 KiB may be carried in
+  `inline_payload`; larger objects use their content-addressed URI. The service binds the inactive
+  generation directly to that capture manifest and performs fenced activation without copying
+  inherited mappings or reopening inherited bundles. File-group-only executors are unaffected
+  because their
+  leased payload still contains resolved bundle selections rather than index runs.
+  `AppendOnlySnapshotBase.chain_depth` counts inherited append-only links so planners can force a
+  periodic full-capture checkpoint.
 - **File-level stats** – `FileTargetStats` anchors counts and sketches to
   a file path. File stats are written as `TargetStatsRecord` values with `target.file` identity via
   `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream. Its
@@ -123,14 +142,16 @@ engine release.
   visibility transition. Successful finalization clears protections; failed or cancelled full
   rescans delete the unpublished generation.
   `FileGroupResultPayload.reusable_artifact_bundle` describes the shared bundle and its per-target
-  fingerprints and capture signatures. `SnapshotCaptureManifest.reusable_artifact_bundles` retains
-  that lightweight index so a later snapshot planner can select reusable targets without reading
-  bundle payloads, source files, or page-index sidecars. A selected file-group worker verifies and
-  reads each compact bundle once. This compatibility index is executor-authored metadata: the
-  control plane validates its structure, leased ownership, counts, content-addressed bundle
-  descriptor, and staged target mappings, but deliberately does not GET the bundle to derive or
-  compare metadata. The consuming worker verifies bundle length and SHA-256 and rejects a selected
-  record that is absent or incompatible before reuse.
+  fingerprints and capture signatures. `SnapshotCaptureManifest.reusable_artifact_bundles` carries
+  only bundles produced by the current file groups. The service applies those entries to the
+  authenticated prior `reusable_artifact_index` runs and publishes the resulting immutable run set
+  as the complete compatibility index. A later planner can select reusable targets without
+  reading bundle payloads, source files, or page-index sidecars. A selected file-group worker
+  verifies and reads each compact bundle once. This compatibility index is executor-authored
+  metadata: the control plane validates its structure, leased ownership, counts, content-addressed
+  bundle descriptor, and staged target mappings, but deliberately does not GET the bundle to derive
+  or compare metadata. The consuming worker verifies bundle length and SHA-256 and rejects a
+  selected record that is absent or incompatible before reuse.
   `FileGroupResultPayload.realized_stats_selectors` and `.realized_index_selectors` record the
   concrete selector aliases materialized by each group. The finalizer aggregates them into the
   corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later

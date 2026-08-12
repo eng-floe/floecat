@@ -18,16 +18,21 @@ package ai.floedb.floecat.service.repo.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
@@ -49,7 +54,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -99,7 +107,9 @@ class IndexArtifactRepositoryTest {
                 "file:s3://bucket/first.parquet", bundleUri, bundle.length, digest),
             new IndexArtifactRepository.PrewrittenIndexArtifactReference(
                 "file:s3://bucket/second.parquet", bundleUri, bundle.length, digest)));
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         generationId,
@@ -187,6 +197,175 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void bundledIndexPublicationChecksOwnedSidecarsConcurrently() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    BlobStore blobs = mock(BlobStore.class);
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String firstTarget = "file:s3://bucket/first.parquet";
+    String secondTarget = "file:s3://bucket/second.parquet";
+    String firstSidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            firstTarget,
+            Hashing.sha256Hex(new byte[] {1}));
+    String secondSidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            secondTarget,
+            Hashing.sha256Hex(new byte[] {2}));
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(
+                indexRecord(snapshotId, "s3://bucket/first.parquet").toBuilder()
+                    .setArtifactUri(firstSidecar))
+            .addIndexArtifacts(
+                indexRecord(snapshotId, "s3://bucket/second.parquet").toBuilder()
+                    .setArtifactUri(secondSidecar))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    when(blobs.get(bundleUri)).thenReturn(bundle);
+    CountDownLatch bothStarted = new CountDownLatch(2);
+    AtomicInteger active = new AtomicInteger();
+    AtomicInteger peak = new AtomicInteger();
+    when(blobs.head(anyString()))
+        .thenAnswer(
+            invocation -> {
+              int current = active.incrementAndGet();
+              peak.accumulateAndGet(current, Math::max);
+              bothStarted.countDown();
+              bothStarted.await(1, TimeUnit.SECONDS);
+              active.decrementAndGet();
+              return Optional.of(BlobHeader.getDefaultInstance());
+            });
+
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-bundled",
+        "/worker-output/index-artifacts/",
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                firstTarget, bundleUri, bundle.length, digest),
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                secondTarget, bundleUri, bundle.length, digest)));
+
+    assertThat(peak.get()).isEqualTo(2);
+  }
+
+  @Test
+  void bundledIndexPublicationChecksEachUniqueSidecarOnceWithoutReadingOrRewritingIt() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    BlobStore blobs = mock(BlobStore.class);
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 716L;
+    String firstTarget = "file:s3://bucket/first.parquet";
+    String secondTarget = "file:s3://bucket/second.parquet";
+    String sharedSidecar =
+        Keys.snapshotIndexSidecarBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            firstTarget,
+            Hashing.sha256Hex(new byte[8 * 1024 * 1024]));
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(
+                indexRecord(snapshotId, "s3://bucket/first.parquet").toBuilder()
+                    .setArtifactUri(sharedSidecar))
+            .addIndexArtifacts(
+                indexRecord(snapshotId, "s3://bucket/second.parquet").toBuilder()
+                    .setArtifactUri(sharedSidecar))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    when(blobs.get(bundleUri)).thenReturn(bundle);
+    when(blobs.head(sharedSidecar)).thenReturn(Optional.of(BlobHeader.getDefaultInstance()));
+
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-bundled",
+        "/worker-output/index-artifacts/",
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                firstTarget, bundleUri, bundle.length, digest),
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                secondTarget, bundleUri, bundle.length, digest)));
+
+    verify(blobs, times(1)).head(sharedSidecar);
+    verify(blobs, never()).get(sharedSidecar);
+    verify(blobs, never()).put(anyString(), any(byte[].class), anyString());
+  }
+
+  @Test
+  void bundledIndexPublicationLimitsSharedSidecarChecksToFifty() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    BlobStore blobs = mock(BlobStore.class);
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 717L;
+    var bundleBuilder = ReusableArtifactBundlePayload.newBuilder().setFormatVersion(1);
+    List<String> targets = new ArrayList<>();
+    for (int index = 0; index < 60; index++) {
+      String filePath = "s3://bucket/file-" + index + ".parquet";
+      String target = "file:" + filePath;
+      targets.add(target);
+      bundleBuilder.addIndexArtifacts(
+          indexRecord(snapshotId, filePath).toBuilder()
+              .setArtifactUri(
+                  Keys.snapshotIndexSidecarBlobUri(
+                      TABLE_ID.getAccountId(),
+                      TABLE_ID.getId(),
+                      snapshotId,
+                      target,
+                      Hashing.sha256Hex(new byte[] {(byte) index}))));
+    }
+    byte[] bundle = bundleBuilder.build().toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    when(blobs.get(bundleUri)).thenReturn(bundle);
+    CountDownLatch fiftyStarted = new CountDownLatch(50);
+    AtomicInteger active = new AtomicInteger();
+    AtomicInteger peak = new AtomicInteger();
+    when(blobs.head(anyString()))
+        .thenAnswer(
+            invocation -> {
+              int current = active.incrementAndGet();
+              peak.accumulateAndGet(current, Math::max);
+              fiftyStarted.countDown();
+              if (!fiftyStarted.await(2, TimeUnit.SECONDS)) {
+                throw new AssertionError("fifty shared-sidecar checks did not start concurrently");
+              }
+              active.decrementAndGet();
+              return Optional.of(BlobHeader.getDefaultInstance());
+            });
+
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-bundled",
+        "/worker-output/index-artifacts/",
+        targets.stream()
+            .map(
+                target ->
+                    new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                        target, bundleUri, bundle.length, digest))
+            .toList());
+
+    assertThat(peak.get()).isEqualTo(50);
+    verify(blobs, times(60)).head(anyString());
+  }
+
+  @Test
   void bundledIndexReadRejectsPayloadThatDoesNotMatchContentAddress() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
@@ -212,7 +391,9 @@ class IndexArtifactRepositoryTest {
         List.of(
             new IndexArtifactRepository.PrewrittenIndexArtifactReference(
                 "file:s3://bucket/file.parquet", bundleUri, bundle.length, digest)));
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         generationId,
@@ -377,7 +558,7 @@ class IndexArtifactRepositoryTest {
             TABLE_ID.getId(),
             snapshotId,
             Hashing.sha256Hex(manifestBytes));
-    repository.activateGeneration(TABLE_ID, snapshotId, generationId, manifestBytes);
+    activateGeneration(repository, blobs, TABLE_ID, snapshotId, generationId, manifestBytes);
 
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, target))
         .get()
@@ -469,7 +650,9 @@ class IndexArtifactRepositoryTest {
     assertThat(blobs.list("/accounts/a/tables/t/index-artifacts/", 10, "").keys()).isEmpty();
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, target)).contains(record);
 
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         "full-rescan-parent",
@@ -583,7 +766,7 @@ class IndexArtifactRepositoryTest {
     String stableManifestUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobUri(
             TABLE_ID.getAccountId(), TABLE_ID.getId(), 718L, Hashing.sha256Hex(manifestBytes));
-    repository.activateGeneration(TABLE_ID, 718L, "full-rescan-parent", manifestBytes);
+    activateGeneration(repository, blobs, TABLE_ID, 718L, "full-rescan-parent", manifestBytes);
 
     assertThat(repository.indexCaptureComplete(TABLE_ID, 718L, Set.of())).isTrue();
     verify(blobs, times(1)).get(stableManifestUri);
@@ -602,18 +785,21 @@ class IndexArtifactRepositoryTest {
                     .setDefaultColumnScope(DefaultColumnScope.DCS_ALL))
             .build();
 
-    repository.activateGeneration(TABLE_ID, 720L, "full-rescan-parent", manifest.toByteArray());
+    activateGeneration(
+        repository, blobs, TABLE_ID, 720L, "full-rescan-parent", manifest.toByteArray());
 
     assertThat(repository.indexCaptureComplete(TABLE_ID, 720L, Set.of("#123"))).isTrue();
   }
 
   @Test
-  void additiveActivationRetainsPriorSelectorCoverageAndFencesItsPredecessor() {
+  void additiveActivationRejectsServiceSideCoverageMerging() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     long snapshotId = 721L;
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         "full-rescan-parent",
@@ -623,21 +809,19 @@ class IndexArtifactRepositoryTest {
     SnapshotCaptureManifest incremental =
         captureManifest(snapshotId, 1, 1, "#2").toBuilder().setParentJobId("next").build();
 
-    repository.activateGeneration(
-        TABLE_ID, snapshotId, "full-rescan-next", incremental.toByteArray(), predecessor, true);
-
-    assertThat(repository.indexCaptureComplete(TABLE_ID, snapshotId, Set.of("#1", "#2"))).isTrue();
     assertThatThrownBy(
             () ->
-                repository.activateGeneration(
+                activateGeneration(
+                    repository,
+                    blobs,
                     TABLE_ID,
                     snapshotId,
-                    "full-rescan-stale",
-                    incremental.toBuilder().setParentJobId("stale").build().toByteArray(),
+                    "full-rescan-next",
+                    incremental.toByteArray(),
                     predecessor,
                     true))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessageContaining("predecessor changed");
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("materialized by the snapshot finalizer");
   }
 
   @Test
@@ -646,7 +830,9 @@ class IndexArtifactRepositoryTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     long snapshotId = 722L;
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         "generation-one",
@@ -655,7 +841,9 @@ class IndexArtifactRepositoryTest {
         repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
 
     IndexArtifactRepository.PreparedActivation prepared =
-        repository.prepareGenerationActivation(
+        prepareGenerationActivation(
+            repository,
+            blobs,
             TABLE_ID,
             snapshotId,
             "generation-two",
@@ -712,8 +900,15 @@ class IndexArtifactRepositoryTest {
         repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
     byte[] manifest = captureManifest(snapshotId, 1, 1, "#1").toByteArray();
     IndexArtifactRepository.PreparedActivation prepared =
-        repository.prepareGenerationActivation(
-            TABLE_ID, snapshotId, "generation-one", manifest, predecessor, false);
+        prepareGenerationActivation(
+            repository,
+            blobs,
+            TABLE_ID,
+            snapshotId,
+            "generation-one",
+            manifest,
+            predecessor,
+            false);
     assertThat(
             pointers.compareAndSetBatch(
                 prepared.publicationFence().pointerUpdates().stream()
@@ -726,8 +921,15 @@ class IndexArtifactRepositoryTest {
         .isTrue();
 
     IndexArtifactRepository.PreparedActivation retry =
-        repository.prepareGenerationActivation(
-            TABLE_ID, snapshotId, "generation-one", manifest, predecessor, false);
+        prepareGenerationActivation(
+            repository,
+            blobs,
+            TABLE_ID,
+            snapshotId,
+            "generation-one",
+            manifest,
+            predecessor,
+            false);
     repository.completePreparedGenerationActivation(TABLE_ID, snapshotId, retry);
 
     assertThat(retry.deleteDirectPredecessor()).isTrue();
@@ -746,7 +948,9 @@ class IndexArtifactRepositoryTest {
     long snapshotId = 724L;
     registerArtifact(repository, blobs, snapshotId, "generation-one", "s3://source/a.parquet");
     registerArtifact(repository, blobs, snapshotId, "generation-one", "s3://source/b.parquet");
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         "generation-one",
@@ -759,7 +963,9 @@ class IndexArtifactRepositoryTest {
     IndexArtifactRepository.GenerationPredecessor predecessor =
         repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
     registerArtifact(repository, blobs, snapshotId, "generation-two", "s3://source/c.parquet");
-    repository.activateGeneration(
+    activateGeneration(
+        repository,
+        blobs,
         TABLE_ID,
         snapshotId,
         "generation-two",
@@ -837,5 +1043,56 @@ class IndexArtifactRepositoryTest {
         .setSourceFileCount(sourceFileCount)
         .setIndexArtifactCount(indexArtifactCount)
         .build();
+  }
+
+  private static IndexArtifactRepository.ActivationFence activateGeneration(
+      IndexArtifactRepository repository,
+      BlobStore blobs,
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      byte[] captureManifestBytes) {
+    prewriteCaptureManifest(blobs, tableId, snapshotId, captureManifestBytes);
+    return repository.activateGeneration(tableId, snapshotId, generationId, captureManifestBytes);
+  }
+
+  private static IndexArtifactRepository.ActivationFence activateGeneration(
+      IndexArtifactRepository repository,
+      BlobStore blobs,
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      byte[] captureManifestBytes,
+      IndexArtifactRepository.GenerationPredecessor predecessor,
+      boolean inheritCoverage) {
+    prewriteCaptureManifest(blobs, tableId, snapshotId, captureManifestBytes);
+    return repository.activateGeneration(
+        tableId, snapshotId, generationId, captureManifestBytes, predecessor, inheritCoverage);
+  }
+
+  private static IndexArtifactRepository.PreparedActivation prepareGenerationActivation(
+      IndexArtifactRepository repository,
+      BlobStore blobs,
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      byte[] captureManifestBytes,
+      IndexArtifactRepository.GenerationPredecessor predecessor,
+      boolean inheritCoverage) {
+    prewriteCaptureManifest(blobs, tableId, snapshotId, captureManifestBytes);
+    return repository.prepareGenerationActivation(
+        tableId, snapshotId, generationId, captureManifestBytes, predecessor, inheritCoverage);
+  }
+
+  private static void prewriteCaptureManifest(
+      BlobStore blobs, ResourceId tableId, long snapshotId, byte[] captureManifestBytes) {
+    blobs.put(
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            tableId.getAccountId(),
+            tableId.getId(),
+            snapshotId,
+            Hashing.sha256Hex(captureManifestBytes)),
+        captureManifestBytes,
+        "application/x-protobuf");
   }
 }

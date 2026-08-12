@@ -112,6 +112,9 @@ floecat.reconciler.executor.remote-snapshot-planner.enabled
 floecat.reconciler.executor.remote-file-group.enabled
 floecat.reconciler.executor.remote-snapshot-finalize.enabled
 floecat.reconciler.executor.snapshot-finalize.enabled
+floecat.reconciler.snapshot-finalize-publication.tick-every
+floecat.reconciler.snapshot-finalize-publication.page-size
+floecat.reconciler.snapshot-finalize-publication.max-parallelism
 floecat.reconciler.authorization.header
 floecat.reconciler.oidc.issuer
 floecat.reconciler.oidc.client-id

@@ -36,6 +36,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -82,12 +83,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
+    ReconcileFileGroupTask plannedTask = requireIndexedPlannedTask(lease);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(lease.accountId)
@@ -185,6 +187,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ReconcileJobStore.LeasedJob lease) {
     ReconcileJobStore.ReconcileJob parent =
         jobs.get(lease.accountId, lease.parentJobId)
+            .filter(
+                candidate ->
+                    lease.accountId.equals(candidate.accountId)
+                        && candidate.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
             .orElseThrow(
                 () ->
                     Status.FAILED_PRECONDITION
@@ -330,7 +336,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       return true;
     }
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
+    ReconcileFileGroupTask plannedTask = requireIndexedPlannedTask(lease);
     ReconcileFileGroupResultDescriptor validated =
         validateResultDescriptor(lease, plannedTask, requiredResultId, descriptor);
     StagedArtifactReferences staged =
@@ -659,7 +665,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String message) {
     String corr = principalContext.getCorrelationId();
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
-    ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
+    ReconcileFileGroupTask plannedTask = requireIndexedPlannedTask(lease);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(lease.accountId)
@@ -787,7 +793,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return resultId.trim();
   }
 
-  private ReconcileFileGroupTask resolvePlannedTask(ReconcileJobStore.LeasedJob lease) {
+  private ReconcileFileGroupTask requireIndexedPlannedTask(ReconcileJobStore.LeasedJob lease) {
     ReconcileFileGroupTask task =
         lease == null || lease.fileGroupTask == null
             ? ReconcileFileGroupTask.empty()
@@ -798,36 +804,48 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
 
   private ReconcileFileGroupTask resolvePlannedTask(
       String accountId, String parentJobId, ReconcileFileGroupTask task) {
-    if (!task.isEmpty()
-        && !task.filePaths().isEmpty()
-        && task.fileExecutionPlans().size() == task.filePaths().size()) {
-      return task;
-    }
-    // Legacy fallback for child jobs staged before bounded execution plans were self-contained.
     if (jobs == null
+        || snapshotPlanBlobStore == null
         || parentJobId == null
         || parentJobId.isBlank()
         || accountId == null
-        || accountId.isBlank()) {
+        || accountId.isBlank()
+        || task.isEmpty()) {
       throw unresolvedPlannedTask();
     }
-    return jobs.get(accountId, parentJobId)
-        .map(parent -> parent.snapshotTask)
-        .filter(snapshotTask -> snapshotTask != null && !snapshotTask.isEmpty())
-        .flatMap(snapshotTask -> resolveFromParentSnapshotTask(snapshotTask, task))
-        .orElseThrow(this::unresolvedPlannedTask);
-  }
-
-  private static java.util.Optional<ReconcileFileGroupTask> resolveFromParentSnapshotTask(
-      ReconcileSnapshotTask snapshotTask, ReconcileFileGroupTask task) {
-    if (snapshotTask == null || snapshotTask.isEmpty() || task == null || task.isEmpty()) {
-      return java.util.Optional.empty();
+    ReconcileJobStore.ReconcileJob parent =
+        jobs.get(accountId, parentJobId).orElseThrow(this::unresolvedPlannedTask);
+    ReconcileSnapshotTask snapshotTask =
+        parent.snapshotTask == null ? ReconcileSnapshotTask.empty() : parent.snapshotTask;
+    if (!accountId.equals(parent.accountId)
+        || parent.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || snapshotTask.isEmpty()
+        || !snapshotTask.fileGroupPlanRecorded()
+        || snapshotTask.fileGroupPlanBlobUri().isBlank()) {
+      throw unresolvedPlannedTask();
     }
-    return snapshotTask.fileGroups().stream()
-        .filter(group -> group != null && !group.isEmpty())
-        .filter(group -> group.groupId().equals(task.groupId()))
-        .filter(group -> group.planId().equals(task.planId()))
-        .findFirst();
+    ReconcileFileGroupTask resolved =
+        snapshotPlanBlobStore
+            .resolveFileGroup(snapshotTask.fileGroupPlanBlobUri(), task.planId(), task.groupId())
+            .orElseThrow(this::unresolvedPlannedTask);
+    if (!task.planId().equals(resolved.planId())
+        || !task.groupId().equals(resolved.groupId())
+        || !task.tableId().equals(resolved.tableId())
+        || task.snapshotId() != resolved.snapshotId()
+        || task.fileCount() != resolved.fileCount()
+        || resolved.filePaths().isEmpty()
+        || resolved.fileCount() != resolved.filePaths().size()
+        || resolved.fileExecutionPlans().size() != resolved.filePaths().size()
+        || new HashSet<>(resolved.filePaths()).size() != resolved.filePaths().size()
+        || !resolved
+            .filePaths()
+            .equals(
+                resolved.fileExecutionPlans().stream()
+                    .map(ReconcileFileExecutionPlan::filePath)
+                    .toList())) {
+      throw unresolvedPlannedTask();
+    }
+    return resolved;
   }
 
   private StatusRuntimeException unresolvedPlannedTask() {

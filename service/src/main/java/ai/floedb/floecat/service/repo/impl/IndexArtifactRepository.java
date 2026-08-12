@@ -21,11 +21,10 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
-import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
@@ -52,10 +51,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
   private static final int MAX_POINTER_BATCH_SIZE = 100;
+  private static final int MAX_PARALLEL_SIDECAR_CHECKS = 50;
   private static final String DIRECT_GENERATION = Keys.INDEX_ARTIFACT_DIRECT_GENERATION;
   private static final String LIST_TOKEN_PREFIX = "v1.";
 
@@ -90,6 +94,7 @@ public class IndexArtifactRepository {
   private final BlobStore blobStore;
   private final ImmutableBlobCache blobCache;
   private final TableBlobReachabilityGuard reachabilityGuard;
+  private final GenerationArtifactMap generationArtifactMap;
 
   @Inject
   public IndexArtifactRepository(
@@ -101,6 +106,7 @@ public class IndexArtifactRepository {
     this.blobStore = blobStore;
     this.blobCache = blobCache;
     this.reachabilityGuard = reachabilityGuard;
+    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, blobCache);
   }
 
   public void putIndexArtifact(IndexArtifactRecord value) {
@@ -309,17 +315,21 @@ public class IndexArtifactRepository {
     if (captureManifestBytes == null || captureManifestBytes.length == 0) {
       throw new IllegalArgumentException("capture manifest bytes are required");
     }
-    byte[] effectiveManifestBytes =
-        inheritCoverage
-            ? mergeCaptureManifestCoverage(predecessor.captureManifestUri(), captureManifestBytes)
-            : captureManifestBytes;
+    if (inheritCoverage) {
+      throw new IllegalArgumentException(
+          "generation coverage must be materialized by the snapshot finalizer");
+    }
+    byte[] effectiveManifestBytes = captureManifestBytes;
     String captureManifestUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobUri(
             tableId.getAccountId(),
             tableId.getId(),
             snapshotId,
             Hashing.sha256Hex(effectiveManifestBytes));
-    blobStore.put(captureManifestUri, effectiveManifestBytes, "application/x-protobuf");
+    if (blobStore.head(captureManifestUri).isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "prewritten index capture manifest is unavailable: " + captureManifestUri);
+    }
     String activePointerKey =
         Keys.snapshotIndexArtifactActiveGenerationPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
@@ -371,77 +381,6 @@ public class IndexArtifactRepository {
       ResourceId tableId, long snapshotId, PreparedActivation prepared) {
     if (prepared != null && prepared.deleteDirectPredecessor()) {
       deleteDirectGenerationPointers(tableId, snapshotId);
-    }
-  }
-
-  private byte[] mergeCaptureManifestCoverage(
-      String predecessorManifestUri, byte[] submittedBytes) {
-    SnapshotCaptureManifest submitted = parseCaptureManifest(submittedBytes, "submitted");
-    if (predecessorManifestUri == null || predecessorManifestUri.isBlank()) {
-      return submittedBytes;
-    }
-    SnapshotCaptureManifest inherited;
-    try {
-      inherited = SnapshotCaptureManifest.parseFrom(blobStore.get(predecessorManifestUri));
-    } catch (StorageNotFoundException e) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "predecessor index capture manifest is unavailable: " + predecessorManifestUri);
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalStateException(
-          "invalid predecessor index capture manifest at " + predecessorManifestUri, e);
-    }
-    LinkedHashMap<String, CaptureColumnPolicy> columns = new LinkedHashMap<>();
-    for (CaptureColumnPolicy column : submitted.getCapturePolicy().getColumnsList()) {
-      columns.put(column.getSelector().trim(), column);
-    }
-    for (CaptureColumnPolicy column : inherited.getCapturePolicy().getColumnsList()) {
-      if (!column.getCaptureIndex() || column.getSelector().isBlank()) {
-        continue;
-      }
-      columns.merge(
-          column.getSelector().trim(),
-          CaptureColumnPolicy.newBuilder()
-              .setSelector(column.getSelector().trim())
-              .setCaptureIndex(true)
-              .build(),
-          (current, ignored) -> current.toBuilder().setCaptureIndex(true).build());
-    }
-    CapturePolicy current = submitted.getCapturePolicy();
-    DefaultColumnScope inheritedScope = inherited.getCapturePolicy().getDefaultColumnScope();
-    DefaultColumnScope scope =
-        mergeDefaultColumnScope(current.getDefaultColumnScope(), inheritedScope);
-    CapturePolicy mergedPolicy =
-        current.toBuilder()
-            .clearColumns()
-            .addAllColumns(columns.values())
-            .setDefaultColumnScope(scope)
-            .setMaxDefaultColumns(
-                Math.max(
-                    current.getMaxDefaultColumns(),
-                    inherited.getCapturePolicy().getMaxDefaultColumns()))
-            .build();
-    return submitted.toBuilder().setCapturePolicy(mergedPolicy).build().toByteArray();
-  }
-
-  private static DefaultColumnScope mergeDefaultColumnScope(
-      DefaultColumnScope current, DefaultColumnScope inherited) {
-    if (current == DefaultColumnScope.DCS_ALL || inherited == DefaultColumnScope.DCS_ALL) {
-      return DefaultColumnScope.DCS_ALL;
-    }
-    if (current == DefaultColumnScope.DCS_FIRST_N
-        || inherited == DefaultColumnScope.DCS_FIRST_N
-        || current == DefaultColumnScope.DCS_UNSPECIFIED
-        || inherited == DefaultColumnScope.DCS_UNSPECIFIED) {
-      return DefaultColumnScope.DCS_FIRST_N;
-    }
-    return DefaultColumnScope.DCS_EXPLICIT_ONLY;
-  }
-
-  private static SnapshotCaptureManifest parseCaptureManifest(byte[] bytes, String description) {
-    try {
-      return SnapshotCaptureManifest.parseFrom(bytes);
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("invalid " + description + " index capture manifest", e);
     }
   }
 
@@ -528,9 +467,8 @@ public class IndexArtifactRepository {
       if (!generationId.isBlank()) {
         for (String filePath : filePaths == null ? List.<String>of() : filePaths) {
           String targetStorageId = "file:" + filePath;
-          pointerStore
-              .get(generationPointer(tableId, snapshotId, generationId, targetStorageId))
-              .map(this::readRecord)
+          findGenerationPointer(tableId, snapshotId, generationId, targetStorageId)
+              .map(pointer -> readRecord(pointer, tableId, snapshotId))
               .ifPresent(artifacts::add);
         }
       }
@@ -562,10 +500,8 @@ public class IndexArtifactRepository {
     if (!predecessor.generationId().isBlank()) {
       for (String filePath : filePaths == null ? List.<String>of() : filePaths) {
         String targetStorageId = "file:" + filePath;
-        pointerStore
-            .get(
-                generationPointer(tableId, snapshotId, predecessor.generationId(), targetStorageId))
-            .map(this::readRecord)
+        findGenerationPointer(tableId, snapshotId, predecessor.generationId(), targetStorageId)
+            .map(pointer -> readRecord(pointer, tableId, snapshotId))
             .ifPresent(artifacts::add);
       }
     }
@@ -607,14 +543,9 @@ public class IndexArtifactRepository {
     return activeGeneration(tableId, snapshotId)
         .flatMap(
             generationId ->
-                pointerStore
-                    .get(
-                        generationPointer(
-                            tableId,
-                            snapshotId,
-                            generationId,
-                            indexArtifactTargetStorageId(target)))
-                    .map(this::readRecord));
+                findGenerationPointer(
+                        tableId, snapshotId, generationId, indexArtifactTargetStorageId(target))
+                    .map(pointer -> readRecord(pointer, tableId, snapshotId)));
   }
 
   public List<IndexArtifactRecord> listIndexArtifacts(
@@ -632,6 +563,38 @@ public class IndexArtifactRepository {
           "index artifact generation changed while listing snapshot " + snapshotId);
     }
     String backendToken = token == null ? "" : token.backendToken();
+    if (generationArtifactMap.manifest(tableId, snapshotId, generationId.get()).isPresent()) {
+      ReusableArtifactIndexStore.EntryPage page =
+          generationArtifactMap.page(
+              tableId,
+              snapshotId,
+              generationId.get(),
+              ReusableArtifactIndexStore.EntryKind.INDEX_ARTIFACT,
+              Math.max(1, limit),
+              backendToken);
+      if (nextOut != null) {
+        nextOut.setLength(0);
+        if (!page.nextPageToken().isBlank()) {
+          nextOut.append(encodeIndexListToken(generationId.get(), page.nextPageToken()));
+        }
+      }
+      return page.entries().stream()
+          .map(
+              entry ->
+                  readRecord(
+                      PointerReferences.blobPointer(
+                          generationPointer(
+                              tableId,
+                              snapshotId,
+                              generationId.get(),
+                              "file:" + entry.getIndexArtifact().getFilePath()),
+                          entry.getArtifact().getPayloadUri(),
+                          1L,
+                          entry.getArtifact().getPayloadBytes()),
+                      tableId,
+                      snapshotId))
+          .toList();
+    }
     StringBuilder backendNext = new StringBuilder();
     List<Pointer> pointers =
         pointerStore.listPointersByPrefix(
@@ -646,7 +609,7 @@ public class IndexArtifactRepository {
         nextOut.append(encodeIndexListToken(generationId.get(), backendNext.toString()));
       }
     }
-    return pointers.stream().map(this::readRecord).toList();
+    return pointers.stream().map(pointer -> readRecord(pointer, tableId, snapshotId)).toList();
   }
 
   private static String encodeIndexListToken(String generationId, String backendToken) {
@@ -682,13 +645,16 @@ public class IndexArtifactRepository {
   private record IndexListToken(String generationId, String backendToken) {}
 
   public int countIndexArtifacts(ResourceId tableId, long snapshotId) {
-    return activeGeneration(tableId, snapshotId)
-        .map(
-            generationId ->
-                pointerStore.countByPrefix(
-                    Keys.snapshotIndexArtifactGenerationPrefix(
-                        tableId.getAccountId(), tableId.getId(), snapshotId, generationId)))
-        .orElse(0);
+    Optional<String> active = activeGeneration(tableId, snapshotId);
+    if (active.isEmpty()) {
+      return 0;
+    }
+    if (generationArtifactMap.manifest(tableId, snapshotId, active.orElseThrow()).isPresent()) {
+      return generationArtifactMap.countIndexes(tableId, snapshotId, active.orElseThrow());
+    }
+    return pointerStore.countByPrefix(
+        Keys.snapshotIndexArtifactGenerationPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, active.orElseThrow()));
   }
 
   public MutationMeta metaForIndexArtifact(
@@ -699,15 +665,14 @@ public class IndexArtifactRepository {
                 () ->
                     new BaseResourceRepository.NotFoundException(
                         "active index artifact generation is missing"));
-    String pointerKey =
-        generationPointer(tableId, snapshotId, generationId, indexArtifactTargetStorageId(target));
     Pointer pointer =
-        pointerStore
-            .get(pointerKey)
+        findGenerationPointer(
+                tableId, snapshotId, generationId, indexArtifactTargetStorageId(target))
             .orElseThrow(
                 () ->
                     new BaseResourceRepository.NotFoundException(
-                        "index artifact pointer is missing: " + pointerKey));
+                        "index artifact pointer is missing"));
+    String pointerKey = pointer.getKey();
     String etag = blobStore.head(pointer.getBlobUri()).map(header -> header.getEtag()).orElse("");
     return MutationMeta.newBuilder()
         .setPointerKey(pointerKey)
@@ -735,23 +700,24 @@ public class IndexArtifactRepository {
       List<PrewrittenIndexWrite> blobWrites = entry.getValue();
       if (ReusableArtifactBundleUris.isBundleUri(blobUri)) {
         ReusableArtifactBundlePayload bundle =
-            loadReusableArtifactBundle(blobUri)
+            loadCachedReusableArtifactBundle(blobUri)
                 .orElseThrow(
                     () ->
                         new BaseResourceRepository.CorruptionException(
                             "prewritten index artifact bundle is missing: " + blobUri));
-        if (blobCache != null && blobCache.enabled()) {
-          // Publication validation must bypass a warm immutable cache: GC may have swept the
-          // wrapper since it was cached. Populate the cache only after the live read succeeds.
-          blobCache.put(blobUri, bundle);
-        }
-        Set<String> bundledTargets = new LinkedHashSet<>();
         for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
-          requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri);
-          bundledTargets.add(indexArtifactTargetStorageId(record.getTarget()));
+          requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri, false);
+        }
+        refreshSharedSidecars(tableId, bundle.getIndexArtifactsList());
+        Set<String> inMemoryBundledTargets = new java.util.HashSet<>();
+        for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
+          if (!inMemoryBundledTargets.add(indexArtifactTargetStorageId(record.getTarget()))) {
+            throw new BaseResourceRepository.CorruptionException(
+                "prewritten index artifact bundle contains a duplicate target: " + blobUri);
+          }
         }
         for (PrewrittenIndexWrite write : blobWrites) {
-          if (!bundledTargets.contains(write.targetStorageId())) {
+          if (!inMemoryBundledTargets.contains(write.targetStorageId())) {
             throw new BaseResourceRepository.CorruptionException(
                 "prewritten index artifact bundle has no record for target "
                     + write.targetStorageId()
@@ -759,7 +725,6 @@ public class IndexArtifactRepository {
                     + blobUri);
           }
         }
-        refreshSharedSidecars(tableId, bundle.getIndexArtifactsList());
         continue;
       }
       try {
@@ -772,7 +737,7 @@ public class IndexArtifactRepository {
               "prewritten index artifact content address does not match payload: " + blobUri);
         }
         IndexArtifactRecord record = IndexArtifactRecord.parseFrom(bytes);
-        requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri);
+        requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri, false);
         if (!blobWrites
             .getFirst()
             .targetStorageId()
@@ -791,12 +756,25 @@ public class IndexArtifactRepository {
     }
   }
 
+  private Optional<ReusableArtifactBundlePayload> loadCachedReusableArtifactBundle(
+      String bundleUri) {
+    Optional<ReusableArtifactBundlePayload> bundle = loadReusableArtifactBundle(bundleUri);
+    if (blobCache != null && blobCache.enabled()) {
+      bundle.ifPresent(value -> blobCache.put(bundleUri, value));
+    }
+    return bundle;
+  }
+
   private static void requirePrewrittenRecordMatches(
-      ResourceId tableId, long snapshotId, IndexArtifactRecord record, String blobUri) {
+      ResourceId tableId,
+      long snapshotId,
+      IndexArtifactRecord record,
+      String blobUri,
+      boolean allowSnapshotRebind) {
     requireValidRecord(record);
     if (!record.getTableId().getAccountId().equals(tableId.getAccountId())
         || !record.getTableId().getId().equals(tableId.getId())
-        || record.getSnapshotId() != snapshotId) {
+        || (!allowSnapshotRebind && record.getSnapshotId() != snapshotId)) {
       throw new BaseResourceRepository.CorruptionException(
           "prewritten index artifact belongs to a different table or snapshot: " + blobUri);
     }
@@ -818,14 +796,46 @@ public class IndexArtifactRepository {
       if (!inspected.add(uri)) {
         continue;
       }
-      // HEAD is sufficient while the table publication guard is held: if GC deleted first, this
-      // fails closed; if publication wins, the pointer becomes visible before unlock and the epoch
-      // advance forces any overlapping GC proof to restart. Never GET or rewrite a potentially
-      // large Parquet sidecar merely to publish its small wrapper.
-      if (blobStore.head(uri).isEmpty()) {
-        throw new BaseResourceRepository.CorruptionException(
-            "shared index sidecar is missing: " + uri);
+    }
+    if (inspected.isEmpty()) {
+      return;
+    }
+    var semaphore = new Semaphore(Math.min(inspected.size(), MAX_PARALLEL_SIDECAR_CHECKS));
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      List<CompletableFuture<Void>> checks =
+          inspected.stream()
+              .map(
+                  uri ->
+                      CompletableFuture.runAsync(
+                          () -> {
+                            semaphore.acquireUninterruptibly();
+                            try {
+                              requireSharedSidecar(uri);
+                            } finally {
+                              semaphore.release();
+                            }
+                          },
+                          executor))
+              .toList();
+      try {
+        CompletableFuture.allOf(checks.toArray(CompletableFuture[]::new)).join();
+      } catch (CompletionException e) {
+        if (e.getCause() instanceof RuntimeException runtimeException) {
+          throw runtimeException;
+        }
+        throw e;
       }
+    }
+  }
+
+  private void requireSharedSidecar(String uri) {
+    // HEAD is sufficient while the table publication guard is held: if GC deleted first, this
+    // fails closed; if publication wins, the pointer becomes visible before unlock and the epoch
+    // advance forces any overlapping GC proof to restart. Never GET or rewrite a potentially
+    // large Parquet sidecar merely to publish its small wrapper.
+    if (blobStore.head(uri).isEmpty()) {
+      throw new BaseResourceRepository.CorruptionException(
+          "shared index sidecar is missing: " + uri);
     }
   }
 
@@ -879,10 +889,31 @@ public class IndexArtifactRepository {
         .filter(value -> value != null && !value.isBlank());
   }
 
-  private IndexArtifactRecord readRecord(Pointer pointer) {
+  private Optional<Pointer> findGenerationPointer(
+      ResourceId tableId, long snapshotId, String generationId, String targetStorageId) {
+    String pointerKey = generationPointer(tableId, snapshotId, generationId, targetStorageId);
+    Optional<Pointer> current = pointerStore.get(pointerKey);
+    if (current.isPresent() || !targetStorageId.startsWith("file:")) {
+      return current;
+    }
+    return generationArtifactMap
+        .lookupIndex(tableId, snapshotId, generationId, targetStorageId.substring("file:".length()))
+        .map(
+            entry ->
+                PointerReferences.blobPointer(
+                    pointerKey,
+                    entry.getArtifact().getPayloadUri(),
+                    1L,
+                    entry.getArtifact().getPayloadBytes()));
+  }
+
+  private IndexArtifactRecord readRecord(Pointer pointer, ResourceId tableId, long snapshotId) {
     try {
       if (!ReusableArtifactBundleUris.isBundleUri(pointer.getBlobUri())) {
-        return IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri()));
+        return rebindRecord(
+            IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri())),
+            tableId,
+            snapshotId);
       }
       ReusableArtifactBundlePayload bundle =
           (blobCache == null
@@ -895,7 +926,7 @@ public class IndexArtifactRepository {
       for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
         String targetStorageId = indexArtifactTargetStorageId(record.getTarget());
         if (pointer.getKey().endsWith("/" + Keys.encodeSegment(targetStorageId))) {
-          return record;
+          return rebindRecord(record, tableId, snapshotId);
         }
       }
       throw new InvalidProtocolBufferException(
@@ -904,6 +935,15 @@ public class IndexArtifactRepository {
       throw new IllegalStateException(
           "invalid index artifact wrapper at " + pointer.getBlobUri(), e);
     }
+  }
+
+  private static IndexArtifactRecord rebindRecord(
+      IndexArtifactRecord record, ResourceId tableId, long snapshotId) {
+    if (record == null
+        || (record.getSnapshotId() == snapshotId && tableId.equals(record.getTableId()))) {
+      return record;
+    }
+    return record.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
   }
 
   private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundle(String uri) {

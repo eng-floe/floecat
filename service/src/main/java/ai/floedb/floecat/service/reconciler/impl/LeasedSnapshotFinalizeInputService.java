@@ -48,13 +48,17 @@ public class LeasedSnapshotFinalizeInputService {
       String snapshotPlanUri,
       int fileGroupCount,
       String statsObjectPrefix,
-      String captureManifestUri,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
       IndexArtifactRepository.GenerationPredecessor indexPredecessor) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
     DIRECT_STATS,
-    EXPLICIT_EMPTY
+    EXPLICIT_EMPTY,
+    APPEND_ONLY
   }
 
   record DescriptorPage(
@@ -110,7 +114,10 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.fileGroupPlanBlobUri(),
           snapshotTask.fileGroupCount(),
           statsObjectPrefix(lease),
-          captureManifestUri(lease),
+          durableCaptureManifestPrefix(lease),
+          reusableArtifactIndexObjectPrefix(lease),
+          statsGenerationManifestUri(lease),
+          indexGenerationCaptureManifestPrefix(lease),
           null);
     }
     if (snapshotTask.fileGroupCount() == 0) {
@@ -122,7 +129,9 @@ public class LeasedSnapshotFinalizeInputService {
           lease.parentJobId,
           tableId,
           snapshotTask.snapshotId(),
-          FinalizeMode.EXPLICIT_EMPTY,
+          snapshotTask.sourceFileCount() == 0
+              ? FinalizeMode.EXPLICIT_EMPTY
+              : FinalizeMode.APPEND_ONLY,
           lease.fullRescan,
           "",
           0,
@@ -130,20 +139,29 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.fileGroupPlanBlobUri(),
           0,
           statsObjectPrefix(lease),
-          captureManifestUri(lease),
+          durableCaptureManifestPrefix(lease),
+          reusableArtifactIndexObjectPrefix(lease),
+          statsGenerationManifestUri(lease),
+          indexGenerationCaptureManifestPrefix(lease),
           pinnedIndexPredecessor);
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.compactChildState(
             lease.accountId, lease.parentJobId, lease.jobId, snapshotTask.fileGroupCount());
     requireReadyForFinalize(childState);
+    long deltaFileCount =
+        childState.completedGroupDescriptors().stream()
+            .mapToLong(ReconcileFileGroupResultDescriptor::succeededFileCount)
+            .sum();
     return new SnapshotFinalizeInput(
         lease.jobId,
         lease.leaseEpoch,
         lease.parentJobId,
         tableId(lease, snapshotTask),
         snapshotTask.snapshotId(),
-        FinalizeMode.FILE_GROUPS_NON_EMPTY,
+        snapshotTask.sourceFileCount() > deltaFileCount
+            ? FinalizeMode.APPEND_ONLY
+            : FinalizeMode.FILE_GROUPS_NON_EMPTY,
         lease.fullRescan,
         "",
         0,
@@ -151,7 +169,10 @@ public class LeasedSnapshotFinalizeInputService {
         snapshotTask.fileGroupPlanBlobUri(),
         snapshotTask.fileGroupCount(),
         statsObjectPrefix(lease),
-        captureManifestUri(lease),
+        durableCaptureManifestPrefix(lease),
+        reusableArtifactIndexObjectPrefix(lease),
+        statsGenerationManifestUri(lease),
+        indexGenerationCaptureManifestPrefix(lease),
         pinnedIndexPredecessor);
   }
 
@@ -180,9 +201,31 @@ public class LeasedSnapshotFinalizeInputService {
         lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId(), lease.parentJobId);
   }
 
-  private static String captureManifestUri(ReconcileJobStore.LeasedJob lease) {
-    return Keys.reconcileSnapshotCaptureManifestUri(
-        lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
+  private static String durableCaptureManifestPrefix(ReconcileJobStore.LeasedJob lease) {
+    return statsObjectPrefix(lease) + "reuse-manifests/";
+  }
+
+  private static String reusableArtifactIndexObjectPrefix(ReconcileJobStore.LeasedJob lease) {
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    return Keys.tableReusableArtifactIndexObjectBlobPrefix(lease.accountId, snapshotTask.tableId());
+  }
+
+  private static String statsGenerationManifestUri(ReconcileJobStore.LeasedJob lease) {
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    return Keys.snapshotTargetStatsManifestBlobUri(
+        lease.accountId,
+        snapshotTask.tableId(),
+        snapshotTask.snapshotId(),
+        "full-rescan-" + lease.parentJobId);
+  }
+
+  private static String indexGenerationCaptureManifestPrefix(ReconcileJobStore.LeasedJob lease) {
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    return Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId());
   }
 
   private static ResourceId tableId(

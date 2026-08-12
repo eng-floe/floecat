@@ -374,6 +374,91 @@ message ReusableArtifactBundleSelection {
   repeated string index_file_paths = 3;
 }
 
+// Content-addressed object identity used by the reusable-artifact run index.
+message ReusableArtifactIndexObjectReference {
+  string uri = 1;
+  uint64 payload_bytes = 2;
+  bytes payload_sha256 = 3;
+  // Small immutable index objects are carried by the enclosing capture manifest. This keeps the
+  // structurally shared index from creating several sub-request-sized S3 objects per reconcile.
+  bytes inline_payload = 4;
+}
+
+message ReusableArtifactIndexBlockReference {
+  // The immutable pack containing this logical block. Multiple adjacent block references normally
+  // share this object and select their payload with offset/length.
+  ReusableArtifactIndexObjectReference object = 1;
+  bytes first_key_sha256 = 2;
+  bytes last_key_sha256 = 3;
+  uint64 entry_count = 4;
+  uint64 offset = 5;
+  uint32 length = 6;
+  bytes block_sha256 = 7;
+}
+
+// Authenticated block directory for one immutable sorted run.
+message ReusableArtifactIndexRunManifest {
+  uint32 format_version = 1;
+  repeated ReusableArtifactIndexBlockReference blocks = 2;
+}
+
+// One immutable sorted run and its probabilistic membership filter. Level zero contains newly
+// published deltas; higher levels are compacted asynchronously without changing entry semantics.
+message ReusableArtifactIndexRunReference {
+  uint32 level = 1;
+  ReusableArtifactIndexObjectReference manifest = 2;
+  ReusableArtifactIndexObjectReference filter = 3;
+  uint64 entry_count = 4;
+  uint32 file_stats_record_count = 5;
+  uint32 index_artifact_count = 6;
+}
+
+// Complete reusable-artifact compatibility index for one snapshot. Runs are immutable and sorted
+// by typed-key SHA-256. Counts are split because stats may additionally cover auxiliary delete/DV
+// files while page-index entries cover source data files.
+message ReusableArtifactIndexReference {
+  uint32 format_version = 1;
+  reserved 2;
+  uint32 file_stats_record_count = 3;
+  uint32 index_artifact_count = 4;
+  repeated ReusableArtifactIndexRunReference runs = 5;
+}
+
+// One typed file identity in the persistent index. The bundle descriptor names the immutable
+// payload containing the reusable wrapper; exactly one metadata variant must be present.
+message ReusableArtifactIndexEntry {
+  StatsObjectDescriptor artifact = 1;
+  oneof metadata {
+    ReusableStatsArtifactMetadata file_stats = 2;
+    ReusableIndexArtifactMetadata index_artifact = 3;
+  }
+}
+
+// Size-bounded data block within a sorted run.
+message ReusableArtifactIndexBlock {
+  uint32 format_version = 1;
+  repeated ReusableArtifactIndexEntry entries = 2;
+}
+
+// Immutable predecessor used by the append-only fast path. The referenced manifest and persistent
+// reusable-artifact run index are verified before its aggregate generation is inherited.
+message AppendOnlySnapshotBase {
+  uint32 format_version = 1;
+  uint64 snapshot_id = 2;
+  string manifest_uri = 3;
+  uint64 manifest_bytes = 4;
+  bytes manifest_sha256 = 5;
+  uint32 source_file_count = 6;
+  uint32 file_stats_record_count = 7;
+  uint32 index_artifact_count = 8;
+  string stats_generation_id = 9;
+  string index_generation_id = 10;
+  // Number of append-only links already represented by this predecessor. A full-capture
+  // predecessor has depth zero; each delta capture increments the depth.
+  uint32 chain_depth = 11;
+  ReusableArtifactIndexReference reusable_artifact_index = 12;
+}
+
 // Immutable result metadata written directly by a file-group executor. Stats and index wrappers
 // may share one group bundle; this bounded payload carries only their compact target mappings.
 message FileGroupResultPayload {
@@ -420,7 +505,7 @@ message SnapshotCaptureManifest {
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
   repeated StatsObjectDescriptor final_stats = 12;
-  reserved 13, 14, 23, 24, 25, 26;
+  reserved 13, 14, 23, 24, 25, 26, 30;
   uint32 source_file_count = 15;
   // Unique snapshot-level file-stats target count after deduplicating targets repeated across
   // file groups.
@@ -433,10 +518,18 @@ message SnapshotCaptureManifest {
   repeated string realized_index_selectors = 21;
   // Concrete column selectors present in the activated stats generation.
   repeated string realized_stats_selectors = 22;
-  // Complete compatibility index for the current snapshot. A false value is not eligible as a
-  // reuse source and is replaced by the next complete capture.
+  // Bundles produced by this snapshot's file groups. The complete current-state compatibility
+  // index is the persistent immutable run set below; append-only manifests do not repeat inherited
+  // bundle metadata.
   repeated ReusableArtifactBundleReference reusable_artifact_bundles = 27;
+  AppendOnlySnapshotBase append_only_base = 28;
+  // Marks a complete compatibility contract: current bundles plus the authenticated base runs are
+  // sufficient for the finalizer to publish the complete persistent index. A false value is not
+  // eligible as a reuse source and is replaced by the next complete capture.
   bool reusable_artifact_bundles_complete = 29;
+  // Complete persistent compatibility index for this snapshot. The trusted finalizer constructs
+  // this run set from authenticated base runs and current file-group bundles before submission.
+  ReusableArtifactIndexReference reusable_artifact_index = 31;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
@@ -717,6 +810,7 @@ message LeasedSnapshotFinalizeInput {
     FZM_FILE_GROUPS_NON_EMPTY = 1;
     FZM_DIRECT_STATS = 2;
     FZM_EXPLICIT_EMPTY = 3;
+    FZM_APPEND_ONLY = 4;
   }
 
   string job_id = 1;
@@ -736,11 +830,17 @@ message LeasedSnapshotFinalizeInput {
   uint32 file_group_count = 12;
   // Server-allocated immutable prefix for this fenced finalizer's individual stats objects.
   string stats_object_prefix = 13;
-  // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
-  string capture_manifest_uri = 14;
+  // Server-allocated immutable prefix for content-addressed durable capture manifests.
+  string durable_capture_manifest_prefix = 14;
   // Index-generation state captured directly for a finalizer with no file-group children.
   // Non-empty captures continue to derive and cross-check this value from file-group results.
   IndexGenerationPredecessor index_predecessor = 15;
+  // Server-allocated table prefix for reusable-index blocks, filters, and run manifests.
+  string reusable_artifact_index_object_prefix = 16;
+  // Exact immutable stats-generation manifest URI for this publication generation.
+  string stats_generation_manifest_uri = 17;
+  // Server-allocated prefix for the content-addressed index-generation capture manifest.
+  string index_generation_capture_manifest_prefix = 18;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
@@ -1055,6 +1155,13 @@ message CommitLeasedFileGroupResultResponse {
 // group before activating its stats and index generations. It does not read file-group payloads or
 // per-file objects. A missing marker is retryable and requires an exact replay of this result.
 message SubmitLeasedSnapshotFinalizeResultRequest {
+  enum FailureKind {
+    SFFK_UNSPECIFIED = 0;
+    // The durable append-only plan was created against an incompatible capture/index contract.
+    // The service schedules a new full-capture reconcile for the same scope.
+    SFFK_APPEND_ONLY_BASE_INCOMPATIBLE = 1;
+  }
+
   message Success {
     string result_id = 1;
     SnapshotCaptureManifestDescriptor manifest_descriptor = 2;
@@ -1063,6 +1170,7 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
   message Failure {
     string result_id = 1;
     string message = 2;
+    FailureKind kind = 3;
   }
 
   string job_id = 1;
@@ -1312,6 +1420,7 @@ service ReconcileExecutorControl {
   // Pages compact committed file-group payload descriptors without hydrating result objects.
   rpc ListLeasedSnapshotFileGroupResults(ListLeasedSnapshotFileGroupResultsRequest)
       returns (ListLeasedSnapshotFileGroupResultsResponse);
+  // Persists bounded inherited references prepared and authenticated by the trusted finalizer.
   // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
       returns (SubmitLeasedSnapshotFinalizeResultResponse);

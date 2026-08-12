@@ -236,6 +236,117 @@ class RemoteFileArtifactReusePlannerTest {
     assertFalse(enriched.reusesIndexArtifact());
   }
 
+  @Test
+  void changedOrRemovedDeleteContextDoesNotReuseFileStats() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    ReconcileFileExecutionPlan withIcebergDelete =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            null,
+            "PARQUET",
+            0,
+            List.of(
+                new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                    "s3://bucket/delete.parquet",
+                    10L,
+                    ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                    0,
+                    List.of(),
+                    "delete-v1")),
+            "data-v1");
+    ReconcileFileExecutionPlan withoutIcebergDelete =
+        ReconcileFileExecutionPlan.of(PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "data-v1");
+    assertFalse(
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}",
+                List.of(withoutIcebergDelete),
+                policy,
+                false,
+                List.of(statsBundle(withIcebergDelete, policy)))
+            .getFirst()
+            .reusesFileStats());
+
+    ReconcileFileExecutionPlan priorDv =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 3L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    ReconcileFileExecutionPlan changedDv =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 4L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    assertFalse(
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(changedDv), policy, false, List.of(statsBundle(priorDv, policy)))
+            .getFirst()
+            .reusesFileStats());
+  }
+
+  @Test
+  void changedDeleteContextCanReusePhysicalIndexButNotLogicalStats() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileFileExecutionPlan prior =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 3L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    ReconcileFileExecutionPlan current =
+        ReconcileFileExecutionPlan.of(
+            PATH,
+            123L,
+            "{}",
+            new ReconcileFileExecutionPlan.DeltaDeletionVector(
+                "u", "s3://bucket/dv.bin", 4, 20, 4L),
+            "PARQUET",
+            0,
+            List.of(),
+            "data-v1");
+    var priorBundle =
+        statsBundle(prior, policy).toBuilder()
+            .addIndexArtifacts(
+                ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(prior))
+                    .setIndexCaptureSignature(FileArtifactReuse.indexCaptureSignature(policy, "{}"))
+                    .addRealizedIndexSelectors("#1"))
+            .build();
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                "{}", List.of(current), policy, false, List.of(priorBundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesFileStats());
+    assertTrue(enriched.reusesIndexArtifact());
+  }
+
   private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference indexBundle(
       ReconcileFileExecutionPlan plan,
       ReconcileCapturePolicy policy,
@@ -264,6 +375,23 @@ class RemoteFileArtifactReusePlannerTest {
         .setFilePath(filePath)
         .setSourceFingerprint(sourceFingerprint)
         .setStatsCaptureSignature(statsCaptureSignature)
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference statsBundle(
+      ReconcileFileExecutionPlan plan, ReconcileCapturePolicy policy) {
+    return ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+        .setArtifact(
+            ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId("reuse-bundle:prior")
+                .setPayloadUri("s3://bucket/prior-reuse-bundle.pb")
+                .setPayloadBytes(100L)
+                .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+        .addFileStats(
+            ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                .setFilePath(PATH)
+                .setSourceFingerprint(FileArtifactReuse.sourceFingerprint(plan, "{}"))
+                .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy)))
         .build();
   }
 }

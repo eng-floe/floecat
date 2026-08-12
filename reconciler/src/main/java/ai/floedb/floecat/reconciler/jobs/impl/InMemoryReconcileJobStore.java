@@ -54,7 +54,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
-  private static final long DEFAULT_LEASE_MS = 120_000L;
+  private static final long DEFAULT_LEASE_MS = 600_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
@@ -65,6 +65,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
   private final Set<String> snapshotFinalizeCommits = ConcurrentHashMap.newKeySet();
+  private final Map<String, SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntents =
+      new ConcurrentHashMap<>();
   private final Map<String, SnapshotFinalizeCompletion> snapshotFinalizeCompletions =
       new ConcurrentHashMap<>();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
@@ -877,15 +879,25 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       return existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
           && completion.equals(snapshotFinalizeCompletions.get(jobId));
     }
+    boolean acceptedSnapshotFinalize =
+        existing != null
+            && existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && hasAcceptedSnapshotFinalizeIntent(jobId, leaseEpoch);
     if (existing == null
         || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-        || !renewLease(jobId, leaseEpoch)) {
+        || (!acceptedSnapshotFinalize && !renewLease(jobId, leaseEpoch))) {
       return false;
+    }
+    if (acceptedSnapshotFinalize && !hasActiveLease(jobId, leaseEpoch)) {
+      // The accepted result, not the worker lease lifetime, owns publication. Extend the internal
+      // lease only while this synchronized completion reuses the normal terminal transition.
+      leaseExpiresAtMs.put(jobId, System.currentTimeMillis() + leaseMs);
     }
     snapshotFinalizeCompletions.put(jobId, completion);
     markSucceeded(
         jobId, leaseEpoch, finishedAtMs, 0L, 0L, 0L, 0L, 1L, Math.max(0L, statsRecordCount));
     snapshotFinalizeCommits.remove(jobId);
+    snapshotFinalizeCommitIntents.remove(jobId);
     return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
   }
 
@@ -1047,6 +1059,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch) {
+    boolean leaseValid = renewLease(jobId, leaseEpoch);
+    var job = jobs.get(jobId);
+    boolean cancellationRequested =
+        job != null && ("JS_CANCELLING".equals(job.state) || "JS_CANCELLED".equals(job.state));
+    return new LeaseRenewal(leaseValid, cancellationRequested);
+  }
+
+  @Override
   public boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
     java.util.concurrent.atomic.AtomicBoolean accepted =
         new java.util.concurrent.atomic.AtomicBoolean();
@@ -1062,6 +1083,39 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           return job;
         });
     return accepted.get();
+  }
+
+  @Override
+  public boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent) {
+    if (intent == null
+        || !jobId.equals(intent.jobId())
+        || !leaseEpoch.equals(intent.leaseEpoch())) {
+      return false;
+    }
+    if (!beginSnapshotFinalizeCommit(jobId, leaseEpoch)) {
+      return false;
+    }
+    SnapshotFinalizeCommitIntent existing =
+        snapshotFinalizeCommitIntents.putIfAbsent(jobId, intent);
+    return existing == null || existing.equals(intent);
+  }
+
+  @Override
+  public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
+    return Optional.ofNullable(snapshotFinalizeCommitIntents.get(jobId));
+  }
+
+  @Override
+  public SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken) {
+    int limit = Math.max(1, pageSize);
+    List<SnapshotFinalizeCommitIntent> pending =
+        snapshotFinalizeCommitIntents.entrySet().stream()
+            .filter(entry -> snapshotFinalizeCommits.contains(entry.getKey()))
+            .map(Map.Entry::getValue)
+            .limit(limit)
+            .toList();
+    return new SnapshotFinalizeCommitPage(pending, "");
   }
 
   @Override
@@ -1083,7 +1137,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         || expiry == null) {
       return Optional.empty();
     }
-    if (expiry <= now && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
+    boolean acceptedSnapshotFinalize =
+        job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(job.state)
+            && hasAcceptedSnapshotFinalizeIntent(jobId, leaseEpoch);
+    if (!acceptedSnapshotFinalize
+        && expiry <= now
+        && (!allowExpiredWithinGrace || now - expiry > reclaimIntervalMs)) {
       return Optional.empty();
     }
     return Optional.of(
@@ -1297,6 +1357,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               statsProcessed);
     }
     snapshotFinalizeCommits.remove(jobId);
+    snapshotFinalizeCommitIntents.remove(jobId);
     return true;
   }
 
@@ -1369,15 +1430,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
-          if (!hasActiveLease(id, leaseEpoch)) {
+          if (!hasActiveLease(id, leaseEpoch)
+              && !hasAcceptedSnapshotFinalizeIntent(id, leaseEpoch)) {
             return job;
           }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          accepted.set(true);
           releaseLane(id);
           leased.remove(id);
           leaseEpochs.remove(id);
@@ -1445,6 +1510,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.fileGroupTask,
               job.parentJobId);
         });
+    if (accepted.get()) {
+      snapshotFinalizeCommits.remove(jobId);
+      snapshotFinalizeCommitIntents.remove(jobId);
+    }
   }
 
   @Override
@@ -1517,15 +1586,19 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
-          if (!hasActiveLease(id, leaseEpoch)) {
+          if (!hasActiveLease(id, leaseEpoch)
+              && !hasAcceptedSnapshotFinalizeIntent(id, leaseEpoch)) {
             return job;
           }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          accepted.set(true);
           releaseLane(id);
           releaseSnapshotOwnership(id);
           leased.remove(id);
@@ -1561,6 +1634,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.fileGroupTask,
               job.parentJobId);
         });
+    if (accepted.get()) {
+      snapshotFinalizeCommits.remove(jobId);
+      snapshotFinalizeCommitIntents.remove(jobId);
+    }
   }
 
   @Override
@@ -1746,6 +1823,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis());
   }
 
+  private boolean hasAcceptedSnapshotFinalizeIntent(String jobId, String leaseEpoch) {
+    SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntents.get(jobId);
+    return snapshotFinalizeCommits.contains(jobId)
+        && intent != null
+        && leaseEpoch != null
+        && leaseEpoch.equals(leaseEpochs.get(jobId))
+        && leaseEpoch.equals(intent.leaseEpoch());
+  }
+
   private synchronized void reclaimExpiredLeasesIfDue(long nowMs) {
     if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
       return;
@@ -1759,11 +1845,16 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       jobs.computeIfPresent(
           jobId,
           (id, job) -> {
+            if ("JS_RUNNING".equals(job.state)
+                && hasAcceptedSnapshotFinalizeIntent(id, leaseEpochs.get(id))) {
+              return job;
+            }
             if (!leased.remove(id)) {
               return job;
             }
             releaseLane(id);
             snapshotFinalizeCommits.remove(id);
+            snapshotFinalizeCommitIntents.remove(id);
             leaseEpochs.remove(id);
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {

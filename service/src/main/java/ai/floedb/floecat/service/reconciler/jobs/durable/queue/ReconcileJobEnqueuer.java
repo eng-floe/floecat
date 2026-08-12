@@ -61,8 +61,7 @@ public class ReconcileJobEnqueuer {
   private ReconcileJobProjector projector;
   private ReconcileJobIndexStore jobIndexStore;
   private ReconcileJobIndexes indexes;
-  private Function<ReconcileSnapshotTask, List<ReconcileFileGroupTask>>
-      materializeSnapshotPlanFileGroups;
+  private Function<ReconcileSnapshotTask, SnapshotPlanBlob> materializeSnapshotPlan;
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
@@ -78,8 +77,7 @@ public class ReconcileJobEnqueuer {
       ReconcileJobProjector projector,
       ReconcileJobIndexStore jobIndexStore,
       ReconcileJobIndexes indexes,
-      Function<ReconcileSnapshotTask, List<ReconcileFileGroupTask>>
-          materializeSnapshotPlanFileGroups,
+      Function<ReconcileSnapshotTask, SnapshotPlanBlob> materializeSnapshotPlan,
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
       ReadyPointerKeyForDue readyPointerKeyForDue) {
@@ -88,7 +86,7 @@ public class ReconcileJobEnqueuer {
     this.projector = projector;
     this.jobIndexStore = jobIndexStore;
     this.indexes = indexes;
-    this.materializeSnapshotPlanFileGroups = materializeSnapshotPlanFileGroups;
+    this.materializeSnapshotPlan = materializeSnapshotPlan;
     this.readyPointerKeys = readyPointerKeys;
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
@@ -291,8 +289,8 @@ public class ReconcileJobEnqueuer {
         spec.viewTask == null ? ReconcileViewTask.empty() : spec.viewTask;
     ReconcileSnapshotTask effectiveSnapshotTask =
         spec.snapshotTask == null ? ReconcileSnapshotTask.empty() : spec.snapshotTask;
-    List<ReconcileFileGroupTask> snapshotPlanFileGroups =
-        materializeSnapshotPlanFileGroups.apply(effectiveSnapshotTask);
+    SnapshotPlanBlob snapshotPlan = materializeSnapshotPlan.apply(effectiveSnapshotTask);
+    List<ReconcileFileGroupTask> snapshotPlanFileGroups = snapshotPlan.fileGroups();
     ReconcileFileGroupTask effectiveFileGroupTask =
         spec.fileGroupTask == null ? ReconcileFileGroupTask.empty() : spec.fileGroupTask;
     String jobId = UUID.randomUUID().toString();
@@ -361,7 +359,7 @@ public class ReconcileJobEnqueuer {
     String dedupeKeyHash = hashValue(dedupeKey);
     String canonicalKey = Keys.reconcileJobStateRowById(spec.accountId, jobId);
     String snapshotPlanBlobUri =
-        snapshotPlanFileGroups.isEmpty()
+        snapshotPlanFileGroups.isEmpty() && snapshotPlan.appendOnlyBase().isEmpty()
             ? ""
             : Keys.reconcileJobBlobUri(
                 spec.accountId, jobId, "snapshot-plan-" + now + "-" + UUID.randomUUID());
@@ -413,7 +411,7 @@ public class ReconcileJobEnqueuer {
         statePointerKeys.apply(record),
         record.connectorIndexPointerKey,
         snapshotPlanBlobUri,
-        snapshotPlanBlob(snapshotPlanFileGroups),
+        snapshotPlan,
         record);
   }
 
@@ -566,18 +564,6 @@ public class ReconcileJobEnqueuer {
     }
     return new BulkEnqueueItemResult(
         index, "", false, message, error instanceof IllegalArgumentException);
-  }
-
-  private static SnapshotPlanBlob snapshotPlanBlob(List<ReconcileFileGroupTask> fileGroups) {
-    return SnapshotPlanBlob.of(
-        (fileGroups == null ? List.<ReconcileFileGroupTask>of() : fileGroups)
-            .stream()
-                .filter(fileGroup -> fileGroup != null && !fileGroup.isEmpty())
-                .map(
-                    fileGroup ->
-                        new ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob(
-                            ReconcileScope.empty(), fileGroup))
-                .toList());
   }
 
   private static long plannedFilesForGroup(ReconcileFileGroupTask fileGroupTask) {

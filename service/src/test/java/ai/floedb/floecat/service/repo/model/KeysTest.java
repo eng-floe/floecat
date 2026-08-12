@@ -91,6 +91,13 @@ class KeysTest {
   }
 
   @Test
+  void reusableArtifactIndexObjectsHaveADedicatedTablePrefix() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/reusable-artifact-index/runs/",
+        Keys.tableReusableArtifactIndexObjectBlobPrefix("acct id", "table id"));
+  }
+
+  @Test
   void generationStatsAndIndexWrappersUseTheSameHashedTargetDirectory() {
     String targetId = "file:s3://bucket/path/data.parquet";
     String targetHash = Hashing.sha256Hex(targetId);
@@ -114,6 +121,15 @@ class KeysTest {
         new Keys.GenerationKey(7L, "generation +/one"),
         Keys.generationFromManifestBlobUri(
             Keys.snapshotTargetStatsManifestBlobUri("account", "table", 7L, "generation +/one")));
+  }
+
+  @Test
+  void generationBlobUriRecoversDecodedGenerationIdentity() {
+    assertEquals(
+        new Keys.GenerationKey(7L, "generation +/one"),
+        Keys.generationFromTargetStatsBlobUri(
+            Keys.snapshotTargetStatsGenerationBlobPrefix("account", "table", 7L, "generation +/one")
+                + "worker-uploads/bundle.pb"));
   }
 
   @Test

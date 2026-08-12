@@ -23,7 +23,7 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import java.util.List;
 
-interface RemoteSnapshotFinalizeWorkerClient {
+public interface RemoteSnapshotFinalizeWorkerClient {
   StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(RemoteLeasedJob lease);
 
   List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(RemoteLeasedJob lease);
@@ -32,7 +32,10 @@ interface RemoteSnapshotFinalizeWorkerClient {
       RemoteLeasedJob lease,
       String resultId,
       String statsObjectPrefix,
-      String captureManifestUri,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
@@ -43,10 +46,33 @@ interface RemoteSnapshotFinalizeWorkerClient {
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
 
+  PreparedSnapshotFinalizeSuccess prepareAppendOnlySnapshotFinalizeSuccess(
+      RemoteLeasedJob lease,
+      String resultId,
+      String statsObjectPrefix,
+      String durableCaptureManifestPrefix,
+      String reusableArtifactIndexObjectPrefix,
+      String statsGenerationManifestUri,
+      String indexGenerationCaptureManifestPrefix,
+      int sourceFileCount,
+      List<ReconcileFileGroupResultDescriptor> fileGroups,
+      List<StatsObjectDescriptor> fileStats,
+      List<TargetStatsRecord> finalStats,
+      List<StatsObjectDescriptor> indexArtifacts,
+      List<ReusableArtifactBundleReference> reusableArtifactBundles,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase);
+
   boolean submitSnapshotFinalizeSuccess(
       RemoteLeasedJob lease, PreparedSnapshotFinalizeSuccess prepared);
 
-  boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
+  boolean submitSnapshotFinalizeFailure(
+      RemoteLeasedJob lease,
+      String resultId,
+      String message,
+      ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind kind);
 
   record PreparedSnapshotFinalizeSuccess(
       String resultId, SnapshotCaptureManifestDescriptor manifestDescriptor) {}

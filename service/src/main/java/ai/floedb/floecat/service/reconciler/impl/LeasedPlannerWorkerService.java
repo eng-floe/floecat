@@ -584,13 +584,30 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     List<SubmitLeasedPlanSnapshotResultRequest.Chunk> stagedChunks =
         loadStagedPlanSnapshotChunks(principalContext, jobId, leaseEpoch, chunkCount);
     List<PlannedFileGroupJob> referencedJobs = List.of();
-    if (chunkCount == 0 && plannedFileGroupJobs > 0) {
+    SnapshotPlanBlobStore.AppendOnlyBase referencedAppendOnlyBase = null;
+    boolean referencedPlanLoaded =
+        chunkCount == 0
+            && durableSnapshotTask.fileGroupPlanBlobUri() != null
+            && !durableSnapshotTask.fileGroupPlanBlobUri().isBlank();
+    if (referencedPlanLoaded) {
       validateReferencedPlanUri(lease, durableSnapshotTask.fileGroupPlanBlobUri());
-      referencedJobs =
-          snapshotPlanBlobStore.loadPlanJobs(durableSnapshotTask.fileGroupPlanBlobUri());
+      SnapshotPlanBlobStore.SnapshotPlanBlob referencedPlan =
+          snapshotPlanBlobStore.loadPlan(durableSnapshotTask.fileGroupPlanBlobUri());
+      referencedJobs = referencedPlan.toPlannedFileGroupJobs();
+      try {
+        referencedAppendOnlyBase = referencedPlan.appendOnlyBase().orElse(null);
+      } catch (IllegalArgumentException error) {
+        // A plan blob written against an older contract cannot be replayed; report it the same way
+        // as the other referenced-plan validations rather than as an unmapped runtime failure.
+        invalidReferencedPlan(
+            "stored append-only base plan is incompatible: "
+                + (error.getMessage() == null
+                    ? error.getClass().getSimpleName()
+                    : error.getMessage()));
+      }
     }
-    if (!referencedJobs.isEmpty()) {
-      validateReferencedPlan(lease, durableSnapshotTask, referencedJobs);
+    if (referencedPlanLoaded) {
+      validateReferencedPlan(lease, durableSnapshotTask, referencedJobs, referencedAppendOnlyBase);
     }
     long stagedFileGroupJobs =
         referencedJobs.isEmpty()
@@ -683,12 +700,24 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       ReconcileJobStore.LeasedJob lease,
       ReconcileSnapshotTask snapshotTask,
       List<PlannedFileGroupJob> plannedJobs) {
+    validateReferencedPlan(lease, snapshotTask, plannedJobs, null);
+  }
+
+  static void validateReferencedPlan(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> plannedJobs,
+      SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
     List<ReconcileFileGroupTask> groups =
         plannedJobs.stream()
             .map(job -> job == null ? ReconcileFileGroupTask.empty() : job.fileGroupTask())
             .toList();
     String expectedUri =
-        SnapshotPlanManifestIds.manifestBlobUri(lease.accountId, lease.jobId, groups);
+        SnapshotPlanManifestIds.manifestBlobUri(
+            lease.accountId,
+            lease.jobId,
+            groups,
+            appendOnlyBase == null ? List.of() : appendOnlyBase.manifestIdentity());
     if (!expectedUri.equals(snapshotTask.fileGroupPlanBlobUri())) {
       invalidReferencedPlan("snapshot plan URI does not match its account, job, and content");
     }
@@ -738,6 +767,13 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
               effectiveScope(lease), group);
       if (!expectedScope.semanticallyEquals(job.scope())) {
         invalidReferencedPlan("snapshot plan file-group scope does not match the leased scope");
+      }
+    }
+    if (appendOnlyBase != null) {
+      try {
+        sourceFileCount = Math.addExact(sourceFileCount, appendOnlyBase.sourceFileCount());
+      } catch (ArithmeticException e) {
+        invalidReferencedPlan("snapshot plan source file count overflow");
       }
     }
     if (snapshotTask.sourceFileCount() != sourceFileCount) {

@@ -213,6 +213,13 @@ class SnapshotManifestsTest {
     return b.build();
   }
 
+  private static SnapshotManifestEntry reusableEntry(long id, long createdMs) {
+    return entry(id, createdMs, true).toBuilder()
+        .setReuseStatsGenerationRef(
+            BlobRef.newBuilder().setUri("s3://t/reuse-stats/" + id + "/gen.pb"))
+        .build();
+  }
+
   @Test
   void latestQueryableCurrentPicksNewestFinalizedAtOrBeforeTheCommittedCurrent() {
     // S1, S2 finalized; S3 is the committed current but not yet finalized.
@@ -241,6 +248,35 @@ class SnapshotManifestsTest {
     var s1 = entry(1, 1_000, false);
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, s1);
     assertTrue(SnapshotManifests.latestQueryableCurrent(roots, head, s1).isEmpty());
+  }
+
+  @Test
+  void latestReusableCandidatesPublishTheReplayTargetAndItsPredecessor() {
+    var s4 = entry(4, 4_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(2, 2_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, reusableEntry(3, 3_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, s4);
+
+    var candidates =
+        SnapshotManifests.latestReusableCandidates(SnapshotManifests.chain(roots, TABLE, head), s4);
+
+    assertEquals(
+        List.of(3L, 2L), candidates.stream().map(SnapshotManifestEntry::getSnapshotId).toList());
+  }
+
+  @Test
+  void latestReusableCandidatesRequirePublishedReuseArtifacts() {
+    var s3 = entry(3, 3_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, reusableEntry(1, 1_000));
+    head = SnapshotManifests.upsert(roots, TABLE, head, entry(2, 2_000, true));
+    head = SnapshotManifests.upsert(roots, TABLE, head, s3);
+
+    var candidates =
+        SnapshotManifests.latestReusableCandidates(SnapshotManifests.chain(roots, TABLE, head), s3);
+
+    assertEquals(
+        List.of(1L), candidates.stream().map(SnapshotManifestEntry::getSnapshotId).toList());
   }
 
   private static String fingerprint(String schemaJson) {

@@ -221,6 +221,391 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
+  void buildResponseReusesFreshAssumeRoleCredentialsForMatchingScope() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    assumeRoleResolver.secretsManager = new StaticSecretsManager();
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+
+    assumeRoleResolver.buildResponse(
+        authority,
+        "s3://warehouse/orders",
+        java.util.List.of("s3://warehouse/orders"),
+        "acct",
+        true);
+    assumeRoleResolver.buildResponse(
+        authority,
+        "s3://warehouse/orders",
+        java.util.List.of("s3://warehouse/orders"),
+        "acct",
+        true);
+
+    assertEquals(1, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheCanonicalizesEquivalentScopeSets() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"), false);
+
+    assertEquals(1, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheSeparatesPrefixAndExactObjectScopes() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/orders"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/orders"), true);
+
+    assertEquals(2, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheIgnoresSecretMapEntryOrdering() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials.Builder base =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"));
+    // Protobuf does not order map entries on the wire, so these two logically identical secrets can
+    // serialize to different bytes purely from insertion order.
+    AuthCredentials forward =
+        base.clone()
+            .putProperties("alpha", "1")
+            .putProperties("beta", "2")
+            .putHeaders("x-one", "a")
+            .putHeaders("x-two", "b")
+            .build();
+    AuthCredentials reversed =
+        base.clone()
+            .putProperties("beta", "2")
+            .putProperties("alpha", "1")
+            .putHeaders("x-two", "b")
+            .putHeaders("x-one", "a")
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, forward, java.util.List.of("s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, reversed, java.util.List.of("s3://warehouse/one"), false);
+
+    assertEquals(1, resolutions.get());
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority,
+        base.clone().putProperties("alpha", "changed").build(),
+        java.util.List.of("s3://warehouse/one"),
+        false);
+
+    assertEquals(2, resolutions.get());
+  }
+
+  @Test
+  void assumeRoleCacheEvictsCompletedEntriesAtItsConfiguredBound() {
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver(2) {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            int resolution = resolutions.incrementAndGet();
+            return new ResolvedStorageCredentials(
+                "temp-akid-" + resolution,
+                "temp-secret",
+                "temp-token",
+                Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/two"), false);
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/three"), false);
+
+    assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
+    assumeRoleResolver.assumeRoleCredentials(
+        authority, source, java.util.List.of("s3://warehouse/one"), false);
+    assertEquals(4, resolutions.get());
+    assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
+  }
+
+  @Test
+  void assumeRoleCacheBackpressuresDistinctInflightMissesAtItsConfiguredBound() throws Exception {
+    java.util.concurrent.CountDownLatch firstTwoStarted =
+        new java.util.concurrent.CountDownLatch(2);
+    java.util.concurrent.CountDownLatch thirdStarted = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+    AtomicInteger resolutions = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver(2) {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            int resolution = resolutions.incrementAndGet();
+            if (resolution <= 2) {
+              firstTwoStarted.countDown();
+            } else {
+              thirdStarted.countDown();
+            }
+            try {
+              if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IllegalStateException("timed out waiting to release AssumeRole");
+              }
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new IllegalStateException("interrupted waiting to release AssumeRole", e);
+            }
+            return new ResolvedStorageCredentials(
+                "temp-akid-" + resolution,
+                "temp-secret",
+                "temp-token",
+                Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newFixedThreadPool(3);
+    try {
+      java.util.concurrent.Future<?> first =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/one"), false));
+      java.util.concurrent.Future<?> second =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/two"), false));
+      assertTrue(firstTwoStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      java.util.concurrent.Future<?> third =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/three"), false));
+
+      assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
+      assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
+      release.countDown();
+      first.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      second.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      third.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      assertEquals(3, resolutions.get());
+      assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
+    } finally {
+      release.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void assumeRoleCacheCapacityWaiterProceedsWhenAnyInflightEntryCompletes() throws Exception {
+    java.util.concurrent.CountDownLatch firstStarted = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch secondStarted = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch thirdStarted = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch releaseFirst = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch releaseSecond = new java.util.concurrent.CountDownLatch(1);
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver(2) {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations,
+              boolean exactObjectScope) {
+            String location = sessionScopeLocations.getFirst();
+            java.util.concurrent.CountDownLatch release = null;
+            if (location.endsWith("/one")) {
+              firstStarted.countDown();
+              release = releaseFirst;
+            } else if (location.endsWith("/two")) {
+              secondStarted.countDown();
+              release = releaseSecond;
+            } else {
+              thirdStarted.countDown();
+            }
+            try {
+              if (release != null && !release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IllegalStateException("timed out waiting to release AssumeRole");
+              }
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              throw new IllegalStateException("interrupted waiting to release AssumeRole", e);
+            }
+            return new ResolvedStorageCredentials(
+                "temp-akid-" + location,
+                "temp-secret",
+                "temp-token",
+                Instant.now().plusSeconds(3600));
+          }
+        };
+    StorageAuthority authority =
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    AuthCredentials source =
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("akid")
+                    .setSecretAccessKey("secret"))
+            .build();
+    java.util.concurrent.ExecutorService executor =
+        java.util.concurrent.Executors.newFixedThreadPool(3);
+    try {
+      java.util.concurrent.Future<?> first =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/one"), false));
+      assertTrue(firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      java.util.concurrent.Future<?> second =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/two"), false));
+      assertTrue(secondStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      java.util.concurrent.Future<?> third =
+          executor.submit(
+              () ->
+                  assumeRoleResolver.assumeRoleCredentials(
+                      authority, source, java.util.List.of("s3://warehouse/three"), false));
+
+      assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
+      releaseSecond.countDown();
+      second.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      assertTrue(thirdStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+      third.get(5, java.util.concurrent.TimeUnit.SECONDS);
+      assertFalse(first.isDone(), "the oldest in-flight request remains blocked");
+      assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
+
+      releaseFirst.countDown();
+      first.get(5, java.util.concurrent.TimeUnit.SECONDS);
+    } finally {
+      releaseFirst.countDown();
+      releaseSecond.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   void buildResponseAllowsServerSideAssumeRoleWithAmbientSourceCredentials() {
     StorageAuthorityResolver assumeRoleResolver =
         new StorageAuthorityResolver() {
@@ -300,6 +685,53 @@ class StorageAuthorityResolverTest {
     assertEquals(2, clientBuilds.get());
     assertEquals(2, providers.size());
     assertNotSame(providers.get(0), providers.get(1));
+  }
+
+  @Test
+  void ambientAssumeRoleRetriesTransientConnectFailure() {
+    StsClient failedClient = mock(StsClient.class);
+    StsClient refreshedClient = mock(StsClient.class);
+    when(failedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenThrow(SdkClientException.builder().message("Connect timed out").build());
+    when(refreshedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenReturn(
+            AssumeRoleResponse.builder()
+                .credentials(
+                    Credentials.builder()
+                        .accessKeyId("temp-akid")
+                        .secretAccessKey("temp-secret")
+                        .sessionToken("temp-token")
+                        .expiration(Instant.now().plusSeconds(3600))
+                        .build())
+                .build());
+
+    AtomicInteger clientBuilds = new AtomicInteger();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          AwsCredentialsProvider ambientCredentialsProvider() {
+            return mock(AwsCredentialsProvider.class);
+          }
+
+          @Override
+          StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
+            return clientBuilds.getAndIncrement() == 0 ? failedClient : refreshedClient;
+          }
+
+          @Override
+          void pauseBeforeAssumeRoleRetry(int failedAttempt) {}
+        };
+
+    ResolvedStorageCredentials credentials =
+        assumeRoleResolver.assumeRoleFromAmbientSource(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .build(),
+            java.util.List.of("s3://warehouse/orders"),
+            false);
+
+    assertEquals("temp-akid", credentials.accessKeyId());
+    assertEquals(2, clientBuilds.get());
   }
 
   @Test
@@ -389,6 +821,18 @@ class StorageAuthorityResolverTest {
     assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
     assertTrue(policy.contains("part-000.parquet"));
     assertTrue(policy.contains("delete-000.parquet"));
+  }
+
+  @Test
+  void scopedSessionPolicyCanonicalizesScopeOrderAndSchemes() {
+    String first =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"));
+    String second =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"));
+
+    assertEquals(first, second);
   }
 
   private static StorageAuthority authority() {

@@ -87,7 +87,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void neverClaimsNonEmptyFileGroupSnapshots() {
+  void claimsNonEmptyFileGroupSnapshotsForLocalParity() {
     var store = new InMemoryReconcileJobStore();
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
     ReconcileFileGroupTask group =
@@ -129,7 +129,63 @@ class SnapshotFinalizeReconcileExecutorTest {
             new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore()),
             snapshotPlanBlobStore);
 
-    assertFalse(executor.supports(lease));
+    assertTrue(executor.supports(lease));
+  }
+
+  @Test
+  void claimsZeroDeltaAppendSnapshotsForLocalParity() {
+    var store = new InMemoryReconcileJobStore();
+    var snapshotPlanBlobStore = snapshotPlanBlobStore();
+    ReconcileScope scope = captureScope();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/plan-1/snapshot-plan/append.json",
+            0,
+            1,
+            "",
+            0);
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+    ReconcileJobStore.LeasedJob lease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+
+    SnapshotFinalizeReconcileExecutor executor =
+        executor(
+            store,
+            new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore()),
+            snapshotPlanBlobStore);
+
+    assertTrue(executor.supports(lease));
   }
 
   private static SnapshotPlanBlobStore snapshotPlanBlobStore() {
@@ -210,6 +266,12 @@ class SnapshotFinalizeReconcileExecutorTest {
     executor.coverageService = coverageService(snapshotPlanBlobStore);
     executor.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
     childStateService.jobs = jobs;
+    var finalizeInputService = new LeasedSnapshotFinalizeInputService();
+    finalizeInputService.jobs = jobs;
+    finalizeInputService.childStateService = childStateService;
+    executor.finalizeInputService = finalizeInputService;
+    executor.finalizeExecutionService = mock(LeasedSnapshotFinalizeExecutionService.class);
+    executor.blobStore = new InMemoryBlobStore();
     return executor;
   }
 
@@ -240,22 +302,8 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void priorFinalizerReceiptDoesNotAuthorizeAStaleAttempt() {
-    var store =
-        new InMemoryReconcileJobStore() {
-          @Override
-          public Optional<ReconcileJobStore.FinalizedSnapshotEvent> getFinalizedSnapshot(
-              String accountId, String tableId, long snapshotId) {
-            return Optional.of(
-                new ReconcileJobStore.FinalizedSnapshotEvent(
-                    accountId + ":" + tableId + ":" + snapshotId,
-                    accountId,
-                    tableId,
-                    snapshotId,
-                    123L,
-                    "winning-finalizer"));
-          }
-        };
+  void localDescriptorFinalizerRejectsIncompleteChildCoverage() {
+    var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
     var executor = executor(store, statsStore, snapshotPlanBlobStore);
@@ -296,9 +344,9 @@ class SnapshotFinalizeReconcileExecutorTest {
         executor.execute(
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(ExecutionResult.JobOutcome.RETRYABLE_FAILURE, result.outcome);
     assertEquals(1, result.errors);
-    assertTrue(result.message.contains("remote descriptor-driven finalizer"));
+    assertTrue(result.message.contains("missing EXEC_FILE_GROUP children"));
   }
 
   @Test

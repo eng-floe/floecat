@@ -451,6 +451,8 @@ public interface ReconcileJobStore {
 
   boolean renewLease(String jobId, String leaseEpoch);
 
+  LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch);
+
   default Optional<LeasedJob> getCompletionLeaseView(
       String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
     return Optional.empty();
@@ -472,8 +474,8 @@ public interface ReconcileJobStore {
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
-    boolean leaseValid = renewLease(jobId, leaseEpoch);
-    if (leaseValid) {
+    LeaseRenewal renewal = renewLeaseWithCancellation(jobId, leaseEpoch);
+    if (renewal.leaseValid) {
       markProgress(
           jobId,
           leaseEpoch,
@@ -486,7 +488,7 @@ public interface ReconcileJobStore {
           statsProcessed,
           message);
     }
-    return new ProgressUpdate(leaseValid, isCancellationRequested(jobId));
+    return new ProgressUpdate(renewal.leaseValid, renewal.cancellationRequested);
   }
 
   default ProgressUpdate reportProgress(
@@ -723,6 +725,16 @@ public interface ReconcileJobStore {
     return renewLease(jobId, leaseEpoch);
   }
 
+  /** Durably records the remote result that snapshot publication must commit. */
+  boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent);
+
+  /** Returns a previously accepted snapshot-finalize publication intent. */
+  Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId);
+
+  /** Lists accepted snapshot-finalize intents that still require publication. */
+  SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken);
+
   /** Whether this store enforces durable snapshot-publication ownership fences. */
   default boolean enforcesSnapshotFinalizeOwnership() {
     return false;
@@ -742,6 +754,26 @@ public interface ReconcileJobStore {
       List<String> materializedCoverage,
       long finishedAtMs,
       String message);
+
+  record SnapshotFinalizeCommitIntent(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount) {}
+
+  record SnapshotFinalizeCommitPage(
+      List<SnapshotFinalizeCommitIntent> intents, String nextPageToken) {
+    public SnapshotFinalizeCommitPage {
+      intents = intents == null ? List.of() : List.copyOf(intents);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
 
   void markCancelled(
       String jobId,
@@ -1701,6 +1733,16 @@ public interface ReconcileJobStore {
     public final boolean cancellationRequested;
 
     public ProgressUpdate(boolean leaseValid, boolean cancellationRequested) {
+      this.leaseValid = leaseValid;
+      this.cancellationRequested = cancellationRequested;
+    }
+  }
+
+  final class LeaseRenewal {
+    public final boolean leaseValid;
+    public final boolean cancellationRequested;
+
+    public LeaseRenewal(boolean leaseValid, boolean cancellationRequested) {
       this.leaseValid = leaseValid;
       this.cancellationRequested = cancellationRequested;
     }

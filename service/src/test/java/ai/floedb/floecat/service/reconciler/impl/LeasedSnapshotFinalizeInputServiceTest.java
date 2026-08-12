@@ -187,6 +187,45 @@ class LeasedSnapshotFinalizeInputServiceTest {
   }
 
   @Test
+  void resolveReturnsAppendOnlyModeForInheritedFilesWithDeltaGroups() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/delta.parquet"));
+    ReconcileSnapshotTask appendTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(plannedGroup),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1,
+            6,
+            "",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", false, appendTask)));
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_SUCCEEDED", plannedGroup, plannedGroup),
+                        resultDescriptor(plannedGroup))),
+                ""));
+
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.APPEND_ONLY, payload.finalizeMode());
+    assertEquals(1, payload.fileGroupCount());
+    assertEquals(6, payload.sourceFileCount());
+  }
+
+  @Test
   void resolveReturnsDirectStatsPayloadWithoutChildStateLookup() {
     ReconcileSnapshotTask directStatsTask =
         ReconcileSnapshotTask.of(
@@ -314,6 +353,36 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertEquals(
         LeasedSnapshotFinalizeInputService.FinalizeMode.EXPLICIT_EMPTY, payload.finalizeMode());
     assertTrue(payload.fullRescan());
+  }
+
+  @Test
+  void resolveReturnsAppendOnlyModeForInheritedFilesWithoutDeltaGroups() {
+    ReconcileSnapshotTask appendTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0,
+            6,
+            "",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", false, appendTask)));
+    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
+
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        LeasedSnapshotFinalizeInputService.FinalizeMode.APPEND_ONLY, payload.finalizeMode());
+    assertEquals(0, payload.fileGroupCount());
+    assertEquals(6, payload.sourceFileCount());
   }
 
   @Test

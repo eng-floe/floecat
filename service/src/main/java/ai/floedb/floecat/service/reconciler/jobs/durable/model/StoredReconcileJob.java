@@ -89,6 +89,7 @@ public class StoredReconcileJob {
   public int snapshotFinalizeFileGroupCount;
   public int snapshotFinalizeSourceFileCount;
   public long snapshotFinalizeStatsRecordCount;
+  public long snapshotFinalizeIndexArtifactCount;
   public boolean snapshotFinalizeCommitStarted;
   public StoredJobDefinition definition = new StoredJobDefinition();
   public String snapshotPlanBlobUri;
@@ -144,6 +145,29 @@ public class StoredReconcileJob {
     return ReconcileJobKind.fromString(jobKind);
   }
 
+  public boolean hasPublishableSnapshotFinalizeIntent() {
+    return snapshotFinalizeCommitStarted
+        && notBlank(jobId)
+        && notBlank(snapshotFinalizeResultLeaseEpoch)
+        && notBlank(snapshotFinalizeResultId)
+        && notBlank(snapshotFinalizeManifestUri)
+        && snapshotFinalizeManifestBytes > 0L
+        && notBlank(snapshotFinalizeManifestSha256);
+  }
+
+  public void clearSnapshotFinalizeIntent() {
+    snapshotFinalizeResultLeaseEpoch = "";
+    snapshotFinalizeResultId = "";
+    snapshotFinalizeManifestUri = "";
+    snapshotFinalizeManifestBytes = 0L;
+    snapshotFinalizeManifestSha256 = "";
+    snapshotFinalizeFileGroupCount = 0;
+    snapshotFinalizeSourceFileCount = 0;
+    snapshotFinalizeStatsRecordCount = 0L;
+    snapshotFinalizeIndexArtifactCount = 0L;
+    snapshotFinalizeCommitStarted = false;
+  }
+
   public ReconcileExecutionPolicy executionPolicy() {
     return ReconcileExecutionPolicy.of(
         ReconcileExecutionClass.fromString(executionClass), executionLane, executionAttributes);
@@ -159,5 +183,9 @@ public class StoredReconcileJob {
 
   public String parentJobId() {
     return parentJobId == null ? "" : parentJobId;
+  }
+
+  private static boolean notBlank(String value) {
+    return value != null && !value.isBlank();
   }
 }

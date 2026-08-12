@@ -81,6 +81,45 @@ class TableBlobReachabilityGuardTest {
     assertThat(guard.retainedEntryCount()).isZero();
   }
 
+  @Test
+  void sameTablePublishersCanRunConcurrently() throws Exception {
+    TableBlobReachabilityGuard guard = new TableBlobReachabilityGuard();
+    CountDownLatch publicationsStarted = new CountDownLatch(2);
+    CountDownLatch finishPublications = new CountDownLatch(1);
+
+    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      var first =
+          executor.submit(
+              () ->
+                  guard.publishing(
+                      "account",
+                      "table",
+                      () -> {
+                        publicationsStarted.countDown();
+                        await(finishPublications);
+                        return null;
+                      }));
+      var second =
+          executor.submit(
+              () ->
+                  guard.publishing(
+                      "account",
+                      "table",
+                      () -> {
+                        publicationsStarted.countDown();
+                        await(finishPublications);
+                        return null;
+                      }));
+
+      assertThat(publicationsStarted.await(5, TimeUnit.SECONDS)).isTrue();
+      finishPublications.countDown();
+      first.get();
+      second.get();
+    }
+
+    assertThat(guard.retainedEntryCount()).isZero();
+  }
+
   private static void await(CountDownLatch latch) {
     try {
       latch.await();

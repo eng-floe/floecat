@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.AppendOnlyBase;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -435,7 +436,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         projector(),
         jobIndexStore(),
         indexes(),
-        this::materializeSnapshotPlanFileGroups,
+        this::materializeSnapshotPlan,
         readyQueue()::readyPointerKeys,
         this::statePointerKeys,
         readyQueue()::readyPointerKeyForDue);
@@ -1768,6 +1769,18 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public LeaseRenewal renewLeaseWithCancellation(String jobId, String leaseEpoch) {
+    StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+    if (loaded == null || loaded.record == null) {
+      return new LeaseRenewal(false, false);
+    }
+    boolean leaseValid = renewLeaseByJobId(loaded.record.accountId, jobId, leaseEpoch);
+    boolean cancellationRequested =
+        isCancellationState(loaded.record.state) || isBlockedByAncestorCancellation(loaded.record);
+    return new LeaseRenewal(leaseValid, cancellationRequested);
+  }
+
+  @Override
   public Optional<LeasedJob> getCompletionLeaseView(
       String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
     var loaded = loadByAnyAccount(jobId);
@@ -1780,7 +1793,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             && !blankToEmpty(existing.plannerOutcomeFingerprint).isBlank()
             && !blankToEmpty(leaseEpoch).isBlank()
             && blankToEmpty(leaseEpoch).equals(blankToEmpty(existing.plannerOutcomeLeaseEpoch));
+    boolean publishingAcceptedSnapshotFinalize =
+        existing.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(existing.state)
+            && existing.hasPublishableSnapshotFinalizeIntent()
+            && !blankToEmpty(leaseEpoch).isBlank()
+            && blankToEmpty(leaseEpoch)
+                .equals(blankToEmpty(existing.snapshotFinalizeResultLeaseEpoch));
     if (!replayingCommittedWaitingOutcome
+        && !publishingAcceptedSnapshotFinalize
         && !leaseManager()
             .hasActiveLease(
                 jobId,
@@ -2047,20 +2068,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private List<ReconcileFileGroupTask> materializeSnapshotPlanFileGroups(
       ReconcileSnapshotTask snapshotTask) {
+    return materializeSnapshotPlan(snapshotTask).fileGroups();
+  }
+
+  private SnapshotPlanBlob materializeSnapshotPlan(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    if (effective.fileGroupPlanRecorded() && !blank(effective.fileGroupPlanBlobUri())) {
+      return payloads()
+          .requireBlob(
+              effective.fileGroupPlanBlobUri(),
+              SnapshotPlanBlob.class,
+              "snapshot plan payload",
+              "");
+    }
     if (!effective.fileGroups().isEmpty()) {
-      return effective.fileGroups();
+      return snapshotPlanBlob(effective.fileGroups());
     }
-    if (!effective.fileGroupPlanRecorded()
-        || effective.fileGroupCount() <= 0
-        || blank(effective.fileGroupPlanBlobUri())) {
-      return List.of();
-    }
-    return payloads()
-        .requireBlob(
-            effective.fileGroupPlanBlobUri(), SnapshotPlanBlob.class, "snapshot plan payload", "")
-        .fileGroups();
+    return SnapshotPlanBlob.of(List.of());
   }
 
   private List<ReconcileFileGroupTask> validateSnapshotPlanManifest(
@@ -2086,7 +2111,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           payloads()
               .requireBlob(
                   manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
-      validateSnapshotPlanManifestHash(manifestUri, payload.fileGroups());
+      validateSnapshotPlanManifestHash(manifestUri, payload);
       if (!payload.fileGroups().isEmpty()) {
         throw new IllegalArgumentException(
             "snapshot plan manifest file-group count mismatch expected=0 actual="
@@ -2103,7 +2128,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             .requireBlob(
                 manifestUri, SnapshotPlanBlob.class, "snapshot plan payload", currentState.jobId);
     List<ReconcileFileGroupTask> plannedFileGroups = payload.fileGroups();
-    validateSnapshotPlanManifestHash(manifestUri, plannedFileGroups);
+    validateSnapshotPlanManifestHash(manifestUri, payload);
     if (plannedFileGroups.size() != effective.fileGroupCount()) {
       throw new IllegalArgumentException(
           "snapshot plan manifest file-group count mismatch expected="
@@ -2250,15 +2275,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             == predecessor.captureManifestPointerVersion();
   }
 
-  private void validateSnapshotPlanManifestHash(
-      String manifestUri, List<ReconcileFileGroupTask> plannedFileGroups) {
+  private void validateSnapshotPlanManifestHash(String manifestUri, SnapshotPlanBlob payload) {
     String effectiveManifestUri = blankToEmpty(manifestUri);
     if (effectiveManifestUri.isBlank()) {
       return;
     }
+    List<ReconcileFileGroupTask> plannedFileGroups =
+        payload == null ? List.of() : payload.fileGroups();
+    List<String> additionalIdentity =
+        payload == null
+            ? List.of()
+            : payload.appendOnlyBase().map(AppendOnlyBase::manifestIdentity).orElse(List.of());
     String expectedManifestUri =
         SnapshotPlanManifestIds.manifestBlobUri(
-            "ignored-account", "ignored-job", plannedFileGroups);
+            "ignored-account", "ignored-job", plannedFileGroups, additionalIdentity);
     String expectedFilename =
         expectedManifestUri.substring(expectedManifestUri.lastIndexOf('/') + 1);
     if (!effectiveManifestUri.endsWith("/" + expectedFilename)
@@ -2434,6 +2464,120 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public boolean beginSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, SnapshotFinalizeCommitIntent intent) {
+    if (intent == null
+        || !blankToEmpty(jobId).equals(blankToEmpty(intent.jobId()))
+        || !blankToEmpty(leaseEpoch).equals(blankToEmpty(intent.leaseEpoch()))
+        || blank(intent.resultId())
+        || blank(intent.manifestUri())
+        || intent.manifestBytes() <= 0L
+        || blank(intent.manifestSha256())
+        || intent.fileGroupCount() < 0
+        || intent.sourceFileCount() < 0
+        || intent.statsRecordCount() < 0L
+        || intent.indexArtifactCount() < 0L) {
+      return false;
+    }
+    return onHotPath(
+        () -> {
+          StoredEnvelope finalizer = loadByAnyAccount(jobId).orElse(null);
+          if (finalizer == null || blank(finalizer.record.parentJobId)) {
+            return false;
+          }
+          StoredEnvelope parent = loadByAnyAccount(finalizer.record.parentJobId).orElse(null);
+          if (parent == null
+              || parent.record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+              || !leaseManager()
+                  .isSnapshotOwnershipHeldBy(parent.record, parent.canonicalPointerKey)) {
+            return false;
+          }
+          return mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (existing == null
+                        || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                        || !"JS_RUNNING".equals(existing.state)
+                        || !leaseManager()
+                            .hasActiveLease(
+                                jobId,
+                                leaseEpoch,
+                                existing,
+                                "beginSnapshotFinalizeCommit",
+                                true,
+                                true,
+                                false)) {
+                      return null;
+                    }
+                    SnapshotFinalizeCommitIntent existingIntent =
+                        snapshotFinalizeCommitIntent(existing);
+                    if (existing.snapshotFinalizeCommitStarted
+                        && existingIntent != null
+                        && !existingIntent.equals(intent)) {
+                      return null;
+                    }
+                    existing.snapshotFinalizeResultLeaseEpoch = blankToEmpty(intent.leaseEpoch());
+                    existing.snapshotFinalizeResultId = blankToEmpty(intent.resultId());
+                    existing.snapshotFinalizeManifestUri = blankToEmpty(intent.manifestUri());
+                    existing.snapshotFinalizeManifestBytes = intent.manifestBytes();
+                    existing.snapshotFinalizeManifestSha256 = blankToEmpty(intent.manifestSha256());
+                    existing.snapshotFinalizeFileGroupCount = intent.fileGroupCount();
+                    existing.snapshotFinalizeSourceFileCount = intent.sourceFileCount();
+                    existing.snapshotFinalizeStatsRecordCount = intent.statsRecordCount();
+                    existing.snapshotFinalizeIndexArtifactCount = intent.indexArtifactCount();
+                    existing.snapshotFinalizeCommitStarted = true;
+                    existing.updatedAtMs = System.currentTimeMillis();
+                    return existing;
+                  })
+              .isPresent();
+        });
+  }
+
+  @Override
+  public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
+    StoredEnvelope stored = loadByAnyAccount(jobId).orElse(null);
+    return Optional.ofNullable(stored == null ? null : snapshotFinalizeCommitIntent(stored.record));
+  }
+
+  @Override
+  public SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken) {
+    var page =
+        jobIndexStore()
+            .listStoredJobsInState("JS_RUNNING", Math.max(1, pageSize), blankToEmpty(pageToken));
+    List<SnapshotFinalizeCommitIntent> intents = new ArrayList<>();
+    for (StoredReconcileJob record : page.records()) {
+      if (record == null
+          || record.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+          || !record.hasPublishableSnapshotFinalizeIntent()) {
+        continue;
+      }
+      SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);
+      if (intent != null) {
+        intents.add(intent);
+      }
+    }
+    return new SnapshotFinalizeCommitPage(intents, page.nextPageToken());
+  }
+
+  private static SnapshotFinalizeCommitIntent snapshotFinalizeCommitIntent(
+      StoredReconcileJob record) {
+    if (record == null || !record.hasPublishableSnapshotFinalizeIntent()) {
+      return null;
+    }
+    return new SnapshotFinalizeCommitIntent(
+        record.jobId,
+        record.snapshotFinalizeResultLeaseEpoch,
+        record.snapshotFinalizeResultId,
+        record.snapshotFinalizeManifestUri,
+        record.snapshotFinalizeManifestBytes,
+        record.snapshotFinalizeManifestSha256,
+        record.snapshotFinalizeFileGroupCount,
+        record.snapshotFinalizeSourceFileCount,
+        record.snapshotFinalizeStatsRecordCount,
+        record.snapshotFinalizeIndexArtifactCount);
+  }
+
+  @Override
   public boolean enforcesSnapshotFinalizeOwnership() {
     return true;
   }
@@ -2473,6 +2617,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         existing.snapshotFinalizeFileGroupCount = fileGroupCount;
                         existing.snapshotFinalizeSourceFileCount = sourceFileCount;
                         existing.snapshotFinalizeStatsRecordCount = statsRecordCount;
+                        existing.snapshotFinalizeIndexArtifactCount = indexArtifactCount;
                         if (materializedCoverage != null) {
                           existing.snapshotTaskRequestedCoverage =
                               ReconcileSnapshotContentState.unionCoverage(
@@ -4153,9 +4298,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     List<ReconcileFileGroupTask> expectedGroups = materializeSnapshotPlanFileGroups(snapshotTask);
-    if (expectedGroups.isEmpty()
-        && (snapshotTask.fileGroupCount() != 0 || snapshotTask.sourceFileCount() != 0)) {
-      return false;
+    if (expectedGroups.isEmpty()) {
+      boolean appendOnly =
+          snapshotTask.fileGroupCount() == 0
+              && snapshotTask.sourceFileCount() > 0
+              && hasAppendOnlySnapshotBase(snapshotTask);
+      if (snapshotTask.fileGroupCount() != 0
+          || (snapshotTask.sourceFileCount() != 0 && !appendOnly)) {
+        return false;
+      }
     }
     if (expectedGroups.isEmpty() && snapshotTask.sourceRevision().isBlank()) {
       return false;
@@ -4220,6 +4371,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         parent.jobId,
         "");
     return true;
+  }
+
+  private boolean hasAppendOnlySnapshotBase(ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask == null
+        || blank(snapshotTask.fileGroupPlanBlobUri())
+        || snapshotTask.sourceFileCount() <= 0) {
+      return false;
+    }
+    return payloads()
+        .requireBlob(
+            snapshotTask.fileGroupPlanBlobUri(),
+            SnapshotPlanBlob.class,
+            "snapshot plan payload",
+            "")
+        .appendOnlyBase()
+        .isPresent();
   }
 
   private ReconcileSnapshotTask snapshotTaskFromStored(StoredReconcileJob record) {
@@ -4745,8 +4912,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         completionKind == CompletionKind.SUCCEEDED_WAITING
             || completionKind == CompletionKind.SUCCEEDED
             || completionKind == CompletionKind.FAILED_TERMINAL;
-    if (!leaseManager()
-        .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
+    boolean publishingAcceptedSnapshotFinalize =
+        nextChild.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_RUNNING".equals(nextChild.state)
+            && nextChild.hasPublishableSnapshotFinalizeIntent()
+            && !blankToEmpty(leaseEpoch).isBlank()
+            && blankToEmpty(leaseEpoch)
+                .equals(blankToEmpty(nextChild.snapshotFinalizeResultLeaseEpoch));
+    if (!publishingAcceptedSnapshotFinalize
+        && !leaseManager()
+            .hasActiveLease(
+                jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
       return null;
     }
     if (isTerminalState(nextChild.state)) {
@@ -4973,7 +5149,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.indexesProcessed = Math.max(existing.indexesProcessed, indexesProcessed);
     existing.lastError = message == null ? "Failed" : message;
     existing.childrenFinalized = false;
-    existing.snapshotFinalizeCommitStarted = false;
+    existing.clearSnapshotFinalizeIntent();
 
     if (existing.attempt >= maxAttempts) {
       existing.state = "JS_FAILED";

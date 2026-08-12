@@ -220,6 +220,8 @@ public class SnapshotRepository {
   public Snapshot recordReuseManifest(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
     if (reuseManifestRef == null
+        || reuseManifestRef.getFormatVersion()
+            != ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
         || reuseManifestRef.getUri().isBlank()
         || reuseManifestRef.getPayloadBytes() <= 0L
         || reuseManifestRef.getPayloadSha256().size() != 32
@@ -388,7 +390,11 @@ public class SnapshotRepository {
     return rootCurrentSnapshot(tableId, false);
   }
 
-  /** Returns the newest root-published reusable snapshot at or before committed current. */
+  /**
+   * Returns the newest root-published reusable snapshot at or before the committed current. This
+   * deliberately does not consult the ingest-time current pointer: while a new snapshot is being
+   * reconciled that pointer already names the unfinalized target.
+   */
   public Optional<Snapshot> getLatestFinalizedSnapshotForReuse(
       ResourceId tableId, Long excludedSnapshotId) {
     if (tableId == null) {

@@ -307,29 +307,10 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes);
-
-  default FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
+      Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes);
-  }
+      ColumnSelectorPolicy columnSelectorPolicy);
 
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.
@@ -404,7 +385,8 @@ public interface FloecatConnector extends Closeable {
       List<TargetStatsRecord> statsRecords,
       List<ParquetPageIndexEntry> pageIndexEntries,
       List<ParquetRowGroup> pageIndexRowGroups,
-      List<String> realizedStatsSelectors) {
+      List<String> realizedStatsSelectors,
+      boolean pageIndexSelectionComplete) {
     public FileGroupCaptureResult {
       statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
       pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
@@ -422,7 +404,8 @@ public interface FloecatConnector extends Closeable {
 
     public static FileGroupCaptureResult of(
         List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
-      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, List.of(), List.of());
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, List.of(), List.of(), false);
     }
 
     public static FileGroupCaptureResult of(
@@ -430,7 +413,7 @@ public interface FloecatConnector extends Closeable {
         List<ParquetPageIndexEntry> pageIndexEntries,
         List<String> realizedStatsSelectors) {
       return new FileGroupCaptureResult(
-          statsRecords, pageIndexEntries, List.of(), realizedStatsSelectors);
+          statsRecords, pageIndexEntries, List.of(), realizedStatsSelectors, false);
     }
 
     public static FileGroupCaptureResult of(
@@ -439,11 +422,20 @@ public interface FloecatConnector extends Closeable {
         List<ParquetRowGroup> pageIndexRowGroups,
         List<String> realizedStatsSelectors) {
       return new FileGroupCaptureResult(
-          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors);
+          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors, false);
+    }
+
+    public static FileGroupCaptureResult ofSelectedPageIndexes(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<ParquetRowGroup> pageIndexRowGroups,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(
+          statsRecords, pageIndexEntries, pageIndexRowGroups, realizedStatsSelectors, true);
     }
 
     public static FileGroupCaptureResult empty() {
-      return new FileGroupCaptureResult(List.of(), List.of(), List.of(), List.of());
+      return new FileGroupCaptureResult(List.of(), List.of(), List.of(), List.of(), false);
     }
   }
 
@@ -519,6 +511,24 @@ public interface FloecatConnector extends Closeable {
    */
   default Optional<SnapshotFilePlan> planSnapshotFiles(
       String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    return Optional.empty();
+  }
+
+  /**
+   * Plans source file changes between two snapshots without enumerating target snapshot membership.
+   * Connectors should return empty when they cannot prove a complete delta.
+   *
+   * <p>Reuse callers treat an append-only delta as proof that every base file still belongs to the
+   * target snapshot, so classification must fail closed: derive it from an authoritative record of
+   * what each snapshot did (Iceberg's snapshot operation, Delta's commit actions) rather than from
+   * counters that a removal pattern can leave absent.
+   */
+  default Optional<SnapshotFileDelta> planSnapshotFileDelta(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long baseSnapshotId,
+      long targetSnapshotId) {
     return Optional.empty();
   }
 
@@ -792,6 +802,23 @@ public interface FloecatConnector extends Closeable {
       dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
       deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
       executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    }
+  }
+
+  record SnapshotFileDelta(
+      List<SnapshotFileEntry> addedDataFiles,
+      List<String> removedDataFilePaths,
+      boolean deleteArtifactsChanged,
+      String executionSchemaJson) {
+    public SnapshotFileDelta {
+      addedDataFiles = addedDataFiles == null ? List.of() : List.copyOf(addedDataFiles);
+      removedDataFilePaths =
+          removedDataFilePaths == null ? List.of() : List.copyOf(removedDataFilePaths);
+      executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    }
+
+    public boolean appendOnly() {
+      return removedDataFilePaths.isEmpty() && !deleteArtifactsChanged;
     }
   }
 

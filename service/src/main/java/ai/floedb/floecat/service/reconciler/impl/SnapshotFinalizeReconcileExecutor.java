@@ -17,17 +17,27 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
+import ai.floedb.floecat.reconciler.impl.RemoteLeasedJob;
+import ai.floedb.floecat.reconciler.impl.RemoteSnapshotFinalizeReconcileExecutor;
+import ai.floedb.floecat.reconciler.impl.RemoteSnapshotFinalizeWorkerClient;
+import ai.floedb.floecat.reconciler.impl.SnapshotFinalizeManifestWriter;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
+import ai.floedb.floecat.reconciler.impl.StandaloneSnapshotFinalizeExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -47,6 +57,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject SnapshotFinalizePersistenceService persistence;
   @Inject SnapshotFinalizeCoverageService coverageService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
+  @Inject LeasedSnapshotFinalizeInputService finalizeInputService;
+  @Inject LeasedSnapshotFinalizeExecutionService finalizeExecutionService;
+  @Inject BlobStore blobStore;
 
   @ConfigProperty(
       name = "floecat.reconciler.executor.snapshot-finalize.enabled",
@@ -90,12 +103,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     ReconcileSnapshotTask snapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
-    boolean locallyFinalizable =
-        snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS
-            || (snapshotTask.fileGroupPlanRecorded()
-                && snapshotTask.fileGroupCount() == 0
-                && snapshotTask.fileGroups().isEmpty());
-    return locallyFinalizable;
+    return snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS
+        || snapshotTask.fileGroupPlanRecorded();
   }
 
   @Override
@@ -141,19 +150,6 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           "snapshot finalization requires parent snapshot plan job",
           new IllegalStateException("parent snapshot plan job is required"));
     }
-    if (jobs.enforcesSnapshotFinalizeOwnership()
-        && !jobs.beginSnapshotFinalizeCommit(lease.jobId, lease.leaseEpoch)) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          "snapshot finalization ownership fence rejected the attempt",
-          new IllegalStateException("snapshot finalization ownership fence rejected the attempt"));
-    }
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
     ResourceId tableId =
@@ -163,6 +159,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             .setId(snapshotTask.tableId())
             .build();
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
+      ExecutionResult ownershipFailure = beginLocalFinalizeCommit(lease);
+      if (ownershipFailure != null) {
+        return ownershipFailure;
+      }
       try {
         long statsProcessed =
             requestsStatsOutputs
@@ -200,6 +200,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
+      ExecutionResult ownershipFailure = beginLocalFinalizeCommit(lease);
+      if (ownershipFailure != null) {
+        return ownershipFailure;
+      }
       List<String> unexpectedChildren =
           fileGroupChildDescriptions(lease.accountId, parentJobId, lease.jobId);
       if (!unexpectedChildren.isEmpty()) {
@@ -235,6 +239,14 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + snapshotTask.snapshotId()
               + " (no planned file groups)");
     }
+    return descriptorDrivenFinalizer().execute(context);
+  }
+
+  private ExecutionResult beginLocalFinalizeCommit(ReconcileJobStore.LeasedJob lease) {
+    if (!jobs.enforcesSnapshotFinalizeOwnership()
+        || jobs.beginSnapshotFinalizeCommit(lease.jobId, lease.leaseEpoch)) {
+      return null;
+    }
     return ExecutionResult.terminalFailure(
         0,
         0,
@@ -243,8 +255,210 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         1,
         0,
         0,
-        "Non-empty file-group snapshots require a remote descriptor-driven finalizer",
-        new IllegalStateException("local file-group finalization has been removed"));
+        "snapshot finalization ownership fence rejected the attempt",
+        new IllegalStateException("snapshot finalization ownership fence rejected the attempt"));
+  }
+
+  private RemoteSnapshotFinalizeReconcileExecutor descriptorDrivenFinalizer() {
+    return new RemoteSnapshotFinalizeReconcileExecutor(
+        new LocalSnapshotFinalizeWorkerClient(), blobStore, snapshotPlanBlobStore, true);
+  }
+
+  private final class LocalSnapshotFinalizeWorkerClient
+      implements RemoteSnapshotFinalizeWorkerClient {
+    @Override
+    public StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(
+        RemoteLeasedJob remoteLease) {
+      ReconcileJobStore.LeasedJob lease = remoteLease.lease();
+      var input = finalizeInputService.resolve(principal(lease), lease.jobId, lease.leaseEpoch);
+      var predecessor = input.indexPredecessor();
+      return new StandaloneSnapshotFinalizeExecutionPayload(
+          input.jobId(),
+          input.leaseEpoch(),
+          input.parentJobId(),
+          input.tableId(),
+          input.snapshotId(),
+          input.fullRescan(),
+          input.sourceFileCount(),
+          input.snapshotPlanUri(),
+          input.fileGroupCount(),
+          input.statsObjectPrefix(),
+          input.durableCaptureManifestPrefix(),
+          input.reusableArtifactIndexObjectPrefix(),
+          input.statsGenerationManifestUri(),
+          input.indexGenerationCaptureManifestPrefix(),
+          predecessor == null
+              ? null
+              : new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                  predecessor.generationId(),
+                  predecessor.activePointerVersion(),
+                  predecessor.captureManifestUri(),
+                  predecessor.captureManifestPointerVersion()));
+    }
+
+    @Override
+    public List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(
+        RemoteLeasedJob remoteLease) {
+      ReconcileJobStore.LeasedJob lease = remoteLease.lease();
+      List<ReconcileFileGroupResultDescriptor> descriptors = new ArrayList<>();
+      String pageToken = "";
+      do {
+        var page =
+            finalizeInputService.descriptorPage(
+                principal(lease), lease.jobId, lease.leaseEpoch, 500, pageToken);
+        descriptors.addAll(page.descriptors());
+        pageToken = page.nextPageToken();
+      } while (!pageToken.isBlank());
+      return List.copyOf(descriptors);
+    }
+
+    @Override
+    public PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
+        RemoteLeasedJob remoteLease,
+        String resultId,
+        String statsObjectPrefix,
+        String durableCaptureManifestPrefix,
+        String reusableArtifactIndexObjectPrefix,
+        String statsGenerationManifestUri,
+        String indexGenerationCaptureManifestPrefix,
+        int sourceFileCount,
+        List<ReconcileFileGroupResultDescriptor> fileGroups,
+        List<StatsObjectDescriptor> fileStats,
+        List<TargetStatsRecord> finalStats,
+        List<StatsObjectDescriptor> indexArtifacts,
+        List<ReusableArtifactBundleReference> reusableArtifactBundles,
+        List<String> realizedStatsSelectors,
+        List<String> realizedIndexSelectors,
+        ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
+      return prepare(
+          remoteLease,
+          resultId,
+          statsObjectPrefix,
+          durableCaptureManifestPrefix,
+          reusableArtifactIndexObjectPrefix,
+          statsGenerationManifestUri,
+          indexGenerationCaptureManifestPrefix,
+          sourceFileCount,
+          fileGroups,
+          fileStats,
+          finalStats,
+          indexArtifacts,
+          reusableArtifactBundles,
+          realizedStatsSelectors,
+          realizedIndexSelectors,
+          indexPredecessor,
+          null);
+    }
+
+    @Override
+    public PreparedSnapshotFinalizeSuccess prepareAppendOnlySnapshotFinalizeSuccess(
+        RemoteLeasedJob remoteLease,
+        String resultId,
+        String statsObjectPrefix,
+        String durableCaptureManifestPrefix,
+        String reusableArtifactIndexObjectPrefix,
+        String statsGenerationManifestUri,
+        String indexGenerationCaptureManifestPrefix,
+        int sourceFileCount,
+        List<ReconcileFileGroupResultDescriptor> fileGroups,
+        List<StatsObjectDescriptor> fileStats,
+        List<TargetStatsRecord> finalStats,
+        List<StatsObjectDescriptor> indexArtifacts,
+        List<ReusableArtifactBundleReference> reusableArtifactBundles,
+        List<String> realizedStatsSelectors,
+        List<String> realizedIndexSelectors,
+        ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor,
+        SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
+      return prepare(
+          remoteLease,
+          resultId,
+          statsObjectPrefix,
+          durableCaptureManifestPrefix,
+          reusableArtifactIndexObjectPrefix,
+          statsGenerationManifestUri,
+          indexGenerationCaptureManifestPrefix,
+          sourceFileCount,
+          fileGroups,
+          fileStats,
+          finalStats,
+          indexArtifacts,
+          reusableArtifactBundles,
+          realizedStatsSelectors,
+          realizedIndexSelectors,
+          indexPredecessor,
+          appendOnlyBase);
+    }
+
+    private PreparedSnapshotFinalizeSuccess prepare(
+        RemoteLeasedJob remoteLease,
+        String resultId,
+        String statsObjectPrefix,
+        String durableCaptureManifestPrefix,
+        String reusableArtifactIndexObjectPrefix,
+        String statsGenerationManifestUri,
+        String indexGenerationCaptureManifestPrefix,
+        int sourceFileCount,
+        List<ReconcileFileGroupResultDescriptor> fileGroups,
+        List<StatsObjectDescriptor> fileStats,
+        List<TargetStatsRecord> finalStats,
+        List<StatsObjectDescriptor> indexArtifacts,
+        List<ReusableArtifactBundleReference> reusableArtifactBundles,
+        List<String> realizedStatsSelectors,
+        List<String> realizedIndexSelectors,
+        ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor,
+        SnapshotPlanBlobStore.AppendOnlyBase appendOnlyBase) {
+      return SnapshotFinalizeManifestWriter.prepare(
+          blobStore,
+          remoteLease.lease(),
+          resultId,
+          statsObjectPrefix,
+          durableCaptureManifestPrefix,
+          reusableArtifactIndexObjectPrefix,
+          statsGenerationManifestUri,
+          indexGenerationCaptureManifestPrefix,
+          sourceFileCount,
+          fileGroups,
+          fileStats,
+          finalStats,
+          indexArtifacts,
+          reusableArtifactBundles,
+          realizedStatsSelectors,
+          realizedIndexSelectors,
+          indexPredecessor,
+          appendOnlyBase);
+    }
+
+    @Override
+    public boolean submitSnapshotFinalizeSuccess(
+        RemoteLeasedJob remoteLease, PreparedSnapshotFinalizeSuccess prepared) {
+      ReconcileJobStore.LeasedJob lease = remoteLease.lease();
+      return finalizeExecutionService.persistSuccess(
+          principal(lease),
+          lease.jobId,
+          lease.leaseEpoch,
+          prepared.resultId(),
+          prepared.manifestDescriptor());
+    }
+
+    @Override
+    public boolean submitSnapshotFinalizeFailure(
+        RemoteLeasedJob remoteLease,
+        String resultId,
+        String message,
+        ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest.FailureKind
+            kind) {
+      ReconcileJobStore.LeasedJob lease = remoteLease.lease();
+      return finalizeExecutionService.persistFailure(
+          principal(lease), lease.jobId, lease.leaseEpoch, resultId, message, kind);
+    }
+  }
+
+  private static PrincipalContext principal(ReconcileJobStore.LeasedJob lease) {
+    return PrincipalContext.newBuilder()
+        .setAccountId(lease.accountId)
+        .setSubject("local-snapshot-finalizer")
+        .setCorrelationId(lease.jobId)
+        .build();
   }
 
   private RuntimeException advanceCurrentSnapshot(

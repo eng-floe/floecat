@@ -79,7 +79,6 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -264,7 +263,10 @@ class GrpcRemoteReconcileExecutorClientTest {
                         .setFileGroupCount(0)
                         .setSourceFileCount(0)
                         .setStatsObjectPrefix("/stats.pb")
-                        .setCaptureManifestUri("/manifest.pb")
+                        .setDurableCaptureManifestPrefix("/manifests/")
+                        .setReusableArtifactIndexObjectPrefix("/reusable-index/")
+                        .setStatsGenerationManifestUri("/stats-generation.pb")
+                        .setIndexGenerationCaptureManifestPrefix("/index-manifests/")
                         .setIndexPredecessor(
                             ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
                                 .setGenerationId("generation-1")
@@ -279,8 +281,44 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     assertEquals(0, payload.fileGroupCount());
     assertEquals(0, payload.sourceFileCount());
-    assertEquals("/manifest.pb", payload.captureManifestUri());
+    assertEquals("/manifests/", payload.durableCaptureManifestPrefix());
     assertEquals("generation-1", payload.indexPredecessor().generationId());
+  }
+
+  @Test
+  void snapshotFinalizeInputAcceptsAppendOnlyDeltaGroups() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.getLeasedSnapshotFinalizeInput(any()))
+        .thenReturn(
+            GetLeasedSnapshotFinalizeInputResponse.newBuilder()
+                .setInput(
+                    LeasedSnapshotFinalizeInput.newBuilder()
+                        .setJobId("finalize-job")
+                        .setLeaseEpoch("lease-epoch")
+                        .setParentJobId("snapshot-job")
+                        .setTableId(tableId())
+                        .setSnapshotId(55L)
+                        .setFinalizeMode(LeasedSnapshotFinalizeInput.FinalizeMode.FZM_APPEND_ONLY)
+                        .setFileGroupCount(111)
+                        .setSourceFileCount(14_092)
+                        .setSnapshotPlanUri("/snapshot-plan.json")
+                        .setStatsObjectPrefix("/stats/")
+                        .setDurableCaptureManifestPrefix("/manifests/")
+                        .setReusableArtifactIndexObjectPrefix("/reusable-index/")
+                        .setStatsGenerationManifestUri("/stats-generation.pb")
+                        .setIndexGenerationCaptureManifestPrefix("/index-manifests/")
+                        .build())
+                .build());
+
+    StandaloneSnapshotFinalizeExecutionPayload payload =
+        client.getSnapshotFinalizeInput(remoteSnapshotFinalizeLease());
+
+    assertEquals(111, payload.fileGroupCount());
+    assertEquals(14_092, payload.sourceFileCount());
   }
 
   @Test
@@ -300,7 +338,10 @@ class GrpcRemoteReconcileExecutorClientTest {
             lease,
             "result-1",
             "/stats/",
-            "/manifest.pb",
+            "/manifests/",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-manifests/",
             0,
             List.of(),
             List.of(),
@@ -315,7 +356,10 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
-        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+        .putImmutable(
+            org.mockito.ArgumentMatchers.startsWith("/manifests/"),
+            manifestBytes.capture(),
+            eq("application/x-protobuf"));
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
@@ -334,12 +378,31 @@ class GrpcRemoteReconcileExecutorClientTest {
             .setPayloadBytes(12L)
             .setPayloadSha256(ByteString.copyFrom(payloadSha256))
             .build();
+    var firstBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(sharedDeleteStats.toBuilder().setTargetStorageId("reuse-bundle:group-a"))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/shared-delete.parquet")
+                    .setSourceFingerprint("delete-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    var secondBundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                sharedDeleteStats.toBuilder()
+                    .setTargetStorageId("reuse-bundle:group-b")
+                    .setPayloadUri("/stats/delete-b.pb"))
+            .build();
 
     client.prepareSnapshotFinalizeSuccess(
         remoteSnapshotFinalizeLease(2),
         "result-1",
         "/stats/",
-        "/manifest.pb",
+        "/manifests/",
+        "/reusable-index/",
+        "/stats-generation.pb",
+        "/index-manifests/",
         2,
         List.of(
             fileGroupResultDescriptor("group-a", 1, null),
@@ -347,14 +410,17 @@ class GrpcRemoteReconcileExecutorClientTest {
         List.of(sharedDeleteStats),
         List.of(),
         List.of(),
-        List.of(),
+        List.of(firstBundle, secondBundle),
         List.of(),
         List.of(),
         null);
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
-        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+        .putImmutable(
+            org.mockito.ArgumentMatchers.startsWith("/manifests/"),
+            manifestBytes.capture(),
+            eq("application/x-protobuf"));
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertThat(manifest.getFileStatsRecordCount()).isEqualTo(1);
     assertThat(manifest.getFileGroupsList())
@@ -378,7 +444,10 @@ class GrpcRemoteReconcileExecutorClientTest {
             lease,
             "result-1",
             "/stats/",
-            "/manifest.pb",
+            "/manifests/",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-manifests/",
             0,
             List.of(),
             List.of(),
@@ -393,7 +462,10 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
-        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+        .putImmutable(
+            org.mockito.ArgumentMatchers.startsWith("/manifests/"),
+            manifestBytes.capture(),
+            eq("application/x-protobuf"));
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertThat(manifest.getFileGroupsCount()).isZero();
     assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
@@ -416,7 +488,10 @@ class GrpcRemoteReconcileExecutorClientTest {
             lease,
             "result-1",
             "/stats/",
-            "/manifest.pb",
+            "/manifests/",
+            "/reusable-index/",
+            "/stats-generation.pb",
+            "/index-manifests/",
             1,
             List.of(fileGroupResultDescriptor(indexPredecessor())),
             List.of(),
@@ -431,7 +506,10 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
-        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+        .putImmutable(
+            org.mockito.ArgumentMatchers.startsWith("/manifests/"),
+            manifestBytes.capture(),
+            eq("application/x-protobuf"));
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertThat(manifest.hasIndexPredecessor()).isTrue();
     assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
@@ -455,7 +533,10 @@ class GrpcRemoteReconcileExecutorClientTest {
                     remoteSnapshotFinalizeLease(2, indexCapturePolicy()),
                     "result-1",
                     "/stats/",
-                    "/manifest.pb",
+                    "/manifests/",
+                    "/reusable-index/",
+                    "/stats-generation.pb",
+                    "/index-manifests/",
                     2,
                     List.of(
                         fileGroupResultDescriptor(indexPredecessor()),
@@ -1207,13 +1288,32 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void defaultIndexCoverageCountsStableIdAndNameAsOneColumn() {
+  void defaultIndexCoverageCountsPairedStableIdAndNameAsOneColumn() {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(
             List.of(),
             Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
             ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
             1);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", List.of("#1", "customer_id"))));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
+  }
+
+  @Test
+  void defaultIndexCoverageCountsUnpairedMixedAliasesConservatively() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            2);
     var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
     var result =
         new StandaloneFileGroupExecutionResult(
@@ -1460,7 +1560,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessVerifiesReusedIndexSidecar() {
+  void submitFileGroupSuccessDoesNotVerifyReusedIndexSidecar() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -1531,31 +1631,24 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(new ReconcilerBackend.StagedIndexArtifact(record, null, "")));
-    when(client.blobStore.head(artifactUri))
-        .thenReturn(
-            Optional.of(
-                BlobHeader.newBuilder().setContentLength(128L).setEtag("prior-etag").build()));
-
     assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
-    verify(client.blobStore).head(artifactUri);
+    verify(client.blobStore, never()).head(artifactUri);
     verify(client.blobStore, never()).put(eq(artifactUri), any(byte[].class), any(String.class));
 
-    when(client.blobStore.head(artifactUri)).thenReturn(Optional.empty());
     assertThrows(
         IllegalArgumentException.class,
-        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
-
-    when(client.blobStore.head(artifactUri))
-        .thenReturn(
-            Optional.of(
-                BlobHeader.newBuilder()
-                    .setContentLength(128L)
-                    .setEtag("replacement-etag")
-                    .build()));
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+        () ->
+            client.submitSuccess(
+                remoteFileGroupLease(),
+                payload,
+                new StandaloneFileGroupExecutionResult(
+                    "result-1",
+                    List.of(),
+                    List.of(),
+                    List.of(
+                        new ReconcilerBackend.StagedIndexArtifact(
+                            record, new byte[] {1}, "application/x-parquet")))));
   }
 
   private static ResourceId connectorId() {
@@ -1779,6 +1872,30 @@ class GrpcRemoteReconcileExecutorClientTest {
   private static ReconcileCapturePolicy indexCapturePolicy() {
     return ReconcileCapturePolicy.of(
         List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference testArtifactIndex(
+      int stats, int indexes) {
+    int entries = stats + indexes;
+    var index =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (entries > 0) {
+      var object =
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1L)
+              .setPayloadSha256(ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(entries)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor() {

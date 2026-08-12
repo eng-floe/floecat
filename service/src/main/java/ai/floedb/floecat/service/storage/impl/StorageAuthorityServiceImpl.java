@@ -354,13 +354,18 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               }
               validateAuthorityCoversSessionScope(
                   authority, credentialScope.sessionScopeLocations());
-              return resolver.buildResponse(
-                  authority,
-                  credentialScope.responseLocationPrefix(),
-                  credentialScope.sessionScopeLocations(),
-                  accountId,
-                  serverSide,
-                  credentialScope.exactObjectScope());
+              try {
+                return resolver.buildResponse(
+                    authority,
+                    credentialScope.responseLocationPrefix(),
+                    credentialScope.sessionScopeLocations(),
+                    accountId,
+                    serverSide,
+                    credentialScope.exactObjectScope());
+              } catch (StorageAuthorityResolver.CredentialVendingUnavailableException error) {
+                throw GrpcErrors.unavailable(
+                    correlationId(), null, Map.of("operation", "assume-role"), error);
+              }
             }),
         correlationId());
   }

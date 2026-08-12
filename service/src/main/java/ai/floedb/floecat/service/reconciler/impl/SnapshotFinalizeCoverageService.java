@@ -54,6 +54,22 @@ public class SnapshotFinalizeCoverageService {
     List<ReconcileFileGroupTask> expectedGroups =
         plannedGroups.stream().filter(group -> group != null && !group.isEmpty()).toList();
     if (expectedGroups.isEmpty()) {
+      if (effective.sourceFileCount() > 0) {
+        boolean appendOnly =
+            !effective.fileGroupPlanBlobUri().isBlank()
+                && snapshotPlanBlobStore
+                    .loadPlan(effective.fileGroupPlanBlobUri())
+                    .appendOnlyBase()
+                    .isPresent();
+        return appendOnly
+            ? new ExpectedCoverage(
+                PlannedCoverageState.APPEND_ONLY, List.of(), List.copyOf(expectedFiles), "")
+            : new ExpectedCoverage(
+                PlannedCoverageState.UNKNOWN,
+                List.of(),
+                List.copyOf(expectedFiles),
+                "non-empty snapshot coverage requires file groups or an append-only base");
+      }
       return new ExpectedCoverage(
           PlannedCoverageState.EXPLICIT_EMPTY, List.of(), List.copyOf(expectedFiles), "");
     }
@@ -130,6 +146,7 @@ public class SnapshotFinalizeCoverageService {
     UNKNOWN,
     DIRECT_STATS,
     EXPLICIT_EMPTY,
+    APPEND_ONLY,
     NON_EMPTY
   }
 

@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageException;
@@ -34,6 +35,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,14 +47,32 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class SnapshotPlanBlobStore {
   private static final Logger LOG = Logger.getLogger(SnapshotPlanBlobStore.class);
+  // Single version knob for the stored append-only plan: it stamps StoredAppendOnlyBase and salts
+  // the derived plan blob URI. Starts at 3 because v1 and v2 were already used as identity salts.
+  static final int APPEND_ONLY_PLAN_FORMAT_VERSION = 3;
+  private static final String APPEND_ONLY_PLAN_IDENTITY =
+      "append-only-base-v" + APPEND_ONLY_PLAN_FORMAT_VERSION;
+  private static final int MAX_CACHED_PLAN_INDEXES = 64;
+  private static final int MAX_CACHED_PLAN_FILES = 65_536;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
+  private final Map<String, SnapshotPlanIndex> planIndexes = new LinkedHashMap<>(16, 0.75f, true);
+  private long cachedPlanFiles;
 
   public ReconcileSnapshotTask persistPlan(
       String accountId,
       String jobId,
       ReconcileSnapshotTask snapshotTask,
       List<PlannedFileGroupJob> fileGroupJobs) {
+    return persistPlan(accountId, jobId, snapshotTask, fileGroupJobs, null);
+  }
+
+  public ReconcileSnapshotTask persistPlan(
+      String accountId,
+      String jobId,
+      ReconcileSnapshotTask snapshotTask,
+      List<PlannedFileGroupJob> fileGroupJobs,
+      AppendOnlyBase appendOnlyBase) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
@@ -71,9 +93,11 @@ public class SnapshotPlanBlobStore {
         SnapshotPlanManifestIds.manifestBlobUri(
             accountId,
             jobId,
-            sanitizedJobs.stream().map(PlannedFileGroupJob::fileGroupTask).toList());
+            sanitizedJobs.stream().map(PlannedFileGroupJob::fileGroupTask).toList(),
+            appendOnlyBase == null ? List.of() : appendOnlyBase.manifestIdentity());
     try {
-      byte[] planBytes = mapper.writeValueAsBytes(SnapshotPlanBlob.of(sanitizedJobs));
+      byte[] planBytes =
+          mapper.writeValueAsBytes(SnapshotPlanBlob.of(sanitizedJobs, appendOnlyBase));
       LOG.infof(
           "Persisting snapshot plan blob uri=%s bytes=%d fileGroups=%d",
           blobUri, planBytes.length, sanitizedJobs.size());
@@ -179,6 +203,14 @@ public class SnapshotPlanBlobStore {
   }
 
   public List<PlannedFileGroupJob> loadPlanJobs(String snapshotPlanUri) {
+    return loadPlan(snapshotPlanUri).toPlannedFileGroupJobs();
+  }
+
+  public SnapshotPlanBlob loadPlan(String snapshotPlanUri) {
+    return planIndex(snapshotPlanUri).plan();
+  }
+
+  private SnapshotPlanBlob loadPlanBlob(String snapshotPlanUri) {
     String effectiveSnapshotPlanUri = snapshotPlanUri == null ? "" : snapshotPlanUri.trim();
     if (effectiveSnapshotPlanUri.isBlank()) {
       throw new IllegalStateException("Missing snapshot plan blob URI");
@@ -205,9 +237,102 @@ public class SnapshotPlanBlobStore {
           "Snapshot plan blob is not yet visible " + effectiveSnapshotPlanUri);
     }
     try {
-      return mapper.readValue(planBytes, SnapshotPlanBlob.class).toPlannedFileGroupJobs();
+      return mapper.readValue(planBytes, SnapshotPlanBlob.class);
     } catch (Exception e) {
       throw new IllegalStateException("Invalid snapshot plan blob " + effectiveSnapshotPlanUri, e);
+    }
+  }
+
+  public Optional<ReconcileFileGroupTask> resolveFileGroup(
+      String snapshotPlanUri, String planId, String groupId) {
+    String effectivePlanId = planId == null ? "" : planId.trim();
+    String effectiveGroupId = groupId == null ? "" : groupId.trim();
+    if (effectivePlanId.isBlank() || effectiveGroupId.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(
+        planIndex(snapshotPlanUri)
+            .fileGroups()
+            .get(new FileGroupIdentity(effectivePlanId, effectiveGroupId)));
+  }
+
+  void clearPlanIndexCache() {
+    synchronized (planIndexes) {
+      planIndexes.clear();
+      cachedPlanFiles = 0L;
+    }
+  }
+
+  private SnapshotPlanIndex planIndex(String snapshotPlanUri) {
+    String effectiveSnapshotPlanUri = snapshotPlanUri == null ? "" : snapshotPlanUri.trim();
+    if (effectiveSnapshotPlanUri.isBlank()) {
+      throw new IllegalStateException("Missing snapshot plan blob URI");
+    }
+    synchronized (planIndexes) {
+      SnapshotPlanIndex cached = planIndexes.get(effectiveSnapshotPlanUri);
+      if (cached != null) {
+        return cached;
+      }
+    }
+    SnapshotPlanIndex loaded = SnapshotPlanIndex.from(loadPlanBlob(effectiveSnapshotPlanUri));
+    synchronized (planIndexes) {
+      SnapshotPlanIndex raced = planIndexes.get(effectiveSnapshotPlanUri);
+      if (raced != null) {
+        return raced;
+      }
+      trimPlanIndexesFor(loaded.plannedFileCount());
+      planIndexes.put(effectiveSnapshotPlanUri, loaded);
+      cachedPlanFiles += loaded.plannedFileCount();
+      return loaded;
+    }
+  }
+
+  private void trimPlanIndexesFor(int plannedFileCount) {
+    long retainedFileLimit =
+        plannedFileCount >= MAX_CACHED_PLAN_FILES ? 0L : MAX_CACHED_PLAN_FILES - plannedFileCount;
+    var iterator = planIndexes.entrySet().iterator();
+    while (iterator.hasNext()
+        && (planIndexes.size() >= MAX_CACHED_PLAN_INDEXES || cachedPlanFiles > retainedFileLimit)) {
+      SnapshotPlanIndex evicted = iterator.next().getValue();
+      cachedPlanFiles -= evicted.plannedFileCount();
+      iterator.remove();
+    }
+  }
+
+  private record FileGroupIdentity(String planId, String groupId) {}
+
+  private record SnapshotPlanIndex(
+      SnapshotPlanBlob plan,
+      Map<FileGroupIdentity, ReconcileFileGroupTask> fileGroups,
+      int plannedFileCount) {
+    private static SnapshotPlanIndex from(SnapshotPlanBlob plan) {
+      Map<FileGroupIdentity, ReconcileFileGroupTask> indexed = new LinkedHashMap<>();
+      for (ReconcileFileGroupTask group :
+          plan == null ? List.<ReconcileFileGroupTask>of() : plan.fileGroups()) {
+        if (group == null || group.isEmpty()) {
+          throw new IllegalStateException("Snapshot plan contains an empty file group");
+        }
+        FileGroupIdentity identity = new FileGroupIdentity(group.planId(), group.groupId());
+        ReconcileFileGroupTask existing = indexed.putIfAbsent(identity, group);
+        if (existing != null) {
+          throw new IllegalStateException(
+              "Snapshot plan contains duplicate file group "
+                  + identity.planId()
+                  + "/"
+                  + identity.groupId());
+        }
+      }
+      int plannedFiles;
+      try {
+        plannedFiles =
+            Math.toIntExact(
+                indexed.values().stream()
+                    .mapToLong(group -> Math.max(group.fileCount(), group.filePaths().size()))
+                    .sum());
+      } catch (ArithmeticException error) {
+        plannedFiles = Integer.MAX_VALUE;
+      }
+      return new SnapshotPlanIndex(plan, Map.copyOf(indexed), plannedFiles);
     }
   }
 
@@ -313,13 +438,24 @@ public class SnapshotPlanBlobStore {
 
   public static final class SnapshotPlanBlob {
     public List<StoredPlannedFileGroupJob> fileGroupJobs = List.of();
+    public StoredAppendOnlyBase appendOnlyBase;
 
     public static SnapshotPlanBlob of(List<PlannedFileGroupJob> plannedFileGroupJobs) {
+      return of(plannedFileGroupJobs, null);
+    }
+
+    public static SnapshotPlanBlob of(
+        List<PlannedFileGroupJob> plannedFileGroupJobs, AppendOnlyBase appendOnlyBase) {
       SnapshotPlanBlob blob = new SnapshotPlanBlob();
       List<PlannedFileGroupJob> sanitizedJobs =
           plannedFileGroupJobs == null ? List.of() : List.copyOf(plannedFileGroupJobs);
       blob.fileGroupJobs = sanitizedJobs.stream().map(StoredPlannedFileGroupJob::from).toList();
+      blob.appendOnlyBase = StoredAppendOnlyBase.from(appendOnlyBase);
       return blob;
+    }
+
+    public Optional<AppendOnlyBase> appendOnlyBase() {
+      return Optional.ofNullable(appendOnlyBase).map(StoredAppendOnlyBase::toValue);
     }
 
     public List<ReconcileFileGroupTask> fileGroups() {
@@ -337,6 +473,140 @@ public class SnapshotPlanBlobStore {
           .filter(job -> job != null && !job.toFileGroupTask().isEmpty())
           .map(job -> new PlannedFileGroupJob(job.scope, job.toFileGroupTask()))
           .toList();
+    }
+  }
+
+  public record AppendOnlyBase(
+      long snapshotId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int sourceFileCount,
+      int fileStatsRecordCount,
+      int indexArtifactCount,
+      int chainDepth,
+      String statsGenerationId,
+      String indexGenerationId,
+      ReusableArtifactIndexReference reusableArtifactIndex) {
+    public AppendOnlyBase {
+      manifestUri = manifestUri == null ? "" : manifestUri.trim();
+      manifestSha256 = manifestSha256 == null ? "" : manifestSha256.trim().toLowerCase();
+      statsGenerationId = statsGenerationId == null ? "" : statsGenerationId.trim();
+      indexGenerationId = indexGenerationId == null ? "" : indexGenerationId.trim();
+      reusableArtifactIndex =
+          reusableArtifactIndex == null
+              ? ReusableArtifactIndexReference.getDefaultInstance()
+              : reusableArtifactIndex;
+      if (snapshotId < 0
+          || manifestUri.isBlank()
+          || manifestBytes <= 0
+          || manifestSha256.length() != 64
+          || sourceFileCount <= 0
+          || fileStatsRecordCount < 0
+          || indexArtifactCount < 0
+          || chainDepth < 0
+          || statsGenerationId.isBlank()
+          || (indexArtifactCount > 0 && indexGenerationId.isBlank())) {
+        throw new IllegalArgumentException("invalid append-only snapshot base");
+      }
+      ReusableArtifactIndexStore.validateReference(reusableArtifactIndex);
+      if (reusableArtifactIndex.getFileStatsRecordCount() != fileStatsRecordCount
+          || reusableArtifactIndex.getIndexArtifactCount() != indexArtifactCount) {
+        throw new IllegalArgumentException("append-only snapshot base index count mismatch");
+      }
+      try {
+        if (HexFormat.of().parseHex(manifestSha256).length != 32) {
+          throw new IllegalArgumentException("invalid append-only snapshot base digest");
+        }
+      } catch (IllegalArgumentException error) {
+        throw new IllegalArgumentException("invalid append-only snapshot base digest", error);
+      }
+    }
+
+    public byte[] manifestSha256Bytes() {
+      return HexFormat.of().parseHex(manifestSha256);
+    }
+
+    public List<String> manifestIdentity() {
+      return List.of(
+          APPEND_ONLY_PLAN_IDENTITY,
+          Long.toString(snapshotId),
+          manifestUri,
+          Long.toString(manifestBytes),
+          manifestSha256,
+          Integer.toString(sourceFileCount),
+          Integer.toString(fileStatsRecordCount),
+          Integer.toString(indexArtifactCount),
+          Integer.toString(chainDepth),
+          statsGenerationId,
+          indexGenerationId,
+          Base64.getEncoder().encodeToString(reusableArtifactIndex.toByteArray()));
+    }
+  }
+
+  static final class StoredAppendOnlyBase {
+    public int formatVersion = 0;
+    public long snapshotId = -1L;
+    public String manifestUri = "";
+    public long manifestBytes = 0L;
+    public String manifestSha256 = "";
+    public int sourceFileCount = 0;
+    public int fileStatsRecordCount = 0;
+    public int indexArtifactCount = 0;
+    public int chainDepth = 0;
+    public String statsGenerationId = "";
+    public String indexGenerationId = "";
+    public String artifactIndex = "";
+
+    static StoredAppendOnlyBase from(AppendOnlyBase value) {
+      if (value == null) {
+        return null;
+      }
+      StoredAppendOnlyBase stored = new StoredAppendOnlyBase();
+      stored.formatVersion = APPEND_ONLY_PLAN_FORMAT_VERSION;
+      stored.snapshotId = value.snapshotId();
+      stored.manifestUri = value.manifestUri();
+      stored.manifestBytes = value.manifestBytes();
+      stored.manifestSha256 = value.manifestSha256();
+      stored.sourceFileCount = value.sourceFileCount();
+      stored.fileStatsRecordCount = value.fileStatsRecordCount();
+      stored.indexArtifactCount = value.indexArtifactCount();
+      stored.chainDepth = value.chainDepth();
+      stored.statsGenerationId = value.statsGenerationId();
+      stored.indexGenerationId = value.indexGenerationId();
+      stored.artifactIndex =
+          Base64.getEncoder().encodeToString(value.reusableArtifactIndex().toByteArray());
+      return stored;
+    }
+
+    AppendOnlyBase toValue() {
+      if (formatVersion != APPEND_ONLY_PLAN_FORMAT_VERSION) {
+        throw new IllegalArgumentException(
+            "stored append-only base plan format is incompatible: " + formatVersion);
+      }
+      return new AppendOnlyBase(
+          snapshotId,
+          manifestUri,
+          manifestBytes,
+          manifestSha256,
+          sourceFileCount,
+          fileStatsRecordCount,
+          indexArtifactCount,
+          chainDepth,
+          statsGenerationId,
+          indexGenerationId,
+          artifactIndexReference());
+    }
+
+    private ReusableArtifactIndexReference artifactIndexReference() {
+      if (artifactIndex == null || artifactIndex.isBlank()) {
+        throw new IllegalArgumentException("stored append-only base index is missing");
+      }
+      try {
+        return ReusableArtifactIndexReference.parseFrom(Base64.getDecoder().decode(artifactIndex));
+      } catch (Exception error) {
+        throw new IllegalArgumentException("stored append-only base index is invalid", error);
+      }
     }
   }
 

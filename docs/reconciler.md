@@ -99,23 +99,41 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   `CommitLeasedFileGroupResult`. The service protects the bundle and stages generation-scoped
   pointers without reading its payload before `FINALIZE_SNAPSHOT_CAPTURE` writes snapshot-wide
   aggregate stats.
-- **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
-  `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
-  explicit file-group coverage metadata required by `FINALIZE_SNAPSHOT_CAPTURE`. Child
-  `EXEC_FILE_GROUP` and `FINALIZE_SNAPSHOT_CAPTURE` jobs reference the parent plan by
-  `parentJobId`.
+- **Snapshot planning persistence**: the immutable snapshot plan is stored in a content-bound blob
+  referenced by the compact parent `PLAN_SNAPSHOT` job. Its identity includes the complete
+  file-execution plans and, for append-only plans, the inherited base descriptor and persistent
+  reusable-artifact sorted-run index. Child
+  `EXEC_FILE_GROUP` and `FINALIZE_SNAPSHOT_CAPTURE` jobs reference that plan through `parentJobId`.
+  File-group execution resolves `(planId, groupId)` through a bounded in-process index over the
+  durable blob; a cold cache reloads the immutable plan. There is no expanded parent-task scan or
+  legacy fallback.
 - **File-group execution**:
-  - `EXEC_FILE_GROUP` resolves the parent snapshot plan, captures file-target stats, and records
-    per-file execution results on the child job payload.
+  - `EXEC_FILE_GROUP` resolves its indexed immutable planned group, captures file-target stats, and
+    records per-file execution results on the child job payload.
+  - For a connector-proven append-only Delta or Iceberg change with unchanged schema, capture
+    policy, and delete artifacts, the plan contains groups only for net-new parquet data files.
+    Finalization inherits the prior stats/index generations through durable base-generation edges
+    and publishes only the delta bundle references. The trusted finalizer writes one immutable level-zero
+    sorted run and carries forward the authenticated prior run references, so the new manifest represents complete
+    reuse coverage without repeating inherited bundle metadata or reopening inherited parquet
+    artifacts. Any
+    removed data file, changed Delta deletion vector, or added/removed Iceberg delete file rejects
+    the append-only path and uses ordinary delete-aware file-group planning instead.
   - Each file execution plan carries connector-provided physical `content_identity`, source
     fingerprints, stats/index capture signatures, auxiliary-target fingerprints, and any selected
     reusable bundle records. Empty physical content identity disables cross-snapshot reuse for that
     file.
   - Snapshot planning reads the compact capture manifest from the newest root-published finalized
     reusable candidate at or before the committed current snapshot. Candidate selection is bounded
-    by the table root and does not scan snapshot history. Once selected, a missing manifest object
-    is retryable and malformed or incomplete content is terminal; neither silently becomes a cold
-    plan. Planning does not read reusable bundle payloads, source files, or page-index sidecars.
+    by the table root and does not scan snapshot history. The lightweight snapshot reference carries
+    the current manifest-contract version, so older references are rejected before their manifest
+    objects are fetched or parsed. A missing, unavailable, malformed, incomplete, or unsupported
+    manifest or persistent index is ineligible for reuse and triggers an ordinary full capture.
+    Append-only overlap checks use point lookups in the persistent artifact index through
+    Bloom-filtered, batched run probes and scale with delta files and the compacted run count.
+    Ordinary full-file planning resolves reuse in bounded file-group batches instead of loading the
+    complete index. Planning does not read reusable bundle payloads, source files, or page-index
+    sidecars.
     The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
     rebinds selected records to the destination snapshot, and captures only missing outputs.
   - The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
@@ -156,12 +174,27 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     enforces membership and counts against the resulting immutable planned group. Raising the
     setting increases the descriptor count, pointer-metadata work, request size, and resident
     metadata for one file-group commit.
+  - Append-only reuse chains checkpoint with a full capture after 16 links by default. The planner
+    persists and authenticates predecessor depth in the immutable plan and manifest, and
+    `floecat.reconciler.snapshot-plan.max-append-only-chain-depth` configures the maximum. Set it to
+    zero to disable append-only chaining.
   - The finalizer reads and verifies each bounded `FileGroupResultPayload`, derives exact file-stats
     coverage from the immutable data-file execution plans and their attached delete artifacts, and
-    merges the embedded aggregate partials. It validates reusable bundle references and carries one
-    normalized reference per file group into `SnapshotCaptureManifest` without reading bundle
-    payloads. Finalize submission can race with pointer staging and must retry the exact same result
-    when a prepared marker is not yet present.
+    merges the embedded aggregate partials. It validates one current bundle reference per file group
+    without reading bundle payloads. Before submission, the trusted finalizer rejects duplicate
+    typed file paths against authenticated inherited runs, writes the delta through bounded 8 MiB
+    sorted L0 runs plus bounded level compaction, and stores the complete structurally shared run set in the durable
+    `SnapshotCaptureManifest`. Sorted entries remain addressable in roughly 512 KiB logical blocks,
+    but adjacent blocks are concatenated into content-addressed packs of up to 64 MiB. Each block
+    reference records its pack, byte range, and SHA-256. Point probes range-read one block, while
+    sequential compaction and paging coalesce adjacent blocks into windows of up to 8 MiB, targeting
+    a 64 MiB operation-wide read budget while always allowing one indivisible block per run. Run objects no larger than
+    64 KiB are embedded in that manifest; larger objects use content-addressed blob storage. The
+    service binds the inactive generation to
+    the capture manifest and reads file mappings through its authenticated run index after fenced
+    activation. It does not traverse and copy inherited mappings. A reuse manifest without a
+    persistent run index is invalid; planning rejects it instead of falling back to the former
+    manifest-level bundle index.
   - Reusable compatibility metadata is executor-authored publication metadata. The control plane
     validates its structure, leased ownership, counts, content-addressed bundle descriptor, and
     staged target mappings, but deliberately does not GET bundle payloads to reconstruct or compare
@@ -169,7 +202,9 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     bundle's byte length and SHA-256 and rejects missing or incompatible records before reuse.
   - Successful publication stores the capture-manifest descriptor in the snapshot's system-owned
     `reuse_manifest_ref` and heads the reusable stats generation from the table root. Garbage
-    collection treats both references as live publication state.
+    collection traverses that manifest's run manifests, filters, and block packs and treats them and referenced
+    reusable bundle payloads—and the stats generations that own those payloads—as live publication
+    state.
   - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,
     `file_groups_failed`, `files_total`, `files_completed`, and `files_failed`.
 - **Index artifacts**:
@@ -194,12 +229,40 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **External capture policy**:
   - leased file-group and snapshot-finalize payloads carry the complete policy, including its
     opaque properties map.
-  - snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
-    columns, and properties exactly; the control plane rejects policy drift.
+  - trusted snapshot finalizers enforce outputs, column policies, default scope, maximum default
+    columns, and properties while validating realized selector coverage.
   - query-driven stats requests do not implicitly request Parquet page indexes and do not encode
     their request origin in capture-policy properties.
   - content-state coverage is checked before execution. Missing coverage attempts connector-native
     direct stats first and uses file-group capture when direct stats cannot satisfy the request.
+- **External reusable-index contract**:
+  - external `EXEC_FILE_GROUP` workers do not read, construct, or compact reusable-index runs. They
+    continue to consume the bundle selections in their leased execution payload and publish the
+    current file group's bundle metadata.
+  - external `PLAN_SNAPSHOT` implementations must regenerate their protobuf bindings for the
+    format-1 sorted-run messages and preserve the complete `AppendOnlySnapshotBase`, including its
+    `reusable_artifact_index`, through planning and finalization. There is no reader for the former
+    trie-root format and no dual-read fallback.
+  - a planner that performs reusable-artifact lookup must authenticate object length and SHA-256,
+    batch-fetch run filters and manifests, and fetch only candidate data blocks. It must not turn
+    lookup into one object-store request per source file. A missing index object makes the base
+    unavailable for reuse. A reuse manifest without an artifact index is likewise ineligible and
+    falls back to a full capture. Any reusable index that is invalid under the current contract,
+    including malformed or digest-invalid index metadata, is discarded and causes a full capture;
+    it is not interpreted through a legacy reader. Missing, unavailable, malformed, digest-invalid,
+    incomplete, or unsupported capture manifests likewise make the base ineligible and cause a
+    full capture.
+  - Bloom-filter references larger than the format's 16 MiB bitset ceiling are rejected before any
+    object read. Activation streams and authenticates every referenced external pack before the
+    generation becomes visible; generation-to-capture-manifest bindings verify the content digest
+    encoded in the immutable manifest URI as well as its recorded length.
+  - an external snapshot finalizer submits the current `reusable_artifact_bundles` delta and the
+    leased `append_only_base`, constructs `SnapshotCaptureManifest.reusable_artifact_index`, and
+    owns run creation and bounded compaction. At a chain reset it authenticates and traverses the
+    inherited index and stages references through bounded control-plane calls. The service owns
+    fenced activation and garbage-collection reachability; it does not reopen inherited bundles.
+  - run objects are immutable and content-addressed. Their filter encoding and storage layout are
+    internal implementation details, not an extension point for independently constructed runs.
 - **Connector security boundary**: all upstream I/O remains inside `FloecatConnector`.
   `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.
@@ -345,6 +408,12 @@ perform a post-completion final lease confirmation after that RPC has durably co
     `floecat.reconciler.job-store.max-attempts`, `base-backoff-ms`, `max-backoff-ms`, `lease-ms`,
     `reclaim-interval-ms`, and `ready-scan-limit`.
   - `floecat.reconciler.job-store=memory` uses the in-memory queue implementation.
+- Accepted snapshot-finalize results are published independently of the originating worker lease.
+  Publication recovery and throughput are tuned with
+  `floecat.reconciler.snapshot-finalize-publication.tick-every`, `page-size`, and
+  `max-parallelism`. A transient publication failure never discards the accepted result: the intent
+  stays pending and is retried under capped backoff, so another instance resumes it if this one
+  dies. Only a payload the service proves invalid fails the job terminally.
 - Executor toggles:
   - `floecat.reconciler.executor.remote-default.enabled`
   - `floecat.reconciler.executor.remote-planner.enabled`

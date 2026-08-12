@@ -17,11 +17,14 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -35,6 +38,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -75,15 +80,16 @@ import org.jboss.logging.Logger;
  * dead URI). Deletes are version-targeted (the exact version the pass age-checked), and the sweep
  * fails closed unless the store reports immutable version ids (S3 bucket versioning Enabled), so a
  * concurrent re-PUT always survives as a new version the targeted delete cannot touch. Families
- * with no owner pointer derivable from the key (manifest pages and shared index sidecars) cannot be
- * rescued individually, and lexicographic listing puts some of them before any blob whose rescue
- * could reveal the stale set — so their deletion is DEFERRED, and the flush independently re-proves
- * liveness per owning table against the settled store (root-chain re-walk plus constraints/stats
- * pointer re-scan) before deleting. The re-mark retains an exact table publication epoch, and the
- * epoch check plus version-targeted deletes run under the same table entry used by root, shared
- * sidecar, and resolving-pin publishers. A publication before the proof is included by the fresh
- * re-mark; one during or after it invalidates the proof and forces a complete restart. This closes
- * the late-publication window for ownerless manifest pages and shared sidecars.
+ * with no owner pointer derivable from the key (manifest pages, reusable-index run objects, and
+ * shared index sidecars) cannot be rescued individually, and lexicographic listing puts some of
+ * them before any blob whose rescue could reveal the stale set — so their deletion is DEFERRED, and
+ * the flush independently re-proves liveness per owning table against the settled store (root-chain
+ * re-walk plus constraints/stats pointer re-scan) before deleting. The re-mark retains an exact
+ * table publication epoch, and the epoch check plus version-targeted deletes run under the same
+ * table entry used by root, shared sidecar, and resolving-pin publishers. A publication before the
+ * proof is included by the fresh re-mark; one during or after it invalidates the proof and forces a
+ * complete restart. This closes the late-publication window for ownerless manifest pages,
+ * reusable-index run objects, and shared sidecars.
  *
  * <p><b>Versioned-bucket operations note.</b> This sweep only ever deletes the CURRENT version it
  * age-checked; it never visits noncurrent versions. With the always-PUT write path, an oscillating
@@ -161,6 +167,8 @@ public class CasBlobGc {
     private final Map<String, String> blobTokens = new LinkedHashMap<>();
     private final Map<String, String> chainPageUris = new HashMap<>();
     private final Map<String, Integer> chainEntryIndexes = new HashMap<>();
+    private final Set<String> visitedReusableIndexNodes = new HashSet<>();
+    private final Map<String, Integer> reusableIndexRunProgress = new HashMap<>();
     private ReferenceIndex chainVisited;
     private String chainRoot = "";
 
@@ -170,6 +178,8 @@ public class CasBlobGc {
       }
       chainVisited = null;
       chainRoot = "";
+      visitedReusableIndexNodes.clear();
+      reusableIndexRunProgress.clear();
     }
   }
 
@@ -196,6 +206,8 @@ public class CasBlobGc {
     private final Set<Keys.GenerationKey> tableGenerationKeys = new HashSet<>();
     private final int[] tableWalkFailures = {0};
     private StatsRepository.GenerationGcContinuation generationGcContinuation;
+    private TableBlobReachabilityGuard.Proof generationGcProof;
+    private boolean generationGcComplete;
     private DeferredPageState deferredPage;
     private int blobsScanned;
     private int blobsDeleted;
@@ -256,6 +268,9 @@ public class CasBlobGc {
       }
       if (deferredPage != null) {
         deferredPage.close();
+      }
+      if (generationGcProof != null) {
+        generationGcProof.close();
       }
     }
   }
@@ -767,6 +782,8 @@ public class CasBlobGc {
                   pass.referenceFalsePositiveRate,
                   ThreadLocalRandom.current().nextLong());
           pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
+          pass.generationGcProof = reachabilityGuard.beginProof(accountId, tableId);
+          pass.generationGcComplete = false;
           pass.tableWalkedPinRoots.clear();
           pass.tableWalkFailures[0] = 0;
         }
@@ -824,56 +841,72 @@ public class CasBlobGc {
                 .setId(tableId)
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
-        // Keep the potentially wide identity scan outside the publication lock. Once complete, the
-        // bounded delete slice below is serialized with resolving-pin publication: delete-first
-        // makes pin validation fail closed, while pin-first makes the protection predicate keep the
-        // generation and every shared sidecar its wrappers reference.
-        if (!statsRepository.discoverGenerationKeys(
-            rid, deadlineMs, pass.generationGcContinuation)) {
-          checkDeadline();
-          throw DeadlineReached.INSTANCE;
+        if (!pass.generationGcComplete) {
+          while (true) {
+            // The identity/base-edge scan may be wide, so retain an epoch proof while scanning
+            // outside the publication lock. Each lifecycle claim checks that proof under the lock;
+            // remote blob I/O remains outside it.
+            if (!statsRepository.discoverGenerationKeys(
+                rid, deadlineMs, pass.generationGcContinuation)) {
+              checkDeadline();
+              throw DeadlineReached.INSTANCE;
+            }
+            pass.tableGenerationKeys.clear();
+            for (Keys.GenerationKey generation : pass.generationGcContinuation.generations()) {
+              pass.addGenerationKey(generation);
+            }
+            boolean[] generationProofChanged = {false};
+            StatsRepository.GenerationGcResult generationGc =
+                statsRepository.deleteUnreferencedGenerations(
+                    rid,
+                    manifestUri -> {
+                      if (pass.tableWalkFailures[0] > 0) {
+                        return true; // an incomplete walk makes protection unknowable
+                      }
+                      String normalized = normalizeKey(manifestUri);
+                      if (tableReferenced.mightContain(normalized)) {
+                        return true;
+                      }
+                      rootLivePinChains(
+                          tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
+                      return pass.tableWalkFailures[0] > 0
+                          || tableReferenced.mightContain(normalized);
+                    },
+                    nowMs,
+                    minAgeMs,
+                    remainingGenerationBlobDeletes,
+                    deadlineMs,
+                    pass.generationGcContinuation,
+                    (isProtected, claim, restore) -> {
+                      var guardedClaim =
+                          claimGenerationIfUnprotected(
+                              reachabilityGuard, pass.generationGcProof, isProtected, claim);
+                      if (guardedClaim.changed()) {
+                        generationProofChanged[0] = true;
+                        return false;
+                      }
+                      return guardedClaim.value();
+                    });
+            remainingGenerationBlobDeletes =
+                Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
+            pass.blobsDeleted += generationGc.blobsDeleted();
+            pass.generationCleanupPending |= generationGc.pending();
+            if (!generationProofChanged[0]) {
+              pass.generationGcProof.close();
+              pass.generationGcProof = null;
+              pass.generationGcComplete = true;
+              break;
+            }
+            pass.generationGcProof.close();
+            pass.generationGcProof = reachabilityGuard.beginProof(accountId, tableId);
+            if (!remarkTable(accountId, tableId, tableReferenced, pageSize)) {
+              pass.tableWalkFailures[0]++;
+            }
+            rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
+            pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
+            checkDeadline();
+          }
         }
-        for (Keys.GenerationKey generation : pass.generationGcContinuation.generations()) {
-          pass.addGenerationKey(generation);
-        }
-        int generationDeleteBudget = remainingGenerationBlobDeletes;
-        StatsRepository.GenerationGcResult generationGc =
-            statsRepository.deleteUnreferencedGenerations(
-                rid,
-                manifestUri -> {
-                  if (pass.tableWalkFailures[0] > 0) {
-                    return true; // an incomplete walk makes protection unknowable
-                  }
-                  String normalized = normalizeKey(manifestUri);
-                  if (tableReferenced.mightContain(normalized)) {
-                    return true;
-                  }
-                  rootLivePinChains(
-                      tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
-                  return pass.tableWalkFailures[0] > 0 || tableReferenced.mightContain(normalized);
-                },
-                nowMs,
-                minAgeMs,
-                generationDeleteBudget,
-                deadlineMs,
-                pass.generationGcContinuation,
-                (isProtected, claim, restore) ->
-                    reachabilityGuard.exclusive(
-                        rid,
-                        () -> {
-                          if (isProtected.getAsBoolean() || !claim.getAsBoolean()) {
-                            return false;
-                          }
-                          if (isProtected.getAsBoolean()) {
-                            restore.run();
-                            return false;
-                          }
-                          return true;
-                        }));
-        remainingGenerationBlobDeletes =
-            Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
-        pass.blobsDeleted += generationGc.blobsDeleted();
-        pass.generationCleanupPending |= generationGc.pending();
         // Generation-owned wrappers and reuse bundles are reclaimed only by StatsRepository. Their
         // IndexArtifactRecord payloads can, however, reference shared content-addressed sidecars.
         // Expand only those indirect shared references into the generic mark index; never add the
@@ -1080,6 +1113,20 @@ public class CasBlobGc {
         pass.generationCleanupPending);
   }
 
+  static TableBlobReachabilityGuard.GuardedResult<Boolean> claimGenerationIfUnprotected(
+      TableBlobReachabilityGuard guard,
+      TableBlobReachabilityGuard.Proof proof,
+      java.util.function.BooleanSupplier isProtected,
+      java.util.function.BooleanSupplier claim) {
+    // Protection can expand a newly registered pin's root chain through remote blob reads. Do
+    // that while retaining the epoch proof but before taking the table write lock. If publication
+    // overlaps the scan, the guarded epoch check rejects the claim and the caller re-marks.
+    if (isProtected.getAsBoolean()) {
+      return new TableBlobReachabilityGuard.GuardedResult<>(false, false);
+    }
+    return guard.deleteIfUnchanged(proof, claim::getAsBoolean);
+  }
+
   /**
    * Sweeps only the generic blob families owned by one table. Target-stats, generation-owned index
    * wrappers, worker uploads, and finalizer outputs live under {@code /target-stats/}; that prefix
@@ -1146,7 +1193,8 @@ public class CasBlobGc {
       for (String prefix :
           List.of(
               Keys.tableRootBlobPrefix(accountId, tableId),
-              Keys.tableIndexSidecarBlobPrefix(accountId, tableId))) {
+              Keys.tableIndexSidecarBlobPrefix(accountId, tableId),
+              Keys.tableReusableArtifactIndexObjectBlobPrefix(accountId, tableId))) {
         boolean more;
         do {
           if (continuation.deferredPage == null) {
@@ -1409,6 +1457,11 @@ public class CasBlobGc {
     }
     pass.currentTableId = "";
     pass.generationGcContinuation = null;
+    pass.generationGcComplete = false;
+    if (pass.generationGcProof != null) {
+      pass.generationGcProof.close();
+      pass.generationGcProof = null;
+    }
     pass.tableWalkedPinRoots.clear();
     pass.tableGenerationKeys.clear();
     pass.tableWalkFailures[0] = 0;
@@ -1458,6 +1511,20 @@ public class CasBlobGc {
   private boolean rootTableRootChain(String rootBlobUri, ReferenceIndex referenced) {
     referenced.add(normalizeKey(rootBlobUri));
     boolean resumable = isRetainedContinuationIndex(referenced);
+    long reusableIndexNodeCapacity =
+        resumable
+            ? continuation.referenceCapacity
+            : Math.max(
+                1L,
+                ConfigProvider.getConfig()
+                    .getOptionalValue(
+                        "floecat.gc.cas.reference-index.expected-capacity", Long.class)
+                    .orElse(2_000_000L));
+    ReusableArtifactIndexStore reusableIndexStore = new ReusableArtifactIndexStore(blobStore);
+    Set<String> walkedReusableIndexNodes =
+        resumable ? continuation.traversal.visitedReusableIndexNodes : new HashSet<>();
+    Map<String, Integer> reusableIndexRunProgress =
+        resumable ? continuation.traversal.reusableIndexRunProgress : new HashMap<>();
     String chainKey = continuationIndexScope(referenced) + ":" + rootBlobUri;
     String savedPage = resumable ? continuation.traversal.chainPageUris.get(chainKey) : null;
     if (SCAN_COMPLETE.equals(savedPage)) {
@@ -1506,6 +1573,15 @@ public class CasBlobGc {
         LOG.warnf("cas gc could not read root blob %s; sweep will be skipped", rootBlobUri);
         return false;
       }
+      if (!root.hasTableId()
+          || root.getTableId().getAccountId().isBlank()
+          || root.getTableId().getId().isBlank()
+          || root.getTableId().getKind() != ResourceKind.RK_TABLE) {
+        LOG.warnf("cas gc root blob %s has invalid table identity", rootBlobUri);
+        return false;
+      }
+      String accountId = root.getTableId().getAccountId();
+      String tableId = root.getTableId().getId();
       if (root.hasDefinitionRef() && !root.getDefinitionRef().getUri().isBlank()) {
         referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
       }
@@ -1554,6 +1630,18 @@ public class CasBlobGc {
           var entry = page.getEntries(entryIndex);
           if (entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getSnapshotRef().getUri()));
+            if (!rootSnapshotReusableArtifactIndex(
+                accountId,
+                tableId,
+                entry.getSnapshotId(),
+                entry.getSnapshotRef().getUri(),
+                referenced,
+                reusableIndexStore,
+                walkedReusableIndexNodes,
+                reusableIndexRunProgress,
+                reusableIndexNodeCapacity)) {
+              return false;
+            }
           }
           if (entry.hasStatsGenerationRef() && !entry.getStatsGenerationRef().getUri().isBlank()) {
             String statsRefUri = entry.getStatsGenerationRef().getUri();
@@ -1598,6 +1686,126 @@ public class CasBlobGc {
       if (!resumable) {
         walkedPages.close();
       }
+    }
+  }
+
+  private boolean rootSnapshotReusableArtifactIndex(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String snapshotBlobUri,
+      ReferenceIndex referenced,
+      ReusableArtifactIndexStore indexStore,
+      Set<String> walkedIndexNodes,
+      Map<String, Integer> reusableIndexRunProgress,
+      long indexNodeCapacity) {
+    try {
+      byte[] snapshotBytes = blobStore.get(snapshotBlobUri);
+      if (snapshotBytes == null) {
+        throw new IllegalStateException("missing snapshot blob " + snapshotBlobUri);
+      }
+      Snapshot snapshot = Snapshot.parseFrom(snapshotBytes);
+      if (!snapshot.hasTableId()
+          || !accountId.equals(snapshot.getTableId().getAccountId())
+          || !tableId.equals(snapshot.getTableId().getId())
+          || snapshot.getSnapshotId() != snapshotId) {
+        throw new IllegalStateException("snapshot reusable artifact identity mismatch");
+      }
+      if (!snapshot.hasReuseManifestRef()) {
+        return true;
+      }
+      var manifestRef = snapshot.getReuseManifestRef();
+      if (manifestRef.getUri().isBlank()) {
+        throw new IllegalStateException("snapshot reuse manifest URI is missing");
+      }
+      referenced.add(normalizeKey(manifestRef.getUri()));
+      byte[] manifestBytes = blobStore.get(manifestRef.getUri());
+      if (manifestBytes == null
+          || manifestBytes.length != manifestRef.getPayloadBytes()
+          || manifestRef.getPayloadSha256().size() != 32
+          || !MessageDigest.isEqual(
+              sha256(manifestBytes), manifestRef.getPayloadSha256().toByteArray())) {
+        throw new IllegalStateException("snapshot reuse manifest metadata mismatch");
+      }
+      SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes);
+      if (manifest.getFormatVersion() != 1
+          || !manifest.getReusableArtifactBundlesComplete()
+          || !manifest.hasReusableArtifactIndex()
+          || !accountId.equals(manifest.getAccountId())
+          || !tableId.equals(manifest.getTableId())
+          || manifest.getSnapshotId() != snapshotId
+          || !manifestRef
+              .getUri()
+              .equals(
+                  Keys.reconcileSnapshotDurableCaptureManifestUri(
+                      accountId,
+                      tableId,
+                      snapshotId,
+                      manifest.getParentJobId(),
+                      sha256(manifestBytes)))
+          || manifest.getReusableArtifactIndex().getFileStatsRecordCount()
+              != manifest.getFileStatsRecordCount()
+          || manifest.getReusableArtifactIndex().getIndexArtifactCount()
+              != manifest.getIndexArtifactCount()) {
+        throw new IllegalStateException("snapshot reusable artifact manifest identity mismatch");
+      }
+      indexStore.walkReachable(
+          manifest.getReusableArtifactIndex(),
+          walkedIndexNodes,
+          reusableIndexRunProgress,
+          object -> {
+            checkDeadline();
+            if (walkedIndexNodes.size() >= indexNodeCapacity) {
+              throw new ReferenceIndex.CapacityExceededException(
+                  "reusable artifact index object capacity exceeded: capacity="
+                      + indexNodeCapacity);
+            }
+            if (!object.getInlinePayload().isEmpty()) {
+              return;
+            }
+            if (!object
+                .getUri()
+                .startsWith(Keys.tableReusableArtifactIndexObjectBlobPrefix(accountId, tableId))) {
+              throw new IllegalStateException(
+                  "reusable artifact index object is outside the owning table");
+            }
+            referenced.add(normalizeKey(object.getUri()));
+          },
+          entry -> {
+            checkDeadline();
+            String artifactUri = entry.getArtifact().getPayloadUri();
+            Keys.GenerationKey generation = Keys.generationFromTargetStatsBlobUri(artifactUri);
+            if (generation == null
+                || !artifactUri.startsWith(
+                    Keys.snapshotTargetStatsGenerationBlobPrefix(
+                        accountId, tableId, generation.snapshotId(), generation.generationId()))) {
+              throw new IllegalStateException(
+                  "reusable artifact bundle is outside the owning table generation");
+            }
+            referenced.add(normalizeKey(artifactUri));
+            String generationManifest =
+                Keys.snapshotTargetStatsManifestBlobUri(
+                    accountId, tableId, generation.snapshotId(), generation.generationId());
+            referenced.add(normalizeKey(generationManifest));
+            rememberTableGeneration(referenced, generationManifest);
+          });
+      return true;
+    } catch (DeadlineReached | ReferenceIndex.CapacityExceededException error) {
+      throw error;
+    } catch (Exception error) {
+      LOG.warnf(
+          error,
+          "cas gc could not root reusable artifact index from snapshot %s; poisoning the sweep",
+          snapshotBlobUri);
+      return false;
+    }
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 unavailable", error);
     }
   }
 
@@ -2067,14 +2275,15 @@ public class CasBlobGc {
             continue;
           }
           if (ownerPointerKey == null && deferNoOwnerTo != null) {
-            // No owner pointer derivable from the key (chain-walked manifest pages and shared
-            // content-addressed sidecars) — and blob listing is lexicographic, so these often
-            // sort
-            // BEFORE any blob whose rescue could reveal a stale referenced set. Deleting them
-            // inline would destroy a missed table's chain before anything can object. Defer them
-            // (with the version this pass age-checked): the flush below re-proves liveness per
-            // table against the settled store before deleting (see the flush comment for why the
-            // rescue signal alone is not sufficient proof).
+            // No owner pointer derivable from the key (chain-walked manifest pages, persistent
+            // reusable-index run objects, and shared content-addressed sidecars) — and blob
+            // listing is lexicographic, so these often sort BEFORE any blob whose rescue could
+            // reveal the stale referenced set. Deleting them inline would destroy a missed table's
+            // chain before anything can object. Defer them (with the version this pass
+            // age-checked):
+            // the flush below re-proves liveness per table against the settled store before
+            // deleting (see the flush comment for why the rescue signal alone is not sufficient
+            // proof).
             deferNoOwnerTo.add(new DeferredCandidate(key, versionId));
             continue;
           }
@@ -2186,9 +2395,10 @@ public class CasBlobGc {
    * from the current-root re-mark, yet must survive. Pin publication is read-only (no re-PUT), so
    * the version fence cannot catch it either. Re-reading the (node-local, cheap) pin set here and
    * expanding any newly-pinned root's chain protects owner-derived candidates that do not use the
-   * deferred table proof. Deferred manifest-page and shared-sidecar deletes additionally serialize
-   * with resolving-pin publication through {@link TableBlobReachabilityGuard}. A pin-chain walk
-   * failure makes reachability unprovable, so it too returns "keep" (and the caller aborts).
+   * deferred table proof. Deferred manifest-page, reusable-index-node, and shared-sidecar deletes
+   * additionally serialize with resolving-pin publication through {@link
+   * TableBlobReachabilityGuard}. A pin-chain walk failure makes reachability unprovable, so it too
+   * returns "keep" (and the caller aborts).
    */
   private boolean keepForLatePin(
       String normalizedKey,

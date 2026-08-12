@@ -227,12 +227,13 @@ public interface ReconcileExecutor {
     }
 
     /**
-     * Returns a successful result for jobs whose terminal or waiting state was already durably
-     * recorded by the executor before it returns.
+     * Returns a successful result for jobs whose completion was durably handed off before the
+     * executor returns.
      *
      * <p>When this is used, the poller will not issue a follow-up {@code complete(...)} RPC.
      * Executors must only return this after the handled-completion RPC has been accepted and the
-     * leased job no longer depends on the outer poller for terminal state persistence.
+     * leased job no longer depends on the outer poller for terminal state persistence. The accepted
+     * handoff may complete terminal publication asynchronously.
      */
     public static ExecutionResult successHandled(
         long tablesScanned,

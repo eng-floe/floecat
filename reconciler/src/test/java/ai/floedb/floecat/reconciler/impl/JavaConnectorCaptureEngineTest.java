@@ -142,7 +142,7 @@ class JavaConnectorCaptureEngineTest {
     assertThat(engine.capture(request, (fileStats, pageIndexEntries) -> {})).isEmpty();
     verify(connector, never())
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
   }
@@ -175,7 +175,7 @@ class JavaConnectorCaptureEngineTest {
         .thenReturn(
             new ServerSideStorageConfigResolver.ResolvedConnectorConfig(resolvedConfig, () -> {}));
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of()));
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
@@ -249,7 +249,7 @@ class JavaConnectorCaptureEngineTest {
                     AwsErrorDetails.builder().serviceName("S3").errorCode("ExpiredToken").build())
                 .build();
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenThrow(expiredToken);
 
     assertThatThrownBy(() -> engine.capture(request, (fileStats, pageIndexEntries) -> {}))
@@ -307,6 +307,7 @@ class JavaConnectorCaptureEngineTest {
             eq(55L),
             eq(Set.of(plannedFile)),
             eq(Set.of("id")),
+            eq(Set.of()),
             eq(
                 Set.of(
                     FloecatConnector.StatsTargetKind.TABLE,
@@ -359,7 +360,7 @@ class JavaConnectorCaptureEngineTest {
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
   }
 
   @Test
@@ -393,6 +394,7 @@ class JavaConnectorCaptureEngineTest {
             eq(tableId),
             eq(55L),
             eq(Set.of(plannedFile)),
+            eq(Set.of()),
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
@@ -430,7 +432,7 @@ class JavaConnectorCaptureEngineTest {
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
   }
 
   @Test
@@ -450,6 +452,7 @@ class JavaConnectorCaptureEngineTest {
             eq(55L),
             eq(Set.of(fileOne, fileTwo)),
             eq(Set.of("id")),
+            eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
@@ -509,7 +512,7 @@ class JavaConnectorCaptureEngineTest {
     AtomicBoolean shouldStop = new AtomicBoolean();
 
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -549,6 +552,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of("s3://bucket/path/file-1.parquet", "s3://bucket/path/file-2.parquet")),
             any(),
             any(),
+            any(),
             anyBoolean(),
             any());
   }
@@ -585,6 +589,7 @@ class JavaConnectorCaptureEngineTest {
             eq(55L),
             eq(Set.of(plannedFile)),
             eq(Set.of("stats_only")),
+            eq(Set.of("index_only")),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(true),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
@@ -677,7 +682,7 @@ class JavaConnectorCaptureEngineTest {
     var selectedEntry =
         pageIndexEntry(plannedFile, "customer_id").withSelectorAliases(Set.of("#1", "customer_id"));
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(),
@@ -737,7 +742,7 @@ class JavaConnectorCaptureEngineTest {
     String plannedFile = "s3://bucket/path/file-1.parquet";
     var availableEntry = pageIndexEntry(plannedFile, "customer_id");
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of(availableEntry)));
     when(connector.selectPageIndexEntries(
             "db",
@@ -777,6 +782,49 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
+  void captureUsesConnectorPreselectedPageIndexesWithoutASecondMetadataLookup() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    var selectedEntry = pageIndexEntry(plannedFile, "customer_id");
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.ofSelectedPageIndexes(
+                List.of(), List.of(selectedEntry), List.of(), List.of()));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of("#2"),
+            Set.of("#1"),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries).containsExactly(selectedEntry);
+    verify(connector, never())
+        .selectPageIndexEntries(any(), any(), anyLong(), any(), any(), any(), any(), any());
+  }
+
+  @Test
   void captureResolvesDefaultFirstNPageIndexSelectors() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
@@ -785,7 +833,7 @@ class JavaConnectorCaptureEngineTest {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     String plannedFile = "s3://bucket/path/file-1.parquet";
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(),
@@ -832,7 +880,7 @@ class JavaConnectorCaptureEngineTest {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     String plannedFile = "s3://bucket/path/file-1.parquet";
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(), List.of(pageIndexEntry(plannedFile, "first"))));
@@ -1027,6 +1075,7 @@ class JavaConnectorCaptureEngineTest {
             eq(55L),
             eq(Set.of(fileOne, fileTwo)),
             eq(Set.of()),
+            eq(Set.of()),
             eq(
                 Set.of(
                     FloecatConnector.StatsTargetKind.TABLE,
@@ -1099,6 +1148,7 @@ class JavaConnectorCaptureEngineTest {
             eq(tableId),
             eq(55L),
             eq(Set.of(dataFile)),
+            eq(Set.of()),
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),

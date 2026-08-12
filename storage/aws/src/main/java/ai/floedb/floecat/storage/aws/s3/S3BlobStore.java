@@ -32,6 +32,7 @@ import jakarta.inject.Singleton;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -60,6 +61,7 @@ public class S3BlobStore implements BlobStore {
   private static final Logger LOG = Logger.getLogger(S3BlobStore.class);
   private static final String META_SHA256 = "floecat-sha256";
   private static final String META_CREATED_AT = "floecat-created-at";
+  private static final int MAX_PARALLEL_READS = 50;
   private static final long VERSIONING_STATUS_TTL_NANOS = java.time.Duration.ofMinutes(5).toNanos();
 
   private final S3Caller s3;
@@ -173,6 +175,105 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRange(String key, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range is invalid");
+    }
+    if (length == 0) {
+      return new byte[0];
+    }
+    final String k = normalize(key);
+    String range = "bytes=" + offset + "-" + Math.addExact(offset, length - 1L);
+    try {
+      byte[] bytes =
+          s3.call(
+                  c ->
+                      c.getObject(
+                          GetObjectRequest.builder().bucket(bucket).key(k).range(range).build(),
+                          ResponseTransformer.toBytes()))
+              .asByteArray();
+      if (bytes.length != length) {
+        throw new StorageCorruptionException(
+            msg("GET", k, "range returned " + bytes.length + " bytes; expected " + length), null);
+      }
+      return bytes;
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        throw new StorageNotFoundException(msg("GET", k, "not found"));
+      }
+      throw mapAndWrap("GET", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("GET", k, e);
+    }
+  }
+
+  @Override
+  public Map<String, byte[]> getBatch(List<String> uris) {
+    if (uris == null || uris.isEmpty()) {
+      return Map.of();
+    }
+    return parallelReads(uris.stream().distinct().toList(), uri -> uri, this::get, "S3 batch GET");
+  }
+
+  @Override
+  public Map<BlobStore.Range, byte[]> getRanges(List<BlobStore.Range> ranges) {
+    if (ranges == null || ranges.isEmpty()) {
+      return Map.of();
+    }
+    return parallelReads(
+        ranges.stream().distinct().toList(),
+        range -> range,
+        range -> getRange(range.uri(), range.offset(), range.length()),
+        "S3 ranged batch GET");
+  }
+
+  private <T, K> Map<K, byte[]> parallelReads(
+      List<T> requests, Function<T, K> key, Function<T, byte[]> reader, String operation) {
+    Map<K, byte[]> out = java.util.Collections.synchronizedMap(new LinkedHashMap<>());
+    var permits = new java.util.concurrent.Semaphore(MAX_PARALLEL_READS);
+    try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+      List<? extends java.util.concurrent.Future<?>> reads =
+          requests.stream()
+              .map(
+                  request ->
+                      executor.submit(
+                          () -> {
+                            boolean acquired = false;
+                            try {
+                              permits.acquire();
+                              acquired = true;
+                              out.put(key.apply(request), reader.apply(request));
+                            } catch (InterruptedException error) {
+                              Thread.currentThread().interrupt();
+                              throw new StorageAbortRetryableException(
+                                  operation + " was interrupted");
+                            } finally {
+                              if (acquired) {
+                                permits.release();
+                              }
+                            }
+                          }))
+              .toList();
+      for (var read : reads) {
+        try {
+          read.get();
+        } catch (InterruptedException error) {
+          Thread.currentThread().interrupt();
+          throw new StorageAbortRetryableException(operation + " was interrupted");
+        } catch (java.util.concurrent.ExecutionException error) {
+          if (error.getCause() instanceof RuntimeException runtime) {
+            throw runtime;
+          }
+          throw new StorageAbortRetryableException(operation + " failed: " + error.getMessage());
+        }
+      }
+    }
+    return Map.copyOf(out);
+  }
+
+  @Override
   public void put(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
     try {
@@ -205,6 +306,32 @@ public class S3BlobStore implements BlobStore {
       PutObjectRequest req =
           PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
 
+      s3.call(c -> c.putObject(req, RequestBody.fromBytes(bytes)));
+    } catch (S3Exception e) {
+      throw mapAndWrap("PUT", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("PUT", k, e);
+    }
+  }
+
+  @Override
+  public void putImmutable(String key, byte[] bytes, String contentType) {
+    putObject(key, bytes, contentType, System.currentTimeMillis());
+  }
+
+  private void putObject(String key, byte[] bytes, String contentType, long createdAtMs) {
+    final String k = normalize(key);
+    try {
+      String checksum = computeSha256Base64(bytes);
+      String ct =
+          (contentType == null || contentType.isBlank()) ? "application/octet-stream" : contentType;
+      Map<String, String> meta = new HashMap<>();
+      meta.put(META_SHA256, checksum);
+      meta.put(META_CREATED_AT, Long.toString(createdAtMs));
+      PutObjectRequest req =
+          PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
       s3.call(c -> c.putObject(req, RequestBody.fromBytes(bytes)));
     } catch (S3Exception e) {
       throw mapAndWrap("PUT", k, e);

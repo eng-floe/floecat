@@ -28,6 +28,8 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.AppendOnlyBase;
+import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -44,6 +46,10 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
+import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
@@ -6188,6 +6194,159 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void appendOnlyFinalizerJobPlanPreservesBaseWithDeltaGroups() throws Exception {
+    ReconcileFileGroupTask deltaGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 56L, List.of("s3://bucket/data/delta.parquet"));
+    AppendOnlyBase appendOnlyBase =
+        new AppendOnlyBase(
+            55L,
+            "/accounts/acct-1/tables/table-1/snapshots/55/manifest.pb",
+            123L,
+            "0".repeat(64),
+            5,
+            5,
+            0,
+            0,
+            "full-rescan-base-job",
+            "",
+            testArtifactIndex(5, 0));
+    String sourcePlanUri = "/accounts/acct-1/reconcile/jobs/snapshot-job/snapshot-plan.json";
+    store.blobStore.put(
+        sourcePlanUri,
+        store.mapper.writeValueAsBytes(
+            SnapshotPlanBlob.of(
+                List.of(
+                    new ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob(
+                        ReconcileScope.empty(), deltaGroup)),
+                appendOnlyBase)),
+        "application/json");
+    ReconcileSnapshotTask appendPlan =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            56L,
+            "db",
+            "orders",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            sourcePlanUri,
+            1,
+            6,
+            "",
+            0);
+
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            appendPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "snapshot-job",
+            "");
+
+    ReconcileJob finalizer = store.get(ACCOUNT_ID, finalizerJobId).orElseThrow();
+    assertNotEquals(sourcePlanUri, finalizer.snapshotTask.fileGroupPlanBlobUri());
+    SnapshotPlanBlob finalizerPlan =
+        store.mapper.readValue(
+            store.blobStore.get(finalizer.snapshotTask.fileGroupPlanBlobUri()),
+            SnapshotPlanBlob.class);
+    assertEquals(Optional.of(appendOnlyBase), finalizerPlan.appendOnlyBase());
+    assertEquals(List.of(deltaGroup), finalizerPlan.fileGroups());
+  }
+
+  @Test
+  void zeroDeltaAppendSnapshotEnqueuesFinalizer() throws Exception {
+    ReconcileSnapshotTask initialTask =
+        ReconcileSnapshotTask.of("table-1", 56L, "db", "orders", List.of(), true)
+            .withContentState("revision-2", "metadata-2", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            initialTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+
+    AppendOnlyBase appendOnlyBase =
+        new AppendOnlyBase(
+            55L,
+            "/accounts/acct-1/tables/table-1/snapshots/55/manifest.pb",
+            123L,
+            "0".repeat(64),
+            1,
+            1,
+            0,
+            0,
+            "full-rescan-base-job",
+            "",
+            testArtifactIndex(1, 0));
+    String planUri =
+        SnapshotPlanManifestIds.manifestBlobUri(
+            ACCOUNT_ID, snapshotJobId, List.of(), appendOnlyBase.manifestIdentity());
+    store.blobStore.put(
+        planUri,
+        store.mapper.writeValueAsBytes(SnapshotPlanBlob.of(List.of(), appendOnlyBase)),
+        "application/json");
+    ReconcileSnapshotTask appendPlan =
+        ReconcileSnapshotTask.of(
+                "table-1",
+                56L,
+                "db",
+                "orders",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                planUri,
+                0,
+                1,
+                "",
+                0)
+            .withContentState("revision-2", "metadata-2", List.of());
+    assertTrue(
+        store.adoptSnapshotPlanManifest(
+            snapshotJobId, snapshotLease.leaseEpoch, appendPlan, planUri, false));
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on zero-delta append finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    runProjectionMaintenance();
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_QUEUED", finalizers.getFirst().state);
+    assertEquals(0, finalizers.getFirst().snapshotTask.fileGroupCount());
+    assertEquals(1, finalizers.getFirst().snapshotTask.sourceFileCount());
+    SnapshotPlanBlob finalizerPlan =
+        store.mapper.readValue(
+            store.blobStore.get(finalizers.getFirst().snapshotTask.fileGroupPlanBlobUri()),
+            SnapshotPlanBlob.class);
+    assertEquals(Optional.of(appendOnlyBase), finalizerPlan.appendOnlyBase());
+  }
+
+  @Test
   void finalizerTerminalFailuresRetryWithBackoffThenFailParentWithoutReplacement() {
     configureRetryPolicy(2, 10_000L, 10_000L);
     ReconcileSnapshotTask emptyPlan =
@@ -6343,6 +6502,230 @@ class DurableReconcileJobStoreTest {
     leaseManager()
         .clearSnapshotOwnershipIfOwned(readStoredRecord(parentCanonical), parentCanonical);
     assertFalse(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+  }
+
+  @Test
+  void snapshotFinalizeCommitIntentIsDurableAndDiscoverableForPublication() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            123L,
+            "abcdef",
+            1,
+            3,
+            4L,
+            2L);
+
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
+    assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    assertEquals("JS_RUNNING", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
+    assertTrue(
+        store.getCompletionLeaseView(finalizerJobId, finalizerLease.leaseEpoch, true).isPresent());
+
+    store.markFailed(
+        finalizerJobId,
+        finalizerLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "publication failed",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    assertSnapshotFinalizeIntentCleared(
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId)));
+  }
+
+  @Test
+  void snapshotFinalizeOwnershipWithoutIntentIsReclaimedAfterLeaseExpiry() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+
+    assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.snapshotFinalizeResultLeaseEpoch = finalizerLease.leaseEpoch;
+          record.snapshotFinalizeResultId = "partial-result";
+          record.snapshotFinalizeManifestUri = "/partial-capture-manifest.pb";
+          record.snapshotFinalizeManifestBytes = 123L;
+          return record;
+        });
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    StoredReconcileJob reclaimed =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    assertEquals("JS_QUEUED", reclaimed.state);
+    assertSnapshotFinalizeIntentCleared(reclaimed);
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+  }
+
+  @Test
+  void cancellingAcceptedSnapshotFinalizeIsReclaimedToCancelled() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            123L,
+            "abcdef",
+            1,
+            3,
+            4L,
+            2L);
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.state = "JS_CANCELLING";
+          record.message = "Cancelling";
+          return record;
+        });
+
+    configureLeaseRenewGraceMs(0L);
+    reclaimExpiredLease(finalizerJobId);
+
+    assertEquals("JS_CANCELLED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
   }
 
   @Test
@@ -7315,8 +7698,27 @@ class DurableReconcileJobStoreTest {
   }
 
   private void configureLeaseRenewGraceMs(long leaseRenewGraceMs) {
+    long effective = Math.max(0L, leaseRenewGraceMs);
     assertDoesNotThrow(
-        () -> setPrivateField(store, "leaseRenewGraceMs", Math.max(0L, leaseRenewGraceMs)));
+        () -> {
+          setPrivateField(store, "leaseRenewGraceMs", effective);
+          if (store.leaseStore != null) {
+            setPrivateField(store.leaseStore, "leaseRenewGraceMs", effective);
+          }
+        });
+  }
+
+  private static void assertSnapshotFinalizeIntentCleared(StoredReconcileJob record) {
+    assertFalse(record.snapshotFinalizeCommitStarted);
+    assertEquals("", record.snapshotFinalizeResultLeaseEpoch);
+    assertEquals("", record.snapshotFinalizeResultId);
+    assertEquals("", record.snapshotFinalizeManifestUri);
+    assertEquals(0L, record.snapshotFinalizeManifestBytes);
+    assertEquals("", record.snapshotFinalizeManifestSha256);
+    assertEquals(0, record.snapshotFinalizeFileGroupCount);
+    assertEquals(0, record.snapshotFinalizeSourceFileCount);
+    assertEquals(0L, record.snapshotFinalizeStatsRecordCount);
+    assertEquals(0L, record.snapshotFinalizeIndexArtifactCount);
   }
 
   private static final class DirtyParentFailingPointerStore implements PointerStore {
@@ -7737,6 +8139,29 @@ class DurableReconcileJobStoreTest {
             System.currentTimeMillis()),
         System.currentTimeMillis(),
         "Succeeded");
+  }
+
+  private static ReusableArtifactIndexReference testArtifactIndex(int stats, int indexes) {
+    var index =
+        ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(
+                ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore.FORMAT_VERSION)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (stats + indexes > 0) {
+      var object =
+          ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1)
+              .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(stats + indexes)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
   }
 
   private static ReconcileScope resolvedCaptureScope(

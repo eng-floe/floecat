@@ -45,8 +45,8 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class RemoteReconcileExecutorPoller {
-  private static final long DEFAULT_LEASE_HEARTBEAT_MS = 2_000L;
-  private static final long MAX_DEFAULT_LEASE_HEARTBEAT_MS = 10_000L;
+  private static final long DEFAULT_LEASE_HEARTBEAT_MS = 90_000L;
+  private static final long MAX_DEFAULT_LEASE_HEARTBEAT_MS = 90_000L;
   private static final long MIN_LEASE_HEARTBEAT_MS = 1_000L;
   private static final long MIN_CANCEL_CHECK_MS = 500L;
   private static final long HEARTBEAT_SHUTDOWN_WAIT_MS = 1_000L;
@@ -473,7 +473,7 @@ public class RemoteReconcileExecutorPoller {
             1_000L,
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class)
-                .orElse(120_000L));
+                .orElse(600_000L));
     long suggestedHeartbeatMs =
         Math.max(
             MIN_LEASE_HEARTBEAT_MS,

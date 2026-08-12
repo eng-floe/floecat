@@ -56,6 +56,7 @@ final class JavaConnectorFileGroupCaptureAdapter {
             request.snapshotId(),
             new java.util.LinkedHashSet<>(request.plannedFilePaths()),
             request.statsColumns(),
+            request.indexColumns(),
             request.requestedStatsTargetKinds(),
             request.capturePageIndex(),
             request.columnSelectorPolicy());
@@ -64,22 +65,24 @@ final class JavaConnectorFileGroupCaptureAdapter {
     realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
     List<FloecatConnector.ParquetPageIndexEntry> capturedPageIndexEntries =
         request.capturePageIndex()
-            ? source
-                .selectPageIndexEntries(
-                    request.sourceNamespace(),
-                    request.sourceTable(),
-                    request.snapshotId(),
-                    request.indexColumns(),
-                    request.columnSelectorPolicy(),
-                    new java.util.LinkedHashSet<>(request.plannedFilePaths()),
-                    captured.pageIndexEntries(),
-                    captured.pageIndexRowGroups())
-                .orElseGet(
-                    () ->
-                        filterPageIndexEntries(
-                            captured.pageIndexEntries(),
-                            request.indexColumns(),
-                            request.columnSelectorPolicy()))
+            ? captured.pageIndexSelectionComplete()
+                ? captured.pageIndexEntries()
+                : source
+                    .selectPageIndexEntries(
+                        request.sourceNamespace(),
+                        request.sourceTable(),
+                        request.snapshotId(),
+                        request.indexColumns(),
+                        request.columnSelectorPolicy(),
+                        new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+                        captured.pageIndexEntries(),
+                        captured.pageIndexRowGroups())
+                    .orElseGet(
+                        () ->
+                            filterPageIndexEntries(
+                                captured.pageIndexEntries(),
+                                request.indexColumns(),
+                                request.columnSelectorPolicy()))
             : List.of();
     Map<String, List<TargetStatsRecord>> statsByFile = new LinkedHashMap<>();
     Map<String, List<FloecatConnector.ParquetPageIndexEntry>> indexesByFile = new LinkedHashMap<>();

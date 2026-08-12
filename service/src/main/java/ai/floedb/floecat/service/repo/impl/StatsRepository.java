@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -43,7 +45,9 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -105,6 +109,8 @@ public class StatsRepository implements StatsStore {
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
   private final TargetStatsStorage targetStatsStorage;
+  private final GenerationArtifactMap generationArtifactMap;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   // Nullable (tests): decoded-content cache, used here for the immutable generation-manifest
   // blobs only. Target-stats RECORD blobs are deliberately not cached: they are written to
@@ -112,17 +118,40 @@ public class StatsRepository implements StatsStore {
   // URI-keyed caching would be unsound for them.
   private final ImmutableBlobCache blobCache;
 
+  /** Test convenience; production construction injects the process-wide publication guard. */
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, blobStore, null, new TableBlobReachabilityGuard());
+  }
+
+  /** Test convenience; production construction injects the process-wide publication guard. */
+  public StatsRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this(pointerStore, blobStore, blobCache, new TableBlobReachabilityGuard());
   }
 
   @Inject
   public StatsRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      TableBlobReachabilityGuard reachabilityGuard) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
+    this.reachabilityGuard = reachabilityGuard;
     this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore, blobCache);
+    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, blobCache);
+  }
+
+  @Override
+  public void registerGenerationArtifactMap(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String captureManifestUri,
+      long captureManifestBytes) {
+    generationArtifactMap.register(
+        tableId, snapshotId, generationId, captureManifestUri, captureManifestBytes);
   }
 
   /**
@@ -730,9 +759,8 @@ public class StatsRepository implements StatsStore {
       ResourceId tableId, long snapshotId, StatsTarget target) {
     return activeGeneration(tableId, snapshotId)
         .flatMap(
-            active ->
-                targetStatsStorage.getByPointer(
-                    targetPointerKey(tableId, snapshotId, active.generationId(), target)));
+            active -> getTargetStatsFromChain(tableId, snapshotId, active.generationId(), target))
+        .map(record -> rebindRecord(record, tableId, snapshotId));
   }
 
   /**
@@ -766,10 +794,8 @@ public class StatsRepository implements StatsStore {
   public Optional<TargetStatsRecord> getTargetStatsInGeneration(
       ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
     return readGenerationIdForFrozenToken(snapshotId, generationToken)
-        .flatMap(
-            generationId ->
-                targetStatsStorage.getByPointer(
-                    targetPointerKey(tableId, snapshotId, generationId, target)));
+        .flatMap(generationId -> getTargetStatsFromChain(tableId, snapshotId, generationId, target))
+        .map(record -> rebindRecord(record, tableId, snapshotId));
   }
 
   @Override
@@ -798,6 +824,14 @@ public class StatsRepository implements StatsStore {
       return Collections.unmodifiableMap(out);
     }
     String generationId = generationIdOpt.get();
+    List<String> filePaths =
+        targets.stream()
+            .filter(target -> target.getTargetCase() == StatsTarget.TargetCase.FILE)
+            .map(target -> target.getFile().getFilePath())
+            .distinct()
+            .toList();
+    Map<String, ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexEntry> reusableFiles =
+        generationArtifactMap.lookupStats(tableId, snapshotId, generationId, filePaths);
 
     // Parallel fetch: one virtual thread per target, bounded by MAX_PARALLEL_READS.
     // The semaphore is a sliding window: as any read completes its slot is immediately
@@ -811,12 +845,15 @@ public class StatsRepository implements StatsStore {
               .map(
                   target -> {
                     String key = StatsTargetIdentity.storageId(target);
-                    String pKey = targetPointerKey(tableId, snapshotId, generationId, target);
                     return CompletableFuture.runAsync(
                         () -> {
                           semaphore.acquireUninterruptibly();
                           try {
-                            parallel.put(key, targetStatsStorage.getByPointer(pKey));
+                            parallel.put(
+                                key,
+                                getTargetStatsFromMap(
+                                        tableId, snapshotId, generationId, target, reusableFiles)
+                                    .map(record -> rebindRecord(record, tableId, snapshotId)));
                           } finally {
                             semaphore.release();
                           }
@@ -834,6 +871,23 @@ public class StatsRepository implements StatsStore {
       out.put(k, parallel.getOrDefault(k, Optional.empty()));
     }
     return Collections.unmodifiableMap(out);
+  }
+
+  private Optional<TargetStatsRecord> getTargetStatsFromMap(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      StatsTarget target,
+      Map<String, ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexEntry> reusableFiles) {
+    String pointerKey = targetPointerKey(tableId, snapshotId, generationId, target);
+    Optional<TargetStatsRecord> current = targetStatsStorage.getByPointer(pointerKey);
+    if (current.isPresent() || target.getTargetCase() != StatsTarget.TargetCase.FILE) {
+      return current;
+    }
+    var entry = reusableFiles.get(target.getFile().getFilePath());
+    return entry == null
+        ? Optional.empty()
+        : targetStatsStorage.getReferenced(pointerKey, entry.getArtifact().getPayloadUri());
   }
 
   private Optional<String> readGenerationIdForFrozenToken(long snapshotId, String generationToken) {
@@ -919,6 +973,123 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
+    if (generationArtifactMap.manifest(tableId, snapshotId, generationId).isPresent()) {
+      if (targetType.isEmpty()) {
+        return listStructurallySharedGeneration(
+            tableId, snapshotId, generationId, Math.max(1, limit), pageToken);
+      }
+      if (targetType.orElseThrow() == StatsTargetType.FILE) {
+        return listFileStatsMap(tableId, snapshotId, generationId, Math.max(1, limit), pageToken);
+      }
+    }
+    return listSingleGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
+  }
+
+  private static final List<StatsTargetType> NON_FILE_TARGET_TYPES =
+      List.of(
+          StatsTargetType.TABLE,
+          StatsTargetType.COLUMN,
+          StatsTargetType.EXPRESSION,
+          StatsTargetType.COMPOSITE);
+
+  private StatsStorePage listStructurallySharedGeneration(
+      ResourceId tableId, long snapshotId, String generationId, int limit, String pageToken) {
+    GenerationMapCursor cursor = decodeGenerationMapCursor(pageToken, generationId);
+    int phase = cursor == null ? 0 : cursor.phase();
+    String backendToken = cursor == null ? "" : cursor.backendToken();
+    List<TargetStatsRecord> records = new ArrayList<>(limit);
+    List<String> continuations = new ArrayList<>(limit);
+    String next = "";
+    while (phase < NON_FILE_TARGET_TYPES.size() && records.size() < limit) {
+      StatsTargetType type = NON_FILE_TARGET_TYPES.get(phase);
+      StatsStorePage page =
+          listSingleGeneration(
+              tableId,
+              snapshotId,
+              generationId,
+              Optional.of(type),
+              limit - records.size(),
+              backendToken);
+      if (!page.records().isEmpty()) {
+        records.addAll(page.records());
+        for (String token : page.continuationTokens()) {
+          continuations.add(encodeGenerationMapCursor(generationId, phase, token));
+        }
+        if (!page.nextPageToken().isBlank()) {
+          next = encodeGenerationMapCursor(generationId, phase, page.nextPageToken());
+          return new StatsStorePage(records, next, continuations);
+        }
+        phase++;
+        backendToken = "";
+        next = encodeGenerationMapCursor(generationId, phase, "");
+        continuations.set(continuations.size() - 1, next);
+        continue;
+      }
+      phase++;
+      backendToken = "";
+    }
+    if (records.size() == limit) {
+      return new StatsStorePage(records, next, continuations);
+    }
+    StatsStorePage files =
+        listFileStatsMap(
+            tableId,
+            snapshotId,
+            generationId,
+            limit - records.size(),
+            phase == NON_FILE_TARGET_TYPES.size() ? backendToken : "");
+    records.addAll(files.records());
+    next =
+        files.nextPageToken().isBlank()
+            ? ""
+            : encodeGenerationMapCursor(
+                generationId, NON_FILE_TARGET_TYPES.size(), files.nextPageToken());
+    files.continuationTokens().stream()
+        .map(token -> encodeGenerationMapCursor(generationId, NON_FILE_TARGET_TYPES.size(), token))
+        .forEach(continuations::add);
+    return new StatsStorePage(records, next, continuations);
+  }
+
+  private StatsStorePage listFileStatsMap(
+      ResourceId tableId, long snapshotId, String generationId, int limit, String pageToken) {
+    ReusableArtifactIndexStore.EntryPage page =
+        generationArtifactMap.page(
+            tableId,
+            snapshotId,
+            generationId,
+            ReusableArtifactIndexStore.EntryKind.FILE_STATS,
+            limit,
+            pageToken);
+    List<TargetStatsRecord> records = new ArrayList<>(page.entries().size());
+    for (var entry : page.entries()) {
+      String pointerKey =
+          targetPointerKey(
+              tableId,
+              snapshotId,
+              generationId,
+              StatsTargetIdentity.fileTarget(entry.getFileStats().getFilePath()));
+      records.add(
+          rebindRecord(
+              targetStatsStorage
+                  .getReferenced(pointerKey, entry.getArtifact().getPayloadUri())
+                  .orElseThrow(
+                      () ->
+                          new BaseResourceRepository.NotFoundException(
+                              "reusable stats bundle disappeared while listing generation")),
+              tableId,
+              snapshotId));
+    }
+    return new StatsStorePage(
+        List.copyOf(records), page.nextPageToken(), page.continuationTokens());
+  }
+
+  private StatsStorePage listSingleGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
     StringBuilder next = new StringBuilder();
     List<BaseResourceRepository.KeyedValue<TargetStatsRecord>> rows =
         targetStatsStorage.listKeyed(
@@ -927,11 +1098,91 @@ public class StatsRepository implements StatsStore {
             pageToken,
             next);
     List<TargetStatsRecord> records =
-        rows.stream().map(BaseResourceRepository.KeyedValue::value).toList();
+        rows.stream()
+            .map(BaseResourceRepository.KeyedValue::value)
+            .map(record -> rebindRecord(record, tableId, snapshotId))
+            .toList();
     List<String> continuationTokens =
         rows.stream().map(row -> pointerStore.pageTokenAfterKey(row.key())).toList();
     return new StatsStorePage(records, next.toString(), continuationTokens);
   }
+
+  private int countInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      Optional<StatsTargetType> targetType) {
+    if (generationArtifactMap.manifest(tableId, snapshotId, generationId).isPresent()) {
+      if (targetType.filter(type -> type == StatsTargetType.FILE).isPresent()) {
+        return generationArtifactMap.countStats(tableId, snapshotId, generationId);
+      }
+      if (targetType.isEmpty()) {
+        int count = generationArtifactMap.countStats(tableId, snapshotId, generationId);
+        for (StatsTargetType type : NON_FILE_TARGET_TYPES) {
+          count =
+              Math.addExact(
+                  count,
+                  targetStatsStorage.countByPrefix(
+                      listPrefix(tableId, snapshotId, generationId, Optional.of(type))));
+        }
+        return count;
+      }
+    }
+    return targetStatsStorage.countByPrefix(
+        listPrefix(tableId, snapshotId, generationId, targetType));
+  }
+
+  private Optional<TargetStatsRecord> getTargetStatsFromChain(
+      ResourceId tableId, long snapshotId, String generationId, StatsTarget target) {
+    String pointerKey = targetPointerKey(tableId, snapshotId, generationId, target);
+    Optional<TargetStatsRecord> current = targetStatsStorage.getByPointer(pointerKey);
+    if (current.isPresent() || target.getTargetCase() != StatsTarget.TargetCase.FILE) {
+      return current;
+    }
+    return generationArtifactMap
+        .lookupStats(tableId, snapshotId, generationId, target.getFile().getFilePath())
+        .flatMap(
+            entry ->
+                targetStatsStorage.getReferenced(pointerKey, entry.getArtifact().getPayloadUri()))
+        .map(record -> rebindRecord(record, tableId, snapshotId));
+  }
+
+  private static String encodeGenerationMapCursor(
+      String generationId, int phase, String backendToken) {
+    String value = generationId + "\n" + phase + "\n" + (backendToken == null ? "" : backendToken);
+    return "generation-map:"
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static GenerationMapCursor decodeGenerationMapCursor(String token, String generationId) {
+    if (token == null || token.isBlank()) {
+      return null;
+    }
+    if (!token.startsWith("generation-map:")) {
+      throw new IllegalArgumentException("invalid generation-map page token");
+    }
+    try {
+      String value =
+          new String(
+              Base64.getUrlDecoder().decode(token.substring("generation-map:".length())),
+              StandardCharsets.UTF_8);
+      String[] fields = value.split("\n", 3);
+      int phase = fields.length == 3 ? Integer.parseInt(fields[1]) : -1;
+      if (fields.length != 3
+          || !generationId.equals(fields[0])
+          || phase < 0
+          || phase > NON_FILE_TARGET_TYPES.size()) {
+        throw new IllegalArgumentException("generation-map page token changed generation");
+      }
+      return new GenerationMapCursor(phase, fields[2]);
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("invalid generation-map page token", e);
+    }
+  }
+
+  private record GenerationMapCursor(int phase, String backendToken) {}
 
   private List<TargetStatsRecord> listAllInGeneration(
       ResourceId tableId, long snapshotId, String generationId) {
@@ -950,10 +1201,7 @@ public class StatsRepository implements StatsStore {
   public int countTargetStats(
       ResourceId tableId, long snapshotId, Optional<StatsTargetType> targetType) {
     return activeGeneration(tableId, snapshotId)
-        .map(
-            active ->
-                targetStatsStorage.countByPrefix(
-                    listPrefix(tableId, snapshotId, active.generationId(), targetType)))
+        .map(active -> countInGeneration(tableId, snapshotId, active.generationId(), targetType))
         .orElse(0);
   }
 
@@ -1045,13 +1293,25 @@ public class StatsRepository implements StatsStore {
                     new BaseResourceRepository.NotFoundException(
                         "No active target stats generation for snapshot " + snapshotId));
     String pointerKey = targetPointerKey(tableId, snapshotId, active.generationId(), target);
-    Pointer pointer =
-        pointerStore
-            .get(pointerKey)
-            .orElseThrow(
-                () ->
-                    new BaseResourceRepository.NotFoundException(
-                        "Pointer missing for target-stats: " + pointerKey));
+    Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+    if (pointer == null && target.getTargetCase() == StatsTarget.TargetCase.FILE) {
+      pointer =
+          generationArtifactMap
+              .lookupStats(
+                  tableId, snapshotId, active.generationId(), target.getFile().getFilePath())
+              .map(
+                  entry ->
+                      PointerReferences.blobPointer(
+                          pointerKey,
+                          entry.getArtifact().getPayloadUri(),
+                          1L,
+                          entry.getArtifact().getPayloadBytes()))
+              .orElse(null);
+    }
+    if (pointer == null) {
+      throw new BaseResourceRepository.NotFoundException(
+          "Pointer missing for target-stats: " + pointerKey);
+    }
     return targetStatsStorage.metaForPointer(pointerKey, pointer.getBlobUri(), nowTs);
   }
 
@@ -1184,7 +1444,10 @@ public class StatsRepository implements StatsStore {
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     markGenerationPublishing(tableId, snapshotId, generationId);
-    targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
+    if (blobStore.head(manifestBlobUri).isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "prewritten stats generation manifest is unavailable: " + manifestBlobUri);
+    }
     if (blobCache != null) {
       blobCache.put(manifestBlobUri, generationId);
     }
@@ -1568,6 +1831,15 @@ public class StatsRepository implements StatsStore {
       throw new IllegalArgumentException(
           "target stats replacement record belongs to a different table snapshot");
     }
+  }
+
+  private static TargetStatsRecord rebindRecord(
+      TargetStatsRecord record, ResourceId tableId, long snapshotId) {
+    if (record == null
+        || (snapshotId == record.getSnapshotId() && tableId.equals(record.getTableId()))) {
+      return record;
+    }
+    return record.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
   }
 
   private String listPrefix(
@@ -2083,6 +2355,14 @@ public class StatsRepository implements StatsStore {
     String publicationIntent =
         Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
             accountId, rawTableId, snapshotId, generationId);
+    String artifactMap =
+        Keys.snapshotGenerationArtifactMapPointer(accountId, rawTableId, snapshotId, generationId);
+    Pointer artifactMapPointer = pointerStore.get(artifactMap).orElse(null);
+    if (artifactMapPointer != null
+        && !pointerStore.compareAndDelete(artifactMap, artifactMapPointer.getVersion())
+        && pointerStore.get(artifactMap).isPresent()) {
+      return true;
+    }
     Pointer intent = pointerStore.get(publicationIntent).orElse(null);
     if (intent != null
         && !pointerStore.compareAndDelete(publicationIntent, intent.getVersion())
@@ -2116,6 +2396,8 @@ public class StatsRepository implements StatsStore {
     pointerStore.delete(
         Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
             accountId, tableId, snapshotId, generationId));
+    pointerStore.delete(
+        Keys.snapshotGenerationArtifactMapPointer(accountId, tableId, snapshotId, generationId));
     if (retainDeletedTombstone) {
       markGenerationDeleted(resourceId(accountId, tableId), snapshotId, generationId);
     } else {
@@ -2254,6 +2536,8 @@ public class StatsRepository implements StatsStore {
     String publicationIntentPointer =
         Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
             accountId, tableId, snapshotId, generationId);
+    String artifactMapPointer =
+        Keys.snapshotGenerationArtifactMapPointer(accountId, tableId, snapshotId, generationId);
     String blobPrefix =
         Keys.snapshotTargetStatsBlobPrefix(accountId, tableId, snapshotId)
             + "generations/"
@@ -2286,6 +2570,11 @@ public class StatsRepository implements StatsStore {
       failure = accumulateFailure(failure, e);
     }
     try {
+      pointerStore.delete(artifactMapPointer);
+    } catch (RuntimeException e) {
+      failure = accumulateFailure(failure, e);
+    }
+    try {
       blobStore.deletePrefix(blobPrefix);
     } catch (RuntimeException e) {
       if (failure == null) {
@@ -2303,6 +2592,7 @@ public class StatsRepository implements StatsStore {
         || pointerStore.countByPrefix(indexPointerPrefix) != 0
         || pointerStore.countByPrefix(preparedPointerPrefix) != 0
         || pointerStore.get(publicationIntentPointer).isPresent()
+        || pointerStore.get(artifactMapPointer).isPresent()
         || !blobStore.list(blobPrefix, 1, "").keys().isEmpty()) {
       throw new StorageAbortRetryableException(
           "target stats generation cleanup was incomplete: " + generationId);
@@ -2463,6 +2753,10 @@ public class StatsRepository implements StatsStore {
 
     private Optional<TargetStatsRecord> getByPointer(String pointerKey) {
       return get(pointerKey);
+    }
+
+    private Optional<TargetStatsRecord> getReferenced(String pointerKey, String blobUri) {
+      return loadAndParseReferencedBlob(pointerKey, blobUri);
     }
 
     private List<KeyedValue<TargetStatsRecord>> listKeyed(

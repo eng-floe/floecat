@@ -97,8 +97,10 @@ class FloecatConnectorCompatibilityTest {
         long snapshotId,
         Set<String> plannedFilePaths,
         Set<String> includeColumns,
+        Set<String> indexColumns,
         Set<StatsTargetKind> includeTargetKinds,
-        boolean captureIndexes) {
+        boolean captureIndexes,
+        ColumnSelectorPolicy columnSelectorPolicy) {
       return FileGroupCaptureResult.empty();
     }
 

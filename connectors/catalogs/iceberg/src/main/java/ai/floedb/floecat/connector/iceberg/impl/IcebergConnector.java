@@ -64,7 +64,10 @@ import java.util.Optional;
 import java.util.Set;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -403,28 +406,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        includeTargetKinds,
-        captureIndexes,
-        ColumnSelectorPolicy.defaults());
-  }
-
-  @Override
-  public FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
+      Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy) {
@@ -469,8 +451,21 @@ public abstract class IcebergConnector implements FloecatConnector {
             ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
                 .read(plannedFilePaths)
             : ParquetPageIndexReader.ReadResult.empty();
-    return FileGroupCaptureResult.of(
-        stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    if (!captureIndexes) {
+      return FileGroupCaptureResult.of(
+          stats, pageIndexes.entries(), pageIndexes.rowGroups(), realizedStatsSelectors);
+    }
+    List<ParquetPageIndexEntry> selectedPageIndexes =
+        selectPageIndexEntries(
+            table,
+            snapshot,
+            indexColumns,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            pageIndexes.entries(),
+            pageIndexes.rowGroups());
+    return FileGroupCaptureResult.ofSelectedPageIndexes(
+        stats, selectedPageIndexes, pageIndexes.rowGroups(), realizedStatsSelectors);
   }
 
   @Override
@@ -488,6 +483,25 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (snapshot == null) {
       throw new IllegalArgumentException("Unknown Iceberg snapshot: " + snapshotId);
     }
+    return Optional.of(
+        selectPageIndexEntries(
+            table,
+            snapshot,
+            selectors,
+            columnSelectorPolicy,
+            plannedFilePaths,
+            entries,
+            rowGroups));
+  }
+
+  private List<ParquetPageIndexEntry> selectPageIndexEntries(
+      Table table,
+      Snapshot snapshot,
+      Set<String> selectors,
+      ColumnSelectorPolicy columnSelectorPolicy,
+      Set<String> plannedFilePaths,
+      List<ParquetPageIndexEntry> entries,
+      List<ParquetRowGroup> rowGroups) {
     Schema schema = schemaForSnapshot(table, snapshot);
     List<ParquetPageIndexEntry> available = entries == null ? List.of() : entries;
     Map<Integer, SyntheticPageIndexColumn> syntheticColumns =
@@ -497,7 +511,7 @@ public abstract class IcebergConnector implements FloecatConnector {
             ? resolveDefaultPageIndexFieldIds(columnSelectorPolicy, syntheticColumns.keySet())
             : resolveIncludedFieldIds(schema, selectors, columnSelectorPolicy);
     if (selectedFieldIds.isEmpty()) {
-      return Optional.of(List.of());
+      return List.of();
     }
     for (int fieldId : selectedFieldIds) {
       if (!syntheticColumns.containsKey(fieldId)) {
@@ -597,7 +611,7 @@ public abstract class IcebergConnector implements FloecatConnector {
                 "Iceberg page indexes for " + filePath + " do not cover selectors " + selectors);
           }
         });
-    return Optional.of(List.copyOf(selected));
+    return List.copyOf(selected);
   }
 
   private static Set<Integer> resolveDefaultPageIndexFieldIds(
@@ -769,6 +783,115 @@ public abstract class IcebergConnector implements FloecatConnector {
           new SnapshotFilePlan(
               List.copyOf(dataFiles), List.of(), SchemaParser.toJson(planner.schema())));
     }
+  }
+
+  @Override
+  public Optional<SnapshotFileDelta> planSnapshotFileDelta(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long baseSnapshotId,
+      long targetSnapshotId) {
+    if (baseSnapshotId < 0 || targetSnapshotId < 0 || baseSnapshotId == targetSnapshotId) {
+      return Optional.empty();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot base = table.snapshot(baseSnapshotId);
+    Snapshot target = table.snapshot(targetSnapshotId);
+    if (base == null || target == null) {
+      return Optional.empty();
+    }
+
+    List<Snapshot> lineage = new ArrayList<>();
+    Snapshot cursor = target;
+    while (cursor != null && cursor.snapshotId() != baseSnapshotId) {
+      lineage.add(cursor);
+      Long parentId = cursor.parentId();
+      cursor = parentId == null ? null : table.snapshot(parentId);
+    }
+    if (cursor == null) {
+      return Optional.empty();
+    }
+
+    for (int i = lineage.size() - 1; i >= 0; i--) {
+      Snapshot change = lineage.get(i);
+      if (!isAppendOperation(change)
+          || hasDataFileRemovals(change, table.io())
+          || hasDeleteArtifactChanges(change, table.io())) {
+        return Optional.empty();
+      }
+    }
+
+    LinkedHashMap<String, SnapshotFileEntry> additions = new LinkedHashMap<>();
+    for (int i = lineage.size() - 1; i >= 0; i--) {
+      for (DataFile dataFile : lineage.get(i).addedDataFiles(table.io())) {
+        SnapshotFileEntry entry = toSnapshotDataFile(table, dataFile);
+        additions.put(entry.filePath(), entry);
+      }
+    }
+
+    return Optional.of(
+        new SnapshotFileDelta(
+            List.copyOf(additions.values()),
+            List.of(),
+            false,
+            SchemaParser.toJson(schemaForSnapshot(table, target))));
+  }
+
+  /**
+   * Authoritative append-only classification for a single snapshot. Manifest delete counts alone
+   * are not sufficient: Iceberg may drop a fully deleted manifest from the manifest list instead of
+   * rewriting it with DELETED entries, in which case no manifest attributable to this snapshot
+   * reports the removal. {@code operation} is written by every Iceberg snapshot producer, so a
+   * non-{@code append} operation fails the gate before the manifest scans run.
+   */
+  private static boolean isAppendOperation(Snapshot snapshot) {
+    return DataOperations.APPEND.equals(snapshot.operation());
+  }
+
+  private static boolean hasDataFileRemovals(Snapshot snapshot, FileIO io) {
+    for (ManifestFile manifest : snapshot.dataManifests(io)) {
+      if (Objects.equals(manifest.snapshotId(), snapshot.snapshotId())
+          && hasFiles(manifest.deletedFilesCount())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasDeleteArtifactChanges(Snapshot snapshot, FileIO io) {
+    for (ManifestFile manifest : snapshot.deleteManifests(io)) {
+      if (Objects.equals(manifest.snapshotId(), snapshot.snapshotId())
+          && (hasFiles(manifest.addedFilesCount()) || hasFiles(manifest.deletedFilesCount()))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static boolean hasFiles(Integer count) {
+    return count == null || count > 0;
+  }
+
+  private static SnapshotFileEntry toSnapshotDataFile(Table table, DataFile dataFile) {
+    PartitionSpec spec = table.specs().getOrDefault(dataFile.specId(), table.spec());
+    Long sequenceNumber = dataFile.fileSequenceNumber();
+    if (sequenceNumber != null && sequenceNumber <= 0L) {
+      sequenceNumber = null;
+    }
+    return new SnapshotFileEntry(
+        dataFile.location().toString(),
+        dataFile.format().name(),
+        dataFile.fileSizeInBytes(),
+        dataFile.recordCount(),
+        FileContent.FC_DATA,
+        IcebergPlanner.partitionJson(spec, dataFile.partition()),
+        spec == null ? 0 : spec.specId(),
+        List.of(),
+        sequenceNumber,
+        null,
+        List.of(),
+        IcebergPlanner.dataContentIdentity(sequenceNumber, dataFile.recordCount()));
   }
 
   private List<TargetStatsRecord> buildTargetStats(

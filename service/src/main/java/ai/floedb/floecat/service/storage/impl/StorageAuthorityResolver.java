@@ -26,13 +26,27 @@ import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
@@ -46,8 +60,26 @@ import software.amazon.awssdk.services.sts.model.Credentials;
 @ApplicationScoped
 public class StorageAuthorityResolver {
   static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
+  private static final Logger LOG = Logger.getLogger(StorageAuthorityResolver.class.getName());
+  private static final Duration ASSUME_ROLE_CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
+  private static final int ASSUME_ROLE_MAX_ATTEMPTS = 3;
+  private static final long ASSUME_ROLE_RETRY_BASE_MILLIS = 50L;
+  private static final int DEFAULT_ASSUME_ROLE_CACHE_MAX_ENTRIES = 1024;
+
+  private final Object assumeRoleCacheLock = new Object();
+  private final LinkedHashMap<AssumeRoleCacheKey, CompletableFuture<ResolvedStorageCredentials>>
+      assumeRoleCache = new LinkedHashMap<>(16, 0.75f, true);
+  private final int assumeRoleCacheMaxEntries;
 
   @Inject SecretsManager secretsManager;
+
+  public StorageAuthorityResolver() {
+    this(DEFAULT_ASSUME_ROLE_CACHE_MAX_ENTRIES);
+  }
+
+  StorageAuthorityResolver(int assumeRoleCacheMaxEntries) {
+    this.assumeRoleCacheMaxEntries = Math.max(1, assumeRoleCacheMaxEntries);
+  }
 
   ResolveStorageAuthorityResponse buildResponse(
       StorageAuthority authority,
@@ -205,12 +237,159 @@ public class StorageAuthorityResolver {
       AuthCredentials authoritySecret,
       List<String> sessionScopeLocations,
       boolean exactObjectScope) {
-    if (authoritySecret != null
-        && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
-      return assumeRoleFromStaticSource(
-          authority, authoritySecret.getAws(), sessionScopeLocations, exactObjectScope);
+    AssumeRoleCacheKey key =
+        AssumeRoleCacheKey.of(authority, authoritySecret, sessionScopeLocations, exactObjectScope);
+    return cachedAssumeRole(
+        key,
+        () -> {
+          if (authoritySecret != null
+              && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
+            return assumeRoleFromStaticSource(
+                authority, authoritySecret.getAws(), sessionScopeLocations, exactObjectScope);
+          }
+          return assumeRoleFromAmbientSource(authority, sessionScopeLocations, exactObjectScope);
+        });
+  }
+
+  private ResolvedStorageCredentials cachedAssumeRole(
+      AssumeRoleCacheKey key, Supplier<ResolvedStorageCredentials> loader) {
+    for (; ; ) {
+      CompletableFuture<ResolvedStorageCredentials> existing = cachedAssumeRoleFuture(key);
+      if (existing != null) {
+        try {
+          ResolvedStorageCredentials credentials = existing.join();
+          if (isFreshForCache(credentials)) {
+            return credentials;
+          }
+        } catch (CompletionException error) {
+          removeCachedAssumeRole(key, existing);
+          throw propagate(error.getCause());
+        }
+        removeCachedAssumeRole(key, existing);
+        continue;
+      }
+
+      CompletableFuture<ResolvedStorageCredentials> created = new CompletableFuture<>();
+      AssumeRoleCacheReservation reservation = reserveAssumeRoleCache(key, created);
+      if (reservation.existing() != null) {
+        continue;
+      }
+      if (!reservation.inserted()) {
+        awaitAssumeRoleCacheCapacity();
+        continue;
+      }
+      try {
+        ResolvedStorageCredentials credentials = loader.get();
+        created.complete(credentials);
+        if (!isFreshForCache(credentials)) {
+          removeCachedAssumeRole(key, created);
+        } else {
+          trimAssumeRoleCache();
+        }
+        return credentials;
+      } catch (Throwable error) {
+        created.completeExceptionally(error);
+        removeCachedAssumeRole(key, created);
+        throw propagate(error);
+      }
     }
-    return assumeRoleFromAmbientSource(authority, sessionScopeLocations, exactObjectScope);
+  }
+
+  private CompletableFuture<ResolvedStorageCredentials> cachedAssumeRoleFuture(
+      AssumeRoleCacheKey key) {
+    synchronized (assumeRoleCacheLock) {
+      return assumeRoleCache.get(key);
+    }
+  }
+
+  private AssumeRoleCacheReservation reserveAssumeRoleCache(
+      AssumeRoleCacheKey key, CompletableFuture<ResolvedStorageCredentials> created) {
+    synchronized (assumeRoleCacheLock) {
+      CompletableFuture<ResolvedStorageCredentials> existing = assumeRoleCache.get(key);
+      if (existing != null) {
+        return new AssumeRoleCacheReservation(existing, false);
+      }
+      trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries - 1);
+      if (assumeRoleCache.size() >= assumeRoleCacheMaxEntries) {
+        return new AssumeRoleCacheReservation(null, false);
+      }
+      assumeRoleCache.put(key, created);
+      return new AssumeRoleCacheReservation(null, true);
+    }
+  }
+
+  private void awaitAssumeRoleCacheCapacity() {
+    synchronized (assumeRoleCacheLock) {
+      trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries - 1);
+      if (assumeRoleCache.size() < assumeRoleCacheMaxEntries) {
+        return;
+      }
+      try {
+        assumeRoleCacheLock.wait();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(
+            "interrupted while waiting for AssumeRole cache capacity", e);
+      }
+    }
+  }
+
+  private void removeCachedAssumeRole(
+      AssumeRoleCacheKey key, CompletableFuture<ResolvedStorageCredentials> expected) {
+    synchronized (assumeRoleCacheLock) {
+      assumeRoleCache.remove(key, expected);
+      assumeRoleCacheLock.notifyAll();
+    }
+  }
+
+  private void trimAssumeRoleCache() {
+    synchronized (assumeRoleCacheLock) {
+      trimAssumeRoleCacheLocked();
+      // A completed entry can now be evicted by a capacity waiter even when this trim did not need
+      // to remove it at the normal maximum size.
+      assumeRoleCacheLock.notifyAll();
+    }
+  }
+
+  private void trimAssumeRoleCacheLocked() {
+    trimAssumeRoleCacheLocked(assumeRoleCacheMaxEntries);
+  }
+
+  private void trimAssumeRoleCacheLocked(int targetSize) {
+    if (assumeRoleCache.size() <= targetSize) {
+      return;
+    }
+    var iterator = assumeRoleCache.entrySet().iterator();
+    while (assumeRoleCache.size() > targetSize && iterator.hasNext()) {
+      if (iterator.next().getValue().isDone()) {
+        iterator.remove();
+      }
+    }
+  }
+
+  int assumeRoleCacheSize() {
+    synchronized (assumeRoleCacheLock) {
+      return assumeRoleCache.size();
+    }
+  }
+
+  private record AssumeRoleCacheReservation(
+      CompletableFuture<ResolvedStorageCredentials> existing, boolean inserted) {}
+
+  private static boolean isFreshForCache(ResolvedStorageCredentials credentials) {
+    return credentials != null
+        && credentials.expiresAt() != null
+        && Instant.now().plus(ASSUME_ROLE_CACHE_REFRESH_SKEW).isBefore(credentials.expiresAt());
+  }
+
+  private static RuntimeException propagate(Throwable error) {
+    if (error instanceof RuntimeException runtime) {
+      return runtime;
+    }
+    if (error instanceof Error fatal) {
+      throw fatal;
+    }
+    return new RuntimeException(error);
   }
 
   ResolvedStorageCredentials assumeRoleFromStaticSource(
@@ -242,6 +421,33 @@ public class StorageAuthorityResolver {
   }
 
   private ResolvedStorageCredentials assumeRole(
+      StorageAuthority authority,
+      Supplier<AwsCredentialsProvider> providerFactory,
+      List<String> sessionScopeLocations,
+      boolean exactObjectScope) {
+    RuntimeException lastFailure = null;
+    for (int attempt = 1; attempt <= ASSUME_ROLE_MAX_ATTEMPTS; attempt++) {
+      try {
+        return assumeRoleOnce(authority, providerFactory, sessionScopeLocations, exactObjectScope);
+      } catch (RuntimeException error) {
+        if (!retryableAssumeRoleFailure(error) || attempt == ASSUME_ROLE_MAX_ATTEMPTS) {
+          if (retryableAssumeRoleFailure(error)) {
+            throw new CredentialVendingUnavailableException(error);
+          }
+          throw error;
+        }
+        lastFailure = error;
+        LOG.log(
+            Level.WARNING,
+            "Retrying transient STS AssumeRole failure authorityId={0} attempt={1}",
+            new Object[] {authority.getResourceId().getId(), attempt});
+        pauseBeforeAssumeRoleRetry(attempt);
+      }
+    }
+    throw new CredentialVendingUnavailableException(lastFailure);
+  }
+
+  private ResolvedStorageCredentials assumeRoleOnce(
       StorageAuthority authority,
       Supplier<AwsCredentialsProvider> providerFactory,
       List<String> sessionScopeLocations,
@@ -285,12 +491,103 @@ public class StorageAuthorityResolver {
     }
   }
 
+  void pauseBeforeAssumeRoleRetry(int failedAttempt) {
+    long upperBound = ASSUME_ROLE_RETRY_BASE_MILLIS << Math.max(0, failedAttempt - 1);
+    long delayMillis =
+        ThreadLocalRandom.current().nextLong(Math.max(1L, upperBound / 2), upperBound + 1);
+    LockSupport.parkNanos(Duration.ofMillis(delayMillis).toNanos());
+  }
+
+  private static boolean retryableAssumeRoleFailure(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof software.amazon.awssdk.core.exception.SdkClientException) {
+        return true;
+      }
+      if (current instanceof software.amazon.awssdk.services.sts.model.StsException sts
+          && (sts.statusCode() == 429 || sts.statusCode() >= 500)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
     var builder = StsClient.builder().credentialsProvider(provider);
     if (authority.hasRegion() && !authority.getRegion().isBlank()) {
       builder.region(Region.of(authority.getRegion()));
     }
     return builder.build();
+  }
+
+  static final class CredentialVendingUnavailableException extends RuntimeException {
+    CredentialVendingUnavailableException(Throwable cause) {
+      super("Temporary failure vending scoped storage credentials", cause);
+    }
+  }
+
+  private record AssumeRoleCacheKey(
+      String authorityFingerprint,
+      String sourceCredentialFingerprint,
+      List<String> scopes,
+      boolean exactObjectScope) {
+    private static AssumeRoleCacheKey of(
+        StorageAuthority authority,
+        AuthCredentials authoritySecret,
+        List<String> sessionScopeLocations,
+        boolean exactObjectScope) {
+      return new AssumeRoleCacheKey(
+          sha256(authority.toByteArray()),
+          sha256(canonicalBytes(authoritySecret)),
+          List.copyOf(normalizeS3Scopes(sessionScopeLocations)),
+          exactObjectScope);
+    }
+
+    /**
+     * Fingerprints the source credential over a canonical form. {@code AuthCredentials} carries
+     * {@code map<string,string>} properties and headers, and protobuf serialization does not order
+     * map entries, so {@code toByteArray()} alone can hash two logically identical secrets to
+     * different digests and defeat the cache. Sorting the map entries out into a stable
+     * representation removes that dependence on serialization order.
+     */
+    private static byte[] canonicalBytes(AuthCredentials authoritySecret) {
+      if (authoritySecret == null) {
+        return new byte[0];
+      }
+      AuthCredentials withoutMaps =
+          authoritySecret.toBuilder().clearProperties().clearHeaders().build();
+      StringBuilder canonical = new StringBuilder();
+      canonical.append(HexFormat.of().formatHex(withoutMaps.toByteArray()));
+      appendSortedEntries(canonical, "p", authoritySecret.getPropertiesMap());
+      appendSortedEntries(canonical, "h", authoritySecret.getHeadersMap());
+      return canonical.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void appendSortedEntries(
+        StringBuilder canonical, String prefix, Map<String, String> entries) {
+      // Length-prefixed so keys or values containing the separator cannot forge another entry.
+      new TreeMap<>(entries)
+          .forEach(
+              (key, value) ->
+                  canonical
+                      .append('|')
+                      .append(prefix)
+                      .append(':')
+                      .append(key.length())
+                      .append(':')
+                      .append(key)
+                      .append(':')
+                      .append(value.length())
+                      .append(':')
+                      .append(value));
+    }
+  }
+
+  private static String sha256(byte[] value) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 is unavailable", error);
+    }
   }
 
   static String scopedSessionPolicy(String locationPrefix) {
@@ -358,12 +655,12 @@ public class StorageAuthorityResolver {
     if (locationPrefixes == null || locationPrefixes.isEmpty()) {
       return List.of();
     }
-    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    TreeSet<String> normalized = new TreeSet<>();
     for (String locationPrefix : locationPrefixes) {
-      if (locationPrefix == null || locationPrefix.isBlank()) {
-        continue;
+      S3Location scope = S3Location.parse(locationPrefix);
+      if (scope != null) {
+        normalized.add(scope.canonicalUri());
       }
-      normalized.add(locationPrefix.trim());
     }
     return List.copyOf(normalized);
   }
@@ -402,7 +699,9 @@ public class StorageAuthorityResolver {
         return null;
       }
       int slash = normalized.indexOf('/');
-      String bucket = slash < 0 ? normalized : normalized.substring(0, slash);
+      String bucket =
+          (slash < 0 ? normalized : normalized.substring(0, slash))
+              .toLowerCase(java.util.Locale.ROOT);
       if (bucket.isBlank()) {
         return null;
       }
@@ -411,6 +710,10 @@ public class StorageAuthorityResolver {
         prefix = prefix.substring(0, prefix.length() - 1);
       }
       return new S3Location(bucket, prefix);
+    }
+
+    String canonicalUri() {
+      return keyPrefix.isBlank() ? "s3://" + bucket : "s3://" + bucket + "/" + keyPrefix;
     }
 
     String listPrefix() {

@@ -38,7 +38,9 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -128,6 +130,7 @@ class StatsRepositoryTargetStorageTest {
         TABLE_ID, snapshotId, generationId, references);
     StatsStore.StatsGenerationPredecessor predecessor =
         repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobs, snapshotId, generationId);
     repository.publishPreparedStatsGeneration(
         TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
 
@@ -210,6 +213,7 @@ class StatsRepositoryTargetStorageTest {
                 digest)));
     StatsStore.StatsGenerationPredecessor predecessor =
         repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobs, snapshotId, generationId);
     repository.publishPreparedStatsGeneration(
         TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
     blobs.put(
@@ -335,6 +339,65 @@ class StatsRepositoryTargetStorageTest {
     List<TargetStatsRecord> listed = page.records();
     assertThat(listed).hasSize(4);
     assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(4);
+  }
+
+  @Test
+  void structurallySharedListFillsMixedPageAndResumesAcrossTargetKinds() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobs);
+    long snapshotId = 3031L;
+
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12).build(), null));
+    for (long columnId = 1L; columnId <= 2L; columnId++) {
+      repository.putTargetStats(
+          TargetStatsRecords.columnRecord(
+              TABLE_ID,
+              snapshotId,
+              columnId,
+              ScalarStats.newBuilder()
+                  .setDisplayName("c" + columnId)
+                  .setLogicalType("BIGINT")
+                  .build(),
+              null));
+    }
+
+    String activeManifest = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String generationId = Keys.generationFromManifestBlobUri(activeManifest).generationId();
+    byte[] captureManifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(TABLE_ID.getAccountId())
+            .setTableId(TABLE_ID.getId())
+            .setSnapshotId(snapshotId)
+            .setReusableArtifactIndex(ReusableArtifactIndexStore.emptyReference())
+            .build()
+            .toByteArray();
+    String captureManifestUri = "/capture/" + Hashing.sha256Hex(captureManifest) + ".pb";
+    blobs.put(captureManifestUri, captureManifest, "application/x-protobuf");
+    repository.registerGenerationArtifactMap(
+        TABLE_ID, snapshotId, generationId, captureManifestUri, captureManifest.length);
+
+    StatsStore.StatsStorePage mixed =
+        repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "");
+    assertThat(mixed.records()).hasSize(3);
+    assertThat(mixed.records())
+        .extracting(record -> record.getTarget().getTargetCase().name())
+        .containsExactly("TABLE", "COLUMN", "COLUMN");
+
+    StatsStore.StatsStorePage first =
+        repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 1, "");
+    assertThat(first.records())
+        .singleElement()
+        .satisfies(record -> assertThat(record.hasTable()).isTrue());
+    StatsStore.StatsStorePage resumed =
+        repository.listTargetStats(
+            TABLE_ID, snapshotId, Optional.empty(), 10, first.nextPageToken());
+    assertThat(resumed.records())
+        .hasSize(2)
+        .allSatisfy(record -> assertThat(record.hasScalar()).isTrue());
   }
 
   @Test
@@ -2584,6 +2647,7 @@ class StatsRepositoryTargetStorageTest {
 
     StatsStore.StatsGenerationPredecessor predecessor =
         repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobStore, snapshotId, generationId);
     repository.publishPreparedStatsGeneration(
         TABLE_ID, snapshotId, generationId, List.of(finalReference), predecessor, null);
 
@@ -2621,7 +2685,8 @@ class StatsRepositoryTargetStorageTest {
             return super.compareAndSetBatch(ops);
           }
         };
-    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobStore);
     String generationId = "atomic-generation";
     String indexActiveKey = "/test/index-active";
     String indexManifestKey = "/test/index-manifest";
@@ -2638,6 +2703,7 @@ class StatsRepositoryTargetStorageTest {
                     PointerReferences.blobPointer(indexManifestKey, "/manifest.pb", 1L))));
     StatsStore.StatsGenerationPredecessor firstPredecessor =
         repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobStore, snapshotId, generationId);
 
     assertThat(
             repository.publishPreparedStatsGeneration(
@@ -2656,59 +2722,6 @@ class StatsRepositoryTargetStorageTest {
     assertThat(pointers.get(statsPointerKey)).isPresent();
     assertThat(pointers.get(indexActiveKey).orElseThrow().getBlobUri()).isEqualTo(generationId);
     assertThat(pointers.get(indexManifestKey).orElseThrow().getBlobUri()).isEqualTo("/manifest.pb");
-  }
-
-  @Test
-  void scopedGenerationInheritsMissingActiveTargetsWithoutOverwritingNewTargets() {
-    InMemoryPointerStore pointers = new InMemoryPointerStore();
-    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
-    long snapshotId = 7153L;
-    TargetStatsRecord tableRecord =
-        TargetStatsRecords.tableRecord(
-            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(10L).build(), null);
-    TargetStatsRecord oldColumn =
-        TargetStatsRecords.columnRecord(
-            TABLE_ID, snapshotId, 7L, ScalarStats.newBuilder().setDisplayName("old").build(), null);
-    repository.putTargetStats(tableRecord);
-    repository.putTargetStats(oldColumn);
-    String generationId = "full-rescan-scoped";
-    String columnTargetStorageId = StatsTargetIdentity.storageId(oldColumn.getTarget());
-    StatsStore.PrewrittenTargetStatsReference replacement =
-        prewrittenReference(snapshotId, generationId, columnTargetStorageId, "replacement");
-    repository.registerPrewrittenStatsReferencesInGeneration(
-        TABLE_ID, snapshotId, generationId, List.of(replacement));
-
-    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
-
-    String targetPrefix =
-        Keys.snapshotTargetStatsGenerationPrefix(
-            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
-    assertThat(pointers.countByPrefix(targetPrefix)).isEqualTo(2);
-    String inheritedTablePointer =
-        Keys.snapshotTargetStatsGenerationPointer(
-            TABLE_ID.getAccountId(),
-            TABLE_ID.getId(),
-            snapshotId,
-            generationId,
-            StatsTargetIdentity.storageId(tableRecord.getTarget()));
-    long inheritedVersion = pointers.get(inheritedTablePointer).orElseThrow().getVersion();
-
-    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
-
-    assertThat(pointers.get(inheritedTablePointer).orElseThrow().getVersion())
-        .isEqualTo(inheritedVersion);
-    assertThat(
-            pointers
-                .get(
-                    Keys.snapshotTargetStatsGenerationPointer(
-                        TABLE_ID.getAccountId(),
-                        TABLE_ID.getId(),
-                        snapshotId,
-                        generationId,
-                        columnTargetStorageId))
-                .orElseThrow()
-                .getBlobUri())
-        .isEqualTo(replacement.blobUri());
   }
 
   @Test
@@ -2910,6 +2923,15 @@ class StatsRepositoryTargetStorageTest {
             + ".pb";
     return new StatsStore.PrewrittenTargetStatsReference(
         targetStorageId, blobUri, payload.length(), digest);
+  }
+
+  private static void prewriteStatsGenerationManifest(
+      BlobStore blobStore, long snapshotId, String generationId) {
+    blobStore.put(
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId),
+        StringValue.of(generationId).toByteArray(),
+        "application/x-protobuf");
   }
 
   private static String generationLifecycle(

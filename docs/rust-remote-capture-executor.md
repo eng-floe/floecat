@@ -33,7 +33,10 @@ satisfy the request directly.
 If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the leased snapshot task's
 `source_revision`, `metadata_fingerprint`, and complete `requested_coverage` in its successful
 planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
-snapshot finalizer must likewise populate the realized-selector fields described below.
+snapshot finalizer must likewise populate the realized-selector fields described below. Planner
+and finalizer implementations must use bindings generated from the same protobuf version as the
+control plane: reusable-artifact indexes use format-1 immutable sorted runs, and the former
+trie-root format is not accepted.
 
 ## Execution Architecture
 The leased file-group execution path is:
@@ -448,10 +451,39 @@ target, and retains that target's compatibility metadata on its owning bundle. I
 hash delete-file content.
 
 The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
-its `artifact_references_sha256`, and one normalized `reusable_artifact_bundles` entry per file
-group. It carries file-group descriptors, bundle compatibility indexes, snapshot-wide aggregate
-descriptors, and counts. Data-file source/success counts do not include auxiliary delete artifacts;
-file-stats record counts include their group-level target mappings.
+its `artifact_references_sha256`, and one normalized `reusable_artifact_bundles` entry per current
+file group. These bundles are a publication delta. When the leased plan has an `append_only_base`,
+the trusted finalizer authenticates its format-1 `reusable_artifact_index`, applies the delta, and
+writes the complete immutable run set to `SnapshotCaptureManifest.reusable_artifact_index`.
+Unchanged runs are structurally shared with the predecessor; bounded level compaction replaces only
+the runs it merges. The current delta is sorted and emitted through bounded 8 MiB L0 chunks rather
+than materialized as one in-memory run. Roughly 512 KiB logical data blocks are concatenated into
+content-addressed packs of up to 64 MiB. Point lookup range-reads one block; sequential merge reads
+coalesce adjacent blocks into windows of up to 8 MiB, targeting a 64 MiB operation-wide read budget
+while always allowing one indivisible block per run.
+Small run objects are embedded in the capture manifest, while larger immutable
+objects are stored by content digest. The service binds the inactive stats generation directly to
+the capture manifest and performs fenced activation, so it neither copies inherited references nor
+reopens inherited bundle payloads.
+The manifest also carries snapshot-wide aggregate descriptors and counts. Data-file source/success
+counts do not include auxiliary delete artifacts; file-stats record counts include their
+group-level target mappings.
+
+An external `PLAN_SNAPSHOT` implementation that offers reuse must use the same lookup semantics as
+the control plane: authenticate every fetched index object by length and SHA-256, batch-fetch run
+filters and manifests, and read only candidate data blocks. It must not issue an object-store
+request per planned source file, and it never needs to read source Parquet, bundle payloads, or
+page-index sidecars to decide compatibility. A missing run object makes the base temporarily
+unavailable for reuse. The run filter encoding and compaction layout are internal. An index that is
+invalid under the current contract, including corrupt authenticated index metadata, is
+discarded and causes a full capture rather than a failed reconcile; it is not read using legacy
+semantics. Malformed capture-manifest metadata remains a terminal invalid-base error. An external
+implementation should use a shared compatible
+index library rather than manufacture or compact run objects itself.
+
+These requirements do not change the standalone Rust `EXEC_FILE_GROUP` contract. A deployment
+that externalizes only file-group execution can treat the run index as opaque and needs no new
+object-store access pattern.
 
 For column-stats capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the

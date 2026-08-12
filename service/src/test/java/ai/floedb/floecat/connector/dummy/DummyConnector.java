@@ -281,8 +281,10 @@ public final class DummyConnector implements FloecatConnector {
       long snapshotId,
       Set<String> plannedFilePaths,
       Set<String> includeColumns,
+      Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes) {
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
     Set<String> effectivePaths =
         plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
     if (effectivePaths.isEmpty()) {

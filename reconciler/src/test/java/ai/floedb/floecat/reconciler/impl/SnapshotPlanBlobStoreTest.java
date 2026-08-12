@@ -227,6 +227,54 @@ class SnapshotPlanBlobStoreTest {
   }
 
   @Test
+  void resolvesFileGroupsFromDurablePlanThroughBoundedIndexCache() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileFileGroupTask first =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/first.parquet"));
+    ReconcileFileGroupTask second =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-2", "table-1", 55L, List.of("s3://bucket/second.parquet"));
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            2);
+    ReconcileSnapshotTask persisted =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            snapshotTask,
+            List.of(
+                new PlannedFileGroupJob(ReconcileScope.empty(), first),
+                new PlannedFileGroupJob(ReconcileScope.empty(), second)));
+
+    assertEquals(
+        Optional.of(first),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-1"));
+    assertEquals(
+        Optional.of(second),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-2"));
+    assertEquals(1, blobStore.getCount);
+
+    store.clearPlanIndexCache();
+
+    assertEquals(
+        Optional.of(first),
+        store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-1"));
+    assertEquals(2, blobStore.getCount);
+  }
+
+  @Test
   void persistDirectStatsRoundTripsRecords() {
     SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -259,6 +307,77 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(7, persistedTask.sourceFileCount());
     assertNotNull(blobStore.bytesByUri.get(persistedTask.directStatsBlobUri()));
     assertEquals(List.of(record), store.loadDirectStats(persistedTask));
+  }
+
+  @Test
+  void persistPlanRoundTripsAppendOnlyBase() {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    store.blobStore = blobStore;
+    store.mapper = new ObjectMapper();
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "",
+            0,
+            1,
+            "",
+            0);
+    SnapshotPlanBlobStore.AppendOnlyBase base =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            54L,
+            "/reuse/base.pb",
+            123L,
+            "ab".repeat(32),
+            1,
+            0,
+            1,
+            3,
+            "full-rescan-base-job",
+            "full-rescan-base-job",
+            testArtifactIndex(0, 1));
+
+    ReconcileSnapshotTask persisted =
+        store.persistPlan("acct", "job-1", snapshotTask, List.of(), base);
+    SnapshotPlanBlobStore.AppendOnlyBase otherBase =
+        new SnapshotPlanBlobStore.AppendOnlyBase(
+            53L,
+            "/reuse/other-base.pb",
+            124L,
+            "cd".repeat(32),
+            1,
+            1,
+            0,
+            0,
+            "full-rescan-other-base-job",
+            "",
+            testArtifactIndex(1, 0));
+    ReconcileSnapshotTask persistedOther =
+        store.persistPlan("acct", "job-1", snapshotTask, List.of(), otherBase);
+
+    assertEquals(
+        Optional.of(base), store.loadPlan(persisted.fileGroupPlanBlobUri()).appendOnlyBase());
+    assertEquals(0, base.fileStatsRecordCount());
+    assertEquals(3, base.chainDepth());
+    assertEquals(1, base.indexArtifactCount());
+    assertNotEquals(persisted.fileGroupPlanBlobUri(), persistedOther.fileGroupPlanBlobUri());
+  }
+
+  @Test
+  void legacyAppendOnlyPlanFormatIsRejected() {
+    SnapshotPlanBlobStore.StoredAppendOnlyBase legacy =
+        new SnapshotPlanBlobStore.StoredAppendOnlyBase();
+
+    IllegalArgumentException failure =
+        assertThrows(IllegalArgumentException.class, legacy::toValue);
+
+    assertTrue(failure.getMessage().contains("plan format is incompatible"));
   }
 
   @Test
@@ -449,11 +568,37 @@ class SnapshotPlanBlobStoreTest {
         .build();
   }
 
+  private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference testArtifactIndex(
+      int stats, int indexes) {
+    int entries = stats + indexes;
+    var index =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference.newBuilder()
+            .setFormatVersion(ReusableArtifactIndexStore.FORMAT_VERSION)
+            .setFileStatsRecordCount(stats)
+            .setIndexArtifactCount(indexes);
+    if (entries > 0) {
+      var object =
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference.newBuilder()
+              .setPayloadBytes(1L)
+              .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32]));
+      index.addRuns(
+          ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference.newBuilder()
+              .setManifest(object.clone().setUri("/artifact-index/manifest.pb"))
+              .setFilter(object.clone().setUri("/artifact-index/filter.bf"))
+              .setEntryCount(entries)
+              .setFileStatsRecordCount(stats)
+              .setIndexArtifactCount(indexes));
+    }
+    return index.build();
+  }
+
   private static final class InMemoryBlobStore implements BlobStore {
     private final Map<String, byte[]> bytesByUri = new HashMap<>();
+    private int getCount;
 
     @Override
     public byte[] get(String uri) {
+      getCount++;
       return Optional.ofNullable(bytesByUri.get(uri)).orElseThrow();
     }
 

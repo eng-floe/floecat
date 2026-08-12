@@ -381,7 +381,7 @@ final class DeltaPlanner implements Planner<String> {
     return snapshot.getSchema();
   }
 
-  private String encodePartition(AddFile add) {
+  static String encodePartition(AddFile add) {
     try {
       Map<String, String> partitionValues = toPartitionMap(add.getPartitionValues());
       if (partitionValues == null || partitionValues.isEmpty()) {
@@ -762,7 +762,7 @@ final class DeltaPlanner implements Planner<String> {
     throw new IllegalArgumentException("Unsupported literal stats type: " + dataType);
   }
 
-  private String toJsonValue(String value) {
+  private static String toJsonValue(String value) {
     if (value == null) {
       return "null";
     }
@@ -778,11 +778,11 @@ final class DeltaPlanner implements Planner<String> {
     return "\"" + escape(value) + "\"";
   }
 
-  private String escape(String s) {
+  private static String escape(String s) {
     return String.valueOf(s).replace("\\", "\\\\").replace("\"", "\\\"");
   }
 
-  private Map<String, String> toPartitionMap(MapValue mapValue) {
+  private static Map<String, String> toPartitionMap(MapValue mapValue) {
     if (mapValue == null) {
       return Map.of();
     }
