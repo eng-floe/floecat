@@ -692,6 +692,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1178,9 +1201,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#breaking-remote-executor-revision" class="md-nav__link">
+  <a href="#remote-executor-versioning" class="md-nav__link">
     <span class="md-ellipsis">
-      Breaking remote-executor revision
+      Remote executor versioning
     </span>
   </a>
   
@@ -1735,9 +1758,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#breaking-remote-executor-revision" class="md-nav__link">
+  <a href="#remote-executor-versioning" class="md-nav__link">
     <span class="md-ellipsis">
-      Breaking remote-executor revision
+      Remote executor versioning
     </span>
   </a>
   
@@ -1889,14 +1912,11 @@
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
-<h3 id="breaking-remote-executor-revision">Breaking remote-executor revision<a class="headerlink" href="#breaking-remote-executor-revision" title="Permanent link">&para;</a></h3>
-<p>This release removes the chunked
-<code>ReconcileExecutorControl.SubmitLeasedFileGroupExecutionResult</code> RPC and replaces it with
-<code>CommitLeasedFileGroupResult</code>. The new RPC accepts immutable result, stats, and index-artifact
-descriptors written by the executor; it cannot decode or resume the old chunk/success flow.</p>
-<p>There is intentionally no compatibility shim. Remote executor and control-plane versions must be
-cut over together after existing leases are drained. Rolling or split deployments containing both
-protocol versions are unsupported.</p>
+<h3 id="remote-executor-versioning">Remote executor versioning<a class="headerlink" href="#remote-executor-versioning" title="Permanent link">&para;</a></h3>
+<p>Snapshot plans now require one immutable file execution plan for every declared file path. Remote
+planner/finalizer executors and the control plane must therefore be cut over together after existing
+leases are drained. Rolling or split deployments containing both plan revisions are unsupported;
+there is intentionally no empty-plan compatibility fallback.</p>
 <p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>integration/</code>, <code>query/</code>,
 <code>execution/</code>, <code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
 under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
@@ -1912,9 +1932,9 @@ CLI, and reconciler.</p>
   schemas also cover per-file statistics and index artifact metadata.</li>
 <li><strong><code>connector/connector.proto</code></strong> – Connector management RPCs plus reconciliation job tracking and
   validation routines.</li>
-<li><strong><code>integration/*.proto</code></strong> – External catalog identity and SQL catalog overlay CRUD APIs,
-  including segment-based namespace filters, typed catalog authentication configuration, write-only
-  credential payloads, non-secret configured/generation state, and credential rotation. These contracts are
+<li><strong><code>integration/catalog_integration.proto</code></strong> – External catalog identity CRUD,
+  typed catalog authentication configuration, write-only credential payloads, non-secret
+  configured/generation state, and credential rotation. This contract is
   independent of Connector and deliberately contain no connectivity-validation or reconciliation
   operations.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
@@ -1965,8 +1985,8 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>SnapshotService</code></td>
-<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code></td>
-<td>Pins upstream checkpoints and timestamps.</td>
+<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>GetLatestFinalizedSnapshot</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code></td>
+<td>Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned <code>reuse_manifest_ref</code>; <code>SnapshotSpec</code> does not accept that field.</td>
 </tr>
 <tr>
 <td><code>TableStatisticsService</code></td>
@@ -2004,11 +2024,6 @@ CLI, and reconciler.</p>
 <td></td>
 </tr>
 <tr>
-<td><code>CatalogOverlays</code></td>
-<td>Overlay CRUD, including filtering by integration.</td>
-<td></td>
-</tr>
-<tr>
 <td><code>QueryService</code></td>
 <td><code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>.</td>
 <td></td>
@@ -2031,7 +2046,7 @@ CLI, and reconciler.</p>
 <tr>
 <td><code>ReconcileExecutorControl</code></td>
 <td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>CommitLeasedFileGroupResult</code></td>
-<td>Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs.</td>
+<td>Executor-facing lease protocol for split reconcile workers. Carries typed planner payloads, immutable file execution identity, reusable bundle selections, artifact-bundle commits, progress, cancellation, and completion RPCs.</td>
 </tr>
 <tr>
 <td><code>PlannerStatsService</code></td>
@@ -2055,13 +2070,9 @@ CLI, and reconciler.</p>
 </tr>
 </tbody>
 </table>
-<p>Resource IDs supplied to integration and overlay RPCs must include an <code>account_id</code> matching the
+<p>Resource IDs supplied to integration RPCs must include an <code>account_id</code> matching the
 authenticated principal's account. The service rejects blank or cross-account IDs before hitting
 repository storage.</p>
-<p><code>NamespacePath</code> represents an upstream namespace as root-to-leaf path segments for overlay include
-and exclude filters. Empty includes select all namespaces; exclusions take precedence. Segment text
-is preserved exactly, paths are deduplicated and deterministically ordered, and matching is
-case-sensitive. Each path selects that namespace subtree.</p>
 <h3 id="planner-lifecycle-execution-scan-schemas">Planner Lifecycle &amp; Execution Scan Schemas<a class="headerlink" href="#planner-lifecycle-execution-scan-schemas" title="Permanent link">&para;</a></h3>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
 - <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
@@ -2085,6 +2096,29 @@ engine release.</p>
   tables must be <code>RK_TABLE</code>). Clients should populate the <code>kind</code> enum to improve error messages.</li>
 <li><strong><code>SnapshotRef</code> semantics</strong> – <code>oneof which { snapshot_id | as_of | special }</code>. <code>special</code> currently
   allows <code>SS_CURRENT</code>. Planner RPCs interpret <code>as_of</code> timestamps when enumerating snapshots.</li>
+<li><strong>Snapshot artifact reuse state</strong> – <code>Snapshot.reuse_manifest_ref</code> identifies the finalized
+  <code>SnapshotCaptureManifest</code> by URI, byte length, SHA-256, and stats-generation manifest URI. It is
+  service-owned and is not part of <code>SnapshotSpec</code>. Its <code>format_version</code> must match the current
+  capture-manifest contract; older references are rejected before their blobs are read.
+  <code>SnapshotManifestEntry.reuse_stats_generation_ref</code> heads the compact stats generation used by
+  that manifest.</li>
+<li><strong>External reusable-index compatibility</strong> – external planner and finalizer deployments must
+  regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
+  run-manifest, and block messages. The old trie-root representation has no compatibility reader.
+  <code>AppendOnlySnapshotBase.reusable_artifact_index</code> is an opaque inherited input that must be
+  authenticated when present. External finalizers submit the current
+  <code>reusable_artifact_bundles</code> delta and construct the complete structurally shared
+  <code>SnapshotCaptureManifest.reusable_artifact_index</code>; unchanged immutable runs remain referenced and
+  bounded level compaction replaces merged runs. Roughly 512 KiB logical data blocks are packed
+  into content-addressed objects of up to 64 MiB; block references carry byte ranges and hashes so
+  point lookup can use object-store range reads. Run objects up to 64 KiB may be carried in
+  <code>inline_payload</code>; larger objects use their content-addressed URI. The service binds the inactive
+  generation directly to that capture manifest and performs fenced activation without copying
+  inherited mappings or reopening inherited bundles. File-group-only executors are unaffected
+  because their
+  leased payload still contains resolved bundle selections rather than index runs.
+  <code>AppendOnlySnapshotBase.chain_depth</code> counts inherited append-only links so planners can force a
+  periodic full-capture checkpoint.</li>
 <li><strong>File-level stats</strong> – <code>FileTargetStats</code> anchors counts and sketches to
   a file path. File stats are written as <code>TargetStatsRecord</code> values with <code>target.file</code> identity via
   <code>PutTargetStats</code>; the service enforces consistent <code>table_id</code>/<code>snapshot_id</code> in a stream. Its
@@ -2094,20 +2128,30 @@ engine release.</p>
   <code>table_id</code> and one <code>snapshot_id</code>. Multiple snapshots must be written through separate client
   streams.</li>
 <li><strong>Leased file-group result commit</strong> – <code>CommitLeasedFileGroupResult.Success</code> and <code>.Failure</code> both
-  require <code>result_id</code>. Success carries immutable stats/artifact pointers and an
-  <code>artifact_references_sha256</code> binding those pointer mappings to the durable descriptor. The
-  control plane first accepts the immutable result and completes the child job, then stages
-  generation-scoped references without reading their objects and writes the prepared marker.
-  Snapshot finalization waits for that marker, so exact replay closes a crash gap without allowing
-  a rejected lease to mutate generation pointers.
+  require <code>result_id</code>. Success carries a <code>FileGroupArtifactBundleDescriptor</code>: one immutable bundle
+  object plus the file-stats and index target IDs mapped to it. The durable result descriptor's
+  <code>artifact_references_sha256</code> binds the expanded target mappings to that result. The control plane
+  first accepts the result and completes the child job, then protects the bundle, stages
+  generation-scoped references without reading it, and writes the prepared marker. Snapshot
+  finalization waits for that marker.
   These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
   retryable error, or uncertain outcome requires an exact replay of the same success request, even
-  when the child job is already terminal. Snapshot finalization carries only group descriptors,
-  aggregate pointers, and counts; it requires every prepared marker and activates the index
-  generation before committing the stats-generation root, without repeating per-file pointers.
-  The root commit is the snapshot visibility point, so readers cannot observe the snapshot before
-  both generations are active. Successful finalization clears protections; failed or cancelled
-  full rescans delete the unpublished generation.
+  when the child job is already terminal. Snapshot finalization carries group descriptors,
+  normalized reusable-bundle compatibility indexes, aggregate pointers, and counts. It requires
+  every prepared marker and publishes the stats and index generations with the snapshot root in one
+  visibility transition. Successful finalization clears protections; failed or cancelled full
+  rescans delete the unpublished generation.
+  <code>FileGroupResultPayload.reusable_artifact_bundle</code> describes the shared bundle and its per-target
+  fingerprints and capture signatures. <code>SnapshotCaptureManifest.reusable_artifact_bundles</code> carries
+  only bundles produced by the current file groups. The service applies those entries to the
+  authenticated prior <code>reusable_artifact_index</code> runs and publishes the resulting immutable run set
+  as the complete compatibility index. A later planner can select reusable targets without
+  reading bundle payloads, source files, or page-index sidecars. A selected file-group worker
+  verifies and reads each compact bundle once. This compatibility index is executor-authored
+  metadata: the control plane validates its structure, leased ownership, counts, content-addressed
+  bundle descriptor, and staged target mappings, but deliberately does not GET the bundle to derive
+  or compare metadata. The consuming worker verifies bundle length and SHA-256 and rejects a
+  selected record that is absent or incompatible before reuse.
   <code>FileGroupResultPayload.realized_stats_selectors</code> and <code>.realized_index_selectors</code> record the
   concrete selector aliases materialized by each group. The finalizer aggregates them into the
   corresponding <code>SnapshotCaptureManifest</code> fields so durable content state can satisfy later
@@ -2116,10 +2160,13 @@ engine release.</p>
   coverage and are not inferred from selector counts. Reusable index metadata repeats the concrete
   selectors for each wrapper so planning can prove explicit coverage without reading its bundle;
   default index capture signatures also bind the execution schema that resolved the selection.
-  Index sidecar placement remains executor-controlled through <code>IndexArtifactRecord.artifact_uri</code>,
-  but its serialized wrapper must be published beneath the leased <code>stats_object_prefix</code> as
-  <code>index-artifacts/&lt;sha256(target_storage_id)&gt;/&lt;payload_sha256&gt;.pb</code>. Finalize manifests must repeat
-  the leased capture policy exactly, including opaque properties.</li>
+  Index sidecar placement remains executor-controlled through <code>IndexArtifactRecord.artifact_uri</code>.
+  The serialized wrapper is stored in the file-group reusable artifact bundle. Finalize manifests
+  repeat the leased capture policy exactly, including opaque properties.</li>
+<li><strong>File reuse identity</strong> – <code>FileExecutionPlan.content_identity</code> comes from immutable connector
+  metadata; an empty value disables cross-snapshot reuse. <code>source_fingerprint</code>,
+  <code>index_source_fingerprint</code>, auxiliary stats fingerprints, and stats/index capture signatures bind
+  each selected wrapper to its physical source context and requested policy.</li>
 <li><strong>File-group delete artifacts</strong> – <code>FileExecutionPlan</code> attaches Iceberg position/equality delete
   files and Delta deletion vectors to a planned data file. When stats are requested, exact group
   coverage includes the planned data files, each distinct attached Iceberg delete path, and each
@@ -2127,9 +2174,9 @@ engine release.</p>
   unsupported. Auxiliary targets increase stats descriptor counts but do not increase data-file
   progress counts or page-index coverage, and they are excluded from table/column aggregate
   rollups. One Iceberg delete file may recur in multiple groups; those repeated references are
-  duplicate work rather than additional logical files. Snapshot finalization verifies their
-  existing descriptor sizes and SHA-256 values and retains one unique target without reading the
-  delete-file content. File-group descriptors retain group-level counts, while
+  duplicate work rather than additional logical files. Snapshot finalization verifies equivalent
+  compatibility metadata and retains one canonical target mapping without reading the delete-file
+  content. File-group descriptors retain group-level counts, while
   <code>SnapshotCaptureManifest.file_stats_record_count</code> reports the deduplicated unique-target count.</li>
 <li><strong>File-group planning ceiling</strong> – snapshot planning uses at most 128 files per group by default.
   <code>floecat.reconciler.snapshot-plan.max-files-per-group</code> configures that ceiling and is clamped to

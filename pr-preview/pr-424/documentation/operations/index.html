@@ -821,6 +821,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1875,6 +1898,9 @@ correctness.</p>
 <span class="na">floecat.reconciler.executor.remote-file-group.enabled</span>
 <span class="na">floecat.reconciler.executor.remote-snapshot-finalize.enabled</span>
 <span class="na">floecat.reconciler.executor.snapshot-finalize.enabled</span>
+<span class="na">floecat.reconciler.snapshot-finalize-publication.tick-every</span>
+<span class="na">floecat.reconciler.snapshot-finalize-publication.page-size</span>
+<span class="na">floecat.reconciler.snapshot-finalize-publication.max-parallelism</span>
 <span class="na">floecat.reconciler.authorization.header</span>
 <span class="na">floecat.reconciler.oidc.issuer</span>
 <span class="na">floecat.reconciler.oidc.client-id</span>
@@ -1898,14 +1924,16 @@ correctness.</p>
   token attached by the worker client itself.</li>
 <li>In OIDC mode, that bearer token comes from the configured reconciler worker service principal.</li>
 <li>Internal user-context fanout still uses propagated request metadata where appropriate, but that
-  is separate from reconcile worker auth and is not a fallback for worker control-plane RPCs.</li>
+  is separate from reconcile worker control-plane authentication.</li>
 </ul>
 <p>In the split model, the control plane owns top-level <code>PLAN_CONNECTOR</code> jobs and public reconcile
 APIs, while executor-plane nodes primarily run child <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, <code>PLAN_SNAPSHOT</code>,
-and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> uses the same plan-plus-child execution path. File-group workers submit results through
+<code>EXEC_FILE_GROUP</code>, and <code>FINALIZE_SNAPSHOT_CAPTURE</code> work. <code>CaptureNow</code> uses the same plan-plus-child
+execution path. File-group workers submit one immutable artifact-bundle descriptor through
 <code>CommitLeasedFileGroupResult</code>, which requires <code>result_id</code> so the control plane can enforce replay
-safety across worker retries. Success idempotently protects the referenced objects before completing
-the child job; these are ordered operations rather than one atomic storage transaction.</p>
+safety across worker retries. Success durably completes the child job, then protects the bundle,
+stages its stats/index target mappings without reading the bundle, and writes the prepared marker.
+The RPC reports acceptance after staging completes; exact replay resumes incomplete staging.</p>
 <p>For <code>floecat.kv=dynamodb</code>, the durable reconcile hot paths now use native queue-oriented storage
 layouts rather than broad generic prefix scans:
 - job-index queries are partitioned by their query slice
