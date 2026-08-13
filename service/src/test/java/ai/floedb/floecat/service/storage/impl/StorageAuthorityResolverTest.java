@@ -391,6 +391,43 @@ class StorageAuthorityResolverTest {
     assertTrue(policy.contains("delete-000.parquet"));
   }
 
+  @Test
+  void scopedSessionPolicyForS3TablesWarehouseIncludesS3TablesPermissions() {
+    String policy =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of("s3://de766125--table-s3/data/file.parquet"),
+            false,
+            "arn:aws:s3tables:us-east-1:000000000000:bucket/bench");
+
+    assertTrue(policy.contains("\"s3tables:GetTableBucket\""));
+    assertTrue(policy.contains("\"arn:aws:s3tables:us-east-1:000000000000:bucket/bench\""));
+    assertTrue(
+        policy.contains("\"arn:aws:s3tables:us-east-1:000000000000:bucket/bench/table/*\""));
+  }
+
+  @Test
+  void resolveBestFallsBackToAlternateWarehousePrefixWhenLocationDoesNotMatchDirectly() {
+    StorageAuthority warehouseAuthority =
+        authority().toBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+                    .setId("sa-s3tables")
+                    .build())
+            .setLocationPrefix("arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
+            .build();
+
+    Optional<StorageAuthority> resolved =
+        StorageAuthorityResolver.resolveBest(
+            java.util.List.of(warehouseAuthority),
+            "s3://de766125--table-s3/data/file.parquet",
+            java.util.List.of("arn:aws:s3tables:us-east-1:000000000000:bucket/bench"));
+
+    assertTrue(resolved.isPresent());
+    assertEquals("sa-s3tables", resolved.orElseThrow().getResourceId().getId());
+  }
+
   private static StorageAuthority authority() {
     return StorageAuthority.newBuilder()
         .setResourceId(

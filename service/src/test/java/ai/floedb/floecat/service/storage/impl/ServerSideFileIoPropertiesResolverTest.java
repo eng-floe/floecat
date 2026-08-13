@@ -32,6 +32,9 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
@@ -49,18 +52,21 @@ import org.junit.jupiter.api.Test;
 class ServerSideFileIoPropertiesResolverTest {
   private ServerSideFileIoPropertiesResolver service;
   private StorageAuthorityRepository repo;
+  private ConnectorRepository connectorRepo;
   private SnapshotRepository snapshotRepo;
 
   @BeforeEach
   void setUp() {
     service = new ServerSideFileIoPropertiesResolver();
     repo = mock(StorageAuthorityRepository.class);
+    connectorRepo = mock(ConnectorRepository.class);
     snapshotRepo = mock(SnapshotRepository.class);
 
     StorageAuthorityResolver resolver = new StorageAuthorityResolver();
     resolver.secretsManager = new StaticSecretsManager();
 
     service.repo = repo;
+    service.connectorRepo = connectorRepo;
     service.snapshotRepo = snapshotRepo;
     service.resolver = resolver;
   }
@@ -181,6 +187,22 @@ class ServerSideFileIoPropertiesResolverTest {
     assertTrue(SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(error));
   }
 
+  @Test
+  void warehouseArnAuthorityCoversS3TablesAliasBucketForQueryReadback() {
+    when(repo.list(eq("acct"), anyInt(), eq(""), any())).thenReturn(List.of(s3TablesAuthority()));
+    when(connectorRepo.getById(s3TablesConnectorId())).thenReturn(Optional.of(s3TablesConnector()));
+
+    Map<String, String> props =
+        service.applyToTableProperties(
+            s3TablesTable(),
+            "s3://de766125--table-s3/metadata/00001.metadata.json",
+            Map.of());
+
+    assertEquals("akid", props.get("s3.access-key-id"));
+    assertEquals("secret", props.get("s3.secret-access-key"));
+    assertEquals("us-east-1", props.get("s3.region"));
+  }
+
   /** Stands in for the catalog round-trip so the wiring can be tested without a live catalog. */
   private static final class RecordingVendor extends SourceCatalogCredentialVendor {
     private final ResolveStorageAuthorityResponse response;
@@ -216,6 +238,40 @@ class ServerSideFileIoPropertiesResolverTest {
         .build();
   }
 
+  private static Table s3TablesTable() {
+    return Table.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_TABLE)
+                .setId("tbl-s3tables")
+                .build())
+        .putProperties("location", "s3://de766125--table-s3")
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setConnectorId(s3TablesConnectorId())
+                .setUri("https://s3tables.us-east-1.amazonaws.com/iceberg")
+                .build())
+        .build();
+  }
+
+  private static ResourceId s3TablesConnectorId() {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .setId("conn-s3tables")
+        .build();
+  }
+
+  private static Connector s3TablesConnector() {
+    return Connector.newBuilder()
+        .setResourceId(s3TablesConnectorId())
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .putProperties("iceberg.source", "rest")
+        .putProperties("warehouse", "arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
+        .build();
+  }
+
   private static StorageAuthority databricksAuthority() {
     return StorageAuthority.newBuilder()
         .setResourceId(
@@ -245,6 +301,22 @@ class ServerSideFileIoPropertiesResolverTest {
         .setType("s3")
         .setLocationPrefix("s3://warehouse/orders")
         .setRegion("us-west-2")
+        .build();
+  }
+
+  private static StorageAuthority s3TablesAuthority() {
+    return StorageAuthority.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+                .setId("sa-s3tables")
+                .build())
+        .setDisplayName("s3tables")
+        .setEnabled(true)
+        .setType("s3")
+        .setLocationPrefix("arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
+        .setRegion("us-east-1")
         .build();
   }
 

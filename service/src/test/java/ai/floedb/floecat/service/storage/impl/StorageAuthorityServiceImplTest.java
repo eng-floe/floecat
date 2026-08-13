@@ -340,6 +340,37 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveServerSideFallsBackToS3TablesWarehouseAuthorityWhenAliasBucketDoesNotMatch() {
+    StorageAuthority s3TablesAuthority =
+        StorageAuthority.newBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setDisplayName("s3tables")
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix("arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
+            .setRegion("us-east-1")
+            .setCreatedAt(Timestamps.fromSeconds(1))
+            .setUpdatedAt(Timestamps.fromSeconds(1))
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of(s3TablesAuthority));
+    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentS3TablesTable()));
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.of(s3TablesConnector()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setTableId(TABLE_ID)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
   void resolveRejectsCallerLocationOutsideTableLocation() {
     var ex =
         org.junit.jupiter.api.Assertions.assertThrows(
@@ -995,6 +1026,43 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveForDiscoveryPlannerFallsBackToS3TablesWarehouseAuthority() {
+    StorageAuthority s3TablesAuthority =
+        StorageAuthority.newBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setDisplayName("s3tables")
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix("arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
+            .setRegion("us-east-1")
+            .setCreatedAt(Timestamps.fromSeconds(1))
+            .setUpdatedAt(Timestamps.fromSeconds(1))
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of(s3TablesAuthority));
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(s3TablesDiscoveryLeaseView()));
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.of(s3TablesConnector()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://de766125--table-s3/metadata/00001.metadata.json")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
   void resolveForDiscoveryPlannerRejectsLocationOutsideConnectorBootstrapScope() {
     when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
 
@@ -1418,6 +1486,18 @@ class StorageAuthorityServiceImplTest {
         .build();
   }
 
+  private static ai.floedb.floecat.catalog.rpc.Table currentS3TablesTable() {
+    return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+        .setResourceId(TABLE_ID)
+        .putProperties("location", "s3://de766125--table-s3")
+        .setUpstream(
+            ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                .setConnectorId(CONNECTOR_ID)
+                .addNamespacePath("tpch_10")
+                .setTableDisplayName("region"))
+        .build();
+  }
+
   private static Connector discoveryConnector() {
     return Connector.newBuilder()
         .setResourceId(CONNECTOR_ID)
@@ -1425,6 +1505,17 @@ class StorageAuthorityServiceImplTest {
         .setKind(ConnectorKind.CK_DELTA)
         .setState(ConnectorState.CS_ACTIVE)
         .putProperties("delta.table-root", "s3://warehouse/orders")
+        .build();
+  }
+
+  private static Connector s3TablesConnector() {
+    return Connector.newBuilder()
+        .setResourceId(CONNECTOR_ID)
+        .setDisplayName("s3tables")
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setState(ConnectorState.CS_ACTIVE)
+        .putProperties("iceberg.source", "rest")
+        .putProperties("warehouse", "arn:aws:s3tables:us-east-1:000000000000:bucket/bench")
         .build();
   }
 
@@ -1508,6 +1599,35 @@ class StorageAuthorityServiceImplTest {
         "",
         ReconcileJobKind.PLAN_TABLE,
         ReconcileTableTask.discovery("src", "orders", "namespace-1", "orders"),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "");
+  }
+
+  private static ReconcileJobStore.ReconcileJob s3TablesDiscoveryLeaseView() {
+    return new ReconcileJobStore.ReconcileJob(
+        "job-1",
+        "acct",
+        "conn-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        1L,
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        false,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        ReconcileJobKind.PLAN_TABLE,
+        ReconcileTableTask.discovery("tpch_10", "region", "namespace-1", "region"),
         ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
         ReconcileSnapshotTask.empty(),
         ReconcileFileGroupTask.empty(),

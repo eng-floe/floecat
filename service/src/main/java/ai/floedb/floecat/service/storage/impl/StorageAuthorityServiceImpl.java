@@ -309,11 +309,15 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               AuthorizedScope authorized =
                   authorizeAndResolveLocation(principal, request, accountId);
               CredentialScope credentialScope = authorized.scope();
+              List<String> authorityLookupHints =
+                  authorityLookupHints(request, authorized.job(), accountId);
               List<StorageAuthority> authorities =
                   repo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =
                   StorageAuthorityResolver.resolveBest(
-                          authorities, credentialScope.authorityLookupLocationPrefix())
+                          authorities,
+                          credentialScope.authorityLookupLocationPrefix(),
+                          authorityLookupHints)
                       .orElse(null);
               if (authority == null) {
                 // No authority covers this location. Before failing, ask the source catalog: an
@@ -353,7 +357,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                 }
               }
               validateAuthorityCoversSessionScope(
-                  authority, credentialScope.sessionScopeLocations());
+                  authority, credentialScope.sessionScopeLocations(), authorityLookupHints);
               return resolver.buildResponse(
                   authority,
                   credentialScope.responseLocationPrefix(),
@@ -839,8 +843,43 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     return false;
   }
 
+  private List<String> authorityLookupHints(
+      VendStorageCredentialsRequest request, ReconcileJobStore.ReconcileJob job, String accountId) {
+    if (request != null && request.hasTableId()) {
+      return StorageAuthorityLookupHints.forTable(
+          loadVisibleTable(scopedTableId(accountId, request.getTableId(), correlationId())),
+          connectorRepo);
+    }
+    String leasedTableId = leasedTableId(job);
+    if (leasedTableId != null) {
+      return StorageAuthorityLookupHints.forTable(
+          loadVisibleTable(
+              ResourceId.newBuilder()
+                  .setAccountId(accountId)
+                  .setKind(ResourceKind.RK_TABLE)
+                  .setId(leasedTableId)
+                  .build()),
+          connectorRepo);
+    }
+    if (job != null && job.connectorId != null && !job.connectorId.isBlank()) {
+      Connector connector =
+          connectorRepo
+              .getById(
+                  ResourceId.newBuilder()
+                      .setAccountId(accountId)
+                      .setKind(ResourceKind.RK_CONNECTOR)
+                      .setId(job.connectorId)
+                      .build())
+              .orElse(null);
+      return StorageAuthorityLookupHints.forConnector(connector);
+    }
+    return List.of();
+  }
+
   private static void validateAuthorityCoversSessionScope(
-      StorageAuthority authority, List<String> sessionScopeLocations) {
+      StorageAuthority authority,
+      List<String> sessionScopeLocations,
+      List<String> authorityLookupHints) {
     if (authority == null
         || sessionScopeLocations == null
         || sessionScopeLocations.isEmpty()
@@ -848,8 +887,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return;
     }
     for (String sessionScopeLocation : sessionScopeLocations) {
-      if (!StorageAuthorityResolver.matchesLocationPrefix(
-          sessionScopeLocation, authority.getLocationPrefix())) {
+      if (!StorageAuthorityResolver.matchesLocationPrefixOrHint(
+          sessionScopeLocation, authority.getLocationPrefix(), authorityLookupHints)) {
         throw io.grpc.Status.FAILED_PRECONDITION
             .withDescription("leased reconcile storage scope spans multiple storage authorities")
             .asRuntimeException();

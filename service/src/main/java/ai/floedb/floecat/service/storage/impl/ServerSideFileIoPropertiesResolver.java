@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.storage.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -41,6 +42,7 @@ public class ServerSideFileIoPropertiesResolver {
           "s3.session-token");
 
   @Inject StorageAuthorityRepository repo;
+  @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject StorageAuthorityResolver resolver;
   @Inject SourceCatalogCredentialVendor sourceCatalogVendor;
@@ -58,7 +60,12 @@ public class ServerSideFileIoPropertiesResolver {
     StoreOperationSummary.nanos(
         "storage_authority", System.nanoTime() - storageAuthorityStartedNanos);
     StoreOperationSummary.put("storage_authority_source", "load");
-    var authority = StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
+    var authority =
+        StorageAuthorityResolver.resolveBest(
+                authorities,
+                locationPrefix,
+                StorageAuthorityLookupHints.forTable(table, connectorRepo))
+            .orElse(null);
     if (authority == null) {
       // No authority covers this location. Before failing, ask the source catalog -- exactly as the
       // vend RPC does, and for the same reason: a table captured through a delegating Iceberg REST

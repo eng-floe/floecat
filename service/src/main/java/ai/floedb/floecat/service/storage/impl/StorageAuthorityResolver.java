@@ -258,7 +258,11 @@ public class StorageAuthorityResolver {
                     "floecat-storage-authority"))
             .externalId(
                 authority.hasAssumeRoleExternalId() ? authority.getAssumeRoleExternalId() : null)
-            .policy(scopedSessionPolicy(sessionScopeLocations, exactObjectScope))
+            .policy(
+                scopedSessionPolicy(
+                    sessionScopeLocations,
+                    exactObjectScope,
+                    blankToNull(authority.getLocationPrefix())))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
@@ -302,12 +306,18 @@ public class StorageAuthorityResolver {
   }
 
   static String scopedSessionPolicy(List<String> locationPrefixes, boolean exactObject) {
+    return scopedSessionPolicy(locationPrefixes, exactObject, null);
+  }
+
+  static String scopedSessionPolicy(
+      List<String> locationPrefixes, boolean exactObject, String authorityLocationPrefix) {
     List<S3Location> scopes =
         normalizeS3Scopes(locationPrefixes).stream()
             .map(S3Location::parse)
             .filter(scope -> scope != null)
             .toList();
-    if (scopes.isEmpty()) {
+    boolean s3TablesWarehouse = isS3TablesWarehouseArn(authorityLocationPrefix);
+    if (scopes.isEmpty() && !s3TablesWarehouse) {
       return null;
     }
     if (exactObject) {
@@ -317,6 +327,9 @@ public class StorageAuthorityResolver {
     for (S3BucketScope bucketScope : groupByBucket(scopes)) {
       statements.add(bucketScope.listStatementJson(exactObject));
       statements.add(bucketScope.objectStatementJson(exactObject));
+    }
+    if (s3TablesWarehouse) {
+      statements.add(s3TablesStatementJson(authorityLocationPrefix));
     }
     return """
         {
@@ -377,6 +390,28 @@ public class StorageAuthorityResolver {
     grouped.forEach(
         (bucket, bucketLocations) -> bucketScopes.add(new S3BucketScope(bucket, bucketLocations)));
     return List.copyOf(bucketScopes);
+  }
+
+  private static String s3TablesStatementJson(String tableBucketArn) {
+    return """
+        {
+          "Effect":"Allow",
+          "Action":[
+            "s3tables:GetTableBucket",
+            "s3tables:ListNamespaces",
+            "s3tables:GetNamespace",
+            "s3tables:ListTables",
+            "s3tables:GetTable",
+            "s3tables:GetTableMetadataLocation",
+            "s3tables:GetTableData"
+          ],
+          "Resource":["%s","%s/table/*"]
+        }
+        """
+        .formatted(tableBucketArn, tableBucketArn)
+        .replace('\n', ' ')
+        .replaceAll("\\s+", " ")
+        .trim();
   }
 
   private static String jsonEscape(String value) {
@@ -496,28 +531,46 @@ public class StorageAuthorityResolver {
 
   static Optional<StorageAuthority> resolveBest(
       List<StorageAuthority> authorities, String locationPrefix) {
+    return resolveBest(authorities, locationPrefix, List.of());
+  }
+
+  static Optional<StorageAuthority> resolveBest(
+      List<StorageAuthority> authorities, String locationPrefix, List<String> alternatePrefixes) {
     StorageAuthority best = null;
+    boolean bestDirect = false;
     if (authorities == null
         || authorities.isEmpty()
-        || locationPrefix == null
-        || locationPrefix.isBlank()) {
+        || ((locationPrefix == null || locationPrefix.isBlank())
+            && (alternatePrefixes == null || alternatePrefixes.isEmpty()))) {
       return Optional.empty();
     }
     for (StorageAuthority authority : authorities) {
+      String configuredPrefix = authority == null ? null : blankToNull(authority.getLocationPrefix());
+      boolean directMatch = matchesLocationPrefix(locationPrefix, configuredPrefix);
+      boolean alternateMatch = !directMatch && matchesAlternatePrefix(configuredPrefix, alternatePrefixes);
       if (authority == null
           || !authority.getEnabled()
-          || authority.getLocationPrefix() == null
-          || authority.getLocationPrefix().isBlank()
-          || !matchesLocationPrefix(locationPrefix, authority.getLocationPrefix())) {
+          || configuredPrefix == null
+          || configuredPrefix.isBlank()
+          || (!directMatch && !alternateMatch)) {
         continue;
       }
       if (best == null
-          || stripTrailingSlash(authority.getLocationPrefix()).length()
-              > stripTrailingSlash(best.getLocationPrefix()).length()) {
+          || (directMatch && !bestDirect)
+          || (directMatch == bestDirect
+              && stripTrailingSlash(configuredPrefix).length()
+                  > stripTrailingSlash(best.getLocationPrefix()).length())) {
         best = authority;
+        bestDirect = directMatch;
       }
     }
     return Optional.ofNullable(best);
+  }
+
+  static boolean matchesLocationPrefixOrHint(
+      String location, String configuredPrefix, List<String> alternatePrefixes) {
+    return matchesLocationPrefix(location, configuredPrefix)
+        || matchesAlternatePrefix(configuredPrefix, alternatePrefixes);
   }
 
   static boolean matchesLocationPrefix(String location, String configuredPrefix) {
@@ -533,6 +586,26 @@ public class StorageAuthorityResolver {
       return true;
     }
     return normalizedLocation.charAt(normalizedPrefix.length()) == '/';
+  }
+
+  static boolean isS3TablesWarehouseArn(String value) {
+    return value != null
+        && value.regionMatches(true, 0, "arn:aws:s3tables:", 0, "arn:aws:s3tables:".length());
+  }
+
+  private static boolean matchesAlternatePrefix(
+      String configuredPrefix, List<String> alternatePrefixes) {
+    if (!isNonBlank(configuredPrefix) || alternatePrefixes == null || alternatePrefixes.isEmpty()) {
+      return false;
+    }
+    String normalizedConfigured = stripTrailingSlash(configuredPrefix.trim());
+    for (String alternatePrefix : alternatePrefixes) {
+      if (isNonBlank(alternatePrefix)
+          && normalizedConfigured.equals(stripTrailingSlash(alternatePrefix.trim()))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static String stripTrailingSlash(String value) {
@@ -560,6 +633,10 @@ public class StorageAuthorityResolver {
       }
     }
     return null;
+  }
+
+  static String blankToNull(String value) {
+    return isNonBlank(value) ? value.trim() : null;
   }
 
   private static void putRegionConfig(Map<String, String> target, String region) {
