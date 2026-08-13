@@ -1781,7 +1781,7 @@ provider metadata access without creating or reading legacy Connector resources.
 <tbody>
 <tr>
 <td><code>core/catalog-access-spi</code></td>
-<td>Provider-neutral connection, authentication, credentials, capabilities, namespace, table, and client contracts.</td>
+<td>Provider-neutral connection, authentication, credentials, capabilities, namespace, table, view, and client contracts.</td>
 </tr>
 <tr>
 <td><code>catalog-access/iceberg-rest</code></td>
@@ -1819,9 +1819,19 @@ the table format. Missing and duplicate providers fail explicitly.</p>
 <li>connection validation through a real namespace-list operation;</li>
 <li>structured, case-preserving namespace discovery;</li>
 <li>table enumeration and provider-neutral table metadata;</li>
-<li>metadata and storage locations when exposed by Iceberg; and</li>
+<li>view enumeration and provider-neutral output schema, SQL dialect, default namespace, properties,
+  and identity metadata;</li>
+<li>metadata and storage locations when exposed by Iceberg;</li>
+<li>table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;
+  and</li>
 <li>idempotent ownership of the underlying REST session.</li>
 </ul>
+<p><code>vendStorageCredentials</code> performs a fresh <code>loadTable</code> request on every call, selects the
+longest-prefix credential matching the table location, and copies only the S3 storage credential
+allowlist. Callers reacquire credentials at the returned expiry. A missing or invalid expiry means
+the result must not be cached. Catalog tokens and ordinary FileIO properties are never treated as
+vended storage credentials, so a server that does not vend returns an empty result instead of
+falling back to catalog authentication, configured storage keys, or Connector behavior.</p>
 <h3 id="renewable-aws-credentials">Renewable AWS credentials<a class="headerlink" href="#renewable-aws-credentials" title="Permanent link">&para;</a></h3>
 <p>SigV4 catalog signing and storage/FileIO access are separate credential scopes. Either scope can
 use static resolved keys or a renewable registration. Renewable registrations are process-local,
@@ -1856,9 +1866,11 @@ exposes it. Tables without an available UUID use a path-derived, explicitly unst
 rename of such a table is interpreted as deletion plus creation.</p>
 <p>OAuth secrets, AWS keys, renewable-provider IDs, and Iceberg credential-provider hooks are rejected
 in persistable connection configuration and accepted only through <code>ResolvedCatalogCredentials</code>.
-Persisted HTTP headers and endpoint user-info are rejected for the same reason. Unsupported
-authentication schemes, incomplete or unknown credential properties, and endpoint protocols fail
-instead of falling back to Connector behavior.</p>
+Persisted secret-bearing properties, HTTP headers, endpoint user-info, endpoint fragments, and
+secret-bearing endpoint query parameters are rejected. Configuration string representations print
+property names but redact their values and query values. Unsupported authentication schemes,
+incomplete or unknown credential properties, and endpoint protocols fail instead of falling back
+to Connector behavior.</p>
 <h2 id="current-boundary">Current boundary<a class="headerlink" href="#current-boundary" title="Permanent link">&para;</a></h2>
 <p>This first slice is discovery infrastructure. It does not add Integration credentials or validation
 RPCs, schedule reconciliation, write captured resources, or change the existing Iceberg Connector.
