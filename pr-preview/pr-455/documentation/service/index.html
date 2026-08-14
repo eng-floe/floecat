@@ -2136,7 +2136,7 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   Get accepts either resource ID or
   exact display name. Reads require
   <code>catalog-integration.read</code>; writes require <code>catalog-integration.write</code>, and cascading deletion of
-  dependent overlays also requires <code>catalog-overlay.write</code>.</li>
+  dependent overlays also requires <code>catalog-overlay.delete</code> and <code>catalog.write</code>.</li>
 <li><strong>CatalogOverlaysImpl</strong> – Binds an integration and optional upstream namespace filters to the
   Catalog the overlay owns. Creating an overlay creates that catalog in the same pointer
   transaction, renaming the overlay renames it, and deleting the overlay deletes it, so the two are
@@ -2150,9 +2150,12 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
   selects all namespaces; paths select subtrees, exclusions
   take precedence, and matching is case-sensitive. The integration binding is immutable through
   update; updates only replace the selected include/exclude lists or rename the overlay. Reads require
-  <code>catalog-overlay.read</code>; writes require <code>catalog-overlay.write</code>, and creation also requires
-  <code>catalog-integration.use</code>. Connectivity and
-  reconciliation are deferred.</li>
+  <code>catalog-overlay.read</code>; create and update require <code>catalog-overlay.write</code>, and creation also
+  requires <code>catalog-integration.use</code> and <code>catalog.write</code>. Renaming also requires <code>catalog.write</code>.
+  Reconciliation requires <code>catalog-overlay.reconcile</code> plus <code>catalog-integration.use</code>; deletion
+  requires <code>catalog-overlay.delete</code> plus <code>catalog.write</code>. These dedicated permissions are not
+  inferred from <code>catalog-overlay.write</code> or namespace/table/view permissions. Connectivity is
+  deferred.</li>
 <li><strong>ConnectorsImpl</strong> – Manages connector lifecycle, validates <code>ConnectorSpec</code> via SPI factories,
   wires reconciliation job submission, and exposes <code>ValidateConnector</code> + <code>StartCapture</code>.
   <code>CaptureNow</code> maps to reconciler capture modes:</li>
