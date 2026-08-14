@@ -40,6 +40,7 @@ hierarchy, a second table identity, or a second name-resolution path.
 | Catalog Overlay API | Overlay CRUD, overlay-owned catalog lifecycle, namespace selection, dependencies, cascade deletion, idempotency, and optimistic concurrency | Capture, reconciliation, and query visibility |
 | Shell CLI | Integration and Overlay CRUD commands, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions | Connectivity validation, discovery, capture, reconciliation, and query visibility |
 | Catalog-access SPI | Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table and view loading, OAuth2, SigV4, and renewable AWS credential support | Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture |
+| Integration validation and discovery | Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views | Persistence of discovery results, Overlay reconciliation, scheduling, and capture |
 | Overlay metadata reconciliation | A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views with generation fencing and explicit lifecycle cleanup | Durable scheduling, snapshot/file capture, validation, and statistics |
 
 ## Goals
@@ -249,8 +250,9 @@ The service adapter translates OAuth client credentials, bearer tokens, and expl
 SigV4 credentials from the Integration protobuf and `CatalogIntegrationCredentialStore` onto the
 SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
 adapter and fail explicitly. Integration authentication is required, so the adapter never selects
-the SPI's `NONE` scheme. Dedicated Integration validation/listing RPCs and scheduling remain
-deferred; synchronous Overlay reconciliation performs validation and discovery internally.
+the SPI's `NONE` scheme. Dedicated Integration RPCs validate the catalog and storage credential
+boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
+remains deferred.
 
 The catalog client owns external I/O only. Capture planning, Floecat persistence, scheduling, and
 name resolution remain outside it.
@@ -445,12 +447,11 @@ on an overlay, and the type and URI on an integration.
 
 After the initial delivery, follow-on changes will:
 
-1. Wire Integration resources and the typed credential resolver to the catalog-access SPI and add
-   synchronous, generation-fenced Overlay metadata reconciliation. This is the first follow-on and
-   materializes namespaces, table definitions, and views, but not snapshots or files.
-2. Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
+1. Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
    catalog authentication and usable storage-credential vending; object listing distinguishes
    namespaces, tables, and views.
+2. Add synchronous, generation-fenced Overlay metadata reconciliation. This materializes namespaces,
+   table definitions, and views, but not snapshots or files.
 3. Extend the durable reconciler with Integration/Overlay-rooted jobs and capture `Snapshot`, file,
    validation, and statistics state beneath the already materialized tables.
 4. Add overlay policy and state, table validation-error persistence, visibility and override
