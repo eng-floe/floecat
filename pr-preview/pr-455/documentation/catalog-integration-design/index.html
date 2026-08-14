@@ -2195,6 +2195,11 @@ hierarchy, a second table identity, or a second name-resolution path.</p>
 <td>Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture</td>
 </tr>
 <tr>
+<td>Integration validation and discovery</td>
+<td>Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views</td>
+<td>Persistence of discovery results, Overlay reconciliation, scheduling, and capture</td>
+</tr>
+<tr>
 <td>Overlay metadata reconciliation</td>
 <td>A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views with generation fencing and explicit lifecycle cleanup</td>
 <td>Durable scheduling, snapshot/file capture, validation, and statistics</td>
@@ -2370,8 +2375,9 @@ separately through <code>ResolvedCatalogCredentials</code>.</p>
 SigV4 credentials from the Integration protobuf and <code>CatalogIntegrationCredentialStore</code> onto the
 SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
 adapter and fail explicitly. Integration authentication is required, so the adapter never selects
-the SPI's <code>NONE</code> scheme. Dedicated Integration validation/listing RPCs and scheduling remain
-deferred; synchronous Overlay reconciliation performs validation and discovery internally.</p>
+the SPI's <code>NONE</code> scheme. Dedicated Integration RPCs validate the catalog and storage credential
+boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
+remains deferred.</p>
 <p>The catalog client owns external I/O only. Capture planning, Floecat persistence, scheduling, and
 name resolution remain outside it.</p>
 <h2 id="materialized-metadata-and-deferred-capture">Materialized metadata and deferred capture<a class="headerlink" href="#materialized-metadata-and-deferred-capture" title="Permanent link">&para;</a></h2>
@@ -2583,12 +2589,11 @@ on an overlay, and the type and URI on an integration.</p>
 <h2 id="follow-on-api-evolution">Follow-on API evolution<a class="headerlink" href="#follow-on-api-evolution" title="Permanent link">&para;</a></h2>
 <p>After the initial delivery, follow-on changes will:</p>
 <ol>
-<li>Wire Integration resources and the typed credential resolver to the catalog-access SPI and add
-   synchronous, generation-fenced Overlay metadata reconciliation. This is the first follow-on and
-   materializes namespaces, table definitions, and views, but not snapshots or files.</li>
 <li>Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
    catalog authentication and usable storage-credential vending; object listing distinguishes
    namespaces, tables, and views.</li>
+<li>Add synchronous, generation-fenced Overlay metadata reconciliation. This materializes namespaces,
+   table definitions, and views, but not snapshots or files.</li>
 <li>Extend the durable reconciler with Integration/Overlay-rooted jobs and capture <code>Snapshot</code>, file,
    validation, and statistics state beneath the already materialized tables.</li>
 <li>Add overlay policy and state, table validation-error persistence, visibility and override

@@ -1822,8 +1822,9 @@ the table format. Missing and duplicate providers fail explicitly.</p>
 <li>view enumeration and provider-neutral output schema, SQL dialect, default namespace, properties,
   and identity metadata;</li>
 <li>metadata and storage locations when exposed by Iceberg;</li>
-<li>table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;
-  and</li>
+<li>table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;</li>
+<li>non-mutating validation of storage access through an upstream table metadata-file read using the
+  provider-configured, vended credential path; and</li>
 <li>idempotent ownership of the underlying REST session.</li>
 </ul>
 <p><code>vendStorageCredentials</code> performs a fresh <code>loadTable</code> request on every call, selects the
@@ -1872,13 +1873,18 @@ property names but redact their values and query values. Unsupported authenticat
 incomplete or unknown credential properties, and endpoint protocols fail instead of falling back
 to Connector behavior.</p>
 <h2 id="current-boundary">Current boundary<a class="headerlink" href="#current-boundary" title="Permanent link">&para;</a></h2>
-<p>The SPI slice itself remains Connector-independent discovery infrastructure. The service now maps
-persisted Catalog Integration OAuth, bearer, and explicit static SigV4 credentials into this SPI and
-uses it from a synchronous Catalog Overlay reconciliation RPC. That RPC validates the connection and
-materializes selected namespaces, table definitions, and views as ordinary Floecat resources.</p>
-<p>Ambient and assume-role AWS resolution, dedicated Integration validation/listing RPCs, durable
-scheduling, and snapshot/file capture remain deferred. The legacy Connector remains a separate
-operational path; the neutral implementation and the Integration adapter do not import or call it.</p>
+<p>The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
+credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
+namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
+authentication, discovery, credential vending, and a non-mutating storage read all pass.</p>
+<p>Discovery results are not persisted and do not materialize Floecat resources. Pagination is applied
+to deterministic provider inventories and continuation tokens are bound to the Integration pointer
+and credential generation, namespace, and object filter.</p>
+<p>The synchronous Catalog Overlay reconciliation RPC uses the same Integration adapter to materialize
+selected namespaces, table definitions, and views as ordinary Floecat resources. Durable scheduling
+and snapshot/file capture remain separate changes.</p>
+<p>The legacy Connector remains operational and unchanged until its explicit migration/removal change.
+The Integration adapter and discovery implementation do not import, call, or fall back to it.</p>
 <p>See <a href="../catalog-integration-design/">Catalog Integration Architecture Decisions</a> for ownership,
 mapping, reconciliation, and migration decisions.</p>
 
