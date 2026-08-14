@@ -519,8 +519,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                     payload,
                     task,
                     buildFileGroupTasks(lease, task),
-                    loadExplicitParentHistoricalArtifactsForReuse(
-                        lease, task, appendOnlyHistorical)));
+                    appendOnlyHistorical));
     List<ReconcileFileGroupTask> fileGroupTasks = enriched.groups();
     return PlannedSnapshotCapture.fileGroups(
         ReconcileSnapshotTask.of(
@@ -751,36 +750,6 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return loadLatestReconciledReuseManifest(
             reconcileContext(lease), tableId, task.snapshotId(), lease.connectorId)
         .orElse(null);
-  }
-
-  private HistoricalArtifacts loadExplicitParentHistoricalArtifactsForReuse(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileSnapshotTask task,
-      HistoricalArtifacts alreadyLoaded) {
-    if (lease.fullRescan || blobStore == null) {
-      return null;
-    }
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setId(task.tableId())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    ReconcileContext context = reconcileContext(lease);
-    Snapshot target = backend.fetchSnapshot(context, tableId, task.snapshotId()).orElse(null);
-    if (target == null || !target.hasParentSnapshotId()) {
-      return null;
-    }
-    if (alreadyLoaded != null
-        && alreadyLoaded.snapshot().getSnapshotId() == target.getParentSnapshotId()) {
-      return alreadyLoaded;
-    }
-    Snapshot parent =
-        backend.fetchSnapshot(context, tableId, target.getParentSnapshotId()).orElse(null);
-    if (parent == null) {
-      return null;
-    }
-    return loadReuseManifest(tableId, parent, lease.connectorId).orElse(null);
   }
 
   private EnrichedFileGroups enrichFileGroupTasks(
