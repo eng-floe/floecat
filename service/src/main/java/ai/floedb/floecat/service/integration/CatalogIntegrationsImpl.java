@@ -95,6 +95,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject CatalogIntegrationCredentialStore credentialStore;
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
   @Inject CatalogIntegrationDiscovery discovery;
+  @Inject CatalogOverlayReconciler overlayReconciler;
 
   @Override
   public Uni<ListCatalogIntegrationsResponse> listCatalogIntegrations(
@@ -837,6 +838,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           throw new BaseResourceRepository.AbortRetryableException(
               "overlay changed while integration cascade deletion was fenced");
         }
+        overlayReconciler.retireMaterializedResources(dependent.value());
         long overlayFenceVersion = overlays.deletionFenceVersion(overlayId);
         if (overlayFenceVersion == 0L
             || !overlays.deleteWithFence(

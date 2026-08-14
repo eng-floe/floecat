@@ -97,6 +97,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "namespace_id",
           "upstream",
           "upstream.connector_id",
+          "upstream.catalog_integration_id",
+          "upstream.catalog_overlay_id",
           "upstream.uri",
           "upstream.namespace_path",
           "upstream.table_display_name",
@@ -648,6 +650,32 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         }
       }
 
+      if (maskTargets(mask, "upstream.catalog_integration_id")) {
+        if (inUp.hasCatalogIntegrationId()) {
+          ensureKind(
+              inUp.getCatalogIntegrationId(),
+              ResourceKind.RK_CATALOG_INTEGRATION,
+              "spec.upstream.catalog_integration_id",
+              corr);
+          ub.setCatalogIntegrationId(inUp.getCatalogIntegrationId());
+        } else {
+          ub.clearCatalogIntegrationId();
+        }
+      }
+
+      if (maskTargets(mask, "upstream.catalog_overlay_id")) {
+        if (inUp.hasCatalogOverlayId()) {
+          ensureKind(
+              inUp.getCatalogOverlayId(),
+              ResourceKind.RK_CATALOG_OVERLAY,
+              "spec.upstream.catalog_overlay_id",
+              corr);
+          ub.setCatalogOverlayId(inUp.getCatalogOverlayId());
+        } else {
+          ub.clearCatalogOverlayId();
+        }
+      }
+
       if (maskTargets(mask, "upstream.uri")) {
         ub.setUri(inUp.getUri());
       }
@@ -741,6 +769,27 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
       ensureKind(
           up.getConnectorId(), ResourceKind.RK_CONNECTOR, "spec.upstream.connector_id", corr);
     }
+    if (up.hasCatalogIntegrationId()) {
+      ensureKind(
+          up.getCatalogIntegrationId(),
+          ResourceKind.RK_CATALOG_INTEGRATION,
+          "spec.upstream.catalog_integration_id",
+          corr);
+    }
+    if (up.hasCatalogOverlayId()) {
+      ensureKind(
+          up.getCatalogOverlayId(),
+          ResourceKind.RK_CATALOG_OVERLAY,
+          "spec.upstream.catalog_overlay_id",
+          corr);
+      if (!up.hasCatalogIntegrationId()) {
+        throw GrpcErrors.invalidArgument(
+            corr, null, Map.of("field", "spec.upstream.catalog_integration_id"));
+      }
+    }
+    if (up.hasConnectorId() && up.hasCatalogIntegrationId()) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.upstream"));
+    }
 
     if (up.getNamespacePathCount() > 0) {
       for (var seg : up.getNamespacePathList()) {
@@ -788,6 +837,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "upstream",
           g ->
               g.scalar("connector_id", nullSafeId(up.getConnectorId()))
+                  .scalar("catalog_integration_id", nullSafeId(up.getCatalogIntegrationId()))
+                  .scalar("catalog_overlay_id", nullSafeId(up.getCatalogOverlayId()))
                   .scalar("uri", up.getUri())
                   .list("namespace_path", up.getNamespacePathList())
                   .scalar("table_display_name", up.getTableDisplayName())

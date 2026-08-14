@@ -42,6 +42,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.HasTableOperations;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
@@ -100,6 +101,9 @@ class IcebergRestCatalogClientTest {
     CatalogObjectName name =
         new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
     Table table = mock(Table.class);
+    Schema schema = new Schema(Types.NestedField.optional(1, "id", Types.LongType.get()));
+    when(table.schema()).thenReturn(schema);
+    when(table.spec()).thenReturn(PartitionSpec.builderFor(schema).identity("id").build());
     when(table.location()).thenReturn("s3://warehouse/sales/orders");
     when(table.properties()).thenReturn(Map.of("owner", "sales-team"));
     when(catalog.loadTable(TableIdentifier.of(Namespace.of("production", "sales"), "orders")))
@@ -112,6 +116,8 @@ class IcebergRestCatalogClientTest {
     assertEquals(ExternalObjectIdentity.pathFallback(name), loaded.identity());
     assertFalse(loaded.identity().stable());
     assertEquals("ICEBERG", loaded.format());
+    assertTrue(loaded.schemaJson().contains("\"name\":\"id\""));
+    assertEquals(List.of("id"), loaded.partitionKeys());
     assertEquals("s3://warehouse/sales/orders", loaded.storageLocation().orElseThrow());
     assertEquals(Map.of("owner", "sales-team"), loaded.properties());
   }
@@ -335,6 +341,9 @@ class IcebergRestCatalogClientTest {
     when(operations.current()).thenReturn(metadata);
     when(metadata.uuid()).thenReturn("6d4fe3f7-4615-4bc5-b9ae-62c691d6ba7e");
     when(metadata.metadataFileLocation()).thenReturn("s3://warehouse/metadata/v2.json");
+    Schema schema = new Schema(Types.NestedField.optional(1, "id", Types.LongType.get()));
+    when(table.schema()).thenReturn(schema);
+    when(table.spec()).thenReturn(PartitionSpec.unpartitioned());
     when(table.location()).thenReturn("s3://warehouse/sales/orders");
     when(table.properties()).thenReturn(Map.of());
     when(catalog.loadTable(TableIdentifier.of(Namespace.of("production", "sales"), "orders")))

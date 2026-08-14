@@ -80,6 +80,7 @@ class CatalogIntegrationsImplTest {
     service = new CatalogIntegrationsImpl();
     service.integrations = mock(CatalogIntegrationRepository.class);
     service.overlays = mock(CatalogOverlayRepository.class);
+    service.overlayReconciler = mock(CatalogOverlayReconciler.class);
     service.markerStore = mock(MarkerStore.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
@@ -1180,6 +1181,7 @@ class CatalogIntegrationsImplTest {
 
     verify(service.integrations).beginCascadeDeletion(integrationId, 7L);
     verify(service.overlays).beginDeletion(overlayId, 3L);
+    verify(service.overlayReconciler).retireMaterializedResources(overlay);
     verify(service.overlays).deleteWithFence(overlayId, 3L, 1L);
     verify(service.integrations)
         .deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L);

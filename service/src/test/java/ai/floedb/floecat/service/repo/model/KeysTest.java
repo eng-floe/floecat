@@ -63,6 +63,13 @@ class KeysTest {
   }
 
   @Test
+  void catalogOverlayDeletionMarkerUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/catalog-overlays/deleting/overlay%2Fid",
+        Keys.catalogOverlayDeletionMarker("acct id", "overlay/id"));
+  }
+
+  @Test
   void namespaceByPathKeyRoundTripsFullPathSegments() {
     String key =
         Keys.namespacePointerByPath(

@@ -30,6 +30,7 @@ import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.CreateCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
@@ -68,6 +69,7 @@ class CatalogOverlaysImplTest {
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
+    service.reconciler = mock(CatalogOverlayReconciler.class);
     installBasePrincipal(service, service.principal);
     when(service.principal.get()).thenReturn(principal());
     stubIntegration(integrationId(), 5L);
@@ -189,6 +191,7 @@ class CatalogOverlaysImplTest {
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(oldIntegrationId))
         .thenReturn(4L);
     when(service.markerStore.catalogOverlaysMarkerVersion(oldCatalogId)).thenReturn(6L);
+    when(service.overlays.beginDeletion(oldOverlayId, 9L)).thenReturn(true);
     when(service.overlays.replaceIdentityAttachedWithMeta(
             any(), eq(9L), any(), any(), any(), any()))
         .thenAnswer(invocation -> Optional.of(row(invocation.getArgument(2), 1L)));
@@ -210,7 +213,53 @@ class CatalogOverlaysImplTest {
     var markers = ArgumentCaptor.forClass(Map.class);
     verify(service.overlays)
         .replaceIdentityAttachedWithMeta(any(), eq(9L), any(), any(), any(), markers.capture());
+    verify(service.reconciler).retireMaterializedResources(current);
     assertEquals(4, markers.getValue().size());
+  }
+
+  @Test
+  void reconcileReportsMaterializedMetadataChanges() {
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current = overlay(overlayId, integrationId(), catalogId(), "sales");
+    var overlayMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    var integration = CatalogIntegration.newBuilder().setResourceId(integrationId()).build();
+    var integrationMeta = MutationMeta.newBuilder().setPointerVersion(5L).build();
+    when(service.principal.get())
+        .thenReturn(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setCorrelationId("corr")
+                .addAllPermissions(
+                    Set.of(
+                        "catalog-overlay.write",
+                        "catalog-integration.use",
+                        "catalog.write",
+                        "namespace.write",
+                        "table.write",
+                        "view.write"))
+                .build());
+    when(service.overlays.getByIdWithMeta(overlayId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(current, overlayMeta)));
+    when(service.integrations.getByIdWithMeta(integrationId()))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(integration, integrationMeta)));
+    when(service.reconciler.reconcile(current, overlayMeta, integration, integrationMeta))
+        .thenReturn(new CatalogOverlayReconciler.Result(2, 1, 3, 4, 5, 6, 7, 8));
+
+    var response =
+        service
+            .reconcileCatalogOverlay(
+                ReconcileCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(2, response.getNamespacesCreated());
+    assertEquals(1, response.getNamespacesDeleted());
+    assertEquals(3, response.getTablesCreated());
+    assertEquals(4, response.getTablesUpdated());
+    assertEquals(5, response.getTablesDeleted());
+    assertEquals(6, response.getViewsCreated());
+    assertEquals(7, response.getViewsUpdated());
+    assertEquals(8, response.getViewsDeleted());
   }
 
   @Test
@@ -229,6 +278,7 @@ class CatalogOverlaysImplTest {
         .indefinitely();
 
     verify(service.overlays).beginDeletion(overlayId, 7L);
+    verify(service.reconciler).retireMaterializedResources(current);
     verify(service.overlays).deleteWithFence(overlayId, 7L, 1L);
     verify(service.catalogs, never()).delete(any());
   }

@@ -31,6 +31,8 @@ import ai.floedb.floecat.integration.rpc.GetCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -74,6 +76,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject CatalogOverlayReconciler reconciler;
 
   @Override
   public Uni<ListCatalogOverlaysResponse> listCatalogOverlays(ListCatalogOverlaysRequest request) {
@@ -350,6 +353,13 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         throw GrpcErrors.alreadyExists(
             corr, CATALOG_OVERLAY_ALREADY_EXISTS, Map.of("display_name", name));
 
+      if (!overlays.beginDeletion(
+          current.value().getResourceId(), current.meta().getPointerVersion())) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "overlay changed while replacement fenced its old identity");
+      }
+      reconciler.retireMaterializedResources(current.value());
+
       Map<String, Long> parentVersions = new java.util.HashMap<>(requiredVersions);
       ResourceId oldIntegrationId = current.value().getIntegrationId();
       if (!oldIntegrationId.equals(integrationId)) {
@@ -388,8 +398,6 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             Keys.catalogOverlaysMarker(accountId, oldCatalogId.getId()),
             markerStore.catalogOverlaysMarkerVersion(oldCatalogId));
       }
-      requiredAbsent.add(
-          Keys.catalogOverlayDeletionMarker(accountId, current.value().getResourceId().getId()));
       var replacement =
           CatalogOverlay.newBuilder()
               .setResourceId(overlayId)
@@ -542,6 +550,58 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   }
 
   @Override
+  public Uni<ReconcileCatalogOverlayResponse> reconcileCatalogOverlay(
+      ReconcileCatalogOverlayRequest request) {
+    return mapFailures(
+        runWithRetry(
+            () -> {
+              var pc = principal.get();
+              authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+              authz.require(pc, RolePermissions.CATALOG_WRITE);
+              authz.require(pc, "namespace.write");
+              authz.require(pc, "table.write");
+              authz.require(pc, "view.write");
+              String corr = pc.getCorrelationId();
+              ResourceId overlayId = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
+              var current =
+                  overlays
+                      .getByIdWithMeta(overlayId)
+                      .orElseThrow(
+                          () -> GrpcErrors.notFound(corr, null, Map.of("id", overlayId.getId())));
+              MutationOps.BaseServiceChecks.enforcePreconditions(
+                  corr, current.meta(), request.getPrecondition());
+              var integration =
+                  integrations
+                      .getByIdWithMeta(current.value().getIntegrationId())
+                      .orElseThrow(
+                          () ->
+                              new BaseResourceRepository.CorruptionException(
+                                  "overlay references a missing Catalog Integration: "
+                                      + current.value().getIntegrationId().getId(),
+                                  null));
+              var result =
+                  reconciler.reconcile(
+                      current.value(),
+                      current.meta(),
+                      integration.value(),
+                      integration.meta());
+              return ReconcileCatalogOverlayResponse.newBuilder()
+                  .setMeta(current.meta())
+                  .setNamespacesCreated(result.namespacesCreated())
+                  .setNamespacesDeleted(result.namespacesDeleted())
+                  .setTablesCreated(result.tablesCreated())
+                  .setTablesUpdated(result.tablesUpdated())
+                  .setTablesDeleted(result.tablesDeleted())
+                  .setViewsCreated(result.viewsCreated())
+                  .setViewsUpdated(result.viewsUpdated())
+                  .setViewsDeleted(result.viewsDeleted())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
   public Uni<DeleteCatalogOverlayResponse> deleteCatalogOverlay(
       DeleteCatalogOverlayRequest request) {
     var L = LogHelper.start(LOG, "DeleteCatalogOverlay");
@@ -567,9 +627,9 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   if (!overlays.beginDeletion(id, meta.getPointerVersion()))
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed while deletion was fenced");
-                  // Reconciliation has not landed in this API change, so there are no materialized
-                  // contributions to retire yet. The fence is nevertheless installed before the
-                  // dependency pointers and resource are removed.
+                  reconciler.retireMaterializedResources(current.get().value());
+                  // Managed descendants retire behind the fence first. The final transaction removes
+                  // only the overlay, its dependencies, and the fence; the target catalog remains.
                   long fenceVersion = overlays.deletionFenceVersion(id);
                   if (fenceVersion == 0L
                       || !overlays.deleteWithFence(id, meta.getPointerVersion(), fenceVersion))

@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -152,11 +153,17 @@ public class TableRootWriter {
 
   /** Records the table's (possibly new) immutable definition blob on the root. */
   public void commitDefinition(ResourceId tableId, MutationMeta meta) {
+    commitDefinitionReturningRoot(tableId, meta);
+  }
+
+  /** Records the definition and returns the root observed or committed by this invocation. */
+  public java.util.Optional<TableRoot> commitDefinitionReturningRoot(
+      ResourceId tableId, MutationMeta meta) {
     BlobRef definitionRef = BlobRefs.refFrom(meta);
     if (definitionRef == null) {
-      return;
+      return java.util.Optional.empty();
     }
-    committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
+    return committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
   }
 
   /**

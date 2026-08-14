@@ -122,6 +122,7 @@ class CatalogOverlayRepositoryTest {
         Map.of(
             Keys.catalogIntegrationOverlaysMarker("account", "old-integration"), 0L,
             Keys.catalogOverlaysMarker("account", "old-catalog"), 0L));
+    assertTrue(overlays.beginDeletion(current.getResourceId(), 1L));
     var replacement = overlay("new-overlay", "new-integration", "new-catalog");
 
     assertTrue(
@@ -145,6 +146,7 @@ class CatalogOverlayRepositoryTest {
     assertEquals(1, overlays.countByIntegration("account", "new-integration"));
     assertEquals(0, overlays.countByCatalog("account", "old-catalog"));
     assertEquals(1, overlays.countByCatalog("account", "new-catalog"));
+    assertEquals(0L, overlays.deletionFenceVersion(current.getResourceId()));
   }
 
   @Test

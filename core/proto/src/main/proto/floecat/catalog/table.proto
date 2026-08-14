@@ -46,6 +46,11 @@ message UpstreamRef {
   TableFormat format = 5;
   repeated string partition_keys = 6;
   ColumnIdAlgorithm column_id_algorithm = 7;
+  // Set for tables materialized through Catalog Integration reconciliation. Connector and
+  // integration identities are mutually exclusive.
+  optional ai.floedb.floecat.common.ResourceId catalog_integration_id = 8;
+  // Identifies the overlay whose owned catalog contains this materialization.
+  optional ai.floedb.floecat.common.ResourceId catalog_overlay_id = 9;
 }
 
 message Table {

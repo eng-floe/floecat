@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +34,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -67,8 +69,18 @@ public class ViewRepository {
     repo.create(view);
   }
 
+  public boolean createWhilePointersMatch(View view, PointerConditions conditions) {
+    return repo.createWithMeta(view, conditions, null).isPresent();
+  }
+
   public boolean update(View view, long expectedPointerVersion) {
     return repo.update(view, expectedPointerVersion);
+  }
+
+  public Optional<MutationMeta> updateWhilePointersMatch(
+      View view, long expectedPointerVersion, PointerConditions conditions) {
+    return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
+        view, expectedPointerVersion, conditions);
   }
 
   public boolean delete(ResourceId viewResourceId) {
@@ -78,6 +90,17 @@ public class ViewRepository {
   public boolean deleteWithPrecondition(ResourceId viewResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
+  }
+
+  public boolean deleteWhilePointersMatch(
+      ResourceId viewResourceId,
+      long expectedPointerVersion,
+      PointerConditions conditions) {
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()),
+        expectedPointerVersion,
+        conditions,
+        Map.of());
   }
 
   public Optional<View> getById(ResourceId viewResourceId) {

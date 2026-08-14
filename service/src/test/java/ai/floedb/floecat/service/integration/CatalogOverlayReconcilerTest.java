@@ -1,0 +1,348 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.integration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ai.floedb.floecat.catalog.access.CatalogCapabilities;
+import ai.floedb.floecat.catalog.access.CatalogCapability;
+import ai.floedb.floecat.catalog.access.CatalogClient;
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.CatalogTable;
+import ai.floedb.floecat.catalog.access.CatalogView;
+import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
+import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
+import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
+import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class CatalogOverlayReconcilerTest {
+  private static final String SCHEMA_JSON =
+      "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"}]}";
+
+  private CatalogOverlayReconciler reconciler;
+  private CatalogIntegrationRepository integrations;
+  private CatalogOverlayRepository overlays;
+  private NamespaceRepository namespaces;
+  private TableRepository tables;
+  private ViewRepository views;
+  private CatalogIntegration integration;
+  private CatalogOverlay overlay;
+  private FakeCatalogClient client;
+
+  @BeforeEach
+  void setUp() {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    integrations = new CatalogIntegrationRepository(pointers, blobs);
+    overlays = new CatalogOverlayRepository(pointers, blobs);
+    namespaces = new NamespaceRepository(pointers, blobs);
+    tables = new TableRepository(pointers, blobs);
+    views = new ViewRepository(pointers, blobs);
+
+    integration =
+        CatalogIntegration.newBuilder()
+            .setResourceId(id("integration", ResourceKind.RK_CATALOG_INTEGRATION))
+            .setDisplayName("upstream")
+            .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+            .setCatalogUri("https://catalog.example/v1")
+            .build();
+    overlay =
+        CatalogOverlay.newBuilder()
+            .setResourceId(id("overlay", ResourceKind.RK_CATALOG_OVERLAY))
+            .setCatalogId(id("catalog", ResourceKind.RK_CATALOG))
+            .setIntegrationId(integration.getResourceId())
+            .setDisplayName("sales")
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("sales"))
+            .build();
+    integrations.create(integration);
+    overlays.create(overlay);
+
+    client = new FakeCatalogClient();
+    var access = mock(CatalogIntegrationAccess.class);
+    when(access.open(integration)).thenReturn(client);
+    reconciler = new CatalogOverlayReconciler();
+    reconciler.access = access;
+    reconciler.integrations = integrations;
+    reconciler.overlays = overlays;
+    reconciler.namespaces = namespaces;
+    reconciler.tables = tables;
+    reconciler.views = views;
+    reconciler.pointerStore = pointers;
+    reconciler.tableRoots = mock(TableRootRepository.class);
+    reconciler.rootWriter = mock(TableRootWriter.class);
+    reconciler.markerStore = mock(MarkerStore.class);
+    reconciler.metadataGraph = mock(UserGraph.class);
+    reconciler.topology = mock(TopologyGraph.class);
+  }
+
+  @Test
+  void materializesSelectedInventoryAndRetiresWhatDisappears() {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath europe = NamespacePath.of("sales", "eu");
+    NamespacePath internal = NamespacePath.of("internal");
+    client.children.put(NamespacePath.root(), List.of(sales, internal));
+    client.children.put(sales, List.of(europe));
+    client.children.put(europe, List.of());
+    client.tables.put(
+        new CatalogObjectName(sales, "orders"),
+        new CatalogTable(
+            new CatalogObjectName(sales, "orders"),
+            ExternalObjectIdentity.stable("table-uuid"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.of("s3://warehouse/orders/metadata.json"),
+            Optional.of("s3://warehouse/orders"),
+            Map.of()));
+    client.views.put(
+        new CatalogObjectName(europe, "summary"),
+        new CatalogView(
+            new CatalogObjectName(europe, "summary"),
+            ExternalObjectIdentity.stable("view-uuid"),
+            SCHEMA_JSON,
+            List.of(new CatalogViewDefinition("select id from orders", "ansi")),
+            europe,
+            Map.of()));
+
+    var first = reconcile();
+
+    assertEquals(2, first.namespacesCreated());
+    assertEquals(1, first.tablesCreated());
+    assertEquals(1, first.viewsCreated());
+    var salesNamespace =
+        namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    var europeNamespace =
+        namespaces.getByPath("acct", "catalog", List.of("sales", "eu")).orElseThrow();
+    var table =
+        tables
+            .getByName("acct", "catalog", salesNamespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    assertEquals(integration.getResourceId(), table.getUpstream().getCatalogIntegrationId());
+    assertEquals(overlay.getResourceId(), table.getUpstream().getCatalogOverlayId());
+    assertEquals(SCHEMA_JSON, table.getSchemaJson());
+    assertTrue(
+        views
+            .getByName("acct", "catalog", europeNamespace.getResourceId().getId(), "summary")
+            .isPresent());
+
+    clearInvocations(reconciler.markerStore, reconciler.metadataGraph, reconciler.topology);
+    var second = reconcile();
+    assertEquals(new CatalogOverlayReconciler.Result(0, 0, 0, 0, 0, 0, 0, 0), second);
+    verifyNoInteractions(reconciler.markerStore, reconciler.metadataGraph, reconciler.topology);
+
+    client.children.put(sales, List.of());
+    client.tables.clear();
+    client.views.clear();
+    var third = reconcile();
+    assertEquals(1, third.namespacesDeleted());
+    assertEquals(1, third.tablesDeleted());
+    assertEquals(1, third.viewsDeleted());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales", "eu")).isEmpty());
+
+    reconciler.retireMaterializedResources(overlay);
+    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+  }
+
+  @Test
+  void staleOverlayGenerationCannotPublish() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    var observed = overlays.metaFor(overlay.getResourceId());
+    assertTrue(overlays.update(overlay.toBuilder().setDisplayName("changed").build(), observed.getPointerVersion()));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () ->
+            reconciler.reconcile(
+                overlay,
+                observed,
+                integration,
+                integrations.metaFor(integration.getResourceId())));
+    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+  }
+
+  @Test
+  void duplicateStableUpstreamIdentityIsRejectedBeforePublication() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    for (String name : List.of("orders", "returns")) {
+      CatalogObjectName objectName = new CatalogObjectName(sales, name);
+      client.tables.put(
+          objectName,
+          new CatalogTable(
+              objectName,
+              ExternalObjectIdentity.stable("duplicate-uuid"),
+              "ICEBERG",
+              SCHEMA_JSON,
+              List.of(),
+              Optional.empty(),
+              Optional.empty(),
+              Map.of()));
+    }
+
+    assertThrows(IllegalStateException.class, this::reconcile);
+    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+  }
+
+  @Test
+  void lostGenerationCannotLeaveAStaleTableRootPublication() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(
+        orders,
+        new CatalogTable(
+            orders,
+            ExternalObjectIdentity.stable("table-uuid"),
+            "ICEBERG",
+            SCHEMA_JSON,
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    AtomicReference<TableRoot> publishedRoot = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              ResourceId tableId = invocation.getArgument(0);
+              TableRoot root = TableRoot.newBuilder().setTableId(tableId).build();
+              publishedRoot.set(root);
+              tables.delete(tableId);
+              MutationMeta current = overlays.metaFor(overlay.getResourceId());
+              overlays.update(
+                  overlay.toBuilder().setDisplayName("changed").build(),
+                  current.getPointerVersion());
+              return Optional.of(root);
+            })
+        .when(reconciler.rootWriter)
+        .commitDefinitionReturningRoot(any(), any());
+    when(reconciler.tableRoots.metaForSafeLive(any()))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(1L).setBlobUri("root-blob").build());
+    when(reconciler.tableRoots.getByBlobUriLive("root-blob"))
+        .thenAnswer(invocation -> Optional.of(publishedRoot.get()));
+    when(reconciler.tableRoots.deleteWithPrecondition(any(), eq(1L))).thenReturn(true);
+
+    assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
+    verify(reconciler.tableRoots).deleteWithPrecondition(any(), eq(1L));
+  }
+
+  private CatalogOverlayReconciler.Result reconcile() {
+    return reconciler.reconcile(
+        overlay,
+        overlays.metaFor(overlay.getResourceId()),
+        integration,
+        integrations.metaFor(integration.getResourceId()));
+  }
+
+  private static ResourceId id(String value, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("acct").setId(value).setKind(kind).build();
+  }
+
+  private static final class FakeCatalogClient implements CatalogClient {
+    private final Map<NamespacePath, List<NamespacePath>> children = new HashMap<>();
+    private final Map<CatalogObjectName, CatalogTable> tables = new HashMap<>();
+    private final Map<CatalogObjectName, CatalogView> views = new HashMap<>();
+
+    @Override
+    public CatalogCapabilities capabilities() {
+      return CatalogCapabilities.of(
+          CatalogCapability.LIST_NAMESPACES,
+          CatalogCapability.LIST_TABLES,
+          CatalogCapability.LOAD_TABLE,
+          CatalogCapability.LIST_VIEWS,
+          CatalogCapability.LOAD_VIEW);
+    }
+
+    @Override
+    public void validate() {}
+
+    @Override
+    public List<NamespacePath> listNamespaces(NamespacePath parent) {
+      return children.getOrDefault(parent, List.of());
+    }
+
+    @Override
+    public List<CatalogObjectName> listTables(NamespacePath namespace) {
+      return tables.keySet().stream().filter(name -> name.namespace().equals(namespace)).toList();
+    }
+
+    @Override
+    public CatalogTable loadTable(CatalogObjectName table) {
+      return tables.get(table);
+    }
+
+    @Override
+    public List<CatalogObjectName> listViews(NamespacePath namespace) {
+      return views.keySet().stream().filter(name -> name.namespace().equals(namespace)).toList();
+    }
+
+    @Override
+    public CatalogView loadView(CatalogObjectName view) {
+      return views.get(view);
+    }
+
+    @Override
+    public Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table) {
+      return Optional.empty();
+    }
+
+    @Override
+    public void close() {}
+  }
+}
