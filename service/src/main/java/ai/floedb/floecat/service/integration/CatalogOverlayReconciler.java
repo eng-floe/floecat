@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.integration;
 
-import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
+import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.CatalogTable;
 import ai.floedb.floecat.catalog.access.CatalogView;
@@ -110,7 +110,10 @@ public class CatalogOverlayReconciler {
 
     var result = new MutableResult();
     Map<NamespacePath, Namespace> localNamespaces =
-        reconcileNamespaces(overlay, integration, fence, discovery.materializedNamespaces(), result);
+        reconcileNamespaces(
+            overlay, integration, fence, discovery.materializedNamespaces(), result);
+    retireStaleRelations(
+        overlay, fence, discovery.tables(), discovery.views(), localNamespaces, result);
     reconcileTables(
         overlay,
         overlayMeta,
@@ -121,8 +124,7 @@ public class CatalogOverlayReconciler {
         localNamespaces,
         result);
     reconcileViews(overlay, integration, fence, discovery.views(), localNamespaces, result);
-    retireNamespaces(
-        overlay, fence, discovery.materializedNamespaces(), localNamespaces, result);
+    retireNamespaces(overlay, fence, discovery.materializedNamespaces(), localNamespaces, result);
     assertFence(overlay, overlayMeta, integration, integrationMeta);
     return result.freeze();
   }
@@ -141,7 +143,8 @@ public class CatalogOverlayReconciler {
     for (Namespace namespace : catalogNamespaces) {
       for (Table table : listTables(namespace)) {
         if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
-        if (!tables.delete(table.getResourceId()) && tables.getById(table.getResourceId()).isPresent()) {
+        if (!tables.delete(table.getResourceId())
+            && tables.getById(table.getResourceId()).isPresent()) {
           throw new BaseResourceRepository.AbortRetryableException(
               "Table changed during Catalog Overlay retirement");
         }
@@ -150,7 +153,8 @@ public class CatalogOverlayReconciler {
       }
       for (View view : listViews(namespace)) {
         if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
-        if (!views.delete(view.getResourceId()) && views.getById(view.getResourceId()).isPresent()) {
+        if (!views.delete(view.getResourceId())
+            && views.getById(view.getResourceId()).isPresent()) {
           throw new BaseResourceRepository.AbortRetryableException(
               "View changed during Catalog Overlay retirement");
         }
@@ -278,6 +282,72 @@ public class CatalogOverlayReconciler {
     return current;
   }
 
+  private void retireStaleRelations(
+      CatalogOverlay overlay,
+      PointerConditions fence,
+      Map<CatalogObjectName, CatalogTable> discoveredTables,
+      Map<CatalogObjectName, CatalogView> discoveredViews,
+      Map<NamespacePath, Namespace> localNamespaces,
+      MutableResult result) {
+    Map<String, Table> tablesByIdentity = new HashMap<>();
+    Map<CatalogObjectName, Table> tablesByName = new HashMap<>();
+    Map<String, View> viewsByIdentity = new HashMap<>();
+    Map<CatalogObjectName, View> viewsByName = new HashMap<>();
+    for (Namespace namespace : localNamespaces.values()) {
+      NamespacePath namespacePath = path(namespace);
+      for (Table table : listTables(namespace)) {
+        if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
+        tablesByName.put(new CatalogObjectName(namespacePath, table.getDisplayName()), table);
+        stableIdentity(table.getPropertiesMap()).ifPresent(id -> tablesByIdentity.put(id, table));
+      }
+      for (View view : listViews(namespace)) {
+        if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
+        viewsByName.put(new CatalogObjectName(namespacePath, view.getDisplayName()), view);
+        stableIdentity(view.getPropertiesMap()).ifPresent(id -> viewsByIdentity.put(id, view));
+      }
+    }
+
+    Set<String> retainedTableIds = new HashSet<>();
+    for (var entry : discoveredTables.entrySet()) {
+      CatalogTable source = entry.getValue();
+      Table current =
+          source.identity().stable()
+              ? tablesByIdentity.get(source.identity().value())
+              : tablesByName.get(entry.getKey());
+      if (current != null) retainedTableIds.add(current.getResourceId().getId());
+    }
+    Set<String> retainedViewIds = new HashSet<>();
+    for (var entry : discoveredViews.entrySet()) {
+      CatalogView source = entry.getValue();
+      View current =
+          source.identity().stable()
+              ? viewsByIdentity.get(source.identity().value())
+              : viewsByName.get(entry.getKey());
+      if (current != null) retainedViewIds.add(current.getResourceId().getId());
+    }
+
+    for (Table stale : tablesByName.values()) {
+      if (retainedTableIds.contains(stale.getResourceId().getId())) continue;
+      MutationMeta meta = tables.metaFor(stale.getResourceId());
+      if (!tables.deleteWhilePointersMatch(
+          stale.getResourceId(), meta.getPointerVersion(), fence)) {
+        lostFence();
+      }
+      purgeTableState(stale.getResourceId());
+      relationChanged(stale.getResourceId(), stale.getNamespaceId());
+      result.tablesDeleted++;
+    }
+    for (View stale : viewsByName.values()) {
+      if (retainedViewIds.contains(stale.getResourceId().getId())) continue;
+      MutationMeta meta = views.metaFor(stale.getResourceId());
+      if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
+        lostFence();
+      }
+      relationChanged(stale.getResourceId(), stale.getNamespaceId());
+      result.viewsDeleted++;
+    }
+  }
+
   private void reconcileTables(
       CatalogOverlay overlay,
       MutationMeta overlayMeta,
@@ -297,7 +367,6 @@ public class CatalogOverlayReconciler {
       }
     }
 
-    Set<String> retainedIds = new HashSet<>();
     for (var entry : discovered.entrySet()) {
       CatalogObjectName name = entry.getKey();
       CatalogTable source = entry.getValue();
@@ -311,7 +380,9 @@ public class CatalogOverlayReconciler {
       MutationMeta definitionMeta;
       if (current == null) {
         definitionMeta =
-            tables.createWhilePointersMatch(desired, fence).orElseThrow(CatalogOverlayReconciler::lostFence);
+            tables
+                .createWhilePointersMatch(desired, fence)
+                .orElseThrow(CatalogOverlayReconciler::lostFence);
         result.tablesCreated++;
         changed = true;
       } else if (!current.equals(desired)) {
@@ -326,25 +397,18 @@ public class CatalogOverlayReconciler {
         definitionMeta = tables.metaFor(current.getResourceId());
       }
       commitDefinitionWhileFenced(
-          desired.getResourceId(), definitionMeta, overlay, overlayMeta, integration, integrationMeta);
-      retainedIds.add(desired.getResourceId().getId());
+          desired.getResourceId(),
+          definitionMeta,
+          overlay,
+          overlayMeta,
+          integration,
+          integrationMeta);
       if (changed) {
         relationChanged(desired.getResourceId(), desired.getNamespaceId());
         if (current != null && !current.getNamespaceId().equals(desired.getNamespaceId())) {
           relationChanged(desired.getResourceId(), current.getNamespaceId());
         }
       }
-    }
-
-    for (Table stale : existingByName.values()) {
-      if (retainedIds.contains(stale.getResourceId().getId())) continue;
-      MutationMeta meta = tables.metaFor(stale.getResourceId());
-      if (!tables.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
-        lostFence();
-      }
-      purgeTableState(stale.getResourceId());
-      relationChanged(stale.getResourceId(), stale.getNamespaceId());
-      result.tablesDeleted++;
     }
   }
 
@@ -365,7 +429,6 @@ public class CatalogOverlayReconciler {
       }
     }
 
-    Set<String> retainedIds = new HashSet<>();
     for (var entry : discovered.entrySet()) {
       CatalogObjectName name = entry.getKey();
       CatalogView source = entry.getValue();
@@ -382,29 +445,17 @@ public class CatalogOverlayReconciler {
         changed = true;
       } else if (!current.equals(desired)) {
         MutationMeta meta = views.metaFor(current.getResourceId());
-        if (views
-            .updateWhilePointersMatch(desired, meta.getPointerVersion(), fence)
-            .isEmpty()) lostFence();
+        if (views.updateWhilePointersMatch(desired, meta.getPointerVersion(), fence).isEmpty())
+          lostFence();
         result.viewsUpdated++;
         changed = true;
       }
-      retainedIds.add(desired.getResourceId().getId());
       if (changed) {
         relationChanged(desired.getResourceId(), desired.getNamespaceId());
         if (current != null && !current.getNamespaceId().equals(desired.getNamespaceId())) {
           relationChanged(desired.getResourceId(), current.getNamespaceId());
         }
       }
-    }
-
-    for (View stale : existingByName.values()) {
-      if (retainedIds.contains(stale.getResourceId().getId())) continue;
-      MutationMeta meta = views.metaFor(stale.getResourceId());
-      if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
-        lostFence();
-      }
-      relationChanged(stale.getResourceId(), stale.getNamespaceId());
-      result.viewsDeleted++;
     }
   }
 
@@ -579,7 +630,8 @@ public class CatalogOverlayReconciler {
 
   private static void requireBinding(CatalogOverlay overlay, CatalogIntegration integration) {
     if (!overlay.getIntegrationId().equals(integration.getResourceId())) {
-      throw new IllegalArgumentException("Overlay is not bound to the supplied Catalog Integration");
+      throw new IllegalArgumentException(
+          "Overlay is not bound to the supplied Catalog Integration");
     }
     if (!overlay.hasCatalogId()) {
       throw new IllegalStateException("Catalog Overlay is missing its target catalog");
@@ -650,9 +702,7 @@ public class CatalogOverlayReconciler {
   }
 
   private static Map<String, String> objectProperties(
-      CatalogOverlay overlay,
-      CatalogIntegration integration,
-      ExternalObjectIdentity identity) {
+      CatalogOverlay overlay, CatalogIntegration integration, ExternalObjectIdentity identity) {
     Map<String, String> properties = new LinkedHashMap<>(ownershipProperties(overlay, integration));
     properties.put(EXTERNAL_ID_PROPERTY, identity.value());
     properties.put(EXTERNAL_ID_STABLE_PROPERTY, Boolean.toString(identity.stable()));
@@ -661,7 +711,8 @@ public class CatalogOverlayReconciler {
 
   private static Optional<String> stableIdentity(Map<String, String> properties) {
     if (!Boolean.parseBoolean(properties.get(EXTERNAL_ID_STABLE_PROPERTY))) return Optional.empty();
-    return Optional.ofNullable(properties.get(EXTERNAL_ID_PROPERTY)).filter(value -> !value.isBlank());
+    return Optional.ofNullable(properties.get(EXTERNAL_ID_PROPERTY))
+        .filter(value -> !value.isBlank());
   }
 
   private static boolean ownedBy(Map<String, String> properties, CatalogOverlay overlay) {

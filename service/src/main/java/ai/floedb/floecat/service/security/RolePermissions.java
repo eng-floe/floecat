@@ -39,6 +39,8 @@ public final class RolePermissions {
   public static final String CATALOG_INTEGRATION_USE = "catalog-integration.use";
   public static final String CATALOG_OVERLAY_READ = "catalog-overlay.read";
   public static final String CATALOG_OVERLAY_WRITE = "catalog-overlay.write";
+  public static final String CATALOG_OVERLAY_RECONCILE = "catalog-overlay.reconcile";
+  public static final String CATALOG_OVERLAY_DELETE = "catalog-overlay.delete";
   private static final List<String> READ_PERMS =
       List.of(
           "account.read",
@@ -65,6 +67,8 @@ public final class RolePermissions {
           CATALOG_INTEGRATION_USE,
           CATALOG_OVERLAY_READ,
           CATALOG_OVERLAY_WRITE,
+          CATALOG_OVERLAY_RECONCILE,
+          CATALOG_OVERLAY_DELETE,
           "system-objects.read",
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
@@ -100,6 +104,7 @@ public final class RolePermissions {
           CATALOG_INTEGRATION_READ,
           CATALOG_INTEGRATION_USE,
           CATALOG_OVERLAY_READ,
+          CATALOG_OVERLAY_RECONCILE,
           "system-objects.read",
           STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RECONCILE_EXECUTOR_CONTROL_INTERNAL);

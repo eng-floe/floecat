@@ -219,6 +219,7 @@ class CatalogOverlaysImplTest {
 
   @Test
   void reconcileReportsMaterializedMetadataChanges() {
+    service.authz = new Authorizer();
     var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
     var current = overlay(overlayId, integrationId(), catalogId(), "sales");
     var overlayMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();
@@ -231,12 +232,7 @@ class CatalogOverlaysImplTest {
                 .setCorrelationId("corr")
                 .addAllPermissions(
                     Set.of(
-                        "catalog-overlay.write",
-                        "catalog-integration.use",
-                        "catalog.write",
-                        "namespace.write",
-                        "table.write",
-                        "view.write"))
+                        "catalog-overlay.reconcile", "catalog-integration.use"))
                 .build());
     when(service.overlays.getByIdWithMeta(overlayId))
         .thenReturn(Optional.of(new ResourceWithMeta<>(current, overlayMeta)));
@@ -260,6 +256,32 @@ class CatalogOverlaysImplTest {
     assertEquals(6, response.getViewsCreated());
     assertEquals(7, response.getViewsUpdated());
     assertEquals(8, response.getViewsDeleted());
+  }
+
+  @Test
+  void overlayWriteDoesNotAuthorizeDelete() {
+    service.authz = new Authorizer();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    when(service.principal.get())
+        .thenReturn(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setCorrelationId("corr")
+                .addPermissions("catalog-overlay.write")
+                .build());
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogOverlay(
+                        DeleteCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+    verify(service.overlays, never()).getByIdWithMeta(any());
   }
 
   @Test

@@ -760,8 +760,9 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                 () -> {
                   var pc = principal.get();
                   authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
-                  if (request.getCascade())
-                    authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  if (request.getCascade()) {
+                    authz.require(pc, RolePermissions.CATALOG_OVERLAY_DELETE);
+                  }
                   String corr = pc.getCorrelationId();
                   ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
                   var current = integrations.getByIdWithMeta(id);
@@ -973,19 +974,25 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       throw GrpcErrors.invalidArgument(
           corr, FIELD, Map.of("field", "authentication.configuration"));
     }
+    CatalogAuthentication normalizedRequested = requested;
 
     switch (configuration) {
       case OAUTH_CLIENT_CREDENTIALS -> {
         var config = requested.getOauthClientCredentials();
-        requireNonBlank(config.getClientId(), "authentication.client_id", corr);
+        String clientId = normalizeNonBlank(config.getClientId(), "authentication.client_id", corr);
         if (config.hasTokenUri()) validateCatalogUri(config.getTokenUri(), corr);
         var scopes = new LinkedHashSet<String>();
         for (String scope : config.getScopesList()) {
-          scopes.add(requireNonBlank(scope, "authentication.scopes", corr));
+          scopes.add(normalizeNonBlank(scope, "authentication.scopes", corr));
         }
         if (scopes.size() != config.getScopesCount()) {
           throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "authentication.scopes"));
         }
+        normalizedRequested =
+            requested.toBuilder()
+                .setOauthClientCredentials(
+                    config.toBuilder().setClientId(clientId).clearScopes().addAllScopes(scopes))
+                .build();
         requireCredentialCase(
             credential, CatalogIntegrationCredentials.CredentialCase.OAUTH_CLIENT_SECRET, corr);
         requireNonBlank(credentials.getOauthClientSecret().getValue(), "credentials", corr);
@@ -1043,7 +1050,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     boolean storesCredentials =
         credential != CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET;
     var persisted =
-        requested.toBuilder()
+        normalizedRequested.toBuilder()
             .setCredentialsConfigured(storesCredentials)
             .setCredentialGeneration(storesCredentials ? generation : 0L);
     return new PreparedAuthentication(persisted.build(), credentials);
@@ -1080,10 +1087,14 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "credentials"));
   }
 
-  private static String requireNonBlank(String value, String field, String corr) {
+  private static void requireNonBlank(String value, String field, String corr) {
     if (value == null || value.isBlank()) {
       throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", field));
     }
+  }
+
+  private static String normalizeNonBlank(String value, String field, String corr) {
+    requireNonBlank(value, field, corr);
     return value.trim();
   }
 

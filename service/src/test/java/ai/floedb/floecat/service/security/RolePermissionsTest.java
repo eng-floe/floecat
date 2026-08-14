@@ -49,6 +49,8 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_INTEGRATION_USE,
           RolePermissions.CATALOG_OVERLAY_READ,
           RolePermissions.CATALOG_OVERLAY_WRITE,
+          RolePermissions.CATALOG_OVERLAY_RECONCILE,
+          RolePermissions.CATALOG_OVERLAY_DELETE,
           "system-objects.read",
           "account.delete");
   private static final List<String> INIT_ACCOUNT_PERMS =
@@ -83,6 +85,7 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_INTEGRATION_READ,
           RolePermissions.CATALOG_INTEGRATION_USE,
           RolePermissions.CATALOG_OVERLAY_READ,
+          RolePermissions.CATALOG_OVERLAY_RECONCILE,
           "system-objects.read",
           RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
@@ -140,6 +143,9 @@ class RolePermissionsTest {
         RolePermissions.permissionsForRoles(List.of(RolePermissions.INIT_ACCOUNT_ROLE), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(INIT_ACCOUNT_PERMS);
+    assertThat(permissions)
+        .doesNotContain(
+            RolePermissions.CATALOG_OVERLAY_RECONCILE, RolePermissions.CATALOG_OVERLAY_DELETE);
   }
 
   @Test
@@ -163,5 +169,6 @@ class RolePermissionsTest {
         RolePermissions.permissionsForRoles(List.of(RolePermissions.RECONCILE_WORKER_ROLE), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(RECONCILE_WORKER_PERMS);
+    assertThat(permissions).doesNotContain(RolePermissions.CATALOG_OVERLAY_DELETE);
   }
 }

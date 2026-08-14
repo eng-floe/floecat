@@ -263,6 +263,37 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
+  void createPersistsNormalizedOauthClientIdAndScopes() {
+    var response =
+        service
+            .createCatalogIntegration(
+                CreateCatalogIntegrationRequest.newBuilder()
+                    .setSpec(
+                        CatalogIntegrationSpec.newBuilder()
+                            .setDisplayName("Warehouse")
+                            .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+                            .setCatalogUri("https://catalog.example")
+                            .setAuthentication(
+                                CatalogAuthentication.newBuilder()
+                                    .setOauthClientCredentials(
+                                        OAuthClientCredentialsAuthentication.newBuilder()
+                                            .setClientId("  client-id  ")
+                                            .addScopes("  catalog.read")
+                                            .addScopes("catalog.write  "))))
+                    .setCredentials(oauthCredentials())
+                    .build())
+            .await()
+            .indefinitely();
+
+    var persisted = ArgumentCaptor.forClass(CatalogIntegration.class);
+    verify(service.integrations).createWithMeta(persisted.capture());
+    var oauth = persisted.getValue().getAuthentication().getOauthClientCredentials();
+    assertEquals("client-id", oauth.getClientId());
+    assertEquals(List.of("catalog.read", "catalog.write"), oauth.getScopesList());
+    assertEquals(oauth, response.getIntegration().getAuthentication().getOauthClientCredentials());
+  }
+
+  @Test
   void updateAuthenticationRotatesCredentialsAndAdvancesGeneration() {
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var current =
@@ -1116,9 +1147,11 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
-  void cascadeDeleteRequiresOverlayWriteBeforeReadingIntegration() {
+  void legacyOverlayWriteDoesNotAuthorizeCascadeDelete() {
     service.authz = new Authorizer();
-    when(service.principal.get()).thenReturn(principal("catalog-integration.write"));
+    when(service.principal.get())
+        .thenReturn(
+            principal("catalog-integration.write", "catalog-overlay.write", "catalog.write"));
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
 
     var error =
@@ -1142,7 +1175,8 @@ class CatalogIntegrationsImplTest {
   void cascadeFencesDeletesDependentsAndAtomicallyCompletes() {
     service.authz = new Authorizer();
     when(service.principal.get())
-        .thenReturn(principal("catalog-integration.write", "catalog-overlay.write"));
+        .thenReturn(
+            principal("catalog-integration.write", "catalog-overlay.delete"));
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
     var integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();

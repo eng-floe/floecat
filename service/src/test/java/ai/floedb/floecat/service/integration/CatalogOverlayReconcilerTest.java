@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -197,6 +198,100 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void retiresOldStableIdentityBeforeRecreatingTheSameTableName() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "old-table-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    ResourceId oldId =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId();
+
+    client.tables.put(orders, catalogTable(orders, "new-table-uuid"));
+    var result = reconcile();
+
+    ResourceId newId =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId();
+    assertEquals(1, result.tablesDeleted());
+    assertEquals(1, result.tablesCreated());
+    assertNotEquals(oldId, newId);
+  }
+
+  @Test
+  void retiresRenameDestinationBeforeMovingAStableTable() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    CatalogObjectName archived = new CatalogObjectName(sales, "archived_orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.tables.put(archived, catalogTable(archived, "archived-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    ResourceId ordersId =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId();
+
+    client.tables.clear();
+    client.tables.put(archived, catalogTable(archived, "orders-uuid"));
+    var result = reconcile();
+
+    assertEquals(1, result.tablesDeleted());
+    assertEquals(1, result.tablesUpdated());
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+    assertEquals(
+        ordersId,
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "archived_orders")
+            .orElseThrow()
+            .getResourceId());
+  }
+
+  @Test
+  void retiresAViewBeforeCreatingATableWithTheSameRelationName() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName summary = new CatalogObjectName(sales, "summary");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.views.put(
+        summary,
+        new CatalogView(
+            summary,
+            ExternalObjectIdentity.stable("view-uuid"),
+            SCHEMA_JSON,
+            List.of(new CatalogViewDefinition("select 1", "ansi")),
+            sales,
+            Map.of()));
+
+    reconcile();
+    client.views.clear();
+    client.tables.put(summary, catalogTable(summary, "table-uuid"));
+
+    var result = reconcile();
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertEquals(1, result.viewsDeleted());
+    assertEquals(1, result.tablesCreated());
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "summary")
+            .isPresent());
+  }
+
+  @Test
   void staleOverlayGenerationCannotPublish() {
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
@@ -288,6 +383,18 @@ class CatalogOverlayReconcilerTest {
         overlays.metaFor(overlay.getResourceId()),
         integration,
         integrations.metaFor(integration.getResourceId()));
+  }
+
+  private static CatalogTable catalogTable(CatalogObjectName name, String stableIdentity) {
+    return new CatalogTable(
+        name,
+        ExternalObjectIdentity.stable(stableIdentity),
+        "ICEBERG",
+        SCHEMA_JSON,
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Map.of());
   }
 
   private static ResourceId id(String value, ResourceKind kind) {

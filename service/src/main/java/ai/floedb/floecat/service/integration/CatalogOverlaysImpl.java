@@ -556,12 +556,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         runWithRetry(
             () -> {
               var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+              authz.require(pc, RolePermissions.CATALOG_OVERLAY_RECONCILE);
               authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
-              authz.require(pc, RolePermissions.CATALOG_WRITE);
-              authz.require(pc, "namespace.write");
-              authz.require(pc, "table.write");
-              authz.require(pc, "view.write");
               String corr = pc.getCorrelationId();
               ResourceId overlayId = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
               var current =
@@ -610,7 +606,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             runWithRetry(
                 () -> {
                   var pc = principal.get();
-                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_DELETE);
                   String corr = pc.getCorrelationId();
                   ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
                   var current = overlays.getByIdWithMeta(id);
