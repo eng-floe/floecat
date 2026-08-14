@@ -18,6 +18,7 @@ package ai.floedb.floecat.catalog.iceberg.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -25,6 +26,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
@@ -45,6 +47,7 @@ import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.types.Types;
@@ -329,6 +332,42 @@ class IcebergRestCatalogClientTest {
     client.validate();
 
     verify(namespaces, times(1)).listNamespaces(Namespace.empty());
+  }
+
+  @Test
+  void validatesStorageWithANonMutatingMetadataFileRead() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class, withSettings().extraInterfaces(HasTableOperations.class));
+    TableOperations operations = mock(TableOperations.class);
+    TableMetadata metadata = mock(TableMetadata.class);
+    FileIO io = mock(FileIO.class);
+    InputFile input = mock(InputFile.class);
+    when(((HasTableOperations) table).operations()).thenReturn(operations);
+    when(operations.current()).thenReturn(metadata);
+    when(metadata.metadataFileLocation()).thenReturn("s3://warehouse/metadata/v2.json");
+    when(table.io()).thenReturn(io);
+    when(io.newInputFile("s3://warehouse/metadata/v2.json")).thenReturn(input);
+    when(input.getLength()).thenReturn(42L);
+    when(catalog.loadTable(identifier)).thenReturn(table);
+
+    client().validateStorageAccess(name);
+
+    verify(input).getLength();
+    assertTrue(client().capabilities().supports(CatalogCapability.VALIDATE_STORAGE_ACCESS));
+  }
+
+  @Test
+  void translatesProviderAuthenticationFailuresWithoutLeakingTheirMessage() {
+    when(namespaces.listNamespaces(Namespace.empty()))
+        .thenThrow(new org.apache.iceberg.exceptions.NotAuthorizedException("secret-token"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().validate());
+
+    assertEquals(CatalogAccessException.Code.UNAUTHENTICATED, error.code());
+    assertFalse(error.getMessage().contains("secret-token"));
   }
 
   @Test

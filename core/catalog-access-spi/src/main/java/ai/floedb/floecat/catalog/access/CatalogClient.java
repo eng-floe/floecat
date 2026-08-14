@@ -42,6 +42,12 @@ public interface CatalogClient extends AutoCloseable {
    */
   Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table);
 
+  /**
+   * Performs a non-mutating read of upstream table storage using credentials vended through the
+   * provider protocol. A successful return proves that the storage credential boundary is usable.
+   */
+  void validateStorageAccess(CatalogObjectName table);
+
   @Override
   void close();
 }

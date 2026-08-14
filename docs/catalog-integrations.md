@@ -15,9 +15,25 @@ CatalogIntegration (external catalog identity)
  └── CatalogOverlay "finance"
 ```
 
-These resources do not yet validate connectivity, refresh metadata, reconcile or capture tables,
-or affect query paths. The legacy `Connector` API and Shell commands remain the operational path
-for external catalog connectivity.
+Catalog Integration RPCs validate connectivity and browse upstream metadata using the current
+write-only credential generation. Discovery is read-only: it does not reconcile or capture tables
+and does not affect query paths.
+
+## Validation and discovery workflow
+
+After creating an Integration, clients call `ValidateCatalogIntegration` with its resource ID. The
+response reports catalog connection, namespace/table discovery, credential vending, and storage
+access as separate checks. `valid` is true only when all four pass; an empty catalog cannot prove
+credential vending and therefore does not report full validation success.
+
+`ListUpstreamNamespaces` lists direct children of an optional parent path. Omitting the parent lists
+the upstream root. `ListUpstreamObjects` lists lightweight table and view names within one upstream
+namespace; callers may filter by object kind. Both operations are paginated, case-preserving, and
+return the Integration mutation metadata used for the call. Returned namespace paths can be copied
+directly into an Overlay's `include_namespaces` or `exclude_namespaces` selection.
+
+These operations require `catalog-integration.read` and `catalog-integration.use`. They use the
+catalog-access SPI directly and never call or fall back to the legacy Connector path.
 
 ## Shell workflow
 

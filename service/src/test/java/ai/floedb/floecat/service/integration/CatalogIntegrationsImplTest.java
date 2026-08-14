@@ -8,6 +8,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,6 +61,7 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,6 +88,7 @@ class CatalogIntegrationsImplTest {
     service.credentialCleanup.pointerStore = new InMemoryPointerStore();
     service.credentialCleanup.integrations = service.integrations;
     service.credentialCleanup.credentials = service.credentialStore;
+    service.discovery = mock(CatalogIntegrationDiscovery.class);
     when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(true);
     installBasePrincipal(service, service.principal);
     when(service.principal.get()).thenReturn(principal());
@@ -1179,6 +1182,109 @@ class CatalogIntegrationsImplTest {
         .deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L);
     verify(service.integrations, never())
         .deleteWithPreconditionAndOverlayMarker(any(), anyLong(), anyLong());
+  }
+
+  @Test
+  void validatesPersistedIntegrationAndReturnsCapabilitiesAndGeneration() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var integration =
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setAuthentication(
+                CatalogAuthentication.newBuilder()
+                    .setBearer(BearerAuthentication.getDefaultInstance())
+                    .setCredentialGeneration(3L))
+            .build();
+    var meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(integration, meta)));
+    var check =
+        ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheck.newBuilder()
+            .setType(
+                ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType
+                    .CIVCT_CATALOG_CONNECTION)
+            .setStatus(
+                ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus.CIVS_PASSED)
+            .build();
+    when(service.discovery.validate(integration))
+        .thenReturn(
+            new CatalogIntegrationDiscovery.ValidationResult(
+                true,
+                List.of(check),
+                ai.floedb.floecat.catalog.access.CatalogCapabilities.of(
+                    ai.floedb.floecat.catalog.access.CatalogCapability.VALIDATE,
+                    ai.floedb.floecat.catalog.access.CatalogCapability.LIST_NAMESPACES)));
+
+    var response =
+        service
+            .validateCatalogIntegration(
+                ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationRequest.newBuilder()
+                    .setIntegrationId(integrationId)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getValid());
+    assertEquals(meta, response.getIntegrationMeta());
+    assertEquals(2, response.getCapabilitiesCount());
+    verify(service.authz).require(any(), eq("catalog-integration.use"));
+  }
+
+  @Test
+  void pagesUpstreamNamespacesAndListsLightweightObjects() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var integration =
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setAuthentication(CatalogAuthentication.newBuilder().setCredentialGeneration(3L))
+            .build();
+    var meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(integration, meta)));
+    var parent = ai.floedb.floecat.catalog.access.NamespacePath.of("Production");
+    var finance = ai.floedb.floecat.catalog.access.NamespacePath.of("Production", "Finance");
+    var sales = ai.floedb.floecat.catalog.access.NamespacePath.of("Production", "Sales");
+    when(service.discovery.listNamespaces(integration, parent)).thenReturn(List.of(finance, sales));
+
+    var first =
+        service
+            .listUpstreamNamespaces(
+                ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest.newBuilder()
+                    .setIntegrationId(integrationId)
+                    .setParent(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("Production"))
+                    .setPage(ai.floedb.floecat.common.rpc.PageRequest.newBuilder().setPageSize(1))
+                    .build())
+            .await()
+            .indefinitely();
+    assertEquals(
+        List.of("Production", "Finance"), first.getNamespaces(0).getPath().getSegmentsList());
+    assertFalse(first.getPage().getNextPageToken().isBlank());
+
+    when(service.discovery.listObjects(integration, sales, Set.of()))
+        .thenReturn(
+            List.of(
+                new CatalogIntegrationDiscovery.DiscoveredObject(
+                    new ai.floedb.floecat.catalog.access.CatalogObjectName(sales, "orders"),
+                    CatalogIntegrationDiscovery.ObjectKind.TABLE)));
+    var objects =
+        service
+            .listUpstreamObjects(
+                ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest.newBuilder()
+                    .setIntegrationId(integrationId)
+                    .setNamespace(
+                        ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                            .addSegments("Production")
+                            .addSegments("Sales"))
+                    .build())
+            .await()
+            .indefinitely();
+    assertEquals("orders", objects.getObjects(0).getName());
+    assertEquals(
+        ai.floedb.floecat.integration.rpc.UpstreamObjectKind.UOK_TABLE,
+        objects.getObjects(0).getKind());
+    assertEquals(meta, objects.getIntegrationMeta());
   }
 
   private static PrincipalContext principal() {

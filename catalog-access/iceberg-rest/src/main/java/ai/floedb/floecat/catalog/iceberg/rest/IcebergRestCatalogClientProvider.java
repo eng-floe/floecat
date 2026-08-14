@@ -81,7 +81,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     }
 
     Map<String, String> properties = catalogProperties(config, resolvedCredentials);
-    RESTSessionCatalog sessionCatalog = createSessionCatalog(properties);
+    RESTSessionCatalog sessionCatalog =
+        IcebergRestCatalogErrors.call(
+            "client initialization", () -> createSessionCatalog(properties));
     try {
       SessionCatalog.SessionContext context = SessionCatalog.SessionContext.createEmpty();
       Catalog catalog = sessionCatalog.asCatalog(context);
@@ -97,6 +99,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
           IcebergRestCatalogClient.storageRoutingProperties(properties));
     } catch (RuntimeException | Error e) {
       closeCatalog(sessionCatalog);
+      if (e instanceof RuntimeException runtimeException) {
+        throw IcebergRestCatalogErrors.translate("client initialization", runtimeException);
+      }
       throw e;
     }
   }

@@ -52,7 +52,8 @@ The Iceberg REST provider currently supports:
   and identity metadata;
 - metadata and storage locations when exposed by Iceberg;
 - table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;
-  and
+- non-mutating validation of storage access through an upstream table metadata-file read using the
+  provider-configured, vended credential path; and
 - idempotent ownership of the underlying REST session.
 
 `vendStorageCredentials` performs a fresh `loadTable` request on every call, selects the
@@ -112,10 +113,18 @@ to Connector behavior.
 
 ## Current boundary
 
-This first slice is discovery infrastructure. It does not add Integration credentials or validation
-RPCs, schedule reconciliation, write captured resources, or change the existing Iceberg Connector.
-The legacy Connector and its existing SigV4/refresh implementation remain operational and unchanged;
-their removal is a later migration step. The neutral implementation does not import or call them.
+The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
+credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
+namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
+authentication, discovery, credential vending, and a non-mutating storage read all pass.
+
+Discovery results are not persisted and do not materialize Floecat resources. Pagination is applied
+to deterministic provider inventories and continuation tokens are bound to the Integration pointer
+and credential generation, namespace, and object filter. Scheduling, reconciliation, and captured
+resource writes remain separate changes.
+
+The legacy Connector remains operational and unchanged until its explicit migration/removal change.
+The Integration adapter and discovery implementation do not import, call, or fall back to it.
 
 See [Catalog Integration Architecture Decisions](catalog-integration-design.md) for ownership,
 mapping, reconciliation, and migration decisions.

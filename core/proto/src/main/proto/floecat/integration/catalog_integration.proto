@@ -19,6 +19,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.integration.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/integration/catalog_overlay.proto";
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -190,6 +191,113 @@ message DeleteCatalogIntegrationResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
+// Provider capabilities exposed to callers without leaking provider implementation types.
+enum CatalogIntegrationCapability {
+  CIC_UNSPECIFIED = 0;
+  CIC_VALIDATE = 1;
+  CIC_LIST_NAMESPACES = 2;
+  CIC_LIST_TABLES = 3;
+  CIC_LIST_VIEWS = 4;
+  CIC_VEND_STORAGE_CREDENTIALS = 5;
+  CIC_VALIDATE_STORAGE_ACCESS = 6;
+  CIC_STABLE_OBJECT_IDS = 7;
+}
+
+enum CatalogIntegrationValidationCheckType {
+  CIVCT_UNSPECIFIED = 0;
+  CIVCT_CATALOG_CONNECTION = 1;
+  CIVCT_DISCOVERY = 2;
+  CIVCT_CREDENTIAL_VENDING = 3;
+  CIVCT_STORAGE_ACCESS = 4;
+}
+
+enum CatalogIntegrationValidationStatus {
+  CIVS_UNSPECIFIED = 0;
+  CIVS_PASSED = 1;
+  CIVS_FAILED = 2;
+  CIVS_NOT_RUN = 3;
+}
+
+enum CatalogIntegrationValidationIssue {
+  CIVI_UNSPECIFIED = 0;
+  CIVI_CONNECTION_FAILED = 1;
+  CIVI_DISCOVERY_UNSUPPORTED = 2;
+  CIVI_DISCOVERY_FAILED = 3;
+  CIVI_NO_TABLES = 4;
+  CIVI_CREDENTIAL_VENDING_UNSUPPORTED = 5;
+  CIVI_CREDENTIAL_VENDING_FAILED = 6;
+  CIVI_STORAGE_ACCESS_UNSUPPORTED = 7;
+  CIVI_STORAGE_ACCESS_FAILED = 8;
+}
+
+message CatalogIntegrationValidationCheck {
+  CatalogIntegrationValidationCheckType type = 1;
+  CatalogIntegrationValidationStatus status = 2;
+  CatalogIntegrationValidationIssue issue = 3;
+  // Stable, credential-safe summary suitable for display to an administrator.
+  string summary = 4;
+}
+
+// Validates a persisted Integration using its current credential generation. Validation is
+// read-only and is deliberately separate from Integration creation.
+message ValidateCatalogIntegrationRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+}
+
+message ValidateCatalogIntegrationResponse {
+  // True only when catalog access, discovery, credential vending, and storage access all pass.
+  bool valid = 1;
+  repeated CatalogIntegrationValidationCheck checks = 2;
+  repeated CatalogIntegrationCapability capabilities = 3;
+  ai.floedb.floecat.common.MutationMeta integration_meta = 4;
+  google.protobuf.Timestamp validated_at = 5;
+}
+
+message UpstreamNamespace {
+  NamespacePath path = 1;
+}
+
+// Lists direct children of parent in the upstream catalog. An absent or empty parent is the
+// upstream catalog root. Results are read directly from the provider and are not materialized.
+message ListUpstreamNamespacesRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+  NamespacePath parent = 2;
+  ai.floedb.floecat.common.PageRequest page = 3;
+}
+
+message ListUpstreamNamespacesResponse {
+  repeated UpstreamNamespace namespaces = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.MutationMeta integration_meta = 3;
+}
+
+enum UpstreamObjectKind {
+  UOK_UNSPECIFIED = 0;
+  UOK_TABLE = 1;
+  UOK_VIEW = 2;
+}
+
+message UpstreamObject {
+  NamespacePath namespace = 1;
+  string name = 2;
+  UpstreamObjectKind kind = 3;
+}
+
+// Lists lightweight object names within one upstream namespace. An empty kind filter lists every
+// supported kind. Detailed table/view metadata remains on the reconciliation path.
+message ListUpstreamObjectsRequest {
+  ai.floedb.floecat.common.ResourceId integration_id = 1;
+  NamespacePath namespace = 2;
+  repeated UpstreamObjectKind kinds = 3;
+  ai.floedb.floecat.common.PageRequest page = 4;
+}
+
+message ListUpstreamObjectsResponse {
+  repeated UpstreamObject objects = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+  ai.floedb.floecat.common.MutationMeta integration_meta = 3;
+}
+
 service CatalogIntegrations {
   rpc GetCatalogIntegration(GetCatalogIntegrationRequest) returns (GetCatalogIntegrationResponse);
   rpc ListCatalogIntegrations(ListCatalogIntegrationsRequest) returns (ListCatalogIntegrationsResponse);
@@ -197,4 +305,7 @@ service CatalogIntegrations {
   rpc UpdateCatalogIntegration(UpdateCatalogIntegrationRequest) returns (UpdateCatalogIntegrationResponse);
   rpc UpdateCatalogIntegrationAuthentication(UpdateCatalogIntegrationAuthenticationRequest) returns (UpdateCatalogIntegrationAuthenticationResponse);
   rpc DeleteCatalogIntegration(DeleteCatalogIntegrationRequest) returns (DeleteCatalogIntegrationResponse);
+  rpc ValidateCatalogIntegration(ValidateCatalogIntegrationRequest) returns (ValidateCatalogIntegrationResponse);
+  rpc ListUpstreamNamespaces(ListUpstreamNamespacesRequest) returns (ListUpstreamNamespacesResponse);
+  rpc ListUpstreamObjects(ListUpstreamObjectsRequest) returns (ListUpstreamObjectsResponse);
 }
