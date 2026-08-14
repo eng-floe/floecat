@@ -1755,9 +1755,13 @@ write-only credential generation. Discovery is read-only: it does not reconcile 
 and does not affect query paths.</p>
 <h2 id="validation-and-discovery-workflow">Validation and discovery workflow<a class="headerlink" href="#validation-and-discovery-workflow" title="Permanent link">&para;</a></h2>
 <p>After creating an Integration, clients call <code>ValidateCatalogIntegration</code> with its resource ID. The
-response reports catalog connection, namespace/table discovery, credential vending, and storage
-access as separate checks. <code>valid</code> is true only when all four pass; an empty catalog cannot prove
-credential vending and therefore does not report full validation success.</p>
+response reports catalog connection, catalog authentication, namespace/table discovery, credential
+vending, and storage access as separate checks. Credential issues distinguish vending failure,
+expiry, and invalid scope. <code>valid</code> is true only when all five checks pass; an empty catalog cannot
+prove credential vending and therefore does not report full validation success.</p>
+<p>The response capability set covers operations relevant to public Integration validation and
+discovery. Internal table and view loading capabilities belong to reconciliation and are not
+reported by this RPC.</p>
 <p><code>ListUpstreamNamespaces</code> lists direct children of an optional parent path. Omitting the parent lists
 the upstream root. <code>ListUpstreamObjects</code> lists lightweight table and view names within one upstream
 namespace; callers may filter by object kind. Both operations are paginated, case-preserving, and
