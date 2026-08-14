@@ -20,13 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.access.CatalogCapabilities;
@@ -39,10 +39,10 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
@@ -105,8 +105,7 @@ class CatalogOverlayReconcilerTest {
             .setIntegrationId(integration.getResourceId())
             .setDisplayName("sales")
             .addIncludeNamespaces(
-                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
-                    .addSegments("sales"))
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("sales"))
             .build();
     integrations.create(integration);
     overlays.create(overlay);
@@ -163,8 +162,7 @@ class CatalogOverlayReconcilerTest {
     assertEquals(2, first.namespacesCreated());
     assertEquals(1, first.tablesCreated());
     assertEquals(1, first.viewsCreated());
-    var salesNamespace =
-        namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    var salesNamespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
     var europeNamespace =
         namespaces.getByPath("acct", "catalog", List.of("sales", "eu")).orElseThrow();
     var table =
@@ -297,16 +295,15 @@ class CatalogOverlayReconcilerTest {
     client.children.put(NamespacePath.root(), List.of(sales));
     client.children.put(sales, List.of());
     var observed = overlays.metaFor(overlay.getResourceId());
-    assertTrue(overlays.update(overlay.toBuilder().setDisplayName("changed").build(), observed.getPointerVersion()));
+    assertTrue(
+        overlays.update(
+            overlay.toBuilder().setDisplayName("changed").build(), observed.getPointerVersion()));
 
     assertThrows(
         BaseResourceRepository.AbortRetryableException.class,
         () ->
             reconciler.reconcile(
-                overlay,
-                observed,
-                integration,
-                integrations.metaFor(integration.getResourceId())));
+                overlay, observed, integration, integrations.metaFor(integration.getResourceId())));
     assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
   }
 
@@ -448,6 +445,10 @@ class CatalogOverlayReconcilerTest {
     public Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table) {
       return Optional.empty();
     }
+
+    @Override
+    public void validateStorageAccess(
+        CatalogObjectName table, VendedStorageCredentials credentials) {}
 
     @Override
     public void close() {}

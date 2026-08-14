@@ -230,9 +230,7 @@ class CatalogOverlaysImplTest {
             PrincipalContext.newBuilder()
                 .setAccountId("acct")
                 .setCorrelationId("corr")
-                .addAllPermissions(
-                    Set.of(
-                        "catalog-overlay.reconcile", "catalog-integration.use"))
+                .addAllPermissions(Set.of("catalog-overlay.reconcile", "catalog-integration.use"))
                 .build());
     when(service.overlays.getByIdWithMeta(overlayId))
         .thenReturn(Optional.of(new ResourceWithMeta<>(current, overlayMeta)));

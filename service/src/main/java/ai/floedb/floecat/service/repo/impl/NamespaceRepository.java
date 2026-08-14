@@ -104,9 +104,7 @@ public class NamespaceRepository {
   }
 
   public boolean deleteWhilePointersMatch(
-      ResourceId namespaceResourceId,
-      long expectedPointerVersion,
-      PointerConditions conditions) {
+      ResourceId namespaceResourceId, long expectedPointerVersion, PointerConditions conditions) {
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
         expectedPointerVersion,

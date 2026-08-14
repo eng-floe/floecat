@@ -1175,8 +1175,7 @@ class CatalogIntegrationsImplTest {
   void cascadeFencesDeletesDependentsAndAtomicallyCompletes() {
     service.authz = new Authorizer();
     when(service.principal.get())
-        .thenReturn(
-            principal("catalog-integration.write", "catalog-overlay.delete"));
+        .thenReturn(principal("catalog-integration.write", "catalog-overlay.delete"));
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
     var integrationMeta = MutationMeta.newBuilder().setPointerVersion(7L).build();

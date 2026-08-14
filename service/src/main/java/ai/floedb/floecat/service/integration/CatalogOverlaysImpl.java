@@ -578,10 +578,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                                   null));
               var result =
                   reconciler.reconcile(
-                      current.value(),
-                      current.meta(),
-                      integration.value(),
-                      integration.meta());
+                      current.value(), current.meta(), integration.value(), integration.meta());
               return ReconcileCatalogOverlayResponse.newBuilder()
                   .setMeta(current.meta())
                   .setNamespacesCreated(result.namespacesCreated())

@@ -71,7 +71,8 @@ public class TableRepository {
 
   public Optional<MutationMeta> createWhilePointersMatch(
       Table table, PointerConditions conditions) {
-    return repo.createWithMeta(table, conditions, null).map(GenericResourceRepository.ResourceWithMeta::meta);
+    return repo.createWithMeta(table, conditions, null)
+        .map(GenericResourceRepository.ResourceWithMeta::meta);
   }
 
   public boolean update(Table table, long expectedPointerVersion) {
@@ -95,9 +96,7 @@ public class TableRepository {
   }
 
   public boolean deleteWhilePointersMatch(
-      ResourceId tableResourceId,
-      long expectedPointerVersion,
-      PointerConditions conditions) {
+      ResourceId tableResourceId, long expectedPointerVersion, PointerConditions conditions) {
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
         expectedPointerVersion,

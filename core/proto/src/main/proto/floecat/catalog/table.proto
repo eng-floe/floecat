@@ -49,7 +49,7 @@ message UpstreamRef {
   // Set for tables materialized through Catalog Integration reconciliation. Connector and
   // integration identities are mutually exclusive.
   optional ai.floedb.floecat.common.ResourceId catalog_integration_id = 8;
-  // Identifies the overlay whose owned catalog contains this materialization.
+  // Identifies the overlay that manages this materialization.
   optional ai.floedb.floecat.common.ResourceId catalog_overlay_id = 9;
 }
 

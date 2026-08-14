@@ -93,9 +93,7 @@ public class ViewRepository {
   }
 
   public boolean deleteWhilePointersMatch(
-      ResourceId viewResourceId,
-      long expectedPointerVersion,
-      PointerConditions conditions) {
+      ResourceId viewResourceId, long expectedPointerVersion, PointerConditions conditions) {
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()),
         expectedPointerVersion,
