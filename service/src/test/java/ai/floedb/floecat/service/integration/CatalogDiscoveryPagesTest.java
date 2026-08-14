@@ -50,4 +50,25 @@ class CatalogDiscoveryPagesTest {
                     "corr"));
     assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
   }
+
+  @Test
+  void issuedTokenClampsToEmptyPageWhenInventoryShrinks() {
+    var first =
+        CatalogDiscoveryPages.page(
+            List.of("a", "b", "c"),
+            PageRequest.newBuilder().setPageSize(2).build(),
+            "same-context",
+            "corr");
+
+    var finalPage =
+        CatalogDiscoveryPages.page(
+            List.of("a"),
+            PageRequest.newBuilder().setPageToken(first.nextToken()).build(),
+            "same-context",
+            "corr");
+
+    assertEquals(List.of(), finalPage.values());
+    assertEquals("", finalPage.nextToken());
+    assertEquals(1, finalPage.totalSize());
+  }
 }

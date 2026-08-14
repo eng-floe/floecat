@@ -153,7 +153,8 @@ class CatalogClientFactoryTest {
     }
 
     @Override
-    public void validateStorageAccess(CatalogObjectName table) {
+    public void validateStorageAccess(
+        CatalogObjectName table, VendedStorageCredentials vendedStorageCredentials) {
       throw new UnsupportedOperationException();
     }
 

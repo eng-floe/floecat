@@ -229,8 +229,6 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                 namespaces = discovery.listNamespaces(row.value(), parent);
               } catch (CatalogAccessException failure) {
                 throw catalogAccessStatus(pc.getCorrelationId(), failure);
-              } catch (RuntimeException failure) {
-                throw GrpcErrors.unavailable(pc.getCorrelationId(), null, Map.of());
               }
               String context =
                   pageContext(
@@ -282,8 +280,6 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                 objects = discovery.listObjects(row.value(), namespace, kinds);
               } catch (CatalogAccessException failure) {
                 throw catalogAccessStatus(pc.getCorrelationId(), failure);
-              } catch (RuntimeException failure) {
-                throw GrpcErrors.unavailable(pc.getCorrelationId(), null, Map.of());
               }
               String kindContext =
                   kinds.stream()
@@ -1189,7 +1185,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   private static io.grpc.StatusRuntimeException catalogAccessStatus(
       String corr, CatalogAccessException failure) {
     return switch (failure.code()) {
-      case INVALID_CONFIGURATION, UNSUPPORTED ->
+      case INVALID_CONFIGURATION, UNSUPPORTED, CREDENTIAL_EXPIRED, CREDENTIAL_SCOPE_INVALID ->
           GrpcErrors.preconditionFailed(corr, null, Map.of());
       case UNAUTHENTICATED -> GrpcErrors.unauthenticated(corr, null, Map.of());
       case PERMISSION_DENIED -> GrpcErrors.permissionDenied(corr, null, Map.of());

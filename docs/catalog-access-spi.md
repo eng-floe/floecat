@@ -53,7 +53,7 @@ The Iceberg REST provider currently supports:
 - metadata and storage locations when exposed by Iceberg;
 - table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;
 - non-mutating validation of storage access through an upstream table metadata-file read using the
-  provider-configured, vended credential path; and
+  exact vended credentials returned to the caller, without ambient credential fallback; and
 - idempotent ownership of the underlying REST session.
 
 `vendStorageCredentials` performs a fresh `loadTable` request on every call, selects the
@@ -116,7 +116,9 @@ to Connector behavior.
 The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
 credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
 namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
-authentication, discovery, credential vending, and a non-mutating storage read all pass.
+connection, authentication, discovery, credential vending, and a non-mutating storage read all
+pass. Authentication, expiry, scope, and storage failures remain distinct in the public validation
+result.
 
 Discovery results are not persisted and do not materialize Floecat resources. Pagination is applied
 to deterministic provider inventories and continuation tokens are bound to the Integration pointer

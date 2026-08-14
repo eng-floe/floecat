@@ -9,6 +9,9 @@ package ai.floedb.floecat.catalog.iceberg.rest;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import java.net.SocketTimeoutException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.BadRequestException;
@@ -76,9 +79,8 @@ final class IcebergRestCatalogErrors {
   }
 
   private static boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
-    for (Throwable cause = failure;
-        cause != null && cause.getCause() != cause;
-        cause = cause.getCause()) {
+    Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable cause = failure; cause != null && visited.add(cause); cause = cause.getCause()) {
       if (type.isInstance(cause)) {
         return true;
       }

@@ -45,7 +45,7 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
   private static final String VENDED_CREDENTIALS = "vended-credentials";
-  private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
+  static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final AwsCredentialKeys CATALOG_AWS_KEYS =
       new AwsCredentialKeys(
           RefreshingAwsCredentialsRegistry.CATALOG_PROVIDER_ID,

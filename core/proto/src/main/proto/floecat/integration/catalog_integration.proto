@@ -191,7 +191,8 @@ message DeleteCatalogIntegrationResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
-// Provider capabilities exposed to callers without leaking provider implementation types.
+// Provider capabilities relevant to public Integration validation and discovery. Internal loading
+// capabilities are deliberately omitted because detailed metadata loading belongs to reconciliation.
 enum CatalogIntegrationCapability {
   CIC_UNSPECIFIED = 0;
   CIC_VALIDATE = 1;
@@ -209,6 +210,7 @@ enum CatalogIntegrationValidationCheckType {
   CIVCT_DISCOVERY = 2;
   CIVCT_CREDENTIAL_VENDING = 3;
   CIVCT_STORAGE_ACCESS = 4;
+  CIVCT_CATALOG_AUTHENTICATION = 5;
 }
 
 enum CatalogIntegrationValidationStatus {
@@ -228,6 +230,9 @@ enum CatalogIntegrationValidationIssue {
   CIVI_CREDENTIAL_VENDING_FAILED = 6;
   CIVI_STORAGE_ACCESS_UNSUPPORTED = 7;
   CIVI_STORAGE_ACCESS_FAILED = 8;
+  CIVI_AUTHENTICATION_FAILED = 9;
+  CIVI_CREDENTIAL_EXPIRED = 10;
+  CIVI_CREDENTIAL_SCOPE_INVALID = 11;
 }
 
 message CatalogIntegrationValidationCheck {
@@ -245,7 +250,8 @@ message ValidateCatalogIntegrationRequest {
 }
 
 message ValidateCatalogIntegrationResponse {
-  // True only when catalog access, discovery, credential vending, and storage access all pass.
+  // True only when catalog connection, authentication, discovery, credential vending, and storage
+  // access all pass.
   bool valid = 1;
   repeated CatalogIntegrationValidationCheck checks = 2;
   repeated CatalogIntegrationCapability capabilities = 3;

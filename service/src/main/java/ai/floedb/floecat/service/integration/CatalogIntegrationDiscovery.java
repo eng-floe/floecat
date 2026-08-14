@@ -13,6 +13,7 @@ import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheck;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
@@ -20,6 +21,8 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationIssue;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -27,153 +30,199 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.LongSupplier;
+import org.jboss.logging.Logger;
 
 /** Read-only discovery and validation against one persisted Catalog Integration. */
 @ApplicationScoped
 public class CatalogIntegrationDiscovery {
+  private static final Logger LOG = Logger.getLogger(CatalogIntegrationDiscovery.class);
   private static final int MAX_VALIDATION_NAMESPACES = 100_000;
+  private static final Duration DEFAULT_VALIDATION_TIMEOUT = Duration.ofSeconds(30);
 
   @Inject CatalogIntegrationAccess access;
+  Clock clock = Clock.systemUTC();
+  Duration validationTimeout = DEFAULT_VALIDATION_TIMEOUT;
+  LongSupplier nanoTime = System::nanoTime;
 
   ValidationResult validate(CatalogIntegration integration) {
-    List<CatalogIntegrationValidationCheck> checks = new ArrayList<>();
-    CatalogCapabilities capabilities = CatalogCapabilities.of();
-    try (CatalogClient client = access.open(integration)) {
-      capabilities = client.capabilities();
-      if (!capabilities.supports(CatalogCapability.VALIDATE)) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
-                CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
-                "The catalog provider does not support connection validation."));
-        addNotRunAfterConnection(checks);
-        return new ValidationResult(false, checks, capabilities);
+    CatalogClient client;
+    try {
+      client = access.open(integration);
+    } catch (CatalogAccessException failure) {
+      if (failure.code() == CatalogAccessException.Code.INTERNAL) {
+        throw failure;
       }
-      try {
-        client.validate();
+      return clientOpenFailure(failure);
+    }
+    try {
+      return validate(client);
+    } finally {
+      closeAfterValidation(client);
+    }
+  }
+
+  private ValidationResult validate(CatalogClient client) {
+    List<CatalogIntegrationValidationCheck> checks = new ArrayList<>();
+    CatalogCapabilities capabilities = client.capabilities();
+    if (!capabilities.supports(CatalogCapability.VALIDATE)) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
+              CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
+              "The catalog provider does not support connection validation."));
+      checks.add(
+          notRun(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+              "Authentication was not tested because connection validation is unsupported."));
+      addNotRunAfterAuthentication(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+    try {
+      client.validate();
+      checks.add(
+          passed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
+              "The catalog endpoint is reachable."));
+      checks.add(
+          passed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+              "The catalog endpoint accepted the configured authentication."));
+    } catch (CatalogAccessException failure) {
+      if (isAuthenticationFailure(failure)) {
         checks.add(
             passed(
                 CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
-                "The catalog endpoint accepted the configured authentication."));
-      } catch (RuntimeException failure) {
+                "The catalog endpoint is reachable."));
+        checks.add(
+            failed(
+                CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+                CatalogIntegrationValidationIssue.CIVI_AUTHENTICATION_FAILED,
+                safeSummary("Catalog authentication failed.", failure)));
+        addNotRunAfterAuthentication(checks);
+      } else {
         checks.add(
             failed(
                 CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
                 CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
                 safeSummary("Catalog connection validation failed.", failure)));
-        addNotRunAfterConnection(checks);
-        return new ValidationResult(false, checks, capabilities);
-      }
-
-      Optional<CatalogObjectName> validationTable;
-      if (!capabilities.supports(CatalogCapability.LIST_NAMESPACES)
-          || !capabilities.supports(CatalogCapability.LIST_TABLES)) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
-                CatalogIntegrationValidationIssue.CIVI_DISCOVERY_UNSUPPORTED,
-                "The catalog provider cannot enumerate namespaces and tables."));
-        addNotRunAfterDiscovery(checks);
-        return new ValidationResult(false, checks, capabilities);
-      }
-      try {
-        validationTable = findFirstTable(client);
-      } catch (RuntimeException failure) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
-                CatalogIntegrationValidationIssue.CIVI_DISCOVERY_FAILED,
-                safeSummary("Catalog discovery validation failed.", failure)));
-        addNotRunAfterDiscovery(checks);
-        return new ValidationResult(false, checks, capabilities);
-      }
-      if (validationTable.isEmpty()) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
-                CatalogIntegrationValidationIssue.CIVI_NO_TABLES,
-                "No upstream table is available to validate credential vending."));
-        addNotRunAfterDiscovery(checks);
-        return new ValidationResult(false, checks, capabilities);
-      }
-      checks.add(
-          passed(
-              CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
-              "The catalog can enumerate upstream namespaces and tables."));
-
-      CatalogObjectName table = validationTable.orElseThrow();
-      if (!capabilities.supports(CatalogCapability.VEND_STORAGE_CREDENTIALS)) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
-                CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_UNSUPPORTED,
-                "The catalog provider does not support storage credential vending."));
         checks.add(
             notRun(
-                CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                "Storage access was not tested because credential vending did not pass."));
-        return new ValidationResult(false, checks, capabilities);
+                CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+                "Authentication was not tested because the catalog endpoint was unavailable."));
+        addNotRunAfterAuthentication(checks);
       }
-      try {
-        if (client.vendStorageCredentials(table).isEmpty()) {
-          checks.add(
-              failed(
-                  CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
-                  CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_FAILED,
-                  "The catalog did not vend usable storage credentials for an upstream table."));
-          checks.add(
-              notRun(
-                  CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                  "Storage access was not tested because credential vending did not pass."));
-          return new ValidationResult(false, checks, capabilities);
-        }
-        checks.add(
-            passed(
-                CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
-                "The catalog vended scoped storage credentials."));
-      } catch (RuntimeException failure) {
+      return new ValidationResult(false, checks, capabilities);
+    }
+
+    Optional<CatalogObjectName> validationTable;
+    if (!capabilities.supports(CatalogCapability.LIST_NAMESPACES)
+        || !capabilities.supports(CatalogCapability.LIST_TABLES)) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
+              CatalogIntegrationValidationIssue.CIVI_DISCOVERY_UNSUPPORTED,
+              "The catalog provider cannot enumerate namespaces and tables."));
+      addNotRunAfterDiscovery(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+    try {
+      validationTable = findFirstTable(client, ValidationBudget.start(validationTimeout, nanoTime));
+    } catch (CatalogAccessException failure) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
+              CatalogIntegrationValidationIssue.CIVI_DISCOVERY_FAILED,
+              safeSummary("Catalog discovery validation failed.", failure)));
+      addNotRunAfterDiscovery(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+    if (validationTable.isEmpty()) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
+              CatalogIntegrationValidationIssue.CIVI_NO_TABLES,
+              "No upstream table is available to validate credential vending."));
+      addNotRunAfterDiscovery(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+    checks.add(
+        passed(
+            CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
+            "The catalog can enumerate upstream namespaces and tables."));
+
+    CatalogObjectName table = validationTable.orElseThrow();
+    if (!capabilities.supports(CatalogCapability.VEND_STORAGE_CREDENTIALS)) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
+              CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_UNSUPPORTED,
+              "The catalog provider does not support storage credential vending."));
+      addStorageNotRun(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+    VendedStorageCredentials vendedCredentials;
+    try {
+      Optional<VendedStorageCredentials> vended = client.vendStorageCredentials(table);
+      if (vended.isEmpty()) {
         checks.add(
             failed(
                 CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
                 CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_FAILED,
-                safeSummary("Storage credential vending failed.", failure)));
-        checks.add(
-            notRun(
-                CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                "Storage access was not tested because credential vending did not pass."));
+                "The catalog did not vend usable storage credentials for an upstream table."));
+        addStorageNotRun(checks);
         return new ValidationResult(false, checks, capabilities);
       }
-
-      if (!capabilities.supports(CatalogCapability.VALIDATE_STORAGE_ACCESS)) {
+      vendedCredentials = vended.orElseThrow();
+      if (vendedCredentials
+          .expiresAt()
+          .filter(expiry -> !expiry.isAfter(clock.instant()))
+          .isPresent()) {
         checks.add(
             failed(
-                CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_UNSUPPORTED,
-                "The catalog provider cannot validate access to upstream table storage."));
+                CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
+                CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_EXPIRED,
+                "The catalog vended storage credentials that are already expired."));
+        addStorageNotRun(checks);
         return new ValidationResult(false, checks, capabilities);
       }
-      try {
-        client.validateStorageAccess(table);
-        checks.add(
-            passed(
-                CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                "Vended credentials can read upstream table storage."));
-        return new ValidationResult(true, checks, capabilities);
-      } catch (RuntimeException failure) {
-        checks.add(
-            failed(
-                CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
-                CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED,
-                safeSummary("Storage access validation failed.", failure)));
-        return new ValidationResult(false, checks, capabilities);
-      }
-    } catch (RuntimeException failure) {
+      checks.add(
+          passed(
+              CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
+              "The catalog vended scoped storage credentials."));
+    } catch (CatalogAccessException failure) {
       checks.add(
           failed(
-              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
-              CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
-              safeSummary("The catalog client could not be opened.", failure)));
-      addNotRunAfterConnection(checks);
+              CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
+              credentialIssue(
+                  failure, CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_FAILED),
+              safeSummary("Storage credential vending failed.", failure)));
+      addStorageNotRun(checks);
+      return new ValidationResult(false, checks, capabilities);
+    }
+
+    if (!capabilities.supports(CatalogCapability.VALIDATE_STORAGE_ACCESS)) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
+              CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_UNSUPPORTED,
+              "The catalog provider cannot validate access to upstream table storage."));
+      return new ValidationResult(false, checks, capabilities);
+    }
+    try {
+      client.validateStorageAccess(table, vendedCredentials);
+      checks.add(
+          passed(
+              CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
+              "Vended credentials can read upstream table storage."));
+      return new ValidationResult(true, checks, capabilities);
+    } catch (CatalogAccessException failure) {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
+              credentialIssue(
+                  failure, CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED),
+              safeSummary("Storage access validation failed.", failure)));
       return new ValidationResult(false, checks, capabilities);
     }
   }
@@ -208,8 +257,16 @@ public class CatalogIntegrationDiscovery {
     }
   }
 
-  private static Optional<CatalogObjectName> findFirstTable(CatalogClient client) {
-    List<CatalogObjectName> rootTables = client.listTables(NamespacePath.root());
+  private static Optional<CatalogObjectName> findFirstTable(
+      CatalogClient client, ValidationBudget budget) {
+    budget.check();
+    List<CatalogObjectName> rootTables;
+    try {
+      rootTables = client.listTables(NamespacePath.root());
+    } catch (CatalogAccessException failure) {
+      rootTables = rootListingUnsupported(failure) ? List.of() : throwFailure(failure);
+    }
+    budget.check();
     if (!rootTables.isEmpty()) {
       return Optional.of(rootTables.stream().sorted().findFirst().orElseThrow());
     }
@@ -218,7 +275,9 @@ public class CatalogIntegrationDiscovery {
     pending.add(NamespacePath.root());
     while (!pending.isEmpty()) {
       NamespacePath parent = pending.removeFirst();
+      budget.check();
       for (NamespacePath namespace : client.listNamespaces(parent).stream().sorted().toList()) {
+        budget.check();
         if (!seen.add(namespace)) {
           continue;
         }
@@ -228,6 +287,7 @@ public class CatalogIntegrationDiscovery {
               "Catalog namespace inventory exceeds the validation limit");
         }
         List<CatalogObjectName> tables = client.listTables(namespace);
+        budget.check();
         if (!tables.isEmpty()) {
           return Optional.of(tables.stream().sorted().findFirst().orElseThrow());
         }
@@ -235,6 +295,17 @@ public class CatalogIntegrationDiscovery {
       }
     }
     return Optional.empty();
+  }
+
+  private static boolean rootListingUnsupported(CatalogAccessException failure) {
+    return switch (failure.code()) {
+      case INVALID_CONFIGURATION, NOT_FOUND, UNSUPPORTED -> true;
+      default -> false;
+    };
+  }
+
+  private static <T> T throwFailure(RuntimeException failure) {
+    throw failure;
   }
 
   private static Set<ObjectKind> defaultKinds(CatalogCapabilities capabilities) {
@@ -274,6 +345,58 @@ public class CatalogIntegrationDiscovery {
         : fallback;
   }
 
+  private static ValidationResult clientOpenFailure(CatalogAccessException failure) {
+    List<CatalogIntegrationValidationCheck> checks = new ArrayList<>();
+    if (isAuthenticationFailure(failure)) {
+      checks.add(
+          passed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
+              "The catalog endpoint is reachable."));
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+              CatalogIntegrationValidationIssue.CIVI_AUTHENTICATION_FAILED,
+              safeSummary("Catalog authentication failed.", failure)));
+    } else {
+      checks.add(
+          failed(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
+              CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
+              safeSummary("The catalog client could not be opened.", failure)));
+      checks.add(
+          notRun(
+              CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+              "Authentication was not tested because the catalog client could not be opened."));
+    }
+    addNotRunAfterAuthentication(checks);
+    return new ValidationResult(false, checks, CatalogCapabilities.of());
+  }
+
+  private static boolean isAuthenticationFailure(CatalogAccessException failure) {
+    return failure.code() == CatalogAccessException.Code.UNAUTHENTICATED
+        || failure.code() == CatalogAccessException.Code.PERMISSION_DENIED;
+  }
+
+  private static CatalogIntegrationValidationIssue credentialIssue(
+      CatalogAccessException failure, CatalogIntegrationValidationIssue fallback) {
+    return switch (failure.code()) {
+      case CREDENTIAL_EXPIRED -> CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_EXPIRED;
+      case CREDENTIAL_SCOPE_INVALID ->
+          CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_SCOPE_INVALID;
+      default -> fallback;
+    };
+  }
+
+  private static void closeAfterValidation(CatalogClient client) {
+    try {
+      client.close();
+    } catch (RuntimeException failure) {
+      LOG.warnf(
+          "Catalog client close failed after validation completed: type=%s",
+          failure.getClass().getName());
+    }
+  }
+
   private static CatalogIntegrationValidationCheck passed(
       CatalogIntegrationValidationCheckType type, String summary) {
     return CatalogIntegrationValidationCheck.newBuilder()
@@ -304,11 +427,11 @@ public class CatalogIntegrationDiscovery {
         .build();
   }
 
-  private static void addNotRunAfterConnection(List<CatalogIntegrationValidationCheck> checks) {
+  private static void addNotRunAfterAuthentication(List<CatalogIntegrationValidationCheck> checks) {
     checks.add(
         notRun(
             CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
-            "Discovery was not tested because catalog connection validation did not pass."));
+            "Discovery was not tested because connection and authentication did not pass."));
     addNotRunAfterDiscovery(checks);
   }
 
@@ -317,10 +440,29 @@ public class CatalogIntegrationDiscovery {
         notRun(
             CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
             "Credential vending was not tested because discovery did not pass."));
+    addStorageNotRun(checks);
+  }
+
+  private static void addStorageNotRun(List<CatalogIntegrationValidationCheck> checks) {
     checks.add(
         notRun(
             CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
             "Storage access was not tested because credential vending did not pass."));
+  }
+
+  private record ValidationBudget(long deadlineNanos, LongSupplier nanoTime) {
+    private static ValidationBudget start(Duration timeout, LongSupplier nanoTime) {
+      long timeoutNanos = Math.max(0L, timeout.toNanos());
+      return new ValidationBudget(nanoTime.getAsLong() + timeoutNanos, nanoTime);
+    }
+
+    private void check() {
+      if (nanoTime.getAsLong() - deadlineNanos >= 0L) {
+        throw new CatalogAccessException(
+            CatalogAccessException.Code.TIMEOUT,
+            "Catalog discovery exceeded the validation time limit");
+      }
+    }
   }
 
   enum ObjectKind {

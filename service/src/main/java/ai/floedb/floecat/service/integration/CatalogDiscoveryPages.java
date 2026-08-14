@@ -31,12 +31,10 @@ final class CatalogDiscoveryPages {
     String expectedContext = contextHash(context);
     int offset =
         decodeOffset(request == null ? "" : request.getPageToken(), expectedContext, correlationId);
-    if (offset > values.size()) {
-      throw invalidToken(correlationId);
-    }
-    int end = Math.min(values.size(), offset + pageSize);
+    int start = Math.min(offset, values.size());
+    int end = start + Math.min(pageSize, values.size() - start);
     String next = end < values.size() ? VERSION + "." + expectedContext + "." + end : "";
-    return new Page<>(values.subList(offset, end), next, values.size());
+    return new Page<>(values.subList(start, end), next, values.size());
   }
 
   private static int decodeOffset(String token, String expectedContext, String correlationId) {

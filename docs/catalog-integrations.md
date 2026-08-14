@@ -22,9 +22,14 @@ and does not affect query paths.
 ## Validation and discovery workflow
 
 After creating an Integration, clients call `ValidateCatalogIntegration` with its resource ID. The
-response reports catalog connection, namespace/table discovery, credential vending, and storage
-access as separate checks. `valid` is true only when all four pass; an empty catalog cannot prove
-credential vending and therefore does not report full validation success.
+response reports catalog connection, catalog authentication, namespace/table discovery, credential
+vending, and storage access as separate checks. Credential issues distinguish vending failure,
+expiry, and invalid scope. `valid` is true only when all five checks pass; an empty catalog cannot
+prove credential vending and therefore does not report full validation success.
+
+The response capability set covers operations relevant to public Integration validation and
+discovery. Internal table and view loading capabilities belong to reconciliation and are not
+reported by this RPC.
 
 `ListUpstreamNamespaces` lists direct children of an optional parent path. Omitting the parent lists
 the upstream root. `ListUpstreamObjects` lists lightweight table and view names within one upstream

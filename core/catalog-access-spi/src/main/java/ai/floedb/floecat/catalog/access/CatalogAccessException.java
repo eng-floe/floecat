@@ -18,6 +18,8 @@ public final class CatalogAccessException extends RuntimeException {
     NOT_FOUND,
     UNAVAILABLE,
     TIMEOUT,
+    CREDENTIAL_EXPIRED,
+    CREDENTIAL_SCOPE_INVALID,
     UNSUPPORTED,
     INTERNAL
   }

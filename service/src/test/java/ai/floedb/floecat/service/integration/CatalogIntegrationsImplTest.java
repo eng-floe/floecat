@@ -62,6 +62,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
@@ -1285,6 +1286,58 @@ class CatalogIntegrationsImplTest {
         ai.floedb.floecat.integration.rpc.UpstreamObjectKind.UOK_TABLE,
         objects.getObjects(0).getKind());
     assertEquals(meta, objects.getIntegrationMeta());
+  }
+
+  @Test
+  void unexpectedDiscoveryFailureUsesStandardInternalMapping() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(
+            Optional.of(new ResourceWithMeta<>(integration, MutationMeta.getDefaultInstance())));
+    when(service.discovery.listNamespaces(
+            integration, ai.floedb.floecat.catalog.access.NamespacePath.root()))
+        .thenThrow(new NullPointerException("implementation bug"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .listUpstreamNamespaces(
+                        ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest.newBuilder()
+                            .setIntegrationId(integrationId)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INTERNAL, error.getStatus().getCode());
+  }
+
+  @Test
+  void discoveryCancellationIsNotRewrittenAsUnavailable() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(
+            Optional.of(new ResourceWithMeta<>(integration, MutationMeta.getDefaultInstance())));
+    when(service.discovery.listNamespaces(
+            integration, ai.floedb.floecat.catalog.access.NamespacePath.root()))
+        .thenThrow(new CancellationException("cancelled"));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .listUpstreamNamespaces(
+                        ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest.newBuilder()
+                            .setIntegrationId(integrationId)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.CANCELLED, error.getStatus().getCode());
   }
 
   private static PrincipalContext principal() {

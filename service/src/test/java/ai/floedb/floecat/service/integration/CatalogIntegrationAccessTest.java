@@ -138,6 +138,23 @@ class CatalogIntegrationAccessTest {
     assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
   }
 
+  @Test
+  void reportsUnreadableStoredCredentialsAsInternalState() {
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(true)
+            .setCredentialGeneration(1L)
+            .build();
+    CatalogIntegration integration = integration(authentication);
+    when(credentials.resolve(integration)).thenThrow(new IllegalStateException("corrupt blob"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> access.open(integration));
+
+    assertEquals(CatalogAccessException.Code.INTERNAL, error.code());
+  }
+
   private static CatalogIntegration integration(CatalogAuthentication authentication) {
     return CatalogIntegration.newBuilder()
         .setResourceId(

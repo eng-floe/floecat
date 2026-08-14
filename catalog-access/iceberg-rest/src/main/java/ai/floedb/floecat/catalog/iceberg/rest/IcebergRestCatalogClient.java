@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Table;
@@ -42,6 +44,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
+import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.view.SQLViewRepresentation;
@@ -77,6 +80,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
   private final ViewCatalog viewCatalog;
   private final Runnable closeHook;
   private final Map<String, String> storageRoutingProperties;
+  private final Function<VendedStorageCredentials, FileIO> validationFileIoFactory;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   IcebergRestCatalogClient(
@@ -93,12 +97,39 @@ final class IcebergRestCatalogClient implements CatalogClient {
       ViewCatalog viewCatalog,
       Runnable closeHook,
       Map<String, String> storageRoutingProperties) {
+    this(
+        catalog,
+        namespaceCatalog,
+        viewCatalog,
+        closeHook,
+        storageRoutingProperties,
+        IcebergRestCatalogClient::validationFileIo);
+  }
+
+  IcebergRestCatalogClient(
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
+      Runnable closeHook,
+      Function<VendedStorageCredentials, FileIO> validationFileIoFactory) {
+    this(catalog, namespaceCatalog, viewCatalog, closeHook, Map.of(), validationFileIoFactory);
+  }
+
+  IcebergRestCatalogClient(
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
+      Runnable closeHook,
+      Map<String, String> storageRoutingProperties,
+      Function<VendedStorageCredentials, FileIO> validationFileIoFactory) {
     this.catalog = Objects.requireNonNull(catalog, "catalog");
     this.namespaceCatalog = Objects.requireNonNull(namespaceCatalog, "namespaceCatalog");
     this.viewCatalog = Objects.requireNonNull(viewCatalog, "viewCatalog");
     this.closeHook = Objects.requireNonNull(closeHook, "closeHook");
     this.storageRoutingProperties =
         Map.copyOf(Objects.requireNonNull(storageRoutingProperties, "storageRoutingProperties"));
+    this.validationFileIoFactory =
+        Objects.requireNonNull(validationFileIoFactory, "validationFileIoFactory");
   }
 
   @Override
@@ -233,6 +264,18 @@ final class IcebergRestCatalogClient implements CatalogClient {
       }
     }
     if (selected == null) {
+      boolean hasOutOfScopeCredential =
+          credentials.stream()
+              .filter(Objects::nonNull)
+              .filter(candidate -> candidate.config() != null && !candidate.config().isEmpty())
+              .map(StorageCredential::prefix)
+              .filter(Objects::nonNull)
+              .anyMatch(prefix -> !prefix.isEmpty() && !tableLocation.startsWith(prefix));
+      if (hasOutOfScopeCredential) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
+            "Vended storage credentials do not cover the upstream table location");
+      }
       return Optional.empty();
     }
 
@@ -249,8 +292,10 @@ final class IcebergRestCatalogClient implements CatalogClient {
   }
 
   @Override
-  public void validateStorageAccess(CatalogObjectName name) {
+  public void validateStorageAccess(
+      CatalogObjectName name, VendedStorageCredentials vendedStorageCredentials) {
     Objects.requireNonNull(name, "name");
+    Objects.requireNonNull(vendedStorageCredentials, "vendedStorageCredentials");
     IcebergRestCatalogErrors.run(
         "storage access validation",
         () -> {
@@ -263,8 +308,22 @@ final class IcebergRestCatalogClient implements CatalogClient {
                               ai.floedb.floecat.catalog.access.CatalogAccessException.Code
                                   .UNSUPPORTED,
                               "Upstream table does not expose a metadata location"));
-          table.io().newInputFile(metadataLocation).getLength();
+          String scopePrefix = vendedStorageCredentials.scopePrefix();
+          if (!scopePrefix.isEmpty() && !metadataLocation.startsWith(scopePrefix)) {
+            throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+                ai.floedb.floecat.catalog.access.CatalogAccessException.Code
+                    .CREDENTIAL_SCOPE_INVALID,
+                "Vended storage credentials do not cover the table metadata location");
+          }
+          try (FileIO validationIo = validationFileIoFactory.apply(vendedStorageCredentials)) {
+            validationIo.newInputFile(metadataLocation).getLength();
+          }
         });
+  }
+
+  private static FileIO validationFileIo(VendedStorageCredentials credentials) {
+    return CatalogUtil.loadFileIO(
+        IcebergRestCatalogClientProvider.DEFAULT_S3_FILE_IO, credentials.properties(), null);
   }
 
   @Override

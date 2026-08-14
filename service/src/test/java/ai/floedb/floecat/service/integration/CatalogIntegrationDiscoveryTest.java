@@ -11,6 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -24,7 +26,13 @@ import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationIssue;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,33 +57,18 @@ class CatalogIntegrationDiscoveryTest {
 
   @Test
   void validationPassesOnlyAfterCatalogVendingAndStorageChecks() {
-    NamespacePath sales = NamespacePath.of("production", "sales");
-    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
-    when(client.capabilities())
-        .thenReturn(
-            CatalogCapabilities.of(
-                CatalogCapability.VALIDATE,
-                CatalogCapability.LIST_NAMESPACES,
-                CatalogCapability.LIST_TABLES,
-                CatalogCapability.VEND_STORAGE_CREDENTIALS,
-                CatalogCapability.VALIDATE_STORAGE_ACCESS));
-    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
-    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(sales));
-    when(client.listTables(sales)).thenReturn(List.of(orders));
-    when(client.vendStorageCredentials(orders))
-        .thenReturn(
-            Optional.of(
-                new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty())));
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
 
     var result = discovery.validate(integration);
 
     assertTrue(result.valid());
-    assertEquals(4, result.checks().size());
+    assertEquals(5, result.checks().size());
     assertTrue(
         result.checks().stream()
             .allMatch(
                 check -> check.getStatus() == CatalogIntegrationValidationStatus.CIVS_PASSED));
-    verify(client).validateStorageAccess(orders);
+    verify(client).validateStorageAccess(orders, vended);
   }
 
   @Test
@@ -97,10 +90,106 @@ class CatalogIntegrationDiscoveryTest {
 
     assertFalse(result.valid());
     assertEquals(
-        CatalogIntegrationValidationStatus.CIVS_FAILED, result.checks().get(2).getStatus());
+        CatalogIntegrationValidationStatus.CIVS_FAILED, result.checks().get(3).getStatus());
     assertEquals(
-        CatalogIntegrationValidationStatus.CIVS_NOT_RUN, result.checks().get(3).getStatus());
-    verify(client, never()).validateStorageAccess(orders);
+        CatalogIntegrationValidationStatus.CIVS_NOT_RUN, result.checks().get(4).getStatus());
+    verify(client, never()).validateStorageAccess(any(), any());
+  }
+
+  @Test
+  void closeFailureDoesNotRewriteCompletedValidationChecks() {
+    setUpSuccessfulValidation(
+        new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty()));
+    doThrow(new IllegalStateException("close failed")).when(client).close();
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    assertEquals(5, result.checks().size());
+  }
+
+  @Test
+  void strictProviderRootTableRejectionFallsThroughToNamespaceWalk() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    when(client.listTables(NamespacePath.root()))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.INVALID_CONFIGURATION,
+                "Root is not a table namespace"));
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void validationWalkStopsAtItsWallClockBudget() {
+    discovery.validationTimeout = Duration.ZERO;
+    when(client.capabilities()).thenReturn(validationCapabilities());
+
+    var result = discovery.validate(integration);
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_DISCOVERY_FAILED, result.checks().get(2).getIssue());
+    verify(client, never()).listTables(any());
+  }
+
+  @Test
+  void authenticationFailureIsSeparateFromConnectionFailure() {
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    doThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.UNAUTHENTICATED, "Authentication rejected"))
+        .when(client)
+        .validate();
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_PASSED, result.checks().get(0).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+        result.checks().get(1).getType());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_AUTHENTICATION_FAILED,
+        result.checks().get(1).getIssue());
+  }
+
+  @Test
+  void expiredVendedCredentialsAreReportedSeparately() {
+    discovery.clock = Clock.fixed(Instant.parse("2026-08-14T12:00:00Z"), ZoneOffset.UTC);
+    CatalogObjectName orders =
+        setUpSuccessfulValidation(
+            new VendedStorageCredentials(
+                Map.of("key", "value"), "", Optional.of(Instant.parse("2026-08-14T11:59:59Z"))));
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_EXPIRED,
+        result.checks().get(3).getIssue());
+    verify(client, never()).validateStorageAccess(any(), any());
+  }
+
+  @Test
+  void invalidCredentialScopeIsReportedSeparately() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    when(client.vendStorageCredentials(orders))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
+                "Credential scope does not cover the table"));
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_SCOPE_INVALID,
+        result.checks().get(3).getIssue());
+    verify(client, never()).validateStorageAccess(any(), any());
   }
 
   @Test
@@ -142,5 +231,25 @@ class CatalogIntegrationDiscoveryTest {
                     Set.of(CatalogIntegrationDiscovery.ObjectKind.VIEW)));
 
     assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
+  }
+
+  private CatalogObjectName setUpSuccessfulValidation(VendedStorageCredentials vended) {
+    NamespacePath sales = NamespacePath.of("production", "sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(sales));
+    when(client.listTables(sales)).thenReturn(List.of(orders));
+    when(client.vendStorageCredentials(orders)).thenReturn(Optional.of(vended));
+    return orders;
+  }
+
+  private static CatalogCapabilities validationCapabilities() {
+    return CatalogCapabilities.of(
+        CatalogCapability.VALIDATE,
+        CatalogCapability.LIST_NAMESPACES,
+        CatalogCapability.LIST_TABLES,
+        CatalogCapability.VEND_STORAGE_CREDENTIALS,
+        CatalogCapability.VALIDATE_STORAGE_ACCESS);
   }
 }

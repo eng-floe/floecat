@@ -47,10 +47,15 @@ public class CatalogIntegrationAccess {
           CatalogAccessException.Code.INVALID_CONFIGURATION,
           "Catalog Integration configuration is invalid",
           failure);
-    } catch (IllegalStateException | UnsupportedOperationException failure) {
+    } catch (UnsupportedOperationException failure) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.UNSUPPORTED,
           "Catalog Integration configuration is not supported",
+          failure);
+    } catch (IllegalStateException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.INTERNAL,
+          "Catalog Integration credentials or provider state is invalid",
           failure);
     }
   }
