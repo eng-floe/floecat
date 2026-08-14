@@ -751,9 +751,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#planned-delivery-boundaries" class="md-nav__link">
+  <a href="#initial-stack-delivery-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      Planned delivery boundaries
+      Initial stack delivery boundaries
     </span>
   </a>
   
@@ -838,9 +838,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#captured-metadata" class="md-nav__link">
+  <a href="#materialized-metadata-and-deferred-capture" class="md-nav__link">
     <span class="md-ellipsis">
-      Captured metadata
+      Materialized metadata and deferred capture
     </span>
   </a>
   
@@ -943,9 +943,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#delivery-phases-and-boundaries" class="md-nav__link">
+  <a href="#initial-cli-name-resolution" class="md-nav__link">
     <span class="md-ellipsis">
-      Delivery phases and boundaries
+      Initial CLI name resolution
     </span>
   </a>
   
@@ -1832,9 +1832,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#planned-delivery-boundaries" class="md-nav__link">
+  <a href="#initial-stack-delivery-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      Planned delivery boundaries
+      Initial stack delivery boundaries
     </span>
   </a>
   
@@ -1919,9 +1919,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#captured-metadata" class="md-nav__link">
+  <a href="#materialized-metadata-and-deferred-capture" class="md-nav__link">
     <span class="md-ellipsis">
-      Captured metadata
+      Materialized metadata and deferred capture
     </span>
   </a>
   
@@ -2024,9 +2024,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#delivery-phases-and-boundaries" class="md-nav__link">
+  <a href="#initial-cli-name-resolution" class="md-nav__link">
     <span class="md-ellipsis">
-      Delivery phases and boundaries
+      Initial CLI name resolution
     </span>
   </a>
   
@@ -2057,9 +2057,10 @@
 
 
 <h1 id="catalog-integration-architecture-and-delivery-plan">Catalog Integration Architecture and Delivery Plan<a class="headerlink" href="#catalog-integration-architecture-and-delivery-plan" title="Permanent link">&para;</a></h1>
-<p>Status: proposed architecture and delivery plan for Catalog Integration.</p>
-<p>This document defines the target architecture and planned boundary of each delivery phase. It
-separates the initial delivery scope from work that remains deferred.</p>
+<p>Status: accepted architecture and delivery contract for the Catalog Integration stack and its
+metadata-reconciliation follow-on.</p>
+<p>This document defines the target architecture and the boundary of each change in the initial stack.
+It separates that accepted delivery scope from architecture and behavior that remain deferred.</p>
 <h2 id="what-this-work-is">What this work is<a class="headerlink" href="#what-this-work-is" title="Permanent link">&para;</a></h2>
 <p>Catalog Integration and Catalog Overlay split today's <code>Connector</code> into its two independent halves:</p>
 <table>
@@ -2097,12 +2098,12 @@ metadata continues to materialize into the existing <code>Catalog</code> / <code
 and pins, statistics visibility, garbage collection, transactions, and the Iceberg REST gateway —
 continues to read those resources unchanged. Nothing in this work introduces a parallel object
 hierarchy, a second table identity, or a second name-resolution path.</p>
-<h2 id="planned-delivery-boundaries">Planned delivery boundaries<a class="headerlink" href="#planned-delivery-boundaries" title="Permanent link">&para;</a></h2>
+<h2 id="initial-stack-delivery-boundaries">Initial stack delivery boundaries<a class="headerlink" href="#initial-stack-delivery-boundaries" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Change</th>
-<th>Planned boundary</th>
+<th>Boundary</th>
 <th>Explicitly deferred</th>
 </tr>
 </thead>
@@ -2113,9 +2114,29 @@ hierarchy, a second table identity, or a second name-resolution path.</p>
 <td>Production behavior</td>
 </tr>
 <tr>
-<td>Catalog Integration and Overlay APIs</td>
-<td>CRUD resources, typed authentication, write-only credential storage and rotation, overlay-owned catalog lifecycle, idempotency, optimistic concurrency, dependencies, cascade deletion, and atomic persistence primitives</td>
+<td>Catalog graph view rename</td>
+<td>Rename the existing metadata graph <code>CatalogOverlay</code> contract to <code>CatalogGraphView</code>, freeing <code>CatalogOverlay</code> for the mapping resource</td>
+<td>Resource or persistence behavior</td>
+</tr>
+<tr>
+<td>Durability primitives</td>
+<td>Reserved resource identity, receipt-in-batch idempotency, companion pointer operations, mutation-store reads, and strongly consistent lifecycle reads</td>
+<td>Integration and Overlay resources</td>
+</tr>
+<tr>
+<td>Account deletion fence</td>
+<td>Durable account-deletion fencing and resumable descendant cleanup</td>
+<td>Integration- and Overlay-specific CRUD</td>
+</tr>
+<tr>
+<td>Catalog Integration API</td>
+<td>Integration CRUD, typed authentication, write-only credential storage and rotation, dependencies, cascade deletion, idempotency, and optimistic concurrency</td>
 <td>Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>Catalog Overlay API</td>
+<td>Overlay CRUD, overlay-owned catalog lifecycle, namespace selection, dependencies, cascade deletion, idempotency, and optimistic concurrency</td>
+<td>Capture, reconciliation, and query visibility</td>
 </tr>
 <tr>
 <td>Shell CLI</td>
@@ -2127,6 +2148,16 @@ hierarchy, a second table identity, or a second name-resolution path.</p>
 <td>Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table and view loading, OAuth2, SigV4, and renewable AWS credential support</td>
 <td>Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture</td>
 </tr>
+<tr>
+<td>Integration validation and discovery</td>
+<td>Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views</td>
+<td>Persistence of discovery results, Overlay reconciliation, scheduling, and capture</td>
+</tr>
+<tr>
+<td>Overlay metadata reconciliation</td>
+<td>A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views with generation fencing and explicit lifecycle cleanup</td>
+<td>Durable scheduling, snapshot/file capture, validation, and statistics</td>
+</tr>
 </tbody>
 </table>
 <h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
@@ -2136,8 +2167,8 @@ hierarchy, a second table identity, or a second name-resolution path.</p>
 <li>select upstream namespaces and expose them beneath a single top-level catalog name;</li>
 <li>discover and validate upstream namespaces, tables, and views without depending on Connector
   resources; and</li>
-<li>eventually capture external metadata into ordinary Floecat resources on a schedule the overlay
-  states.</li>
+<li>materialize external namespace, table-definition, and view metadata into ordinary Floecat
+  resources on demand, then add durable snapshot/file capture and scheduling separately.</li>
 </ul>
 <p>The Integration path will not use, wrap, synthesize, or fall back to Connector resources.
 Connectors will remain a separate operational path until they are retired through an explicit
@@ -2179,8 +2210,8 @@ inferred as an Integration-wide property.</p>
 create or through the dedicated authentication-update RPC and are never returned.</p>
 <p>The service derives its internal secret key from integration ID and credential generation. No
 secret-manager reference is exposed in the public resource.
-<code>CatalogIntegrationCredentialStore</code> provides the typed service-side resolution primitive required by
-a later catalog-access adapter.</p>
+<code>CatalogIntegrationCredentialStore</code> provides the typed service-side resolution primitive used by
+the catalog-access adapter.</p>
 <p>Credential publication must provide these guarantees:</p>
 <ul>
 <li>reserve a new immutable generation with atomic <code>putIfAbsent</code> before the resource CAS;</li>
@@ -2251,12 +2282,13 @@ space.</p>
 <li>Paths are normalized and deduplicated without flattening segment boundaries.</li>
 <li>A selected upstream namespace materializes as a Floecat <code>Namespace</code> at the same path beneath the
   overlay's catalog, preserving segment boundaries.</li>
-<li>Newly discovered namespaces matching the stored selection become eligible automatically once
-  discovery is wired to overlays.</li>
+<li>Newly discovered namespaces matching the stored selection materialize on the next synchronous
+  reconciliation.</li>
 </ul>
 <p>Selection is updatable through the administrative API. A client that can only express selection at
 creation time changes it by replacing the overlay, which produces a new identity under the same
-name. The initial delivery phases do not make the selected namespaces query-visible.</p>
+name. Reconciliation makes the selected namespace, table-definition, and view metadata visible;
+snapshot-backed table visibility remains deferred to durable capture.</p>
 <h2 id="catalog-access-boundary">Catalog access boundary<a class="headerlink" href="#catalog-access-boundary" title="Permanent link">&para;</a></h2>
 <p>The implemented contracts and provider behavior are documented in
 <a href="catalog-access-spi.md">Catalog Access SPI</a>.</p>
@@ -2293,34 +2325,42 @@ normally and do not advertise view support.</p>
 <p>The SPI validates persistable configuration so secrets, credential-provider handles, user-info, and
 secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
 separately through <code>ResolvedCatalogCredentials</code>.</p>
-<p>The later adapter must translate the Integration protobuf authentication variants and resolved
-<code>CatalogIntegrationCredentials</code> onto the SPI's authentication schemes. Integration authentication is
-required, so the adapter need not select the SPI's <code>NONE</code> scheme. It must also perform
-provider-specific compatibility checks. The catalog-access SPI phase does not call
-<code>CatalogIntegrationCredentialStore</code>, expose Integration validation or discovery RPCs, or schedule
-work.</p>
+<p>The service adapter translates OAuth client credentials, bearer tokens, and explicit static AWS
+SigV4 credentials from the Integration protobuf and <code>CatalogIntegrationCredentialStore</code> onto the
+SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
+adapter and fail explicitly. Integration authentication is required, so the adapter never selects
+the SPI's <code>NONE</code> scheme. Dedicated Integration RPCs validate the catalog and storage credential
+boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
+remains deferred.</p>
 <p>The catalog client owns external I/O only. Capture planning, Floecat persistence, scheduling, and
 name resolution remain outside it.</p>
-<h2 id="captured-metadata">Captured metadata<a class="headerlink" href="#captured-metadata" title="Permanent link">&para;</a></h2>
-<p>Capture materializes ordinary Floecat resources beneath the overlay's catalog. A selected upstream
-namespace becomes a <code>Namespace</code>; a selected upstream table becomes a <code>Table</code> with its <code>Snapshot</code>
-chain, file groups, and statistics; a selected upstream view becomes a <code>View</code>. These are the same
-resources the Connector path produces today, written through the same repositories, with the same
-<code>TableRoot</code> commit and pin semantics.</p>
+<h2 id="materialized-metadata-and-deferred-capture">Materialized metadata and deferred capture<a class="headerlink" href="#materialized-metadata-and-deferred-capture" title="Permanent link">&para;</a></h2>
+<p>Synchronous metadata reconciliation materializes ordinary Floecat resources beneath the overlay's
+catalog. A selected upstream namespace becomes a <code>Namespace</code>; a selected upstream table becomes a
+<code>Table</code> definition and initial <code>TableRoot</code>; and a selected upstream view becomes a <code>View</code>. These are
+the same logical resources the Connector path produces today and use the existing repositories and
+name-resolution paths.</p>
+<p>This phase deliberately does not create <code>Snapshot</code> resources, file groups, validation results, or
+statistics. Those require extending the durable reconciler from its current Connector-rooted job
+identity to an Integration/Overlay-rooted plan. That protocol and snapshot/file capture belong in a
+separate follow-on change.</p>
 <p>Upstream identity is recorded on the existing <code>UpstreamRef</code>. The Connector path stores
-<code>connector_id</code> there; the Integration path needs the equivalent integration-rooted reference plus
-the provider's stable upstream object ID when it has one. Provider-stable IDs are preferred; when a
-provider has no stable ID, the normalized full upstream path is an explicitly unstable identity and
-rename is observed as delete plus create.</p>
+<code>connector_id</code> there; the Integration path stores <code>catalog_integration_id</code> and
+<code>catalog_overlay_id</code>. The provider's external identity and stability flag are stored with the
+materialized object. Provider-stable IDs preserve a Floecat resource identity across an upstream
+rename or namespace move; when a provider has no stable ID, the normalized full upstream path is an
+explicitly unstable identity and rename is observed as delete plus create.</p>
 <p>Two overlays that select the same upstream table produce two Floecat tables, one beneath each
 overlay's catalog, exactly as two connectors would today. Deduplicating captures across overlays is
 not in scope: it would require a table identity separate from the <code>Catalog</code>/<code>Namespace</code> hierarchy,
 which is precisely the parallel architecture this design avoids. If that reuse is wanted later, it
 belongs in a separately reviewed change against the table model itself, not in the Integration path.</p>
 <h2 id="table-validation-and-visibility">Table validation and visibility<a class="headerlink" href="#table-validation-and-visibility" title="Permanent link">&para;</a></h2>
-<p>Creating or replacing an overlay establishes capture demand for the tables its selection matches.
-The integration-owned scheduler triggers or joins discovery, file scanning, table validation, and
-statistics collection for the effective union of active overlay selections on that integration.</p>
+<p>The later durable-capture phase will make an active overlay establish capture demand for the tables
+its selection matches. The integration-owned scheduler will trigger or join discovery, file
+scanning, table validation, and statistics collection for the effective union of active overlay
+selections on that integration. The synchronous metadata RPC in the current phase does not enqueue
+that work.</p>
 <p>A table does not become query-visible until its current capture has completed validation. Validation
 compares each discovered Parquet file with the captured table format and metadata. A file that
 cannot be interpreted consistently with that metadata produces one validation-error record against
@@ -2342,9 +2382,9 @@ message. The API must expose those records for listing, one entry per current fi
 <p>Views have no file-validation state; resolving a view must still respect the visibility of its base
 tables and cannot be used to bypass an invalid table's visibility gate.</p>
 <h2 id="refresh-and-reconciliation-ownership">Refresh and reconciliation ownership<a class="headerlink" href="#refresh-and-reconciliation-ownership" title="Permanent link">&para;</a></h2>
-<p>This behavior is deferred beyond the initial delivery. Overlays state freshness and retention
-demand; integrations own upstream connection work. For active overlays on one integration, the
-scheduler computes one effective plan:</p>
+<p>Scheduling, freshness, and retention remain deferred. Overlays will state freshness and retention
+demand; integrations will own upstream connection work. For active overlays on one integration,
+the scheduler computes one effective plan:</p>
 <ul>
 <li>discovery scope is the union of selected namespaces, including matching tables and views, while
   file validation and statistics collection apply to the matching tables;</li>
@@ -2354,16 +2394,18 @@ scheduler computes one effective plan:</p>
 </ul>
 <p>Sharing applies to upstream I/O: two overlays selecting the same upstream namespace from one
 integration issue one discovery pass, then materialize into their own catalogs.</p>
-<p>A future integration configuration generation and capture-plan generation will fence every planned
-and leased job. Stale work may finish external I/O but must not publish results after configuration,
-selection, pause, replacement, or deletion changes.</p>
+<p>The synchronous metadata reconciler already fences every resource publication on the observed
+Integration and Overlay pointer generations and the absence of account, Integration, and Overlay
+deletion markers. A future capture-plan generation must extend equivalent fencing to every planned
+and leased durable job. Stale work may finish external I/O but must not publish results after
+configuration, selection, pause, replacement, or deletion changes.</p>
 <h2 id="lifecycle-and-garbage-collection">Lifecycle and garbage collection<a class="headerlink" href="#lifecycle-and-garbage-collection" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Operation</th>
-<th>Initial delivery behavior</th>
-<th>Later behavior</th>
+<th>Current behavior</th>
+<th>Deferred behavior</th>
 </tr>
 </thead>
 <tbody>
@@ -2389,13 +2431,18 @@ selection, pause, replacement, or deletion changes.</p>
 </tr>
 <tr>
 <td>Create or replace overlay</td>
-<td>Creates the overlay and its catalog atomically; stores selection and integration dependency</td>
-<td>Trigger or join capture into that catalog</td>
+<td>Creates the overlay and its catalog atomically; stores selection and integration dependency; replacement fences and retires prior materializations</td>
+<td>Trigger or join durable snapshot/file capture into that catalog</td>
+</tr>
+<tr>
+<td>Reconcile overlay</td>
+<td>Synchronously validates the connection, discovers the selected inventory, and creates, updates, or retires namespaces, table definitions, and views behind generation fences</td>
+<td>Schedule reconciliation and capture snapshots, files, validation, and statistics</td>
 </tr>
 <tr>
 <td>Delete overlay</td>
-<td>Removes the overlay, its catalog, and the integration dependency atomically</td>
-<td>Fence jobs; retire capture demand and captured resources</td>
+<td>Installs an Overlay deletion fence, explicitly retires materialized descendants, then atomically removes the empty catalog, overlay, dependency, and fence</td>
+<td>Cancel and drain durable jobs</td>
 </tr>
 <tr>
 <td>Delete integration</td>
@@ -2404,8 +2451,8 @@ selection, pause, replacement, or deletion changes.</p>
 </tr>
 <tr>
 <td>Cascade integration delete</td>
-<td>Durable deletion fence, dependent overlay deletion, resource deletion, and credential cleanup</td>
-<td>Also retire captured resources</td>
+<td>Durable Integration and Overlay deletion fences, explicit descendant retirement, dependent overlay/catalog deletion, resource deletion, and credential cleanup</td>
+<td>Cancel and drain durable jobs</td>
 </tr>
 <tr>
 <td>Delete account</td>
@@ -2414,9 +2461,11 @@ selection, pause, replacement, or deletion changes.</p>
 </tr>
 </tbody>
 </table>
-<p>Resources materialized by capture are ordinary Floecat resources and are collected by the existing
-catalog garbage collection paths once nothing references them. Validation-error records are retained
-with their table and atomically replaced or removed when a later validation generation is published.</p>
+<p>Overlay lifecycle code explicitly deletes logical <code>Namespace</code>, <code>Table</code>, and <code>View</code> resources and
+purges table snapshot/root pointer state; existing pointer and CAS-blob garbage collection remains
+responsible for reclaiming unreachable immutable blobs. Garbage collection is not a substitute for
+retiring the logical resource pointers. Validation-error records will be retained with their table
+and atomically replaced or removed when a later validation generation is published.</p>
 <h2 id="durability-contract">Durability contract<a class="headerlink" href="#durability-contract" title="Permanent link">&para;</a></h2>
 <p>Integration-owned resources are held to a stricter durability contract than the Connector path they
 replace. This is a deliberate decision, not a side effect of the decomposition, and it is intended
@@ -2447,12 +2496,12 @@ after an acknowledgement-uncertain create reconstructs its answer from mutable r
 </ul>
 <p>The cost is real and concentrated in shared code rather than in the new resources: most of it lands
 in the generic resource repository, the idempotency guard, account deletion, and the storage read
-interfaces. Two consequences are large enough to describe separately.</p>
+interfaces. Three consequences are large enough to describe separately.</p>
 <h3 id="delivery-sequencing">Delivery sequencing<a class="headerlink" href="#delivery-sequencing" title="Permanent link">&para;</a></h3>
-<p>This durability work is separable from the Catalog Integration decomposition and would have been
-better delivered as its own reviewed change, landing before the resources that depend on it. It
-touches shared infrastructure that every resource type uses, so reviewing it inside a feature
-branch means the feature's diff carries changes whose rationale is not the feature.</p>
+<p>The durability primitives land as their own reviewed change before the account-deletion fence and
+the Integration and Overlay resources that depend on them. Keeping this cross-cutting work separate
+makes its effect on every resource type independently reviewable and keeps the resource/API changes
+focused on their own contracts.</p>
 <p>Future work that raises a cross-cutting contract should land as its own change first, with the
 feature that motivated it stacked on top. Where this contract is extended — to capture, scheduling,
 or the remaining resource types — that extension is its own reviewed change and does not ride along
@@ -2494,14 +2543,15 @@ on an overlay, and the type and URI on an integration.</p>
 <h2 id="follow-on-api-evolution">Follow-on API evolution<a class="headerlink" href="#follow-on-api-evolution" title="Permanent link">&para;</a></h2>
 <p>After the initial delivery, follow-on changes will:</p>
 <ol>
-<li>Wire Integration resources and the typed credential resolver to the catalog-access SPI.</li>
 <li>Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
    catalog authentication and usable storage-credential vending; object listing distinguishes
    namespaces, tables, and views.</li>
-<li>Add the integration-rooted <code>UpstreamRef</code> variant and the capture adapter that materializes
-   <code>Namespace</code>, <code>Table</code>, <code>View</code>, and <code>Snapshot</code> resources beneath an overlay's catalog.</li>
+<li>Add synchronous, generation-fenced Overlay metadata reconciliation. This materializes namespaces,
+   table definitions, and views, but not snapshots or files.</li>
+<li>Extend the durable reconciler with Integration/Overlay-rooted jobs and capture <code>Snapshot</code>, file,
+   validation, and statistics state beneath the already materialized tables.</li>
 <li>Add overlay policy and state, table validation-error persistence, visibility and override
-   handling, and integration-owned scheduling with generation fencing.</li>
+   handling, and integration-owned scheduling with durable job-generation fencing.</li>
 <li>Add migration from Connectors and Connector removal in separately reviewed changes.</li>
 </ol>
 <p>Because backwards compatibility is not a project requirement at this stage, contracts should be
@@ -2522,21 +2572,7 @@ yields one integration from its <code>uri</code>, <code>auth</code>, and <code>k
 <code>destination</code>, with connectors sharing an endpoint and credentials collapsing onto one integration.
 A connector whose destination is an existing catalog migrates by making that catalog overlay-owned,
 so its existing namespaces, tables, and snapshots remain valid and are not re-materialized.</p>
-<h2 id="delivery-phases-and-boundaries">Delivery phases and boundaries<a class="headerlink" href="#delivery-phases-and-boundaries" title="Permanent link">&para;</a></h2>
-<ol>
-<li><strong>Architecture and delivery plan:</strong> define the architecture, design decisions, and delivery
-   boundaries.</li>
-<li><strong>Resource and API foundation:</strong> add CRUD, overlay-owned catalog lifecycle,
-   authentication/credential lifecycle, atomic storage, idempotency, dependency, cascade, and
-   cleanup primitives.</li>
-<li><strong>CLI surface:</strong> add CLI coverage for those APIs, including typed authentication and write-only
-   credential input for create and rotation commands.</li>
-<li><strong>Catalog-access SPI:</strong> add the neutral catalog-access SPI and Iceberg REST vertical slice,
-   including table and view discovery and loading.</li>
-<li><strong>Follow-on:</strong> add the Integration-to-SPI adapter and the validation and discovery RPCs.</li>
-<li><strong>Later:</strong> add capture beneath overlay catalogs, table validation and error visibility,
-   scheduling, query visibility, migration, and Connector removal.</li>
-</ol>
+<h2 id="initial-cli-name-resolution">Initial CLI name resolution<a class="headerlink" href="#initial-cli-name-resolution" title="Permanent link">&para;</a></h2>
 <p>The CLI will initially resolve Integration and Overlay display names by listing the corresponding
 resource type. The duplication will remain isolated and will not require expanding the API until
 another consumer needs a generic resolver.</p>
