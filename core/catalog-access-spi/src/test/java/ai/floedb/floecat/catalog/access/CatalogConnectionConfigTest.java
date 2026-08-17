@@ -69,9 +69,6 @@ class CatalogConnectionConfigTest {
 
   private static CatalogConnectionConfig config(URI endpoint, Map<String, String> properties) {
     return new CatalogConnectionConfig(
-        CatalogProtocol.ICEBERG_REST,
-        endpoint,
-        properties,
-        CatalogAuthentication.none());
+        CatalogProtocol.ICEBERG_REST, endpoint, properties, CatalogAuthentication.none());
   }
 }

@@ -38,11 +38,11 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
-import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
@@ -147,8 +147,7 @@ class IcebergRestCatalogClientTest {
   void returnsOnlyDedicatedProtocolVendedCredentialsForTheLongestMatchingPrefix() {
     CatalogObjectName name =
         new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
-    TableIdentifier identifier =
-        TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
     Table table = mock(Table.class);
     FileIO io =
         mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));

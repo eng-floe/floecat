@@ -149,8 +149,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
             .map(SQLViewRepresentation.class::cast)
             .map(
                 representation ->
-                    new CatalogViewDefinition(
-                        representation.sql(), representation.dialect()))
+                    new CatalogViewDefinition(representation.sql(), representation.dialect()))
             .toList();
     return new CatalogView(
         name,
@@ -196,8 +195,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
     }
 
     Map<String, String> vended = filterVendedStorageProperties(selected.config());
-    if (!vended.containsKey("s3.access-key-id")
-        || !vended.containsKey("s3.secret-access-key")) {
+    if (!vended.containsKey("s3.access-key-id") || !vended.containsKey("s3.secret-access-key")) {
       return Optional.empty();
     }
     return Optional.of(

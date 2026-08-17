@@ -75,9 +75,7 @@ class IcebergRestCatalogClientProviderTest {
                     config(CatalogAuthentication.none(), Map.of("token", "must-not-persist")),
                     ResolvedCatalogCredentials.none()));
 
-    assertEquals(
-        "connection properties must not contain secret key: token",
-        error.getMessage());
+    assertEquals("connection properties must not contain secret key: token", error.getMessage());
   }
 
   @Test
@@ -128,8 +126,7 @@ class IcebergRestCatalogClientProviderTest {
                 IcebergRestCatalogClientProvider.catalogProperties(
                     config, ResolvedCatalogCredentials.none()));
 
-    assertEquals(
-        "Iceberg REST endpoint must use http or https: scheme=s3", error.getMessage());
+    assertEquals("Iceberg REST endpoint must use http or https: scheme=s3", error.getMessage());
   }
 
   @Test
@@ -146,8 +143,7 @@ class IcebergRestCatalogClientProviderTest {
             IllegalArgumentException.class,
             () -> CatalogClientFactory.load().open(config, ResolvedCatalogCredentials.none()));
 
-    assertEquals(
-        "Iceberg REST endpoint must use http or https: scheme=s3", error.getMessage());
+    assertEquals("Iceberg REST endpoint must use http or https: scheme=s3", error.getMessage());
   }
 
   @Test
