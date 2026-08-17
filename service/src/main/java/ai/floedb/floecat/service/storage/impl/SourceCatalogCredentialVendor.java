@@ -27,7 +27,8 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -270,7 +271,7 @@ public class SourceCatalogCredentialVendor {
    * absorb the resulting missing-authority error -- cannot drift apart.
    */
   static boolean connectorDeclaresVendedDelegation(Connector connector) {
-    return IcebergAccessDelegation.declaresVendedCredentials(
+    return SourceCatalogVending.declaresVendedCredentials(
         ConnectorConfigMapper.fromProto(connector));
   }
 
@@ -339,7 +340,7 @@ public class SourceCatalogCredentialVendor {
    * -- a connection reset, a 5xx, a timeout -- is genuinely transient and keeps INTERNAL so the
    * existing retry behaviour still applies.
    */
-  private static StatusRuntimeException catalogFailureStatus(
+  static StatusRuntimeException catalogFailureStatus(
       RuntimeException cause, Connector connector, String namespaceFq, String tableName) {
     String detail =
         String.format(
@@ -368,6 +369,17 @@ public class SourceCatalogCredentialVendor {
             .withDescription(detail)
             .withCause(cause)
             .asRuntimeException();
+      }
+      // Format-neutral refusal for connectors that do not speak Iceberg REST (e.g. Unity Catalog
+      // over HTTP): they raise a typed SourceCatalogAccessException rather than an Iceberg
+      // exception, carrying whether it was an authentication or authorization failure.
+      if (c instanceof SourceCatalogAccessException access) {
+        io.grpc.Status status =
+            switch (access.denial()) {
+              case UNAUTHENTICATED -> io.grpc.Status.UNAUTHENTICATED;
+              case PERMISSION_DENIED -> io.grpc.Status.PERMISSION_DENIED;
+            };
+        return status.withDescription(detail).withCause(cause).asRuntimeException();
       }
     }
     // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager

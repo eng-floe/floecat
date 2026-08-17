@@ -21,9 +21,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -579,5 +583,170 @@ class UnityDeltaConnectorTest {
     Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
 
     assertThat(props).containsEntry("delta.constraints.ck_valid", "amount < 1000");
+  }
+
+  // -------------------------------------------------------------------------
+  // Vended-credential tests (Unity Catalog temporary-table-credentials)
+  // -------------------------------------------------------------------------
+
+  @Test
+  void vendStorageCredentialsReturnsAwsTupleWithExpiry() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                """
+                {"aws_temp_credentials":{
+                   "access_key_id":"AKIAEXAMPLE",
+                   "secret_access_key":"secret",
+                   "session_token":"token"},
+                 "expiration_time":1893456000000,
+                 "url":"s3://bucket/table"}
+                """));
+
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        connector.vendStorageCredentials("mycat.myschema", "orders");
+
+    assertThat(vended).isPresent();
+    assertThat(vended.get().properties())
+        .containsEntry("s3.access-key-id", "AKIAEXAMPLE")
+        .containsEntry("s3.secret-access-key", "secret")
+        .containsEntry("s3.session-token", "token");
+    // The catalog's own auth token must never leak into the storage property map.
+    assertThat(vended.get().properties()).doesNotContainKey("token");
+    assertThat(vended.get().expiresAt()).isEqualTo(Instant.ofEpochMilli(1893456000000L));
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackWhenTableHasNoId() throws Exception {
+    // Without a table_id there is nothing to key the credentials call on; treat as "unavailable".
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"storage_location\":\"s3://bucket/table\"}"));
+
+    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackOnNonAwsCredentials() throws Exception {
+    // Azure/GCP shapes are not mapped yet: fall back to a storage authority rather than hand out
+    // a credential the S3 reader cannot use.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                "{\"azure_user_delegation_sas\":{\"sas_token\":\"sv=2021\"},"
+                    + "\"expiration_time\":1893456000000}"));
+
+    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackOnIncompleteAwsTuple() throws Exception {
+    // A key pair with no session token is unusable for the reconcile path and must not be handed
+    // out as if it were complete.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                "{\"aws_temp_credentials\":{\"access_key_id\":\"AKIA\","
+                    + "\"secret_access_key\":\"secret\"},\"expiration_time\":1893456000000}"));
+
+    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsRaisesTerminalPermissionDeniedOnCredentials403() throws Exception {
+    // The 403 raised when EXTERNAL USE SCHEMA is missing is a permanent configuration failure. It
+    // must surface as a typed SourceCatalogAccessException so the storage service classifies it
+    // terminally -- a generic RuntimeException would be retried forever.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange, 403, "{\"error_code\":\"PERMISSION_DENIED\",\"message\":\"Forbidden\"}"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            ex ->
+                assertThat(ex.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.PERMISSION_DENIED))
+        .hasMessageContaining("403")
+        .hasMessageContaining("temporary-table-credentials");
+  }
+
+  @Test
+  void vendStorageCredentialsRaisesTerminalUnauthenticatedOnTablesLookup401() throws Exception {
+    // A 401 on the tables lookup (bad/expired token) is also terminal, mapped to UNAUTHENTICATED.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange ->
+            respond(
+                exchange, 401, "{\"error_code\":\"UNAUTHENTICATED\",\"message\":\"bad token\"}"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            ex ->
+                assertThat(ex.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNAUTHENTICATED))
+        .hasMessageContaining("401");
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackWhenTableNotFound() throws Exception {
+    // A 404 means the table was dropped/renamed. Per the vend contract this is "unavailable" (fall
+    // back to a storage authority), not a hard failure.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange ->
+            respond(
+                exchange, 404, "{\"error_code\":\"RESOURCE_DOES_NOT_EXIST\",\"message\":\"no\"}"));
+
+    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsStaysRetryableOnServerError() throws Exception {
+    // A 5xx is genuinely transient: it must NOT become a terminal SourceCatalogAccessException, so
+    // the reconciler keeps retrying.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange -> respond(exchange, 503, "{\"message\":\"try later\"}"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOf(RuntimeException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class)
+        .hasMessageContaining("503");
+  }
+
+  private static void respond(HttpExchange exchange, int status, String body) throws IOException {
+    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+    exchange.sendResponseHeaders(status, bytes.length);
+    try (var out = exchange.getResponseBody()) {
+      out.write(bytes);
+    }
   }
 }

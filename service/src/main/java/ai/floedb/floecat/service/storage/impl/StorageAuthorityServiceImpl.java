@@ -813,7 +813,8 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       return null;
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+    if (config.kind() == ConnectorConfig.Kind.DELTA
+        || config.kind() == ConnectorConfig.Kind.UNITY) {
       String location = trimToNull(config.options().get("storage_location"));
       return location != null ? location : trimToNull(config.options().get("delta.table-root"));
     }

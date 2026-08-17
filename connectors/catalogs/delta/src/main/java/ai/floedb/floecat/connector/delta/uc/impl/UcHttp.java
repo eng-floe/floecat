@@ -47,4 +47,18 @@ public final class UcHttp {
 
     return client.send(req.GET().build(), BodyHandlers.ofString());
   }
+
+  public HttpResponse<String> post(String pathAndQuery, String jsonBody) throws Exception {
+    var req =
+        HttpRequest.newBuilder()
+            .uri(URI.create(host + pathAndQuery))
+            .timeout(readMs)
+            .header("Content-Type", "application/json");
+    // Auth headers last so the bearer token cannot be clobbered by a base header of the same name.
+    var headers = auth.applyHeaders(Map.of());
+    headers.forEach(req::header);
+
+    return client.send(
+        req.POST(HttpRequest.BodyPublishers.ofString(jsonBody)).build(), BodyHandlers.ofString());
+  }
 }

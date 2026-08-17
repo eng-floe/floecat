@@ -23,7 +23,7 @@ import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
+import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -230,6 +230,7 @@ public class ServerSideStorageConfigResolver {
       return config;
     }
     if ((config.kind() != ConnectorConfig.Kind.DELTA
+            && config.kind() != ConnectorConfig.Kind.UNITY
             && config.kind() != ConnectorConfig.Kind.ICEBERG)
         || !connector.hasResourceId()) {
       return config;
@@ -292,7 +293,7 @@ public class ServerSideStorageConfigResolver {
       // Only "no authority covers this location" is recoverable by delegation: the catalog client
       // holds vended credentials of its own, so the untouched config is what it needs.
       if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
-          && IcebergAccessDelegation.declaresVendedCredentials(config)) {
+          && SourceCatalogVending.declaresVendedCredentials(config)) {
         return config;
       }
       throw e;
