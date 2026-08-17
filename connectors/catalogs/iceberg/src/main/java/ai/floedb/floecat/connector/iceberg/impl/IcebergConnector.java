@@ -1964,18 +1964,10 @@ public abstract class IcebergConnector implements FloecatConnector {
    * Reads the credential expiry, or null when absent or unparseable.
    *
    * <p>Null is deliberately not "never expires": callers are documented to treat it as "do not
-   * cache". Guessing a TTL here would produce credentials that fail mid-read.
+   * cache". Guessing a TTL here would produce credentials that fail mid-read. Delegates to the
+   * shared parser so every vending connector agrees on the epoch-millis semantics.
    */
   private static Instant parseVendedExpiry(Map<String, String> ioProps) {
-    String raw = ioProps.get(VENDED_EXPIRY_KEY);
-    if (raw == null || raw.isBlank()) {
-      return null;
-    }
-    try {
-      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
-    } catch (NumberFormatException e) {
-      LOG.warnf("ignoring unparseable %s from delegated loadTable: %s", VENDED_EXPIRY_KEY, raw);
-      return null;
-    }
+    return VendedStorageCredentials.expiryFromEpochMillis(ioProps.get(VENDED_EXPIRY_KEY));
   }
 }

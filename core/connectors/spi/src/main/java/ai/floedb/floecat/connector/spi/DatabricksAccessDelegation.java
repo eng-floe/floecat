@@ -1,0 +1,78 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.connector.spi;
+
+import java.util.Locale;
+
+/**
+ * Reads the vend-credentials opt-in off a Databricks / Unity Catalog connector's configuration.
+ *
+ * <p>The Unity Catalog analog of Iceberg's {@link IcebergAccessDelegation} is the <a
+ * href="https://docs.databricks.com/api/workspace/temporarytablecredentials">temporary table
+ * credentials</a> API: given a table id, UC hands back short-lived cloud credentials scoped to that
+ * table's storage location. Unlike Iceberg REST there is no request header that declares the intent
+ * -- vending is a server capability gated by the {@code EXTERNAL USE SCHEMA} privilege -- so the
+ * connector opts in explicitly through a property instead.
+ *
+ * <p>The opt-in is required rather than implicit for the same reason Iceberg's header is: the
+ * reconciler absorbs a missing-storage-authority error <em>only</em> when vending was declared.
+ * Making it implicit for every Unity connector would silently swallow a genuinely misconfigured
+ * storage authority and resurface it far away as an opaque FileIO read failure. Both gates read
+ * this one parser so they cannot drift apart -- the same invariant {@link IcebergAccessDelegation}
+ * documents.
+ */
+public final class DatabricksAccessDelegation {
+
+  /**
+   * The property that turns on source-catalog vending for a Delta/Unity connector.
+   *
+   * <p>Set with {@code --props databricks.vend-credentials=true}. Honored only for the Delta-family
+   * connector kinds; a stray copy on an Iceberg connector is ignored, since that path is governed
+   * by {@link IcebergAccessDelegation#HEADER_PROPERTY} instead.
+   */
+  public static final String VEND_OPTION = "databricks.vend-credentials";
+
+  private DatabricksAccessDelegation() {}
+
+  /**
+   * Whether {@code config} is a Delta/Unity connector that has opted in to catalog vending.
+   *
+   * <p>Answerable from {@link ConnectorConfig} alone because both gates run before the connector
+   * factory builds the connector, exactly as the Iceberg gate requires.
+   */
+  public static boolean declaresVendedCredentials(ConnectorConfig config) {
+    if (config == null) {
+      return false;
+    }
+    if (config.kind() != ConnectorConfig.Kind.DELTA
+        && config.kind() != ConnectorConfig.Kind.UNITY) {
+      return false;
+    }
+    return isTruthy(config.options().get(VEND_OPTION));
+  }
+
+  private static boolean isTruthy(String value) {
+    if (value == null || value.isBlank()) {
+      return false;
+    }
+    String token = value.trim().toLowerCase(Locale.ROOT);
+    return token.equals("true")
+        || token.equals("1")
+        || token.equals("yes")
+        || token.equals("vended-credentials");
+  }
+}

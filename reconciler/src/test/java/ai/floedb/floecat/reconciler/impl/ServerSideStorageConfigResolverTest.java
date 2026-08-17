@@ -417,6 +417,32 @@ class ServerSideStorageConfigResolverTest {
     assertEquals(config.options(), resolved.options());
   }
 
+  @Test
+  void delegatingUnityConnectorFallsBackToCatalogWhenNoAuthorityMatches() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.UNITY,
+            "unity",
+            "https://workspace.example.com",
+            Map.of(
+                "storage_location", "s3://8c554103--table-s3",
+                "databricks.vend-credentials", "true"),
+            new ConnectorConfig.Auth("oauth2", Map.of("token", "secret"), Map.of()));
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
+
+    ConnectorConfig resolved =
+        resolveWithStorageLocation(resolver, unityConnector(), config).config();
+
+    verify(resolver.storageAuthorities).vendStorageCredentials(any());
+    assertEquals(config.options(), resolved.options());
+  }
+
   /**
    * INVALID_ARGUMENT alone must not trigger the fallback. vendStorageCredentials returns it for
    * account_id, execution_binding and location_prefix validation failures too, and turning those
@@ -583,15 +609,11 @@ class ServerSideStorageConfigResolverTest {
 
   private static ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveWithStorageLocation(
       ServerSideStorageConfigResolver resolver, ConnectorConfig config) {
-    Connector connector =
-        Connector.newBuilder()
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setResourceId(
-                ResourceId.newBuilder()
-                    .setAccountId("acct")
-                    .setId("conn")
-                    .setKind(ResourceKind.RK_CONNECTOR))
-            .build();
+    return resolveWithStorageLocation(resolver, icebergConnector(), config);
+  }
+
+  private static ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveWithStorageLocation(
+      ServerSideStorageConfigResolver resolver, Connector connector, ConnectorConfig config) {
     return resolver.resolveManagedWithAuthorization(
         java.util.Optional.empty(),
         java.util.Optional.empty(),
@@ -600,6 +622,30 @@ class ServerSideStorageConfigResolverTest {
         java.util.Optional.empty(),
         connector,
         config);
+  }
+
+  private static Connector icebergConnector() {
+    return Connector.newBuilder()
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setId("conn")
+                .setKind(ResourceKind.RK_CONNECTOR))
+        .build();
+  }
+
+  private static Connector unityConnector() {
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_UNITY)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .build();
+    return connector;
   }
 
   @Test

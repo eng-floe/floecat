@@ -1020,7 +1020,8 @@ public class ReconcilerService {
     if (config == null) {
       return Optional.empty();
     }
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+    if (config.kind() == ConnectorConfig.Kind.DELTA
+        || config.kind() == ConnectorConfig.Kind.UNITY) {
       String location = firstNonBlank(config.options().get("storage_location"));
       if (location == null) {
         location = firstNonBlank(config.options().get("delta.table-root"));
