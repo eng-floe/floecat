@@ -683,7 +683,7 @@ message LeaseReconcileJobRequest {
   // Local executor ids available to satisfy pinned-executor routing.
   repeated string executor_ids = 5;
   // Job-tree contract version implemented by this worker. Floecat requires this to match its
-  // deployment affinity. Empty is accepted only by the temporary legacy-worker fallback.
+  // deployment affinity exactly; an empty or mismatched affinity is rejected.
   string worker_affinity = 6;
 }
 

@@ -186,8 +186,8 @@ engine release.
   `executor_id`, and repeated `executor_ids` selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run. Versioned
   workers also declare `worker_affinity`; the server rejects a mismatch and echoes the job's
-  affinity in `LeasedReconcileJob` for worker-side validation. Empty affinity requests remain a
-  temporary legacy fallback controlled by `floecat.reconciler.allow-unversioned-workers`.
+  affinity in `LeasedReconcileJob` for worker-side validation. Empty affinity requests are rejected
+  by a versioned control plane, keeping unversioned workers isolated to an unversioned deployment.
 - **Stats vs constraints snapshot policy** – `PutTargetStats` currently accepts unknown snapshots
   (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while

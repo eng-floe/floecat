@@ -41,17 +41,15 @@ class ReconcileWorkerAffinityGuardTest {
     guard = new ReconcileWorkerAffinityGuard();
     guard.jobs = mock(ReconcileJobStore.class);
     guard.configuredAffinity = "reconciler-v1";
-    guard.allowUnversionedWorkers = true;
   }
 
   @Test
-  void acceptsMatchingAndLegacyLeaseRequests() {
+  void acceptsMatchingLeaseRequest() {
     assertDoesNotThrow(() -> guard.requireLeaseRequestAffinity("reconciler-v1"));
-    assertDoesNotThrow(() -> guard.requireLeaseRequestAffinity(""));
   }
 
   @Test
-  void rejectsExplicitlyMismatchedLeaseRequestWithoutFallingBack() {
+  void rejectsMismatchedLeaseRequest() {
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class, () -> guard.requireLeaseRequestAffinity("reconciler-v2"));
@@ -60,9 +58,7 @@ class ReconcileWorkerAffinityGuardTest {
   }
 
   @Test
-  void legacyFallbackCanBeDisabled() {
-    guard.allowUnversionedWorkers = false;
-
+  void rejectsUnversionedLeaseRequest() {
     StatusRuntimeException error =
         assertThrows(StatusRuntimeException.class, () -> guard.requireLeaseRequestAffinity(""));
 

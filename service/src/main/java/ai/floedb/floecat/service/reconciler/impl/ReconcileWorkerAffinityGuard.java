@@ -21,40 +21,19 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 /** Enforces the remote worker, serving deployment, and leased job affinity contract. */
 @ApplicationScoped
 public class ReconcileWorkerAffinityGuard {
-  private static final Logger LOG = Logger.getLogger(ReconcileWorkerAffinityGuard.class);
-
   @Inject ReconcileJobStore jobs;
 
   @ConfigProperty(name = "floecat.reconciler.worker-affinity", defaultValue = "reconciler-v1")
   String configuredAffinity = "reconciler-v1";
 
-  @ConfigProperty(name = "floecat.reconciler.allow-unversioned-workers", defaultValue = "true")
-  boolean allowUnversionedWorkers = true;
-
-  private final AtomicBoolean legacyWorkerWarningLogged = new AtomicBoolean();
-
   public void requireLeaseRequestAffinity(String requestedAffinity) {
     ReconcileWorkerAffinity requested = ReconcileWorkerAffinity.of(requestedAffinity);
     ReconcileWorkerAffinity configured = configuredAffinity();
-    if (!requested.enabled()) {
-      if (!allowUnversionedWorkers) {
-        throw mismatch("unversioned reconcile workers are disabled", requested, configured);
-      }
-      if (legacyWorkerWarningLogged.compareAndSet(false, true)) {
-        LOG.warnf(
-            "Accepted an unversioned reconcile worker through the legacy fallback;"
-                + " treating it as affinity=%s",
-            configured.value());
-      }
-      return;
-    }
     if (!requested.equals(configured)) {
       throw mismatch(
           "reconcile worker affinity does not match this deployment", requested, configured);
