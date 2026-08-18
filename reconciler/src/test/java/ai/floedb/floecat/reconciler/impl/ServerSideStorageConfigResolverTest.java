@@ -426,7 +426,7 @@ class ServerSideStorageConfigResolverTest {
             "https://workspace.example.com",
             Map.of(
                 "storage_location", "s3://8c554103--table-s3",
-                "databricks.vend-credentials", "true"),
+                "databricks.access-delegation", "vended-credentials"),
             new ConnectorConfig.Auth("oauth2", Map.of("token", "secret"), Map.of()));
     ServerSideStorageConfigResolver resolver =
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
