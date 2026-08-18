@@ -2078,11 +2078,28 @@ public interface ReconcileJobStore {
     public final Set<String> executorIds;
     public final Set<ReconcileJobKind> jobKinds;
 
+    /**
+     * Deployment cohort this worker belongs to, or empty when affinity is disabled. The job store
+     * forces this from its own configuration on every lease, so callers never set it.
+     */
+    public final ReconcileWorkerAffinity workerAffinity;
+
     public LeaseRequest(
         Set<ReconcileExecutionClass> executionClasses,
         Set<String> lanes,
         Set<String> executorIds,
         Set<ReconcileJobKind> jobKinds) {
+      this(executionClasses, lanes, executorIds, jobKinds, ReconcileWorkerAffinity.DISABLED);
+    }
+
+    public LeaseRequest(
+        Set<ReconcileExecutionClass> executionClasses,
+        Set<String> lanes,
+        Set<String> executorIds,
+        Set<ReconcileJobKind> jobKinds,
+        ReconcileWorkerAffinity workerAffinity) {
+      this.workerAffinity =
+          workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
       this.executionClasses =
           executionClasses == null
               ? Set.of()
@@ -2132,8 +2149,18 @@ public interface ReconcileJobStore {
       return new LeaseRequest(executionClasses, lanes, executorIds, jobKinds);
     }
 
+    /**
+     * The single rule deciding whether a queued job may be leased by this request: cohort, executor
+     * pin, execution class, lane and job kind. Every job store delegates here so no two lease paths
+     * can disagree about eligibility.
+     *
+     * @param laneKey the job's lane key, which a request may name instead of the policy lane
+     */
     public boolean matches(
-        ReconcileExecutionPolicy policy, String pinnedExecutorId, ReconcileJobKind jobKind) {
+        ReconcileExecutionPolicy policy,
+        String pinnedExecutorId,
+        ReconcileJobKind jobKind,
+        String laneKey) {
       ReconcileExecutionPolicy effective =
           policy == null ? ReconcileExecutionPolicy.defaults() : policy;
       ReconcileJobKind effectiveJobKind =
@@ -2141,12 +2168,32 @@ public interface ReconcileJobStore {
       boolean classMatches =
           executionClasses.isEmpty() || executionClasses.contains(effective.executionClass());
       boolean laneMatches =
-          lanes.isEmpty() || lanes.contains(ANY_LANE) || lanes.contains(effective.lane());
+          lanes.isEmpty()
+              || lanes.contains(ANY_LANE)
+              || lanes.contains(effective.lane())
+              || lanes.contains(laneKey == null ? "" : laneKey.trim());
       boolean kindMatches = jobKinds.isEmpty() || jobKinds.contains(effectiveJobKind);
       String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
       boolean executorMatches =
           effectivePinnedExecutorId.isEmpty() || executorIds.contains(effectivePinnedExecutorId);
-      return classMatches && laneMatches && kindMatches && executorMatches;
+      return classMatches && laneMatches && kindMatches && executorMatches && cohortMatches(policy);
+    }
+
+    /**
+     * A job may only be leased by its own deployment cohort. Exact equality also keeps a legacy job
+     * with no cohort away from an affinity-aware worker, and vice versa.
+     */
+    public boolean cohortMatches(ReconcileExecutionPolicy policy) {
+      return workerAffinity.matches(policy);
+    }
+
+    /** Returns this request constrained to the deployment's cohort. */
+    public LeaseRequest withWorkerAffinity(ReconcileWorkerAffinity workerAffinity) {
+      ReconcileWorkerAffinity effective =
+          workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
+      return effective.equals(this.workerAffinity)
+          ? this
+          : new LeaseRequest(executionClasses, lanes, executorIds, jobKinds, effective);
     }
 
     public static String anyLaneToken() {

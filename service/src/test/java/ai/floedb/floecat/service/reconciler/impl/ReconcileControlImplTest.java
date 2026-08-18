@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -36,12 +37,14 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
@@ -243,6 +246,31 @@ class ReconcileControlImplTest {
             .indefinitely();
 
     assertEquals("job-1", response.getJobId());
+  }
+
+  @Test
+  void startCaptureLeavesWorkerAffinityToTheJobStore() {
+    // Affinity is stamped by the job store on every enqueue path, so no producer sets it.
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    ArgumentCaptor<ReconcileExecutionPolicy> policyCaptor =
+        ArgumentCaptor.forClass(ReconcileExecutionPolicy.class);
+
+    service
+        .startCapture(
+            ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(captureScope())
+                .build())
+        .await()
+        .indefinitely();
+
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), policyCaptor.capture(), eq(""));
+    assertThat(policyCaptor.getValue().attributes())
+        .doesNotContainKey(ReconcileWorkerAffinity.ATTRIBUTE);
   }
 
   @Test

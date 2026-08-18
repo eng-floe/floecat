@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -89,6 +90,40 @@ class ReconcileExecutorRegistryTest {
         new ReconcileExecutorRegistry(List.of(new TestExecutor("other", 1, true)));
 
     assertThat(registry.executorFor(lease)).isEmpty();
+  }
+
+  @Test
+  void cohortAffinityDoesNotLeakIntoExecutorPinning() {
+    // A cohort is enforced by the job store, so it must never masquerade as an executor pin here.
+    ReconcileExecutionPolicy policy =
+        ReconcileWorkerAffinity.of("ci-branch").applyTo(ReconcileExecutionPolicy.defaults());
+    ReconcileJobStore.LeasedJob lease = defaultLease(policy, "");
+    ReconcileExecutor fallback = new TestExecutor("fallback", 100, true);
+    ReconcileExecutor preferred = new TestExecutor("preferred", 10, true);
+
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(fallback, preferred));
+
+    assertThat(registry.executorFor(lease).orElseThrow().id()).isEqualTo("preferred");
+    assertThat(registry.leaseRequest().executorIds)
+        .containsExactlyInAnyOrder("fallback", "preferred");
+    assertThat(registry.leaseRequestFor(preferred).executorIds).containsExactly("preferred");
+  }
+
+  @Test
+  void pinEligibilityIsSharedWithTheLeasePoller() {
+    ReconcileExecutor preferred = new TestExecutor("preferred", 10, true);
+    ReconcileExecutor other = new TestExecutor("other", 20, true);
+    ReconcileExecutorRegistry registry = new ReconcileExecutorRegistry(List.of(preferred, other));
+
+    ReconcileJobStore.LeasedJob unpinned = defaultLease(ReconcileExecutionPolicy.defaults(), "");
+    ReconcileJobStore.LeasedJob pinned =
+        defaultLease(ReconcileExecutionPolicy.defaults(), "preferred");
+
+    // An unpinned job is runnable by whichever executor the poller offered.
+    assertThat(registry.pinExcludes(unpinned, other)).isFalse();
+    assertThat(registry.pinExcludes(pinned, preferred)).isFalse();
+    assertThat(registry.pinExcludes(pinned, other)).isTrue();
   }
 
   @Test
@@ -174,7 +209,8 @@ class ReconcileExecutorRegistryTest {
                 ReconcileExecutionPolicy.of(
                     ReconcileExecutionClass.HEAVY, "planner-lane", Map.of()),
                 "",
-                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR))
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR,
+                "planner-lane"))
         .isTrue();
   }
 
@@ -211,19 +247,31 @@ class ReconcileExecutorRegistryTest {
 
     assertThat(
             emptyExecutors.matches(
-                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+                policy,
+                "remote-a",
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE,
+                "remote"))
         .isFalse();
     assertThat(
             wrongExecutor.matches(
-                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+                policy,
+                "remote-a",
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE,
+                "remote"))
         .isFalse();
     assertThat(
             matchingExecutor.matches(
-                policy, "remote-a", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+                policy,
+                "remote-a",
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE,
+                "remote"))
         .isTrue();
     assertThat(
             emptyExecutors.matches(
-                policy, "", ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE))
+                policy,
+                "",
+                ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_TABLE,
+                "remote"))
         .isTrue();
   }
 

@@ -46,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
@@ -188,6 +189,43 @@ class DurableReconcileJobStoreTest {
 
   @AfterEach
   void tearDown() {}
+
+  @Test
+  void storeStampsItsCohortOnEveryProducerAndConstrainsLeasesToIt() {
+    // Regression: affinity used to be stamped by individual producers, so a producer that built its
+    // own execution policy (post-commit capture) enqueued uncohorted work that no worker in an
+    // affinity-configured deployment would ever lease.
+    System.setProperty("floecat.reconciler.worker-affinity", "ci-branch");
+    try {
+      store.init();
+      ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+      String jobId =
+          store.enqueuePlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              scope,
+              ReconcileExecutionPolicy.of(
+                  ReconcileExecutionClass.DEFAULT,
+                  "",
+                  Map.of("post_commit_transaction_id", "tx-1")),
+              "");
+
+      ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+
+      assertEquals(jobId, lease.jobId);
+      assertEquals(
+          ReconcileWorkerAffinity.of("ci-branch"),
+          ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy));
+      // The cohort is a first-class constraint, not an executor pin.
+      assertEquals("", lease.pinnedExecutorId == null ? "" : lease.pinnedExecutorId);
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
+  }
 
   @Test
   void enqueueDedupesWhileJobIsActive() {

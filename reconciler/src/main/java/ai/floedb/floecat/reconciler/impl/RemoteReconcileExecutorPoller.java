@@ -282,8 +282,7 @@ public class RemoteReconcileExecutorPoller {
     if (executor == null || lease == null) {
       return false;
     }
-    String pinnedExecutorId = lease.pinnedExecutorId == null ? "" : lease.pinnedExecutorId.trim();
-    if (!pinnedExecutorId.isBlank() && !pinnedExecutorId.equals(executor.id())) {
+    if (executorRegistry.pinExcludes(lease, executor)) {
       return false;
     }
     return executor.supportsJobKind(lease.jobKind)

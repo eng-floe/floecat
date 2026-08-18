@@ -155,84 +155,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void ordinaryPlanningLoadsReuseManifestOnlyFromExplicitParent() throws Exception {
-    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
-    var workerClient = mock(RemotePlannerWorkerClient.class);
-    BlobStore blobStore = mock(BlobStore.class);
-    var executor =
-        new RemoteSnapshotPlanningReconcileExecutor(
-            backend, workerClient, ignored -> Optional.empty(), 2, true);
-    executor.blobStore = blobStore;
-    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
-    when(workerClient.getPlanSnapshotInput(any()))
-        .thenReturn(
-            new StandalonePlanSnapshotPayload(
-                lease.jobId,
-                lease.leaseEpoch,
-                "",
-                connectorId(),
-                ReconcilerService.CaptureMode.CAPTURE_ONLY,
-                false,
-                statsOnlyScope(),
-                snapshotTask()));
-    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.empty());
-    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                new FloecatConnector.SnapshotFilePlan(
-                    List.of(snapshotFile("file-1", 10L)), List.of())));
-    long reuseBasisSnapshotId = 7L;
-    byte[] manifestBytes =
-        SnapshotCaptureManifest.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId("acct")
-            .setConnectorId("connector-1")
-            .setTableId("table-1")
-            .setSnapshotId(reuseBasisSnapshotId)
-            .setReusableArtifactBundlesComplete(true)
-            .setReusableArtifactIndex(ReusableArtifactIndexStore.emptyReference())
-            .build()
-            .toByteArray();
-    String uri = "/reuse/7.pb";
-    byte[] manifestSha256 =
-        java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(reuseBasisSnapshotId)
-                    .build()));
-    when(backend.fetchSnapshot(any(), any(), eq(reuseBasisSnapshotId)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(reuseBasisSnapshotId)
-                    .setReuseManifestRef(
-                        SnapshotReuseManifestRef.newBuilder()
-                            .setFormatVersion(1)
-                            .setUri(uri)
-                            .setPayloadBytes(manifestBytes.length)
-                            .setPayloadSha256(ByteString.copyFrom(manifestSha256))
-                            .setStatsGenerationManifestUri("/stats/generation.pb"))
-                    .build()));
-    when(blobStore.get(uri)).thenReturn(manifestBytes);
-    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
-
-    assertTrue(
-        executor
-            .execute(
-                new ReconcileExecutor.ExecutionContext(
-                    lease, () -> false, (a, b, c, d, e, f, g, h) -> {}))
-            .success());
-    verify(blobStore).get(uri);
-    verify(backend, never()).existingSnapshotIds(any(), any());
-  }
-
-  @Test
   void planningFallsBackWhenLatestReuseManifestIntegrityIsInvalid() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -633,13 +555,13 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
-  void compactionOrDeleteChangeLoadsReusableBundlesFromLatestCompleteManifest() throws Exception {
+  void checkpointReusesLatestFinalizedBasisWithoutLoadingImmediateParent() throws Exception {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
     BlobStore blobStore = mock(BlobStore.class);
     var executor =
         new RemoteSnapshotPlanningReconcileExecutor(
-            backend, workerClient, ignored -> Optional.empty(), 2, true);
+            backend, workerClient, ignored -> Optional.empty(), 2, 0, true);
     executor.blobStore = blobStore;
     ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
     when(workerClient.getPlanSnapshotInput(any()))
@@ -751,36 +673,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             .setPayloadSha256(ByteString.copyFrom(currentDigest))
                             .setStatsGenerationManifestUri("/stats/generation-8.pb"))
                     .build()));
-    when(backend.fetchSnapshot(any(), any(), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(55L)
-                    .setParentSnapshotId(8L)
-                    .build()));
-    when(backend.fetchSnapshot(any(), any(), eq(8L)))
-        .thenReturn(
-            Optional.of(
-                Snapshot.newBuilder()
-                    .setTableId(tableId())
-                    .setSnapshotId(8L)
-                    .setReuseManifestRef(
-                        SnapshotReuseManifestRef.newBuilder()
-                            .setFormatVersion(1)
-                            .setUri(currentUri)
-                            .setPayloadBytes(currentManifest.length)
-                            .setPayloadSha256(ByteString.copyFrom(currentDigest))
-                            .setStatsGenerationManifestUri("/stats/generation-8.pb"))
-                    .build()));
-    when(backend.fetchSnapshotFileDelta(any(), any(), eq(8L), eq(55L)))
-        .thenReturn(
-            Optional.of(
-                new FloecatConnector.SnapshotFileDelta(
-                    List.of(snapshotFile("file-3", 10L)),
-                    List.of("s3://bucket/file-2.parquet"),
-                    true,
-                    "schema")));
     when(blobStore.get(currentUri)).thenReturn(currentManifest);
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
@@ -811,6 +703,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             any());
     verify(blobStore).get(currentUri);
     verify(blobStore, never()).get(baseUri);
+    verify(backend, never()).fetchSnapshot(any(), any(), anyLong());
+    verify(backend, never()).fetchSnapshotFileDelta(any(), any(), anyLong(), anyLong());
   }
 
   @Test
