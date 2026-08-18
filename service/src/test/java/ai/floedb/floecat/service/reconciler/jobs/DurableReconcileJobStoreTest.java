@@ -3654,6 +3654,8 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     assertEquals("", queued.executionPolicy().lane());
     assertFalse(queued.laneKey.isBlank());
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
 
     @SuppressWarnings("unchecked")
     List<String> readyKeys =
@@ -3666,14 +3668,16 @@ class DurableReconcileJobStoreTest {
             .anyMatch(
                 key ->
                     key.startsWith(
-                        Keys.reconcileReadyByExecutionLanePointerPrefix(queued.laneKey))));
+                        Keys.reconcileReadyByExecutionLanePointerPrefix(
+                            workerAffinity.indexFilterValue(queued.laneKey)))));
     assertTrue(
         readyKeys.stream()
             .anyMatch(
                 key ->
                     key.startsWith(
                         Keys.reconcileReadyByJobKindPointerPrefix(
-                            ReconcileJobKind.EXEC_FILE_GROUP.name()))));
+                            workerAffinity.indexFilterValue(
+                                ReconcileJobKind.EXEC_FILE_GROUP.name())))));
 
     var lease =
         store
@@ -7536,19 +7540,23 @@ class DurableReconcileJobStoreTest {
   }
 
   private boolean findAndDeleteReadyEntry(StoredReconcileJob record, String readyPointerKey) {
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     List<ReconcileReadyQueueBackend.ReadyQueueSlice> slices =
         List.of(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
-                record.executionPolicy().executionClass().name()),
+                workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, record.laneKey),
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                workerAffinity.indexFilterValue(record.laneKey)),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, record.pinnedExecutorId()),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, record.jobKind().name()));
+                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+                workerAffinity.indexFilterValue(record.jobKind().name())));
     for (ReconcileReadyQueueBackend.ReadyQueueSlice slice : slices) {
       var page = store.readyQueueBackend.scanReadySlice(slice, 100, "", null);
       for (var entry : page.entries()) {

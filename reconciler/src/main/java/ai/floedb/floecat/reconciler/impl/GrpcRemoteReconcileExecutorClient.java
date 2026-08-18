@@ -82,6 +82,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
@@ -135,6 +136,10 @@ class GrpcRemoteReconcileExecutorClient
   private final long workerControlKeepAliveTimeoutMs;
   private final boolean workerControlKeepAliveWithoutCalls;
   private final int planTableChildJobChunkMaxCount;
+
+  @ConfigProperty(name = "floecat.reconciler.worker-affinity", defaultValue = "reconciler-v1")
+  String workerAffinity = "reconciler-v1";
+
   private final Object workerControlLock = new Object();
   private volatile ManagedChannel workerControlChannel;
   private volatile ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub
@@ -356,11 +361,27 @@ class GrpcRemoteReconcileExecutorClient
                                 .map(GrpcRemoteReconcileExecutorClient::toProtoJobKind)
                                 .toList())
                         .addAllExecutorIds(effective.executorIds)
+                        .setWorkerAffinity(workerAffinity == null ? "" : workerAffinity.trim())
                         .build()));
     if (!response.getFound()) {
       return Optional.empty();
     }
+    String expectedAffinity = workerAffinity == null ? "" : workerAffinity.trim();
+    if (!expectedAffinity.isEmpty()
+        && !expectedAffinity.equals(response.getJob().getWorkerAffinity().trim())) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "leased reconcile job affinity does not match worker: job="
+                  + displayWorkerAffinity(response.getJob().getWorkerAffinity())
+                  + " worker="
+                  + displayWorkerAffinity(expectedAffinity))
+          .asRuntimeException();
+    }
     return Optional.of(new RemoteLeasedJob(fromProtoLease(response.getJob())));
+  }
+
+  private static String displayWorkerAffinity(String affinity) {
+    return affinity == null || affinity.isBlank() ? "<unversioned>" : affinity.trim();
   }
 
   @Override

@@ -665,6 +665,9 @@ message LeasedReconcileJob {
   ReconcileSnapshotTask snapshot_task = 14;
   // Present for EXEC_FILE_GROUP jobs; empty otherwise.
   ReconcileFileGroupTask file_group_task = 15;
+  // Job-tree contract version stamped on this job. A versioned worker must reject the lease unless
+  // this exactly matches the affinity it declared in LeaseReconcileJobRequest.
+  string worker_affinity = 16;
 }
 
 // Request from an executor asking the scheduler for work it is willing to run.
@@ -679,6 +682,9 @@ message LeaseReconcileJobRequest {
   repeated ReconcileJobKind job_kinds = 4;
   // Local executor ids available to satisfy pinned-executor routing.
   repeated string executor_ids = 5;
+  // Job-tree contract version implemented by this worker. Floecat requires this to match its
+  // deployment affinity. Empty is accepted only by the temporary legacy-worker fallback.
+  string worker_affinity = 6;
 }
 
 message LeaseReconcileJobResponse {
