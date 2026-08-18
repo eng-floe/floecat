@@ -40,11 +40,17 @@ public final class DatabricksAccessDelegation {
   /**
    * The property that turns on source-catalog vending for a Delta/Unity connector.
    *
-   * <p>Set with {@code --props databricks.vend-credentials=true}. Honored only for the Delta-family
-   * connector kinds; a stray copy on an Iceberg connector is ignored, since that path is governed
-   * by {@link IcebergAccessDelegation#HEADER_PROPERTY} instead.
+   * <p>Set with {@code --props databricks.access-delegation=vended-credentials}. Honored only for
+   * the Delta-family connector kinds; a stray copy on an Iceberg connector is ignored, since that
+   * path is governed by {@link IcebergAccessDelegation#HEADER_PROPERTY} instead.
+   *
+   * <p>The key ends in {@code access-delegation} rather than {@code vend-credentials} on purpose:
+   * the connector-property secret guard rejects any key whose canonical form ends in {@code
+   * _credentials} (to keep plaintext secrets out of connector metadata), and this is a non-secret
+   * boolean opt-in. The name also mirrors the Iceberg gate's {@code X-Iceberg-Access-Delegation}
+   * header, whose {@code vended-credentials} value {@link #isTruthy} already accepts.
    */
-  public static final String VEND_OPTION = "databricks.vend-credentials";
+  public static final String VEND_OPTION = "databricks.access-delegation";
 
   private DatabricksAccessDelegation() {}
 
