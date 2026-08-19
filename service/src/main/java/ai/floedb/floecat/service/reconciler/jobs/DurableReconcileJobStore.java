@@ -34,6 +34,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
@@ -210,6 +211,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private int leaseMaxConcurrency = DEFAULT_LEASE_MAX_CONCURRENCY;
   long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
   private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
+  private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
   long snapshotCoverageClaimRetentionMs = DEFAULT_SNAPSHOT_COVERAGE_CLAIM_RETENTION_MS;
   private final Map<String, String> snapshotCoverageClaimGcTokens = new ConcurrentHashMap<>();
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
@@ -439,7 +441,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         this::materializeSnapshotPlan,
         readyQueue()::readyPointerKeys,
         this::statePointerKeys,
-        readyQueue()::readyPointerKeyForDue);
+        readyQueue()::readyPointerKeyForDue,
+        workerAffinity);
     return enqueuer;
   }
 
@@ -569,6 +572,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-scan-budget-ms", Long.class)
                 .orElse(DEFAULT_LEASE_SCAN_BUDGET_MS));
+    workerAffinity =
+        ReconcileWorkerAffinity.of(
+            config.getOptionalValue("floecat.reconciler.worker-affinity", String.class).orElse(""));
     snapshotCoverageClaimRetentionMs =
         Math.max(
             1_000L,
@@ -1523,7 +1529,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       throw new LeaseScanCapacityExceededException(
           "reconcile lease scan capacity exhausted cap=" + leaseMaxConcurrency);
     }
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    LeaseRequest effective =
+        (request == null ? LeaseRequest.all() : request).withWorkerAffinity(workerAffinity);
     LeaseScanStats scanStats = new LeaseScanStats();
     configureLeaseScanStats(scanStats, startedAtMs);
     try {

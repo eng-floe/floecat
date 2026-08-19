@@ -327,6 +327,26 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   - in `floecat.kv=memory`, the same domain model is preserved, but the physical implementation is
     in-memory rather than a literal Dynamo simulator
 
+### Job-tree versioning and deployment cohorts
+
+`floecat.reconciler.worker-affinity` is the job-tree contract version for one deployment, not its
+build version. The job store stamps it on every job at enqueue and constrains every lease to an
+exact match. Remote workers send the same value in `LeaseReconcileJobRequest.worker_affinity`, the
+control plane rejects blank or mismatched requests, and the leased job echoes the value for
+worker-side validation. Lease-bound RPCs also reject jobs owned by another cohort.
+
+The ready queue affinity-qualifies execution-class, execution-lane, job-kind, and pinned-executor
+index slices. The semantic execution policy and `pinnedExecutorId` remain unchanged; only the
+derived index filter is qualified. This prevents an older control plane that does not understand
+affinity from discovering versioned work through the corresponding raw filtered slices.
+
+Upgrades use separate draining cohorts. The old unversioned deployment continues serving its old
+workers and drains unversioned trees. The new deployment and workers use the same non-empty
+affinity (currently `reconciler-v1`) and process only that cohort. Route workers exclusively to the
+matching control plane, and do not retire the old deployment until its active trees have drained.
+Changing affinity does not migrate or reclaim queued jobs; it starts a separate cohort that may
+independently plan equivalent work.
+
 ### gRPC auth
 - Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
   payload/result exchange.
@@ -402,6 +422,9 @@ perform a post-completion final lease confirmation after that RPC has durably co
   - `remote` keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
     `reconciler.max-parallelism=0` on control-plane-only nodes.
 - Worker capacity via `reconciler.max-parallelism`.
+- Job-tree contract affinity via `floecat.reconciler.worker-affinity` (default
+  `reconciler-v1`). Control planes and all of their local or remote executors must use exactly the
+  same value.
 - Job store selection:
   - `floecat.reconciler.job-store=durable` (service default) uses persisted queue records plus
     retry/lease tuning via:

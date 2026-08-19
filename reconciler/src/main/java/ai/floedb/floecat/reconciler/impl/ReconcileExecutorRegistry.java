@@ -48,18 +48,24 @@ public class ReconcileExecutorRegistry {
                 .toList();
   }
 
+  /**
+   * Whether a leased job carries an executor pin that names some executor other than {@code
+   * executor}. Pin eligibility has one implementation so the registry and the lease poller cannot
+   * disagree about which executor may run a job.
+   */
+  public boolean pinExcludes(ReconcileJobStore.LeasedJob lease, ReconcileExecutor executor) {
+    if (lease == null || lease.pinnedExecutorId == null || lease.pinnedExecutorId.isBlank()) {
+      return false;
+    }
+    return executor == null || !lease.pinnedExecutorId.equals(executor.id());
+  }
+
   public Optional<ReconcileExecutor> executorFor(ReconcileJobStore.LeasedJob lease) {
-    if (lease != null && lease.pinnedExecutorId != null && !lease.pinnedExecutorId.isBlank()) {
-      return executors.stream()
-          .filter(executor -> lease.pinnedExecutorId.equals(executor.id()))
-          .filter(executor -> executor.supportsJobKind(lease.jobKind))
-          .filter(
-              executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
-          .filter(executor -> executor.supportsLane(lease.laneKey))
-          .filter(executor -> executor.supports(lease))
-          .findFirst();
+    if (lease == null) {
+      return Optional.empty();
     }
     return executors.stream()
+        .filter(executor -> !pinExcludes(lease, executor))
         .filter(executor -> executor.supportsJobKind(lease.jobKind))
         .filter(executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
         .filter(executor -> executor.supportsLane(lease.laneKey))

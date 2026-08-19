@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
@@ -102,26 +103,15 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
 
   @Override
   public boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request) {
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    String pinnedExecutorId = record == null ? "" : record.pinnedExecutorId();
-    if (!blank(pinnedExecutorId) && !effective.executorIds.contains(pinnedExecutorId)) {
-      return false;
-    }
     if (record == null) {
       return false;
     }
-    ReconcileExecutionPolicy policy = record.executionPolicy();
-    boolean classMatches =
-        effective.executionClasses.isEmpty()
-            || effective.executionClasses.contains(policy.executionClass());
-    boolean laneMatches =
-        effective.lanes.isEmpty()
-            || effective.lanes.contains(LeaseRequest.anyLaneToken())
-            || effective.lanes.contains(policy.lane())
-            || effective.lanes.contains(blankToEmpty(record.laneKey));
-    boolean kindMatches =
-        effective.jobKinds.isEmpty() || effective.jobKinds.contains(record.jobKind());
-    return classMatches && laneMatches && kindMatches;
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    return effective.matches(
+        record.executionPolicy(),
+        record.pinnedExecutorId(),
+        record.jobKind(),
+        blankToEmpty(record.laneKey));
   }
 
   @Override
@@ -181,10 +171,16 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     }
     long dueAtMs = readyPointerDueAt(record);
     List<String> keys = new java.util.ArrayList<>();
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     String pinnedExecutorId = record.pinnedExecutorId();
     if (!blank(pinnedExecutorId)) {
       String pinnedExecutorKey =
-          readyPointerKeyFor(record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, pinnedExecutorId);
+          readyPointerKeyFor(
+              record,
+              ReadyIndexType.PINNED_EXECUTOR,
+              dueAtMs,
+              workerAffinity.indexFilterValue(pinnedExecutorId));
       return pinnedExecutorKey.isBlank() ? List.of() : List.of(pinnedExecutorKey);
     }
     keys.add(readyPointerKeyFor(record, dueAtMs));
@@ -330,6 +326,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
         request.executorIds.stream()
             .map(InMemoryReconcileReadyQueueStore::blankToEmpty)
             .filter(executorId -> !executorId.isBlank())
+            .map(request.workerAffinity::indexFilterValue)
             .sorted()
             .toList();
     if (executorIds.isEmpty()) {
@@ -347,6 +344,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
         request.lanes.stream()
             .map(InMemoryReconcileReadyQueueStore::blankToEmpty)
             .filter(lane -> !lane.isBlank() && !LeaseRequest.anyLaneToken().equals(lane))
+            .map(request.workerAffinity::indexFilterValue)
             .sorted()
             .toList();
     if (!lanes.isEmpty()) {
@@ -355,7 +353,12 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
           new ReadyIndexSelection(
               new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.EXECUTION_LANE, lane)));
     }
-    List<String> jobKinds = request.jobKinds.stream().sorted().map(Enum::name).toList();
+    List<String> jobKinds =
+        request.jobKinds.stream()
+            .map(Enum::name)
+            .map(request.workerAffinity::indexFilterValue)
+            .sorted()
+            .toList();
     if (!jobKinds.isEmpty()) {
       String jobKind = jobKinds.get(nextIndex(unpinnedSelectionCursor, jobKinds.size()));
       return Optional.of(
@@ -363,7 +366,11 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
               new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.JOB_KIND, jobKind)));
     }
     List<String> executionClasses =
-        request.executionClasses.stream().sorted().map(Enum::name).toList();
+        request.executionClasses.stream()
+            .map(Enum::name)
+            .map(request.workerAffinity::indexFilterValue)
+            .sorted()
+            .toList();
     if (!executionClasses.isEmpty()) {
       String executionClass =
           executionClasses.get(nextIndex(unpinnedSelectionCursor, executionClasses.size()));
@@ -458,12 +465,23 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
   private boolean readyIndexFilterMatchesRecord(
       ReadyQueueEntry candidate, StoredReconcileJob record) {
     ReconcileExecutionPolicy policy = record.executionPolicy();
+    ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.fromPolicy(policy);
     return switch (candidate.indexType()) {
       case GLOBAL -> true;
-      case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
-      case EXECUTION_LANE -> candidate.filterValue().equals(blankToEmpty(record.laneKey));
-      case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
-      case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
+      case EXECUTION_CLASS ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(policy.executionClass().name()));
+      case EXECUTION_LANE ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(blankToEmpty(record.laneKey)));
+      case PINNED_EXECUTOR ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(record.pinnedExecutorId()));
+      case JOB_KIND ->
+          candidate.filterValue().equals(workerAffinity.indexFilterValue(record.jobKind().name()));
     };
   }
 

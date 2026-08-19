@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
@@ -118,6 +119,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   @Inject LeasedSnapshotFinalizeInputService leasedSnapshotFinalizeInputService;
   @Inject LeasedSnapshotFinalizeExecutionService leasedSnapshotFinalizeExecutionService;
   @Inject LeasedPlannerWorkerService leasedPlannerWorkerService;
+  @Inject ReconcileWorkerAffinityGuard affinityGuard;
 
   @Override
   public Uni<LeaseReconcileJobResponse> leaseReconcileJob(LeaseReconcileJobRequest request) {
@@ -127,6 +129,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               var principalContext = principalProvider.get();
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
+              affinityGuard.requireLeaseRequestAffinity(
+                  request == null ? "" : request.getWorkerAffinity());
               Set<String> executorIds;
               if (request == null) {
                 executorIds = Set.of();
@@ -222,6 +226,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 requireExecutorControl(principalContext);
                 correlationId = principalContext.getCorrelationId();
                 jobId = mustNonEmpty(request.getJobId(), "job_id", correlationId);
+                affinityGuard.requireJobAffinity(jobId);
                 String leaseEpoch =
                     mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", correlationId);
                 setupNanos = System.nanoTime() - phaseStartNanos;
@@ -275,6 +280,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               String executorId = mustNonEmpty(request.getExecutorId(), "executor_id", corr);
               jobs.markRunning(jobId, leaseEpoch, System.currentTimeMillis(), executorId);
@@ -293,6 +299,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var update =
                   jobs.reportProgress(
@@ -324,6 +331,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.getState() == ReconcileCompletionState.RCS_UNSPECIFIED
                   || request.getState() == ReconcileCompletionState.UNRECOGNIZED) {
@@ -512,6 +520,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               return GetReconcileCancellationResponse.newBuilder()
                   .setCancellationRequested(jobs.isCancellationRequested(jobId))
                   .build();
@@ -529,6 +538,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedPlannerWorkerService.resolvePlanConnector(
@@ -560,6 +570,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
                 boolean accepted =
@@ -614,6 +625,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedPlannerWorkerService.resolvePlanTable(principalContext, jobId, leaseEpoch);
@@ -644,6 +656,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasChunk()) {
                 boolean accepted =
@@ -708,6 +721,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedPlannerWorkerService.resolvePlanView(principalContext, jobId, leaseEpoch);
@@ -736,6 +750,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
                 var result =
@@ -787,6 +802,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedPlannerWorkerService.resolvePlanSnapshot(
@@ -818,6 +834,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasChunk()) {
                 boolean accepted =
@@ -879,6 +896,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedFileGroupExecutionService.resolve(principalContext, jobId, leaseEpoch);
@@ -970,6 +988,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var payload =
                   leasedSnapshotFinalizeInputService.resolve(principalContext, jobId, leaseEpoch);
@@ -1035,6 +1054,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               var page =
                   leasedSnapshotFinalizeInputService.descriptorPage(
@@ -1112,6 +1132,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
                 if (!request.getSuccess().hasResultDescriptor()) {
@@ -1198,6 +1219,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               requireExecutorControl(principalContext);
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
+              affinityGuard.requireJobAffinity(jobId);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
               if (request.hasSuccess()) {
                 boolean accepted =
@@ -1299,6 +1321,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setViewTask(toProtoViewTask(lease.viewTask))
         .setSnapshotTask(toProtoSnapshotTask(compactSnapshotTask(lease.snapshotTask)))
         .setFileGroupTask(toProtoFileGroupTask(compactFileGroupTask(lease.fileGroupTask)))
+        .setWorkerAffinity(ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy).value())
         .build();
   }
 

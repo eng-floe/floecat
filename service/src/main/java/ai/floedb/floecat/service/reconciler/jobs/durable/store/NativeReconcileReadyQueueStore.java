@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -92,26 +93,15 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   }
 
   public boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request) {
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    String pinnedExecutorId = record == null ? "" : record.pinnedExecutorId();
-    if (!blank(pinnedExecutorId) && !effective.executorIds.contains(pinnedExecutorId)) {
-      return false;
-    }
     if (record == null) {
       return false;
     }
-    ReconcileExecutionPolicy policy = record.executionPolicy();
-    boolean classMatches =
-        effective.executionClasses.isEmpty()
-            || effective.executionClasses.contains(policy.executionClass());
-    boolean laneMatches =
-        effective.lanes.isEmpty()
-            || effective.lanes.contains(LeaseRequest.anyLaneToken())
-            || effective.lanes.contains(policy.lane())
-            || effective.lanes.contains(blankToEmpty(record.laneKey));
-    boolean kindMatches =
-        effective.jobKinds.isEmpty() || effective.jobKinds.contains(record.jobKind());
-    return classMatches && laneMatches && kindMatches;
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    return effective.matches(
+        record.executionPolicy(),
+        record.pinnedExecutorId(),
+        record.jobKind(),
+        blankToEmpty(record.laneKey));
   }
 
   public long readyPointerDueAt(StoredReconcileJob record) {
@@ -340,6 +330,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         request.executorIds.stream()
             .map(NativeReconcileReadyQueueStore::blankToEmpty)
             .filter(executorId -> !executorId.isBlank())
+            .map(request.workerAffinity::indexFilterValue)
             .sorted()
             .toList();
     if (executorIds.isEmpty()) {
@@ -359,21 +350,33 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         request.lanes.stream()
             .map(NativeReconcileReadyQueueStore::blankToEmpty)
             .filter(lane -> !lane.isBlank() && !LeaseRequest.anyLaneToken().equals(lane))
+            .map(request.workerAffinity::indexFilterValue)
             .sorted()
             .toList();
     if (!lanes.isEmpty()) {
       return selections(ReadyIndexType.EXECUTION_LANE, rotate(lanes, unpinnedSelectionCursor));
     }
-    List<String> jobKinds = request.jobKinds.stream().sorted().map(Enum::name).toList();
+    List<String> jobKinds =
+        request.jobKinds.stream()
+            .map(Enum::name)
+            .map(request.workerAffinity::indexFilterValue)
+            .sorted()
+            .toList();
     if (!jobKinds.isEmpty()) {
       return selections(ReadyIndexType.JOB_KIND, rotate(jobKinds, unpinnedSelectionCursor));
     }
     List<String> executionClasses =
-        request.executionClasses.stream().sorted().map(Enum::name).toList();
+        request.executionClasses.stream()
+            .map(Enum::name)
+            .map(request.workerAffinity::indexFilterValue)
+            .sorted()
+            .toList();
     if (!executionClasses.isEmpty()) {
       return selections(
           ReadyIndexType.EXECUTION_CLASS, rotate(executionClasses, unpinnedSelectionCursor));
     }
+    // The global index is not cohort-partitioned; only a fully unconstrained request reaches it,
+    // and matchesLeaseRequest still enforces the cohort on every candidate it yields.
     return List.of(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
@@ -484,12 +487,23 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       return false;
     }
     ReconcileExecutionPolicy policy = record.executionPolicy();
+    ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.fromPolicy(policy);
     return switch (candidate.indexType()) {
       case GLOBAL -> true;
-      case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
-      case EXECUTION_LANE -> candidate.filterValue().equals(blankToEmpty(record.laneKey));
-      case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
-      case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
+      case EXECUTION_CLASS ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(policy.executionClass().name()));
+      case EXECUTION_LANE ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(blankToEmpty(record.laneKey)));
+      case PINNED_EXECUTOR ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(record.pinnedExecutorId()));
+      case JOB_KIND ->
+          candidate.filterValue().equals(workerAffinity.indexFilterValue(record.jobKind().name()));
     };
   }
 

@@ -29,6 +29,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.annotation.PostConstruct;
@@ -86,6 +87,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private volatile long leaseMs = DEFAULT_LEASE_MS;
   private volatile long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private volatile long lastReclaimAtMs;
+  private volatile ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
 
   public InMemoryReconcileJobStore() {
     reloadConfig();
@@ -113,6 +115,23 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             1_000L,
             readLong(
                 "floecat.reconciler.job-store.reclaim-interval-ms", DEFAULT_RECLAIM_INTERVAL_MS));
+    workerAffinity = readWorkerAffinity("floecat.reconciler.worker-affinity");
+  }
+
+  private ReconcileWorkerAffinity readWorkerAffinity(String key) {
+    try {
+      var container = Arc.container();
+      if (container != null) {
+        var config = container.instance(org.eclipse.microprofile.config.Config.class);
+        if (config.isAvailable()) {
+          return ReconcileWorkerAffinity.of(
+              config.get().getOptionalValue(key, String.class).orElse(""));
+        }
+      }
+    } catch (RuntimeException ignored) {
+      // Fall back to system properties for plain unit construction.
+    }
+    return ReconcileWorkerAffinity.of(System.getProperty(key));
   }
 
   private int readInt(String key, int defaultValue) {
@@ -173,7 +192,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             effectiveTableTask,
             effectiveViewTask);
     ReconcileExecutionPolicy effectivePolicy =
-        executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+        workerAffinity.applyTo(
+            executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy);
     ReconcileScope identityScope =
         ReconcileScopeCanonicalizer.resolvedWorkScope(
             effectiveScope,
@@ -939,7 +959,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     long now = System.currentTimeMillis();
     reclaimExpiredLeasesIfDue(now);
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    LeaseRequest effective =
+        (request == null ? LeaseRequest.all() : request).withWorkerAffinity(workerAffinity);
     int attempts = Math.max(1, ready.size());
     for (int i = 0; i < attempts; i++) {
       String jobId = ready.poll();
@@ -2311,27 +2332,15 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
 
   private static boolean matchesLeaseRequest(
       LeaseRequest request, ReconcileJob job, String pinnedExecutorId, String laneKey) {
-    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     if (job == null) {
       return false;
     }
-    String effectivePinnedExecutorId = blankToEmpty(pinnedExecutorId);
-    if (!effectivePinnedExecutorId.isBlank()
-        && !effective.executorIds.contains(effectivePinnedExecutorId)) {
-      return false;
-    }
-    ReconcileExecutionPolicy policy =
-        job.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : job.executionPolicy;
-    boolean classMatches =
-        effective.executionClasses.isEmpty()
-            || effective.executionClasses.contains(policy.executionClass());
-    boolean laneMatches =
-        effective.lanes.isEmpty()
-            || effective.lanes.contains(LeaseRequest.anyLaneToken())
-            || effective.lanes.contains(policy.lane())
-            || effective.lanes.contains(blankToEmpty(laneKey));
-    boolean kindMatches = effective.jobKinds.isEmpty() || effective.jobKinds.contains(job.jobKind);
-    return classMatches && laneMatches && kindMatches;
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    return effective.matches(
+        job.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : job.executionPolicy,
+        blankToEmpty(pinnedExecutorId),
+        job.jobKind,
+        blankToEmpty(laneKey));
   }
 
   private static String hashValue(String value) {

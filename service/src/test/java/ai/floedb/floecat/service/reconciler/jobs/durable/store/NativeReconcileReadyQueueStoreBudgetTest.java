@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend.ReadyQueueSlice;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
@@ -116,6 +117,30 @@ class NativeReconcileReadyQueueStoreBudgetTest {
         ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(1).indexType());
     assertEquals(ReconcileJobKind.EXEC_FILE_GROUP.name(), backend.slices.get(1).filterValue());
     assertEquals(List.of(16, 16), backend.pageSizes);
+  }
+
+  @Test
+  void pinnedExecutorScanUsesTheCohortQualifiedSlice() {
+    SliceRecordingBackend backend = new SliceRecordingBackend();
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    store.bind(backend, null, null, 128, record -> true, record -> false);
+    ReconcileWorkerAffinity affinity = ReconcileWorkerAffinity.of("ci-branch");
+
+    store.leaseReadyDue(
+        System.currentTimeMillis(),
+        LeaseRequest.of(
+                Set.of(),
+                Set.of(),
+                Set.of("floescan_ingest"),
+                Set.of(ReconcileJobKind.EXEC_FILE_GROUP))
+            .withWorkerAffinity(affinity),
+        new LeaseScanStats());
+
+    assertEquals(
+        ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+        backend.slices.getFirst().indexType());
+    assertEquals(
+        affinity.indexFilterValue("floescan_ingest"), backend.slices.getFirst().filterValue());
   }
 
   @Test

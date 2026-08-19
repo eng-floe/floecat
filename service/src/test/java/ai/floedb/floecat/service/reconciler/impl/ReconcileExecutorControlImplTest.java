@@ -106,6 +106,7 @@ class ReconcileExecutorControlImplTest {
     service.leasedSnapshotFinalizeExecutionService =
         mock(LeasedSnapshotFinalizeExecutionService.class);
     service.leasedPlannerWorkerService = mock(LeasedPlannerWorkerService.class);
+    service.affinityGuard = mock(ReconcileWorkerAffinityGuard.class);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -160,6 +161,19 @@ class ReconcileExecutorControlImplTest {
             .indefinitely();
 
     assertTrue(!response.getFound());
+  }
+
+  @Test
+  void leaseReconcileJobPassesWorkerAffinityToProtocolGuard() {
+    when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
+
+    service
+        .leaseReconcileJob(
+            LeaseReconcileJobRequest.newBuilder().setWorkerAffinity("reconciler-v1").build())
+        .await()
+        .indefinitely();
+
+    verify(service.affinityGuard).requireLeaseRequestAffinity("reconciler-v1");
   }
 
   @Test
@@ -252,7 +266,9 @@ class ReconcileExecutorControlImplTest {
                     CaptureMode.METADATA_AND_CAPTURE,
                     ReconcileScope.of(java.util.List.of(), "orders", List.of(), capturePolicy),
                     ReconcileExecutionPolicy.of(
-                        ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
+                        ReconcileExecutionClass.HEAVY,
+                        "remote",
+                        Map.of("tier", "gold", "floecat.worker-affinity", "reconciler-v1")),
                     "lease-1",
                     "remote-executor",
                     "")));
@@ -281,6 +297,7 @@ class ReconcileExecutorControlImplTest {
             .getCapturePolicy()
             .getPropertiesOrDefault("engine.option", ""));
     assertEquals("remote-executor", response.getJob().getPinnedExecutorId());
+    assertEquals("reconciler-v1", response.getJob().getWorkerAffinity());
     verify(service.jobs)
         .leaseNext(
             argThat(
@@ -589,6 +606,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getRenewed());
     assertTrue(response.getCancellationRequested());
+    verify(service.affinityGuard).requireJobAffinity("job-1");
   }
 
   private static ResourceId deletedConnectorId() {

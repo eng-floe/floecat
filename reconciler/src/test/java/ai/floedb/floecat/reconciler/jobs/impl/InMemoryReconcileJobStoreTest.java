@@ -33,6 +33,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -155,6 +156,116 @@ class InMemoryReconcileJobStoreTest {
             "");
 
     assertNotEquals(first, second);
+  }
+
+  @Test
+  void storeStampsItsOwnCohortOnEnqueueAndLease() {
+    // The store owns both stamps, so a caller cannot enqueue work its own deployment cannot lease.
+    System.setProperty("floecat.reconciler.worker-affinity", "ci-branch");
+    try {
+      var store = new InMemoryReconcileJobStore();
+      String jobId =
+          store.enqueuePlan(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileExecutionPolicy.defaults(),
+              "");
+
+      var lease = store.leaseNext().orElseThrow();
+
+      assertEquals(jobId, lease.jobId);
+      assertEquals(
+          ReconcileWorkerAffinity.of("ci-branch"),
+          ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy));
+      // The cohort is not an executor pin.
+      assertEquals("", lease.pinnedExecutorId);
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+    }
+  }
+
+  @Test
+  void presentButEmptyAffinityPropertyLeavesAffinityDisabled() {
+    // The property ships as ${FLOECAT_RECONCILER_WORKER_AFFINITY:}, so the default deployment
+    // always presents it as an empty value. That must read as "disabled", not fail or stamp "".
+    System.setProperty("floecat.reconciler.worker-affinity", "   ");
+    try {
+      var store = new InMemoryReconcileJobStore();
+      String jobId =
+          store.enqueuePlan(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileExecutionPolicy.defaults(),
+              "");
+
+      var lease = store.leaseNext().orElseThrow();
+
+      assertEquals(jobId, lease.jobId);
+      assertEquals(
+          ReconcileWorkerAffinity.DISABLED,
+          ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy));
+      assertFalse(
+          lease.executionPolicy.attributes().containsKey(ReconcileWorkerAffinity.ATTRIBUTE));
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+    }
+  }
+
+  @Test
+  void storeOverridesCallerSuppliedAffinity() {
+    // A caller must not be able to place work into, or steal work from, another cohort by passing
+    // the attribute itself. The store's own configuration always wins.
+    System.setProperty("floecat.reconciler.worker-affinity", "ci-branch");
+    try {
+      var store = new InMemoryReconcileJobStore();
+      String jobId =
+          store.enqueuePlan(
+              "acct",
+              "conn",
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileWorkerAffinity.of("steady-state")
+                  .applyTo(ReconcileExecutionPolicy.defaults()),
+              "");
+
+      var lease = store.leaseNext().orElseThrow();
+
+      assertEquals(jobId, lease.jobId);
+      assertEquals(
+          ReconcileWorkerAffinity.of("ci-branch"),
+          ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy));
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+    }
+  }
+
+  @Test
+  void leaseRequestCohortMustMatchTheJobExactly() {
+    ReconcileExecutionPolicy branch =
+        ReconcileWorkerAffinity.of("ci-branch").applyTo(ReconcileExecutionPolicy.defaults());
+    ReconcileExecutionPolicy legacy = ReconcileExecutionPolicy.defaults();
+    ReconcileJobStore.LeaseRequest request =
+        new ReconcileJobStore.LeaseRequest(
+            null, null, Set.of(), EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR));
+
+    assertTrue(
+        request.withWorkerAffinity(ReconcileWorkerAffinity.of("ci-branch")).cohortMatches(branch));
+    assertFalse(
+        request
+            .withWorkerAffinity(ReconcileWorkerAffinity.of("steady-state"))
+            .cohortMatches(branch));
+    // Neither direction of the legacy boundary may cross.
+    assertFalse(request.cohortMatches(branch));
+    assertFalse(
+        request.withWorkerAffinity(ReconcileWorkerAffinity.of("ci-branch")).cohortMatches(legacy));
+    assertTrue(request.cohortMatches(legacy));
   }
 
   @Test

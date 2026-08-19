@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
 import java.util.ArrayList;
@@ -88,6 +89,8 @@ public final class ReadyQueueKeys {
       return List.of();
     }
     List<String> keys = new ArrayList<>();
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     String pinnedExecutorId = record.pinnedExecutorId();
     if (!blank(pinnedExecutorId)) {
       String pinnedExecutorKey =
@@ -95,25 +98,29 @@ public final class ReadyQueueKeys {
               record,
               ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
               dueAtMs,
-              pinnedExecutorId);
+              workerAffinity.indexFilterValue(pinnedExecutorId));
       return pinnedExecutorKey.isBlank() ? List.of() : List.of(pinnedExecutorKey);
     }
+    // A cohort keeps its own slice of each filtered index, so a shared queue does not force
+    // every deployment's workers through one undifferentiated scan.
     keys.add(readyPointerKeyFor(record, dueAtMs));
     String executionClassKey =
         readyPointerKeyFor(
             record,
             ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
             dueAtMs,
-            record.executionPolicy().executionClass().name());
+            workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name()));
     if (!executionClassKey.isBlank()) {
       keys.add(executionClassKey);
     }
     String executionLaneKey =
-        readyPointerKeyFor(
-            record,
-            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
-            dueAtMs,
-            record.laneKey);
+        blank(record.laneKey)
+            ? ""
+            : readyPointerKeyFor(
+                record,
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                dueAtMs,
+                workerAffinity.indexFilterValue(record.laneKey));
     if (!executionLaneKey.isBlank()) {
       keys.add(executionLaneKey);
     }
@@ -122,7 +129,7 @@ public final class ReadyQueueKeys {
             record,
             ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
             dueAtMs,
-            record.jobKind().name());
+            workerAffinity.indexFilterValue(record.jobKind().name()));
     if (!jobKindKey.isBlank()) {
       keys.add(jobKindKey);
     }

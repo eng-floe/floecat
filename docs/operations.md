@@ -105,6 +105,7 @@ Key reconciler mode flags live in `service/src/main/resources/application.proper
 
 ```properties
 floecat.reconciler.worker.mode
+floecat.reconciler.worker-affinity
 reconciler.max-parallelism
 floecat.reconciler.executor.remote-planner.enabled
 floecat.reconciler.executor.remote-default.enabled
@@ -132,6 +133,20 @@ Recommended split deployment:
 - Shared settings: same blob/kv backend, same reconciler OIDC worker principal configuration, executor nodes pointed at the control-plane gRPC host/port
 - Control-plane-specific setting: `reconciler.max-parallelism=0`
 - Executor-plane-specific setting: `floecat.reconciler.worker.mode=remote`
+
+#### Reconciler versioned rollout
+
+Set `floecat.reconciler.worker-affinity` to the job-tree contract version, currently
+`reconciler-v1`, on both the control plane and every executor routed to it. Lease requests require
+an exact match; blank or mismatched workers are rejected. Different affinities can share the same
+durable blob/kv backend because filtered ready indexes, including pinned-executor indexes, are
+partitioned by affinity, but their worker-control endpoints must remain separately routed.
+
+For an upgrade from an unversioned deployment, keep the old control plane and workers running to
+drain their unversioned job trees. Start the new control plane and workers with the new matching
+affinity, route each worker fleet only to its matching control plane, and retire the old deployment
+after its active trees have drained. A new deployment does not adopt, migrate, or lease the old
+cohort's jobs.
 
 Worker gRPC auth boundary:
 

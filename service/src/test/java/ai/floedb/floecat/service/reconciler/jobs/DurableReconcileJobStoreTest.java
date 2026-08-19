@@ -46,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexObjectReference;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference;
@@ -188,6 +189,43 @@ class DurableReconcileJobStoreTest {
 
   @AfterEach
   void tearDown() {}
+
+  @Test
+  void storeStampsItsCohortOnEveryProducerAndConstrainsLeasesToIt() {
+    // Regression: affinity used to be stamped by individual producers, so a producer that built its
+    // own execution policy (post-commit capture) enqueued uncohorted work that no worker in an
+    // affinity-configured deployment would ever lease.
+    System.setProperty("floecat.reconciler.worker-affinity", "ci-branch");
+    try {
+      store.init();
+      ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+      String jobId =
+          store.enqueuePlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              scope,
+              ReconcileExecutionPolicy.of(
+                  ReconcileExecutionClass.DEFAULT,
+                  "",
+                  Map.of("post_commit_transaction_id", "tx-1")),
+              "");
+
+      ReconcileJobStore.LeasedJob lease = store.leaseNext().orElseThrow();
+
+      assertEquals(jobId, lease.jobId);
+      assertEquals(
+          ReconcileWorkerAffinity.of("ci-branch"),
+          ReconcileWorkerAffinity.fromPolicy(lease.executionPolicy));
+      // The cohort is a first-class constraint, not an executor pin.
+      assertEquals("", lease.pinnedExecutorId == null ? "" : lease.pinnedExecutorId);
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
+  }
 
   @Test
   void enqueueDedupesWhileJobIsActive() {
@@ -3616,6 +3654,8 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
     assertEquals("", queued.executionPolicy().lane());
     assertFalse(queued.laneKey.isBlank());
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
 
     @SuppressWarnings("unchecked")
     List<String> readyKeys =
@@ -3628,14 +3668,16 @@ class DurableReconcileJobStoreTest {
             .anyMatch(
                 key ->
                     key.startsWith(
-                        Keys.reconcileReadyByExecutionLanePointerPrefix(queued.laneKey))));
+                        Keys.reconcileReadyByExecutionLanePointerPrefix(
+                            workerAffinity.indexFilterValue(queued.laneKey)))));
     assertTrue(
         readyKeys.stream()
             .anyMatch(
                 key ->
                     key.startsWith(
                         Keys.reconcileReadyByJobKindPointerPrefix(
-                            ReconcileJobKind.EXEC_FILE_GROUP.name()))));
+                            workerAffinity.indexFilterValue(
+                                ReconcileJobKind.EXEC_FILE_GROUP.name())))));
 
     var lease =
         store
@@ -3671,6 +3713,8 @@ class DurableReconcileJobStoreTest {
             "remote-executor");
 
     StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
     @SuppressWarnings("unchecked")
     List<String> readyKeys =
         (List<String>)
@@ -3679,7 +3723,12 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(1, readyKeys.size());
     assertTrue(
-        readyKeys.get(0).contains("/reconcile/jobs/ready/by-pinned-executor/remote-executor/"));
+        readyKeys
+            .get(0)
+            .startsWith(
+                Keys.reconcileReadyByPinnedExecutorPointerPrefix(
+                    workerAffinity.indexFilterValue("remote-executor"))));
+    assertEquals("remote-executor", queued.pinnedExecutorId());
 
     var otherExecutorLease =
         store.leaseNext(
@@ -7498,19 +7547,24 @@ class DurableReconcileJobStoreTest {
   }
 
   private boolean findAndDeleteReadyEntry(StoredReconcileJob record, String readyPointerKey) {
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     List<ReconcileReadyQueueBackend.ReadyQueueSlice> slices =
         List.of(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
-                record.executionPolicy().executionClass().name()),
+                workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, record.laneKey),
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                workerAffinity.indexFilterValue(record.laneKey)),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, record.pinnedExecutorId()),
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+                workerAffinity.indexFilterValue(record.pinnedExecutorId())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, record.jobKind().name()));
+                ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+                workerAffinity.indexFilterValue(record.jobKind().name())));
     for (ReconcileReadyQueueBackend.ReadyQueueSlice slice : slices) {
       var page = store.readyQueueBackend.scanReadySlice(slice, 100, "", null);
       for (var entry : page.entries()) {

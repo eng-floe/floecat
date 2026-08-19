@@ -31,6 +31,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -65,6 +66,7 @@ public class ReconcileJobEnqueuer {
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
   private Function<StoredReconcileJob, List<String>> statePointerKeys;
   private ReadyPointerKeyForDue readyPointerKeyForDue;
+  private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
 
   @FunctionalInterface
   public interface ReadyPointerKeyForDue {
@@ -80,7 +82,8 @@ public class ReconcileJobEnqueuer {
       Function<ReconcileSnapshotTask, SnapshotPlanBlob> materializeSnapshotPlan,
       Function<StoredReconcileJob, List<String>> readyPointerKeys,
       Function<StoredReconcileJob, List<String>> statePointerKeys,
-      ReadyPointerKeyForDue readyPointerKeyForDue) {
+      ReadyPointerKeyForDue readyPointerKeyForDue,
+      ReconcileWorkerAffinity workerAffinity) {
     this.blobStore = blobStore;
     this.payloadStore = payloadStore;
     this.projector = projector;
@@ -90,6 +93,8 @@ public class ReconcileJobEnqueuer {
     this.readyPointerKeys = readyPointerKeys;
     this.statePointerKeys = statePointerKeys;
     this.readyPointerKeyForDue = readyPointerKeyForDue;
+    this.workerAffinity =
+        workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
   }
 
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
@@ -321,7 +326,10 @@ public class ReconcileJobEnqueuer {
             effectiveSnapshotTask,
             spec.captureMode == CaptureMode.CAPTURE_ONLY);
     ReconcileExecutionPolicy policy =
-        spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
+        workerAffinity.applyTo(
+            spec.executionPolicy == null
+                ? ReconcileExecutionPolicy.defaults()
+                : spec.executionPolicy);
     String laneKey =
         laneKey(
             spec.connectorId,
