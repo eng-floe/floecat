@@ -235,7 +235,7 @@ final class ViewCliSupport {
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
     if (CliUtils.looksLikeUuid(u)) {
-      return rid(u, ResourceKind.RK_OVERLAY, getCurrentAccountId);
+      return rid(u, ResourceKind.RK_VIEW, getCurrentAccountId);
     }
     NameRef ref = NameRefUtil.nameRefForTable(tok);
     return directory

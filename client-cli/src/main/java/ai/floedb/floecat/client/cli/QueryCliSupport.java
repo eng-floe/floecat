@@ -715,7 +715,7 @@ final class QueryCliSupport {
     }
     return ResourceId.newBuilder()
         .setAccountId(accountId)
-        .setKind(ResourceKind.RK_OVERLAY)
+        .setKind(ResourceKind.RK_VIEW)
         .setId(id)
         .build();
   }

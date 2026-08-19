@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DataFileBatch;
@@ -371,6 +372,27 @@ class QueryCliSupportTest {
     }
   }
 
+  @Test
+  void queryBeginWithViewIdUsesViewResourceKind() throws Exception {
+    try (Harness h = new Harness()) {
+      QueryCliSupport.handle(
+          "query",
+          List.of("begin", "view-id", "view-uuid-1"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.queriesStub,
+          h.queryScanStub,
+          h.querySchemaStub,
+          h.directoryStub,
+          () -> CATALOG_NAME,
+          () -> ACCOUNT_ID);
+
+      ResourceId viewId = h.querySchemaService.lastDescribeInputsRequest.getInputs(0).getViewId();
+      assertEquals("view-uuid-1", viewId.getId());
+      assertEquals(ACCOUNT_ID, viewId.getAccountId());
+      assertEquals(ResourceKind.RK_VIEW, viewId.getKind());
+    }
+  }
+
   // --- test infrastructure ---
 
   private static final class Harness implements AutoCloseable {
@@ -520,11 +542,13 @@ class QueryCliSupportTest {
       extends QuerySchemaServiceGrpc.QuerySchemaServiceImplBase {
 
     final AtomicInteger describeInputsCalls = new AtomicInteger();
+    DescribeInputsRequest lastDescribeInputsRequest;
 
     @Override
     public void describeInputs(
         DescribeInputsRequest request, StreamObserver<DescribeInputsResponse> responseObserver) {
       describeInputsCalls.incrementAndGet();
+      lastDescribeInputsRequest = request;
       responseObserver.onNext(DescribeInputsResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
