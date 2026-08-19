@@ -529,6 +529,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Reconciler deployment modes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reconciler-versioned-rollout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciler versioned rollout
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1729,6 +1744,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Reconciler deployment modes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reconciler-versioned-rollout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciler versioned rollout
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1868,6 +1898,7 @@ summary maintenance is best-effort observability only and does not participate i
 correctness.</p>
 <p>Key reconciler mode flags live in <code>service/src/main/resources/application.properties</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.worker.mode</span>
+<span class="na">floecat.reconciler.worker-affinity</span>
 <span class="na">reconciler.max-parallelism</span>
 <span class="na">floecat.reconciler.executor.remote-planner.enabled</span>
 <span class="na">floecat.reconciler.executor.remote-default.enabled</span>
@@ -1895,6 +1926,17 @@ correctness.</p>
 <li>Control-plane-specific setting: <code>reconciler.max-parallelism=0</code></li>
 <li>Executor-plane-specific setting: <code>floecat.reconciler.worker.mode=remote</code></li>
 </ul>
+<h4 id="reconciler-versioned-rollout">Reconciler versioned rollout<a class="headerlink" href="#reconciler-versioned-rollout" title="Permanent link">&para;</a></h4>
+<p>Set <code>floecat.reconciler.worker-affinity</code> to the job-tree contract version, currently
+<code>reconciler-v1</code>, on both the control plane and every executor routed to it. Lease requests require
+an exact match; blank or mismatched workers are rejected. Different affinities can share the same
+durable blob/kv backend because filtered ready indexes, including pinned-executor indexes, are
+partitioned by affinity, but their worker-control endpoints must remain separately routed.</p>
+<p>For an upgrade from an unversioned deployment, keep the old control plane and workers running to
+drain their unversioned job trees. Start the new control plane and workers with the new matching
+affinity, route each worker fleet only to its matching control plane, and retire the old deployment
+after its active trees have drained. A new deployment does not adopt, migrate, or lease the old
+cohort's jobs.</p>
 <p>Worker gRPC auth boundary:</p>
 <ul>
 <li>Remote reconcile workers authenticate to <code>ReconcileExecutorControl</code> with an explicit bearer

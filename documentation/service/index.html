@@ -2202,6 +2202,10 @@ rows upserted after all batches have been consumed.</p>
 <td>Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention.</td>
 </tr>
 <tr>
+<td><code>floecat.reconciler.worker-affinity</code></td>
+<td>Exact job-tree contract cohort shared by a control plane and its executor fleet (default <code>reconciler-v1</code>).</td>
+</tr>
+<tr>
 <td><code>floecat.reconciler.job-store.*</code></td>
 <td>Durable reconcile queue selection and retry/lease tuning.</td>
 </tr>
