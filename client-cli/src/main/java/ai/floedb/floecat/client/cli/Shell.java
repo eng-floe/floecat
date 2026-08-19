@@ -703,6 +703,7 @@ public class Shell implements Runnable {
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
+    storageAuthorities = StorageAuthoritiesGrpc.newBlockingStub(overrideChannel);
   }
 
   static GrpcEndpointOverride resolveGrpcEndpointOverride(
