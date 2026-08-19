@@ -2048,7 +2048,7 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
   <code>service/metagraph/overlay/user/UserGraph.java</code>) composes the helpers above, exposes the public API,
   and keeps a <code>CatalogGraphView</code>-friendly view via <code>MetaGraph</code>. <code>SystemGraph</code> (in
   <code>overlay/systemobjects/SystemGraph.java</code>) consumes <code>SystemNodeRegistry</code> snapshots so pg_catalog-style
-  system tables/views merge with the user metadata when callers go through the overlay.</li>
+  system tables/views merge with the user metadata when callers go through the composite graph view.</li>
 </ul>
 <h2 id="node-model">Node Model<a class="headerlink" href="#node-model" title="Permanent link">&para;</a></h2>
 <p>Nodes live under <code>core/metagraph/model</code> and each implements <code>GraphNode</code>. They are Java records with
