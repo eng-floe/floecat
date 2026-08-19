@@ -8,10 +8,18 @@ compatibility.
 
 ### Remote executor versioning
 
-Snapshot plans now require one immutable file execution plan for every declared file path. Remote
-planner/finalizer executors and the control plane must therefore be cut over together after existing
-leases are drained. Rolling or split deployments containing both plan revisions are unsupported;
-there is intentionally no empty-plan compatibility fallback.
+`LeaseReconcileJobRequest.worker_affinity` identifies the job-tree contract implemented by a
+worker. It must exactly match the control plane's configured
+`floecat.reconciler.worker-affinity`; blank and mismatched values are rejected. The control plane
+echoes the owning affinity in `LeasedReconcileJob.worker_affinity`, and workers must reject a lease
+whose value differs from their own.
+
+Different affinities may share the same durable backend because ready-index slices, including
+pinned-executor slices, are affinity-qualified. They must not share worker routing: executors must
+connect only to a control plane with the same affinity. During an upgrade, keep the old deployment
+running until its job trees drain while the new deployment writes and executes its own cohort.
+Snapshot plans require one immutable file execution plan for every declared file path, so planner,
+executor, and finalizer implementations within one cohort must implement the same contract.
 
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
 `connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live

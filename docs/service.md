@@ -219,6 +219,7 @@ Notable `application.properties` keys:
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `floecat.gc.reconcile-jobs.*` | Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention. |
+| `floecat.reconciler.worker-affinity` | Exact job-tree contract cohort shared by a control plane and its executor fleet (default `reconciler-v1`). |
 | `floecat.reconciler.job-store.*` | Durable reconcile queue selection and retry/lease tuning. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |

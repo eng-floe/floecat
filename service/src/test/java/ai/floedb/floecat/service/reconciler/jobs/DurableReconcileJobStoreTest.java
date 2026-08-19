@@ -3713,6 +3713,8 @@ class DurableReconcileJobStoreTest {
             "remote-executor");
 
     StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
     @SuppressWarnings("unchecked")
     List<String> readyKeys =
         (List<String>)
@@ -3721,7 +3723,12 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(1, readyKeys.size());
     assertTrue(
-        readyKeys.get(0).contains("/reconcile/jobs/ready/by-pinned-executor/remote-executor/"));
+        readyKeys
+            .get(0)
+            .startsWith(
+                Keys.reconcileReadyByPinnedExecutorPointerPrefix(
+                    workerAffinity.indexFilterValue("remote-executor"))));
+    assertEquals("remote-executor", queued.pinnedExecutorId());
 
     var otherExecutorLease =
         store.leaseNext(
@@ -7553,7 +7560,8 @@ class DurableReconcileJobStoreTest {
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
                 workerAffinity.indexFilterValue(record.laneKey)),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, record.pinnedExecutorId()),
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+                workerAffinity.indexFilterValue(record.pinnedExecutorId())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
                 workerAffinity.indexFilterValue(record.jobKind().name())));

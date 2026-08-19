@@ -78,6 +78,7 @@ Relevant shared settings:
 
 ```properties
 floecat.reconciler.job-store=durable
+floecat.reconciler.worker-affinity=reconciler-v1
 floecat.reconciler.authorization.header=authorization
 floecat.reconciler.oidc.issuer=https://<issuer>/realms/<realm>
 floecat.reconciler.oidc.client-id=<reconcile-worker-client-id>
@@ -95,6 +96,20 @@ The worker participates only in the lease-coordination domain. Canonical reconci
 owned by control-plane job-state transitions, and remote workers should not assume reads or
 maintenance will repair queue drift for them.
 
+## Job-Tree Versioning
+
+The Rust worker must be configured with the same job-tree contract affinity as its control plane.
+Set `LeaseReconcileJobRequest.worker_affinity` on every lease request and require the returned
+`LeasedReconcileJob.worker_affinity` to match before starting work. The control plane rejects blank
+or mismatched affinities with `FAILED_PRECONDITION` and checks the owning job affinity again on
+lease-bound RPCs.
+
+Affinity versions the job-tree contract, not an individual build. Workers and control planes that
+can safely process the same job trees should use the same value. A breaking tree or payload change
+requires a new value and a separately routed control-plane/worker deployment. During an upgrade,
+leave the old deployment running until its cohort drains; do not route an unversioned worker to a
+`reconciler-v1` control plane.
+
 ## Worker Identity and Leasing
 The lease request supports:
 
@@ -103,12 +118,14 @@ The lease request supports:
 - job kinds
 - `executor_id`
 - repeated `executor_ids`
+- `worker_affinity`
 
 For a Rust file-group worker, use:
 
 - `job_kinds = [RJK_EXEC_FILE_GROUP]`
 - `executor_id = <stable worker instance id>`
 - `executor_ids` containing the executor implementations this process can satisfy
+- `worker_affinity` set to the worker's configured job-tree contract version
 
 The current Java poller advertises local executor ids so pinned jobs can route to compatible
 workers. A Rust fleet should do the same if you intend to use pinned executor routing.

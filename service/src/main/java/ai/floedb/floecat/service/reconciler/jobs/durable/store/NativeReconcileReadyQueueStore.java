@@ -330,6 +330,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         request.executorIds.stream()
             .map(NativeReconcileReadyQueueStore::blankToEmpty)
             .filter(executorId -> !executorId.isBlank())
+            .map(request.workerAffinity::indexFilterValue)
             .sorted()
             .toList();
     if (executorIds.isEmpty()) {
@@ -497,7 +498,10 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           candidate
               .filterValue()
               .equals(workerAffinity.indexFilterValue(blankToEmpty(record.laneKey)));
-      case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
+      case PINNED_EXECUTOR ->
+          candidate
+              .filterValue()
+              .equals(workerAffinity.indexFilterValue(record.pinnedExecutorId()));
       case JOB_KIND ->
           candidate.filterValue().equals(workerAffinity.indexFilterValue(record.jobKind().name()));
     };

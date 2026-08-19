@@ -89,6 +89,8 @@ public final class ReadyQueueKeys {
       return List.of();
     }
     List<String> keys = new ArrayList<>();
+    ReconcileWorkerAffinity workerAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     String pinnedExecutorId = record.pinnedExecutorId();
     if (!blank(pinnedExecutorId)) {
       String pinnedExecutorKey =
@@ -96,13 +98,11 @@ public final class ReadyQueueKeys {
               record,
               ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
               dueAtMs,
-              pinnedExecutorId);
+              workerAffinity.indexFilterValue(pinnedExecutorId));
       return pinnedExecutorKey.isBlank() ? List.of() : List.of(pinnedExecutorKey);
     }
     // A cohort keeps its own slice of each filtered index, so a shared queue does not force
     // every deployment's workers through one undifferentiated scan.
-    ReconcileWorkerAffinity workerAffinity =
-        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     keys.add(readyPointerKeyFor(record, dueAtMs));
     String executionClassKey =
         readyPointerKeyFor(

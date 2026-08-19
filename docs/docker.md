@@ -110,6 +110,10 @@ Notes:
   connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
   the control-plane RPCs. No executor leader election is required.
 - Both services must share the same blob/kv backend configuration.
+- The control plane and its executor replicas must set the same
+  `FLOECAT_RECONCILER_WORKER_AFFINITY` (default `reconciler-v1`). Blank or mismatched executors are
+  rejected. During a versioned rollout, route old and new executor fleets only to their matching
+  control planes and keep the old deployment running until its job trees drain.
 - The durable reconcile store is split into native job-index, ready-queue, lease, and projection
   domains. Control-plane job-state transitions own job-index and ready mutations. Executor replicas
   only participate in lease coordination; they do not repair or rebuild queue indexes on reads.
@@ -188,7 +192,8 @@ Common configuration knobs:
   non-default endpoints. Temporary vended credentials come from storage authorities.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
 - **Reconciler split deployment**:
-  `FLOECAT_RECONCILER_WORKER_MODE`, `FLOECAT_RECONCILER_MAX_PARALLELISM`,
+  `FLOECAT_RECONCILER_WORKER_MODE`, `FLOECAT_RECONCILER_WORKER_AFFINITY`,
+  `FLOECAT_RECONCILER_MAX_PARALLELISM`,
   `FLOECAT_RECONCILER_REMOTE_DEFAULT_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_PLANNER_EXECUTOR_ENABLED`,
   `FLOECAT_RECONCILER_REMOTE_SNAPSHOT_PLANNER_EXECUTOR_ENABLED`,

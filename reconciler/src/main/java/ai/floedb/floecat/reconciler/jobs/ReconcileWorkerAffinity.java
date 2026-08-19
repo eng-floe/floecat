@@ -90,7 +90,8 @@ public record ReconcileWorkerAffinity(String value) {
 
   /**
    * Qualifies a ready-index filter value with the owning cohort so each cohort scans its own slice
-   * of the execution-class, execution-lane and job-kind indexes instead of one shared slice.
+   * of the execution-class, execution-lane, pinned-executor and job-kind indexes instead of one
+   * shared slice.
    */
   public String indexFilterValue(String filterValue) {
     // Strip the separator from both halves so an operator-configured lane or cohort cannot compose

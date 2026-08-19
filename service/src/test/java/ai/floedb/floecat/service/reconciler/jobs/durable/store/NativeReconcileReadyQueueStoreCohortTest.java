@@ -110,6 +110,70 @@ class NativeReconcileReadyQueueStoreCohortTest {
     assertTrue(keys.get(0).contains("by-pinned-executor"));
   }
 
+  @Test
+  void cohortsGetDistinctPinnedSlicesForTheSameExecutor() {
+    NativeReconcileReadyQueueStore store = store();
+    StoredReconcileJob branch = record(ReconcileWorkerAffinity.of("ci-branch"));
+    StoredReconcileJob steady = record(ReconcileWorkerAffinity.of("steady-state"));
+    StoredReconcileJob unversioned = record(ReconcileWorkerAffinity.DISABLED);
+    branch.pinnedExecutorId = "executor-1";
+    steady.pinnedExecutorId = "executor-1";
+    unversioned.pinnedExecutorId = "executor-1";
+
+    String branchKey = store.readyPointerKeys(branch).getFirst();
+    String steadyKey = store.readyPointerKeys(steady).getFirst();
+    String unversionedKey = store.readyPointerKeys(unversioned).getFirst();
+
+    assertFalse(branchKey.equals(steadyKey));
+    assertFalse(branchKey.equals(unversionedKey));
+    assertEquals("executor-1", branch.pinnedExecutorId());
+  }
+
+  @Test
+  void pinnedPointerValidationRequiresTheCohortQualifiedExecutor() {
+    NativeReconcileReadyQueueStore store = store();
+    ReconcileWorkerAffinity affinity = ReconcileWorkerAffinity.of("ci-branch");
+    StoredReconcileJob record = record(affinity);
+    record.pinnedExecutorId = "executor-1";
+    String qualifiedExecutor = affinity.indexFilterValue(record.pinnedExecutorId());
+    String qualifiedKey =
+        store.readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+            DUE_AT_MS,
+            qualifiedExecutor);
+
+    assertTrue(
+        store.readyPointerMatchesRecord(
+            new ReconcileReadyQueueStore.ReadyQueueEntry(
+                qualifiedKey,
+                "canonical-1",
+                record.accountId,
+                record.jobId,
+                DUE_AT_MS,
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+                qualifiedExecutor),
+            record));
+
+    String rawKey =
+        store.readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+            DUE_AT_MS,
+            record.pinnedExecutorId());
+    assertFalse(
+        store.readyPointerMatchesRecord(
+            new ReconcileReadyQueueStore.ReadyQueueEntry(
+                rawKey,
+                "canonical-1",
+                record.accountId,
+                record.jobId,
+                DUE_AT_MS,
+                ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+                record.pinnedExecutorId()),
+            record));
+  }
+
   private static String onlyMatching(List<String> keys, String fragment) {
     return keys.stream().filter(key -> key.contains(fragment)).findFirst().orElseThrow();
   }
