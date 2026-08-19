@@ -60,13 +60,7 @@ class StorageAuthorityResolverTest {
 
   @Test
   void buildResponseAllowsStaticAwsSecretsForServerSideAccess() {
-    ResolveStorageAuthorityResponse response =
-        resolver.buildResponse(
-            authority(),
-            "s3://warehouse/orders",
-            java.util.List.of("s3://warehouse/orders"),
-            "acct",
-            true);
+    ResolveStorageAuthorityResponse response = resolver.buildResponse(authority(), "acct", true);
 
     assertEquals("us-east-1", response.getClientSafeConfigMap().get("s3.region"));
     assertEquals(1, response.getStorageCredentialsCount());
@@ -107,12 +101,7 @@ class StorageAuthorityResolverTest {
         };
 
     ResolveStorageAuthorityResponse response =
-        resolverWithSessionToken.buildResponse(
-            authority(),
-            "s3://warehouse/orders",
-            java.util.List.of("s3://warehouse/orders"),
-            "acct",
-            true);
+        resolverWithSessionToken.buildResponse(authority(), "acct", true);
 
     assertEquals("akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
     assertEquals(
@@ -131,13 +120,7 @@ class StorageAuthorityResolverTest {
     var error =
         assertThrows(
             io.grpc.StatusRuntimeException.class,
-            () ->
-                resolver.buildResponse(
-                    null,
-                    "s3://warehouse/orders",
-                    java.util.List.of("s3://warehouse/orders"),
-                    "acct",
-                    false));
+            () -> resolver.buildResponse(null, "acct", false));
     assertTrue(
         ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
             .isNoMatchingStorageAuthority(error),
@@ -148,27 +131,13 @@ class StorageAuthorityResolverTest {
   void buildResponseForServerSideNoAuthorityFails() {
     var error =
         assertThrows(
-            io.grpc.StatusRuntimeException.class,
-            () ->
-                resolver.buildResponse(
-                    null,
-                    "s3://warehouse/orders",
-                    java.util.List.of("s3://warehouse/orders"),
-                    "acct",
-                    true));
+            io.grpc.StatusRuntimeException.class, () -> resolver.buildResponse(null, "acct", true));
   }
 
   @Test
   void buildResponseRejectsStaticAwsSecretsForClientVending() {
     assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                authority(),
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                false));
+        IllegalArgumentException.class, () -> resolver.buildResponse(authority(), "acct", false));
   }
 
   @Test
@@ -177,10 +146,7 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -206,8 +172,6 @@ class StorageAuthorityResolverTest {
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
                 .build(),
-            "s3://warehouse/orders",
-            java.util.List.of("s3://warehouse/orders"),
             "acct",
             true);
 
@@ -221,16 +185,13 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
-  void buildResponseReusesFreshAssumeRoleCredentialsForMatchingScope() {
+  void buildResponseReusesFreshAssumeRoleCredentialsForMatchingAuthority() {
     AtomicInteger resolutions = new AtomicInteger();
     StorageAuthorityResolver assumeRoleResolver =
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
             resolutions.incrementAndGet();
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
@@ -242,92 +203,10 @@ class StorageAuthorityResolverTest {
             .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
             .build();
 
-    assumeRoleResolver.buildResponse(
-        authority,
-        "s3://warehouse/orders",
-        java.util.List.of("s3://warehouse/orders"),
-        "acct",
-        true);
-    assumeRoleResolver.buildResponse(
-        authority,
-        "s3://warehouse/orders",
-        java.util.List.of("s3://warehouse/orders"),
-        "acct",
-        true);
+    assumeRoleResolver.buildResponse(authority, "acct", true);
+    assumeRoleResolver.buildResponse(authority, "acct", true);
 
     assertEquals(1, resolutions.get());
-  }
-
-  @Test
-  void assumeRoleCacheCanonicalizesEquivalentScopeSets() {
-    AtomicInteger resolutions = new AtomicInteger();
-    StorageAuthorityResolver assumeRoleResolver =
-        new StorageAuthorityResolver() {
-          @Override
-          ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
-            resolutions.incrementAndGet();
-            return new ResolvedStorageCredentials(
-                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
-          }
-        };
-    StorageAuthority authority =
-        authority().toBuilder()
-            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
-            .build();
-    AuthCredentials source =
-        AuthCredentials.newBuilder()
-            .setAws(
-                AuthCredentials.AwsCredentials.newBuilder()
-                    .setAccessKeyId("akid")
-                    .setSecretAccessKey("secret"))
-            .build();
-
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"), false);
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"), false);
-
-    assertEquals(1, resolutions.get());
-  }
-
-  @Test
-  void assumeRoleCacheSeparatesPrefixAndExactObjectScopes() {
-    AtomicInteger resolutions = new AtomicInteger();
-    StorageAuthorityResolver assumeRoleResolver =
-        new StorageAuthorityResolver() {
-          @Override
-          ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
-            resolutions.incrementAndGet();
-            return new ResolvedStorageCredentials(
-                "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
-          }
-        };
-    StorageAuthority authority =
-        authority().toBuilder()
-            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
-            .build();
-    AuthCredentials source =
-        AuthCredentials.newBuilder()
-            .setAws(
-                AuthCredentials.AwsCredentials.newBuilder()
-                    .setAccessKeyId("akid")
-                    .setSecretAccessKey("secret"))
-            .build();
-
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/orders"), false);
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/orders"), true);
-
-    assertEquals(2, resolutions.get());
   }
 
   @Test
@@ -337,10 +216,7 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
             resolutions.incrementAndGet();
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.now().plusSeconds(3600));
@@ -373,18 +249,13 @@ class StorageAuthorityResolverTest {
             .putHeaders("x-one", "a")
             .build();
 
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, forward, java.util.List.of("s3://warehouse/one"), false);
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, reversed, java.util.List.of("s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(authority, forward);
+    assumeRoleResolver.assumeRoleCredentials(authority, reversed);
 
     assertEquals(1, resolutions.get());
 
     assumeRoleResolver.assumeRoleCredentials(
-        authority,
-        base.clone().putProperties("alpha", "changed").build(),
-        java.util.List.of("s3://warehouse/one"),
-        false);
+        authority, base.clone().putProperties("alpha", "changed").build());
 
     assertEquals(2, resolutions.get());
   }
@@ -396,10 +267,7 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver(2) {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
             int resolution = resolutions.incrementAndGet();
             return new ResolvedStorageCredentials(
                 "temp-akid-" + resolution,
@@ -420,16 +288,13 @@ class StorageAuthorityResolverTest {
                     .setSecretAccessKey("secret"))
             .build();
 
+    assumeRoleResolver.assumeRoleCredentials(withLocation(authority, "s3://warehouse/one"), source);
+    assumeRoleResolver.assumeRoleCredentials(withLocation(authority, "s3://warehouse/two"), source);
     assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/one"), false);
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/two"), false);
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/three"), false);
+        withLocation(authority, "s3://warehouse/three"), source);
 
     assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
-    assumeRoleResolver.assumeRoleCredentials(
-        authority, source, java.util.List.of("s3://warehouse/one"), false);
+    assumeRoleResolver.assumeRoleCredentials(withLocation(authority, "s3://warehouse/one"), source);
     assertEquals(4, resolutions.get());
     assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
   }
@@ -445,10 +310,7 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver(2) {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
             int resolution = resolutions.incrementAndGet();
             if (resolution <= 2) {
               firstTwoStarted.countDown();
@@ -488,18 +350,18 @@ class StorageAuthorityResolverTest {
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/one"), false));
+                      withLocation(authority, "s3://warehouse/one"), source));
       java.util.concurrent.Future<?> second =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/two"), false));
+                      withLocation(authority, "s3://warehouse/two"), source));
       assertTrue(firstTwoStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> third =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/three"), false));
+                      withLocation(authority, "s3://warehouse/three"), source));
 
       assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
       assertEquals(2, assumeRoleResolver.assumeRoleCacheSize());
@@ -526,11 +388,8 @@ class StorageAuthorityResolverTest {
         new StorageAuthorityResolver(2) {
           @Override
           ResolvedStorageCredentials assumeRoleFromStaticSource(
-              StorageAuthority authority,
-              AuthCredentials.AwsCredentials source,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
-            String location = sessionScopeLocations.getFirst();
+              StorageAuthority authority, AuthCredentials.AwsCredentials source) {
+            String location = authority.getLocationPrefix();
             java.util.concurrent.CountDownLatch release = null;
             if (location.endsWith("/one")) {
               firstStarted.countDown();
@@ -574,19 +433,19 @@ class StorageAuthorityResolverTest {
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/one"), false));
+                      withLocation(authority, "s3://warehouse/one"), source));
       assertTrue(firstStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> second =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/two"), false));
+                      withLocation(authority, "s3://warehouse/two"), source));
       assertTrue(secondStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
       java.util.concurrent.Future<?> third =
           executor.submit(
               () ->
                   assumeRoleResolver.assumeRoleCredentials(
-                      authority, source, java.util.List.of("s3://warehouse/three"), false));
+                      withLocation(authority, "s3://warehouse/three"), source));
 
       assertFalse(thirdStarted.await(200, java.util.concurrent.TimeUnit.MILLISECONDS));
       releaseSecond.countDown();
@@ -610,10 +469,7 @@ class StorageAuthorityResolverTest {
     StorageAuthorityResolver assumeRoleResolver =
         new StorageAuthorityResolver() {
           @Override
-          ResolvedStorageCredentials assumeRoleFromAmbientSource(
-              StorageAuthority authority,
-              java.util.List<String> sessionScopeLocations,
-              boolean exactObjectScope) {
+          ResolvedStorageCredentials assumeRoleFromAmbientSource(StorageAuthority authority) {
             return new ResolvedStorageCredentials(
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
@@ -625,8 +481,6 @@ class StorageAuthorityResolverTest {
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
                 .build(),
-            "s3://warehouse/orders",
-            java.util.List.of("s3://warehouse/orders"),
             "acct",
             true);
 
@@ -677,9 +531,7 @@ class StorageAuthorityResolverTest {
         assumeRoleResolver.assumeRoleFromAmbientSource(
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
-                .build(),
-            java.util.List.of("s3://warehouse/orders"),
-            false);
+                .build());
 
     assertEquals("temp-akid", credentials.accessKeyId());
     assertEquals(2, clientBuilds.get());
@@ -726,9 +578,7 @@ class StorageAuthorityResolverTest {
         assumeRoleResolver.assumeRoleFromAmbientSource(
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
-                .build(),
-            java.util.List.of("s3://warehouse/orders"),
-            false);
+                .build());
 
     assertEquals("temp-akid", credentials.accessKeyId());
     assertEquals(2, clientBuilds.get());
@@ -736,7 +586,7 @@ class StorageAuthorityResolverTest {
 
   @Test
   void scopedSessionPolicyOmitsEmptyListPrefixConditionForBucketRoot() {
-    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse");
+    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse/");
 
     assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse\"]"));
     assertFalse(policy.contains("\"s3:prefix\""));
@@ -744,95 +594,84 @@ class StorageAuthorityResolverTest {
   }
 
   @Test
-  void scopedSessionPolicyForExactObjectOmitsChildWildcard() {
-    String location = "s3://warehouse/orders/data/part-000.parquet";
-    String objectArn = "arn:aws:s3:::warehouse/orders/data/part-000.parquet";
+  void scopedSessionPolicyForAuthorityPrefixRestrictsListingAndObjects() throws Exception {
+    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse/warehouse/");
+    ObjectMapper mapper =
+        new ObjectMapper(
+            JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
 
-    String prefixPolicy = StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location));
-    // The default (prefix) scope grants the object and everything beneath its key.
-    assertTrue(prefixPolicy.contains("\"" + objectArn + "/*\""));
+    JsonNode root = mapper.readTree(policy);
 
-    String exactPolicy =
-        StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true);
-    // The exact-object scope grants the object itself and nothing beneath it -- no child wildcard
-    // on the object resource, and no child-prefix in the list condition.
-    assertTrue(exactPolicy.contains("\"" + objectArn + "\""));
-    assertFalse(exactPolicy.contains(objectArn + "/*"));
-    assertFalse(exactPolicy.contains("orders/data/part-000.parquet/*"));
+    assertEquals("2012-10-17", root.get("Version").asText());
+    assertEquals(2, root.get("Statement").size());
+    assertEquals("Allow", root.get("Statement").get(0).get("Effect").asText());
+    assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
+    assertTrue(policy.contains("\"s3:prefix\":[\"warehouse\",\"warehouse/*\"]"));
+    assertTrue(policy.contains("arn:aws:s3:::warehouse/warehouse/*"));
+    assertFalse(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse/*\"]"));
   }
 
   @Test
-  void exactObjectScopeRefusesKeysCarryingIamWildcardMetacharacters() {
-    // `*` and `?` are legal in an S3 object key and are wildcards in an IAM resource ARN, so a
-    // planned file named part-*.parquet would mint access to every sibling it matches -- the
-    // opposite of what an exact-object scope promises. IAM cannot express a literal `*`, so the
-    // only safe answer is refusal; widening the grant is not an acceptable fallback.
-    for (String key : java.util.List.of("part-*.parquet", "part-00?.parquet", "*")) {
-      String location = "s3://warehouse/orders/data/" + key;
-      assertThrows(
-          IllegalArgumentException.class,
-          () -> StorageAuthorityResolver.scopedSessionPolicy(java.util.List.of(location), true),
-          "expected refusal for key " + key);
+  void authorityPolicyCoversDeletionVectorSiblingBeneathAuthorityPrefix() {
+    String policy =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            "s3://floedb-databricks-metastore-367509577365/metastore/metastore-id/tables/");
+
+    assertTrue(
+        policy.contains(
+            "arn:aws:s3:::floedb-databricks-metastore-367509577365/metastore/metastore-id/tables/*"));
+    assertFalse(policy.contains("table-uuid"));
+  }
+
+  @Test
+  void invalidS3AuthorityLocationsCannotProduceAnUnscopedPolicy() {
+    for (String location :
+        new String[] {
+          null,
+          "",
+          " ",
+          "s3://",
+          "s3:///warehouse",
+          "not-an-s3-uri",
+          "s3://bad bucket",
+          "s3://warehouse/prefix*"
+        }) {
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> StorageAuthorityResolver.scopedSessionPolicy(location));
+      assertTrue(error.getMessage().contains("concrete bucket"));
+      if (location != null) {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> resolver.buildResponse(withLocation(authority(), location), "acct", true));
+      }
     }
   }
 
   @Test
-  void wildcardKeysStillAllowedForPrefixScopesWhichNeverPromisedASingleObject() {
-    // Only the exact-object contract is broken by a metacharacter. A prefix scope is broad by
-    // construction, so refusing here would reject working authority configurations for no gain.
-    String policy =
-        StorageAuthorityResolver.scopedSessionPolicy(
-            java.util.List.of("s3://warehouse/orders/data/part-*.parquet"));
-    assertTrue(policy.contains("arn:aws:s3:::warehouse/orders/data/part-*.parquet"));
+  void resolveBestSelectsTheLongestMatchingEnabledAuthority() {
+    StorageAuthority bucket = withLocation(authority(), "s3://warehouse/");
+    StorageAuthority warehouse =
+        withLocation(authority(), "s3://warehouse/warehouse/").toBuilder()
+            .setResourceId(authority().getResourceId().toBuilder().setId("sa-2"))
+            .build();
+    StorageAuthority disabledNarrower =
+        withLocation(authority(), "s3://warehouse/warehouse/orders/").toBuilder()
+            .setResourceId(authority().getResourceId().toBuilder().setId("sa-3"))
+            .setEnabled(false)
+            .build();
+
+    Optional<StorageAuthority> resolved =
+        StorageAuthorityResolver.resolveBest(
+            java.util.List.of(bucket, disabledNarrower, warehouse),
+            "s3://warehouse/warehouse/orders/data.parquet");
+
+    assertEquals(warehouse, resolved.orElseThrow());
   }
 
-  @Test
-  void scopedSessionPolicyForNonRootParsesAsValidJson() throws Exception {
-    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse/orders");
-    ObjectMapper mapper =
-        new ObjectMapper(
-            JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
-
-    JsonNode root = mapper.readTree(policy);
-
-    assertEquals("2012-10-17", root.get("Version").asText());
-    assertEquals(2, root.get("Statement").size());
-    assertEquals("Allow", root.get("Statement").get(0).get("Effect").asText());
-    assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
-  }
-
-  @Test
-  void scopedSessionPolicyForMultipleFilePathsParsesAsValidJson() throws Exception {
-    String policy =
-        StorageAuthorityResolver.scopedSessionPolicy(
-            java.util.List.of(
-                "s3://warehouse/orders/data/part-000.parquet",
-                "s3://warehouse/orders/data/part-001.parquet",
-                "s3://warehouse/orders/metadata/delete-000.parquet"));
-    ObjectMapper mapper =
-        new ObjectMapper(
-            JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
-
-    JsonNode root = mapper.readTree(policy);
-
-    assertEquals("2012-10-17", root.get("Version").asText());
-    assertEquals(2, root.get("Statement").size());
-    assertEquals("Allow", root.get("Statement").get(0).get("Effect").asText());
-    assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
-    assertTrue(policy.contains("part-000.parquet"));
-    assertTrue(policy.contains("delete-000.parquet"));
-  }
-
-  @Test
-  void scopedSessionPolicyCanonicalizesScopeOrderAndSchemes() {
-    String first =
-        StorageAuthorityResolver.scopedSessionPolicy(
-            java.util.List.of("s3://warehouse/two/", "s3://warehouse/one"));
-    String second =
-        StorageAuthorityResolver.scopedSessionPolicy(
-            java.util.List.of("S3A://WAREHOUSE/one/", "s3n://warehouse/two"));
-
-    assertEquals(first, second);
+  private static StorageAuthority withLocation(StorageAuthority authority, String locationPrefix) {
+    return authority.toBuilder().setLocationPrefix(locationPrefix).build();
   }
 
   private static StorageAuthority authority() {
