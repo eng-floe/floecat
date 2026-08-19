@@ -3061,7 +3061,9 @@ class UserObjectBundleServiceTest {
         "test");
   }
 
-  /** Fails when a graph view that opts out of concurrency is called away from its producer thread. */
+  /**
+   * Fails when a graph view that opts out of concurrency is called away from its producer thread.
+   */
   private static final class CallerThreadOnlyGraphView extends FakeCatalogGraphView {
     private final Thread producer;
     private final AtomicInteger callbackCount = new AtomicInteger();

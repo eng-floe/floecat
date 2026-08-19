@@ -110,7 +110,8 @@ class RelationBundleBuilderTest {
           .build();
 
   // A PinValidator that fails loudly if reached: these tests use TABLE-kind graph nodes (not
-  // UserTableNode), so buildRelation reads schema straight from the graph view and never validates a
+  // UserTableNode), so buildRelation reads schema straight from the graph view and never validates
+  // a
   // pin. Mirrors the test-only UserObjectBundleService constructor.
   private final PinValidator throwingPinValidator =
       new PinValidator(null, RootRepairRequests.disabled()) {

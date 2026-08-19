@@ -59,7 +59,8 @@ class TableIndexServiceImplTest {
             .setId("sys_index_table")
             .build();
 
-    when(svc.graphView.resolve(tableId)).thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     var request =

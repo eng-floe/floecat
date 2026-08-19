@@ -207,7 +207,8 @@ class TableStatisticsServiceImplTest {
             .setId("sys_stats_table")
             .build();
 
-    when(svc.graphView.resolve(tableId)).thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     var request =
@@ -240,7 +241,8 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.graphView.resolve(tableId)).thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(123L).build()));
@@ -286,7 +288,8 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.graphView.resolve(tableId)).thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(123L).build()));

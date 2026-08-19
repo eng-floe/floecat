@@ -199,15 +199,16 @@ public interface CatalogGraphView {
    * Whether independent resolution callbacks may run concurrently on this graph-view instance.
    *
    * <p>The default preserves compatibility for existing implementations whose lifecycle state may
-   * be tied to one request thread. Implementations backed by thread-safe services may opt in to concurrent
-   * resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code resolveName(s)}, and
-   * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread, together with
-   * graph-view schema/name callbacks used while assembling GetUserObjects relations ({@link
-   * #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId, EngineContext)}, and {@link
-   * #viewName(ResourceId, EngineContext)}). It does not change the caller-thread contract of
-   * separately injected stats, pin-validation, or engine-decoration collaborators. Implementations
-   * opting in must make the listed graph-view callbacks thread-safe and must not depend on custom
-   * caller-thread state that service context propagation does not capture.
+   * be tied to one request thread. Implementations backed by thread-safe services may opt in to
+   * concurrent resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code
+   * resolveName(s)}, and {@link #tablePinFor} callbacks to execute concurrently and off the caller
+   * thread, together with graph-view schema/name callbacks used while assembling GetUserObjects
+   * relations ({@link #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId,
+   * EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It does not change the
+   * caller-thread contract of separately injected stats, pin-validation, or engine-decoration
+   * collaborators. Implementations opting in must make the listed graph-view callbacks thread-safe
+   * and must not depend on custom caller-thread state that service context propagation does not
+   * capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;

@@ -92,7 +92,8 @@ class RelationResolutionMemoTest {
 
     assertThat(first).isEmpty();
     assertThat(second).isEmpty();
-    // A negative result is cached too: the graph view is not re-queried on the second miss-key lookup.
+    // A negative result is cached too: the graph view is not re-queried on the second miss-key
+    // lookup.
     assertThat(graphView.resolveNameCount(unknown)).isEqualTo(1);
     assertThat(memo.nameEntries()).isEqualTo(1);
 

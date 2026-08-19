@@ -486,20 +486,21 @@ public class QueryInputResolver {
   }
 
   /**
-   * Resolve the inputs and gather their plans in input order. When the graph view supports concurrent
-   * resolution the units fan out; otherwise MetadataFanout runs them serially on the caller thread.
-   * Tasks report to a thread-safe accumulator instead of the request's diagnostics (which is not
-   * guaranteed thread-safe); its per-key totals — snapshot-lookup calls and time, memo hits/misses
-   * — are flushed to the real diagnostics once resolution has joined. The result is the per-RPC
-   * aggregate of those counters, not a per-relation breakdown; the coarse phase timings are
-   * measured by the caller around this call regardless. Each input receives its own state view so
-   * mutable per-plan fields can never become shared task state; only immutable resolution context
-   * and the explicitly thread-safe single-flight memo, root tracker, and diagnostics accumulator
-   * are shared. Keep off-thread diagnostics to counters and durations only; the accumulator safely
-   * omits one-shot put/emit values that cannot be combined across inputs. The task timing keys are
-   * aggregate work time in the concurrent path, so they may exceed the enclosing wall-clock
-   * resolver phase; dashboards must not treat them as elapsed time. Gathering plans in input order
-   * keeps the caller's merge deterministic (first-touch-wins, conflict detection).
+   * Resolve the inputs and gather their plans in input order. When the graph view supports
+   * concurrent resolution the units fan out; otherwise MetadataFanout runs them serially on the
+   * caller thread. Tasks report to a thread-safe accumulator instead of the request's diagnostics
+   * (which is not guaranteed thread-safe); its per-key totals — snapshot-lookup calls and time,
+   * memo hits/misses — are flushed to the real diagnostics once resolution has joined. The result
+   * is the per-RPC aggregate of those counters, not a per-relation breakdown; the coarse phase
+   * timings are measured by the caller around this call regardless. Each input receives its own
+   * state view so mutable per-plan fields can never become shared task state; only immutable
+   * resolution context and the explicitly thread-safe single-flight memo, root tracker, and
+   * diagnostics accumulator are shared. Keep off-thread diagnostics to counters and durations only;
+   * the accumulator safely omits one-shot put/emit values that cannot be combined across inputs.
+   * The task timing keys are aggregate work time in the concurrent path, so they may exceed the
+   * enclosing wall-clock resolver phase; dashboards must not treat them as elapsed time. Gathering
+   * plans in input order keeps the caller's merge deterministic (first-touch-wins, conflict
+   * detection).
    */
   private void planInputs(
       ResolutionState state,

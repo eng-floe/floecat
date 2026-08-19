@@ -869,7 +869,8 @@ class TransactionIntentApplierSupportTest {
    * graph view, so tests must supply one.)
    */
   private static ai.floedb.floecat.scanner.spi.CatalogGraphView permissiveGraphView() {
-    // Permit-all graph view: resolves any catalog/namespace/table id as a writable user object so the
+    // Permit-all graph view: resolves any catalog/namespace/table id as a writable user object so
+    // the
     // apply-time write-eligibility guard passes and each test exercises its actual pointer/claim
     // assertion. (The guard now fails closed on a null graph view, so tests must supply one.) The
     // synthesized namespace reports catalog "cat-1" to satisfy requireNamespaceInCatalog, matching

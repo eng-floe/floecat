@@ -230,7 +230,9 @@ class QueryPinCommitterTest {
         table,
         node,
         selectedInput,
-        graphView.tableName(table).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView
+            .tableName(table)
+            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static QueryInput selected(ResourceId table, long snapshotId) {

@@ -99,9 +99,9 @@ public final class CatalogSurfaceWritePolicy {
   /**
    * Delete-path guard for catalogs. Rejects system catalogs (immutable) but, unlike {@link
    * #requireWritableCatalog}, does <b>not</b> require the catalog to currently resolve through the
-   * graph view: an unresolved target is left for the repository fallback, which deletes idempotently
-   * (and enforces any caller precondition). System catalogs are identified purely by id, so no
-   * graph-view lookup is needed here.
+   * graph view: an unresolved target is left for the repository fallback, which deletes
+   * idempotently (and enforces any caller precondition). System catalogs are identified purely by
+   * id, so no graph-view lookup is needed here.
    */
   public void requireDeletableCatalog(ResourceId catalogId, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);

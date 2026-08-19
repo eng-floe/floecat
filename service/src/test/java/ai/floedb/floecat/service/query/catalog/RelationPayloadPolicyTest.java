@@ -108,7 +108,9 @@ class RelationPayloadPolicyTest {
         TABLE,
         node,
         QueryInput.newBuilder().setTableId(TABLE).build(),
-        graphView.tableName(TABLE).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView
+            .tableName(TABLE)
+            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static QueryContext pinnedWith(TablePin pin) {
