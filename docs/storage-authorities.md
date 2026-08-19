@@ -13,6 +13,13 @@ Storage authorities are generic storage infrastructure, not Iceberg-specific. Ic
 credential vending is one consumer of this layer, but the same model also applies to server-side
 Floecat workflows such as reconciliation and register/import flows that need to reach S3.
 
+For authority-backed vending, the selected authority's `location-prefix` is both the inline STS
+session-policy boundary and the prefix returned with the credential. A reconcile lease or table
+location authorizes whether credentials may be vended, but does not narrow the resulting session
+below the authority prefix. A bucket-root authority therefore vends read access across that bucket;
+a narrower authority vends read access only at and beneath its configured prefix. The assumed
+role's base IAM policy is still intersected with this session policy.
+
 Storage authorities are separate from connector auth:
 
 - connector auth is how Floecat reaches upstream catalogs or services such as Glue, Unity Catalog,
@@ -107,6 +114,10 @@ storage access and the table location matches an authority prefix.
 Use one storage authority per bucket or per major prefix boundary when you want clean separation of
 permissions and easy auditability.
 
+This is also a security boundary. A caller authorized to vend for one location receives credentials
+covering the full selected authority prefix. Use separate, narrower authorities when tables or
+workloads within one bucket must not share the same vended credential scope.
+
 ### Cross-Account Read-Only Access
 
 For a production bucket in another AWS account:
@@ -122,6 +133,8 @@ both.
 ## Common Failure Modes
 
 - prefix mismatch: the requested table location does not match any configured `location-prefix`
+- invalid authority: S3 authorities require `type=s3` and a concrete S3 bucket; blank, malformed,
+  bucketless, wildcard-containing, and otherwise invalid prefixes are rejected
 - missing trust policy: Floecat can resolve the authority but cannot assume the target role
 - missing S3 permissions: temporary credentials are minted but the bucket or prefix access is too narrow
 - auth confusion: connector auth is configured correctly, but no storage authority exists for the

@@ -233,6 +233,47 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void updateRejectsNonConcreteS3AuthorityLocation() {
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateStorageAuthority(
+                        UpdateStorageAuthorityRequest.newBuilder()
+                            .setAuthorityId(AUTHORITY_ID)
+                            .setSpec(StorageAuthoritySpec.newBuilder().setLocationPrefix("s3://"))
+                            .setUpdateMask(
+                                FieldMask.newBuilder().addPaths("location_prefix").build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(repo, never()).update(any(StorageAuthority.class), anyLong());
+  }
+
+  @Test
+  void updateRejectsUnsupportedAuthorityType() {
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateStorageAuthority(
+                        UpdateStorageAuthorityRequest.newBuilder()
+                            .setAuthorityId(AUTHORITY_ID)
+                            .setSpec(StorageAuthoritySpec.newBuilder().setType("gcs"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("type").build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(repo, never()).update(any(StorageAuthority.class), anyLong());
+  }
+
+  @Test
   void deleteScopesAuthorityIdToPrincipalAccount() {
     service
         .deleteStorageAuthority(
@@ -318,6 +359,55 @@ class StorageAuthorityServiceImplTest {
             .indefinitely();
 
     assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+    assertEquals(
+        "s3://floedb-databricks-metastore-367509577365",
+        response.getStorageCredentials(0).getPrefix());
+  }
+
+  @Test
+  void twoTablesCoveredByOneAuthorityUseOneAuthorityScopedCredential() {
+    ResourceId customersTableId = TABLE_ID.toBuilder().setId("tbl-2").build();
+    StorageAuthority bucketAuthority =
+        currentAuthority().toBuilder()
+            .setLocationPrefix("s3://warehouse/")
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(bucketAuthority));
+    when(tableRepo.getById(customersTableId))
+        .thenReturn(
+            Optional.of(
+                ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+                    .setResourceId(customersTableId)
+                    .putProperties("location", "s3://warehouse/customers")
+                    .build()));
+    java.util.List<String> policies = new java.util.ArrayList<>();
+    service.resolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials
+              assumeRoleFromStaticSource(
+                  StorageAuthority authority, AuthCredentials.AwsCredentials source) {
+            policies.add(
+                StorageAuthorityResolver.scopedSessionPolicy(authority.getLocationPrefix()));
+            return new ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials(
+                "temp-akid",
+                "temp-secret",
+                "temp-token",
+                java.time.Instant.now().plusSeconds(3600));
+          }
+        };
+    service.resolver.secretsManager = secretsManager;
+
+    ResolveStorageAuthorityResponse orders = vendServerCredentialsForTable(TABLE_ID);
+    ResolveStorageAuthorityResponse customers = vendServerCredentialsForTable(customersTableId);
+
+    assertEquals("s3://warehouse/", orders.getStorageCredentials(0).getPrefix());
+    assertEquals("s3://warehouse/", customers.getStorageCredentials(0).getPrefix());
+    assertEquals(1, policies.size(), "the authority-scoped cache must be shared across tables");
+    assertTrue(policies.getFirst().contains("arn:aws:s3:::warehouse/*"));
+    assertFalse(policies.getFirst().contains("orders"));
+    assertFalse(policies.getFirst().contains("customers"));
   }
 
   @Test
@@ -432,6 +522,68 @@ class StorageAuthorityServiceImplTest {
     verify(reconcileJobs).renewLease("job-1", "lease-1");
     verify(reconcileJobs).getLeaseView("job-1");
     assertEquals(AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void executionBoundRequestSelectsLongestAuthorityMatchingRequestedLocation() {
+    StorageAuthority dataAuthority =
+        currentAuthority().toBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setLocationPrefix("s3://warehouse/orders/data/")
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(currentAuthority(), dataAuthority));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+    assertEquals("s3://warehouse/orders/data/", response.getStorageCredentials(0).getPrefix());
+  }
+
+  @Test
+  void executionBoundParentRequestRemainsPinnedToLeasedTableLocation() {
+    StorageAuthority bucketAuthority =
+        currentAuthority().toBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setLocationPrefix("s3://warehouse/")
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(bucketAuthority, currentAuthority()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+    assertEquals("s3://warehouse/orders", response.getStorageCredentials(0).getPrefix());
   }
 
   @Test
@@ -921,12 +1073,82 @@ class StorageAuthorityServiceImplTest {
     assertTrue(
         ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
             .isNoMatchingStorageAuthority(error));
-    // ...but source-catalog vending is deliberately NOT consulted. This request carries an
-    // exact-object scope, and a delegating catalog mints its own table-scoped credentials that we
-    // hold no role to narrow -- answering a single-file request with table-wide access. Failing
-    // with the missing-authority error is the honest answer. This assertion previously required
-    // the opposite, pinning exactly that widening as intended.
+    // Source-catalog vending is deliberately not consulted. Exact leased-file membership
+    // authorizes the request, but an upstream catalog chooses its own credential scope and Floecat
+    // must not reinterpret table-scoped credentials as a single-file grant.
     verify(connectorRepo, never()).getById(CONNECTOR_ID);
+  }
+
+  @Test
+  void icebergExternalLeasedFileUsesMatchingAuthorityPrefix() {
+    String externalFile = "s3://elsewhere/registered/part-000.parquet";
+    StorageAuthority externalAuthority =
+        currentAuthority().toBuilder().setLocationPrefix("s3://elsewhere/").build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(externalAuthority));
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView("job-1", "acct", "JS_RUNNING", java.util.List.of(externalFile))));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix(externalFile)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+    assertEquals("s3://elsewhere/", response.getStorageCredentials(0).getPrefix());
+  }
+
+  @Test
+  void deltaDeletionVectorSiblingUsesBucketAuthorityPrefix() {
+    String deletionVector =
+        "s3://floedb-databricks-metastore-367509577365/metastore/metastore-id/tables/deletion_vector_uuid.bin";
+    StorageAuthority databricksAuthority =
+        currentAuthority().toBuilder()
+            .setResourceId(DATARBRICKS_AUTHORITY_ID)
+            .setLocationPrefix("s3://floedb-databricks-metastore-367509577365/")
+            .build();
+    when(repo.list(eq("acct"), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(databricksAuthority));
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView("job-1", "acct", "JS_RUNNING", java.util.List.of(deletionVector))));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix(deletionVector)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+    assertEquals(
+        "s3://floedb-databricks-metastore-367509577365/",
+        response.getStorageCredentials(0).getPrefix());
   }
 
   /**
@@ -1167,8 +1389,6 @@ class StorageAuthorityServiceImplTest {
 
   @Test
   void resolveForAccountLocationFailsForNoAuthority() {
-    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
-
     var ex =
         assertThrows(
             StatusRuntimeException.class,
@@ -1177,7 +1397,7 @@ class StorageAuthorityServiceImplTest {
                     .vendStorageCredentials(
                         VendStorageCredentialsRequest.newBuilder()
                             .setAccountId("acct")
-                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setLocationPrefix("s3://elsewhere/data/part-000.parquet")
                             .setUsage(StorageCredentialUsage.SCU_SERVER)
                             .build())
                     .await()
@@ -1340,9 +1560,7 @@ class StorageAuthorityServiceImplTest {
     IllegalArgumentException ex =
         assertThrows(
             IllegalArgumentException.class,
-            () ->
-                resolver.mintTemporaryCredentials(
-                    authority, temporaryCredentials, java.util.List.of("s3://warehouse/orders")));
+            () -> resolver.mintTemporaryCredentials(authority, temporaryCredentials));
 
     assertTrue(ex.getMessage().contains("known expiry"));
   }
@@ -1387,6 +1605,18 @@ class StorageAuthorityServiceImplTest {
     assertEquals("renamed", response.getAuthority().getDisplayName());
     assertEquals("s3://warehouse/renamed", response.getAuthority().getLocationPrefix());
     assertEquals("us-east-2", response.getAuthority().getRegion());
+  }
+
+  private ResolveStorageAuthorityResponse vendServerCredentialsForTable(ResourceId tableId) {
+    return service
+        .vendStorageCredentials(
+            VendStorageCredentialsRequest.newBuilder()
+                .setAccountId("acct")
+                .setTableId(tableId)
+                .setUsage(StorageCredentialUsage.SCU_SERVER)
+                .build())
+        .await()
+        .indefinitely();
   }
 
   private static StorageAuthority currentAuthority() {

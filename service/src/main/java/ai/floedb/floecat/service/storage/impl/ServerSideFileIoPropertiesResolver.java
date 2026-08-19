@@ -81,12 +81,7 @@ public class ServerSideFileIoPropertiesResolver {
       // no-matching-authority error rather than silently returning no credentials.
     }
     ResolveStorageAuthorityResponse response =
-        resolver.buildResponse(
-            authority,
-            locationPrefix,
-            locationPrefix == null ? java.util.List.of() : java.util.List.of(locationPrefix),
-            tableId.getAccountId(),
-            true);
+        resolver.buildResponse(authority, tableId.getAccountId(), true);
     return mergeStorageAuthorityFileIoConfig(response);
   }
 

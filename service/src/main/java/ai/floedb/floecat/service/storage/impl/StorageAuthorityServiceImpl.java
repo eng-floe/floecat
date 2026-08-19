@@ -312,56 +312,27 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               List<StorageAuthority> authorities =
                   repo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =
-                  StorageAuthorityResolver.resolveBest(
-                          authorities, credentialScope.authorityLookupLocationPrefix())
+                  StorageAuthorityResolver.resolveBest(authorities, credentialScope.location())
                       .orElse(null);
               if (authority == null) {
                 // No authority covers this location. Before failing, ask the source catalog: an
                 // Iceberg REST catalog with access delegation issues its own short-lived
                 // credentials, which makes a separately configured authority unnecessary.
                 //
-                // Deliberately a fallback rather than the first choice -- an existing authority
-                // stays authoritative, so this cannot change behaviour for any catalog that
-                // already works.
-                //
-                // An exact-object scope is the one case that must not take it. That scope exists to
-                // promise credentials for a single named file, and it is enforced by the session
-                // policy this service mints when assuming an authority's role. A delegating catalog
-                // mints its own credentials -- table-scoped, by its own choice -- and we hold no
-                // role to narrow them with, so accepting them here would quietly answer a
-                // single-object request with table-wide access. Refuse instead: the caller gets the
-                // usual missing-authority error, which is the honest answer, and in practice
-                // table-scoped credentials would not have covered the file anyway -- an exact
-                // object scope arises precisely when a leased file sits outside the table location.
-                if (credentialScope.exactObjectScope()) {
-                  LOG.infof(
-                      "source-catalog vending skipped: request needs an exact-object credential"
-                          + " scope for %s, which a delegating catalog cannot express",
-                      credentialScope.responseLocationPrefix());
-                }
                 ResourceId sourceTableId =
-                    credentialScope.exactObjectScope()
-                        ? null
-                        : sourceCatalogTableId(request, accountId, authorized.job());
+                    credentialScope.sourceCatalogDelegationAllowed()
+                        ? sourceCatalogTableId(request, accountId, authorized.job())
+                        : null;
                 if (sourceTableId != null) {
                   ResolveStorageAuthorityResponse vended =
-                      vendFromSourceCatalog(
-                          accountId, sourceTableId, credentialScope.responseLocationPrefix());
+                      vendFromSourceCatalog(accountId, sourceTableId, credentialScope.location());
                   if (vended != null) {
                     return vended;
                   }
                 }
               }
-              validateAuthorityCoversSessionScope(
-                  authority, credentialScope.sessionScopeLocations());
               try {
-                return resolver.buildResponse(
-                    authority,
-                    credentialScope.responseLocationPrefix(),
-                    credentialScope.sessionScopeLocations(),
-                    accountId,
-                    serverSide,
-                    credentialScope.exactObjectScope());
+                return resolver.buildResponse(authority, accountId, serverSide);
               } catch (StorageAuthorityResolver.CredentialVendingUnavailableException error) {
                 throw GrpcErrors.unavailable(
                     correlationId(), null, Map.of("operation", "assume-role"), error);
@@ -433,6 +404,14 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.display_name"));
     }
     if (trimToNull(spec.getLocationPrefix()) == null) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.location_prefix"));
+    }
+    if (!StorageAuthorityResolver.isSupportedAuthorityType(
+        spec.hasType() ? spec.getType() : null)) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.type"));
+    }
+    if (!StorageAuthorityResolver.isValidAuthorityLocation(
+        spec.hasType() ? spec.getType() : null, spec.getLocationPrefix())) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.location_prefix"));
     }
     if (creating
@@ -540,13 +519,13 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       VendStorageCredentialsRequest request, ReconcileJobStore.ReconcileJob job) {
     String requestedLocationPrefix = validateExplicitLocation(request);
     CredentialScope scope = resolveLeaseScopedLocation(job);
-    if ((scope == null || scope.authorityLookupLocationPrefix() == null) && request.hasTableId()) {
+    if ((scope == null || scope.location() == null) && request.hasTableId()) {
       scope = resolveDiscoveryTableLocation(request.getTableId(), job);
     }
-    if (scope == null || scope.authorityLookupLocationPrefix() == null) {
+    if (scope == null || scope.location() == null) {
       scope = resolvePlannerBootstrapLocation(requestedLocationPrefix, job);
     }
-    if (scope == null || scope.authorityLookupLocationPrefix() == null) {
+    if (scope == null || scope.location() == null) {
       throw io.grpc.Status.FAILED_PRECONDITION
           .withDescription("reconcile lease is not bound to a concrete storage location")
           .asRuntimeException();
@@ -560,17 +539,19 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       // files planned for this job, so a request for one of them is in scope even though it sits
       // under a different prefix.
       //
-      // Scope to the requested file rather than widening the table scope: authority lookup and the
-      // minted session policy then follow the location actually being read, and a table whose data
-      // does live under its own location is unaffected.
+      // Use the requested file for authority lookup. Exact membership authorizes this vending
+      // request; once an authority is selected, its configured prefix defines the credential scope.
       if (isLeasedFilePath(job, requestedLocationPrefix)) {
-        return CredentialScope.forSingleObject(requestedLocationPrefix);
+        return CredentialScope.forLeasedFile(requestedLocationPrefix);
       }
       throw io.grpc.Status.PERMISSION_DENIED
           .withDescription("requested location is outside the leased reconcile storage scope")
           .asRuntimeException();
     }
-    return scope.withResponseLocationPrefix(requestedLocationPrefix);
+    if (StorageAuthorityResolver.matchesLocationPrefix(requestedLocationPrefix, scope.location())) {
+      return CredentialScope.forSingleLocation(requestedLocationPrefix);
+    }
+    return scope;
   }
 
   private static StorageCredentialUsage usage(VendStorageCredentialsRequest request) {
@@ -829,37 +810,11 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (requestedLocationPrefix == null || scope == null) {
       return false;
     }
-    List<String> sessionScopes = scope.sessionScopeLocations();
-    if (sessionScopes == null || sessionScopes.isEmpty()) {
-      return StorageAuthorityResolver.matchesLocationPrefix(
-          requestedLocationPrefix, scope.authorityLookupLocationPrefix());
-    }
-    for (String sessionScope : sessionScopes) {
-      if (StorageAuthorityResolver.matchesLocationPrefix(sessionScope, requestedLocationPrefix)
-          || StorageAuthorityResolver.matchesLocationPrefix(
-              requestedLocationPrefix, sessionScope)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private static void validateAuthorityCoversSessionScope(
-      StorageAuthority authority, List<String> sessionScopeLocations) {
-    if (authority == null
-        || sessionScopeLocations == null
-        || sessionScopeLocations.isEmpty()
-        || authority.getLocationPrefix().isBlank()) {
-      return;
-    }
-    for (String sessionScopeLocation : sessionScopeLocations) {
-      if (!StorageAuthorityResolver.matchesLocationPrefix(
-          sessionScopeLocation, authority.getLocationPrefix())) {
-        throw io.grpc.Status.FAILED_PRECONDITION
-            .withDescription("leased reconcile storage scope spans multiple storage authorities")
-            .asRuntimeException();
-      }
-    }
+    String authorizedLocation = scope.location();
+    return StorageAuthorityResolver.matchesLocationPrefix(
+            requestedLocationPrefix, authorizedLocation)
+        || StorageAuthorityResolver.matchesLocationPrefix(
+            authorizedLocation, requestedLocationPrefix);
   }
 
   /**
@@ -943,35 +898,15 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     storeCredentials(secretsManager, accountId, authorityId, spec.getCredentials());
   }
 
-  private record CredentialScope(
-      String authorityLookupLocationPrefix,
-      String responseLocationPrefix,
-      List<String> sessionScopeLocations,
-      boolean exactObjectScope) {
+  private record CredentialScope(String location, boolean sourceCatalogDelegationAllowed) {
     static CredentialScope forSingleLocation(String locationPrefix) {
-      return new CredentialScope(
-          locationPrefix,
-          locationPrefix,
-          locationPrefix == null ? List.of() : List.of(locationPrefix),
-          false);
+      return new CredentialScope(locationPrefix, true);
     }
 
-    /**
-     * A scope over a single concrete object rather than a prefix. The minted session policy grants
-     * exactly that key -- no child wildcard -- so admitting one leased data file cannot hand out
-     * credentials for anything sharing its path as a prefix.
-     */
-    static CredentialScope forSingleObject(String location) {
-      return new CredentialScope(
-          location, location, location == null ? List.of() : List.of(location), true);
-    }
-
-    CredentialScope withResponseLocationPrefix(String responseLocationPrefix) {
-      return new CredentialScope(
-          authorityLookupLocationPrefix,
-          responseLocationPrefix,
-          sessionScopeLocations,
-          exactObjectScope);
+    static CredentialScope forLeasedFile(String location) {
+      // Upstream catalog credentials keep whatever scope the catalog minted. Do not reinterpret a
+      // single leased-file authorization as permission to return those table-scoped credentials.
+      return new CredentialScope(location, false);
     }
   }
 
