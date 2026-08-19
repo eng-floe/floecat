@@ -917,6 +917,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#job-tree-versioning-and-deployment-cohorts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job-tree versioning and deployment cohorts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#grpc-auth" class="md-nav__link">
     <span class="md-ellipsis">
       gRPC auth
@@ -1760,6 +1769,15 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#job-tree-versioning-and-deployment-cohorts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job-tree versioning and deployment cohorts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#grpc-auth" class="md-nav__link">
     <span class="md-ellipsis">
       gRPC auth
@@ -2162,6 +2180,22 @@ reconcile control RPCs:</p>
 <li>in <code>floecat.kv=memory</code>, the same domain model is preserved, but the physical implementation is
     in-memory rather than a literal Dynamo simulator</li>
 </ul>
+<h3 id="job-tree-versioning-and-deployment-cohorts">Job-tree versioning and deployment cohorts<a class="headerlink" href="#job-tree-versioning-and-deployment-cohorts" title="Permanent link">&para;</a></h3>
+<p><code>floecat.reconciler.worker-affinity</code> is the job-tree contract version for one deployment, not its
+build version. The job store stamps it on every job at enqueue and constrains every lease to an
+exact match. Remote workers send the same value in <code>LeaseReconcileJobRequest.worker_affinity</code>, the
+control plane rejects blank or mismatched requests, and the leased job echoes the value for
+worker-side validation. Lease-bound RPCs also reject jobs owned by another cohort.</p>
+<p>The ready queue affinity-qualifies execution-class, execution-lane, job-kind, and pinned-executor
+index slices. The semantic execution policy and <code>pinnedExecutorId</code> remain unchanged; only the
+derived index filter is qualified. This prevents an older control plane that does not understand
+affinity from discovering versioned work through the corresponding raw filtered slices.</p>
+<p>Upgrades use separate draining cohorts. The old unversioned deployment continues serving its old
+workers and drains unversioned trees. The new deployment and workers use the same non-empty
+affinity (currently <code>reconciler-v1</code>) and process only that cohort. Route workers exclusively to the
+matching control plane, and do not retire the old deployment until its active trees have drained.
+Changing affinity does not migrate or reclaim queued jobs; it starts a separate cohort that may
+independently plan equivalent work.</p>
 <h3 id="grpc-auth">gRPC auth<a class="headerlink" href="#grpc-auth" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
@@ -2236,6 +2270,9 @@ perform a post-completion final lease confirmation after that RPC has durably co
 <li><code>remote</code> keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
     <code>reconciler.max-parallelism=0</code> on control-plane-only nodes.</li>
 <li>Worker capacity via <code>reconciler.max-parallelism</code>.</li>
+<li>Job-tree contract affinity via <code>floecat.reconciler.worker-affinity</code> (default
+  <code>reconciler-v1</code>). Control planes and all of their local or remote executors must use exactly the
+  same value.</li>
 <li>Job store selection:</li>
 <li><code>floecat.reconciler.job-store=durable</code> (service default) uses persisted queue records plus
     retry/lease tuning via:

@@ -1936,10 +1936,17 @@ structures for resource identifiers, catalog services, query lifecycle metadata,
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
 <h3 id="remote-executor-versioning">Remote executor versioning<a class="headerlink" href="#remote-executor-versioning" title="Permanent link">&para;</a></h3>
-<p>Snapshot plans now require one immutable file execution plan for every declared file path. Remote
-planner/finalizer executors and the control plane must therefore be cut over together after existing
-leases are drained. Rolling or split deployments containing both plan revisions are unsupported;
-there is intentionally no empty-plan compatibility fallback.</p>
+<p><code>LeaseReconcileJobRequest.worker_affinity</code> identifies the job-tree contract implemented by a
+worker. It must exactly match the control plane's configured
+<code>floecat.reconciler.worker-affinity</code>; blank and mismatched values are rejected. The control plane
+echoes the owning affinity in <code>LeasedReconcileJob.worker_affinity</code>, and workers must reject a lease
+whose value differs from their own.</p>
+<p>Different affinities may share the same durable backend because ready-index slices, including
+pinned-executor slices, are affinity-qualified. They must not share worker routing: executors must
+connect only to a control plane with the same affinity. During an upgrade, keep the old deployment
+running until its job trees drain while the new deployment writes and executes its own cohort.
+Snapshot plans require one immutable file execution plan for every declared file path, so planner,
+executor, and finalizer implementations within one cohort must implement the same contract.</p>
 <p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>integration/</code>, <code>query/</code>,
 <code>execution/</code>, <code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
 under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
@@ -2216,7 +2223,10 @@ engine release.</p>
   ceiling and validates commits against the immutable planned group.</li>
 <li><strong>Executor leasing filters</strong> – <code>LeaseReconcileJobRequest</code> accepts execution class, lane, job kind,
   <code>executor_id</code>, and repeated <code>executor_ids</code> selectors so a worker fleet can advertise both its
-  concrete worker identity and the executor implementations it is willing to run.</li>
+  concrete worker identity and the executor implementations it is willing to run. Versioned
+  workers also declare <code>worker_affinity</code>; the server rejects a mismatch and echoes the job's
+  affinity in <code>LeasedReconcileJob</code> for worker-side validation. Empty affinity requests are rejected
+  by a versioned control plane, keeping unversioned workers isolated to an unversioned deployment.</li>
 <li><strong>Stats vs constraints snapshot policy</strong> – <code>PutTargetStats</code> currently accepts unknown snapshots
   (lenient ordering), while <code>PutTableConstraints</code> is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
