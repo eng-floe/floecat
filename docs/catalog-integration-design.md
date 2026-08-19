@@ -14,12 +14,14 @@ Catalog Integration and Catalog Overlay split today's `Connector` into its two i
 | --- | --- |
 | `uri`, `auth`, `kind` — how Floecat reaches and authenticates to an upstream catalog | `CatalogIntegration` |
 | `source` — which upstream namespaces are selected | `CatalogOverlay` |
-| `destination` — where the selection lands in Floecat | `CatalogOverlay`, through the catalog it owns |
-| `policy`, `state` — refresh cadence, retention, pause | `CatalogOverlay` |
+| `destination` — where the selection lands in Floecat | `CatalogOverlay`, through a reference to an existing `Catalog` |
+| `policy` — refresh cadence, retention, pause | Overlay demand or a referenced policy, deferred from the initial API |
+| scheduler state — leases, attempts, progress, last success | Integration-owned scheduler state, separate from the Overlay resource |
 
 Connectors will be deprecated and replaced by these two resources. One integration can serve many
-overlays, which is the reuse a single `Connector` cannot express: today every destination needs its
-own connector, and therefore its own copy of the endpoint and credentials.
+overlays, and overlays from one or more integrations can target the same Floecat catalog. This is the
+reuse a single `Connector` cannot express: today every destination needs its own connector, and
+therefore its own copy of the endpoint and credentials.
 
 This is a decomposition of the connector resource, not a new metadata architecture. Captured
 metadata continues to materialize into the existing `Catalog` / `Namespace` / `Table` / `View` /
@@ -37,18 +39,20 @@ hierarchy, a second table identity, or a second name-resolution path.
 | Durability primitives | Reserved resource identity, receipt-in-batch idempotency, companion pointer operations, mutation-store reads, and strongly consistent lifecycle reads | Integration and Overlay resources |
 | Account deletion fence | Durable account-deletion fencing and resumable descendant cleanup | Integration- and Overlay-specific CRUD |
 | Catalog Integration API | Integration CRUD, typed authentication, write-only credential storage and rotation, dependencies, cascade deletion, idempotency, and optimistic concurrency | Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility |
-| Catalog Overlay API | Overlay CRUD, overlay-owned catalog lifecycle, namespace selection, dependencies, cascade deletion, idempotency, and optimistic concurrency | Capture, reconciliation, and query visibility |
-| Shell CLI | Integration and Overlay CRUD commands, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions | Connectivity validation, discovery, capture, reconciliation, and query visibility |
+| Catalog Overlay API | Overlay CRUD, references to existing target catalogs, namespace selection, Integration and Catalog dependencies, contribution lifecycle, idempotency, and optimistic concurrency | Capture, reconciliation, and query visibility |
+| Shell CLI | Integration and Overlay CRUD commands, target-Catalog binding, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions | Connectivity validation, discovery, capture, reconciliation, and query visibility |
 | Catalog-access SPI | Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table and view loading, OAuth2, SigV4, and renewable AWS credential support | Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture |
 | Integration validation and discovery | Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views | Persistence of discovery results, Overlay reconciliation, scheduling, and capture |
-| Overlay metadata reconciliation | A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views with generation fencing and explicit lifecycle cleanup | Durable scheduling, snapshot/file capture, validation, and statistics |
+| Overlay metadata reconciliation | A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views into an existing Catalog with generation fencing, collision checks, and contribution-scoped cleanup | Durable scheduling, snapshot/file capture, validation, and statistics |
 
 ## Goals
 
 The catalog integration model provides a way to:
 
 - authenticate Floecat to an upstream catalog once, and reuse that connection across many overlays;
-- select upstream namespaces and expose them beneath a single top-level catalog name;
+- select upstream namespaces and expose them in an existing Floecat catalog;
+- combine non-conflicting contributions from multiple overlays and integrations in one catalog while
+  retaining independently managed catalog content;
 - discover and validate upstream namespaces, tables, and views without depending on Connector
   resources; and
 - materialize external namespace, table-definition, and view metadata into ordinary Floecat
@@ -61,20 +65,24 @@ later migration, not through runtime fallback.
 ## Resource and ownership model
 
 ```text
-CatalogIntegration "prod-glue"     connection and authentication
- ├── CatalogOverlay "crm_data"     upstream selection -> owns Catalog "crm_data"
- └── CatalogOverlay "finance"      a different selection -> owns Catalog "finance"
+CatalogIntegration "prod-glue"          connection and authentication
+ └── CatalogOverlay "crm-import"        selection -> Catalog "analytics"
 
-Catalog "crm_data"                 owned by the overlay, read-only to clients
- └── Namespace ["sales"]           materialized from the overlay's selection
-      └── Table / View             ordinary resources with snapshots and statistics
+CatalogIntegration "finance-unity"      a different connection and authentication
+ └── CatalogOverlay "finance-import"    selection -> Catalog "analytics"
+
+Catalog "analytics"                     independently managed target
+ ├── Namespace ["crm"]                  materialized contribution from "crm-import"
+ ├── Namespace ["finance"]              materialized contribution from "finance-import"
+ └── Namespace ["local"]                directly managed Floecat content
 ```
 
-An overlay is a mapping resource that owns exactly one Floecat `Catalog`. The overlay's display name
-is that catalog's display name, so an overlay contributes one top-level catalog name and its
-selected upstream namespaces appear beneath it as ordinary namespaces. Name resolution, listing,
-pinning, planning, and garbage collection all operate on those resources with no overlay-specific
-path.
+An overlay is a mapping resource that references exactly one Integration and one existing Floecat
+`Catalog`. It does not own the target Catalog. Multiple overlays may target the same Catalog, and
+the Catalog retains its independent identity, name, writability, and lifecycle. An overlay owns only
+the materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
+and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
+with no overlay-specific read path.
 
 ### Catalog integration
 
@@ -88,9 +96,12 @@ AWS access keys, and AWS SigV4. Unity initially accepts only OAuth client creden
 authentication. The base service validates structural compatibility; endpoint and provider support
 remain the responsibility of the catalog-access adapter and provider.
 
-Type and catalog URI are immutable through update. A replacing create produces a new resource
-identity, and is rejected while overlays depend on the existing integration because replacement must
-not silently retarget those overlays.
+Integration type is immutable through update. The catalog URI is mutable with an etag precondition;
+publishing a URI update advances the Integration generation so reconciliation and durable work that
+observed the previous endpoint cannot publish afterward. Existing overlays and materialized resource
+identities remain attached to the same Integration. A replacing create is required only to change
+the Integration type, produces a new resource identity, and is rejected while overlays depend on the
+existing Integration because replacement must not silently retarget those overlays.
 
 Integration type identifies the catalog access protocol; it does not define the format of every
 table in that catalog. As in the existing Connector path, the catalog-access provider determines
@@ -147,40 +158,50 @@ reported as separate error entries.
 
 ### Catalog overlay
 
-`CatalogOverlay` binds one integration to one selection of upstream namespaces, and owns the Floecat
-`Catalog` those namespaces are exposed beneath. It is the direct replacement for the connector's
-`source` plus `destination` pair; the overlay does not carry a separate destination because the
-catalog it owns is the destination.
+`CatalogOverlay` binds one Integration and one selection of upstream namespaces to an existing
+Floecat `Catalog`. It is the direct replacement for the connector's `source` plus `destination`
+pair. The target is explicit because Catalog lifecycle remains independent from Overlay lifecycle.
 
 ```text
 CatalogOverlay
-  display_name         also the display name of the catalog it owns
+  display_name         independently managed Overlay name
   integration_id       which upstream catalog and credentials to use (immutable through update)
+  catalog_id           existing Floecat destination (immutable through update)
   include_namespaces   upstream selection
   exclude_namespaces   upstream selection
 ```
 
-The overlay's resource state is the mapping; the catalog it owns is where captured metadata lands.
-Creating an overlay creates that catalog in the same atomic pointer transaction, so an overlay can
-never exist without its catalog and a partially created overlay cannot leave an orphan catalog
-behind. Renaming an overlay renames its catalog in the same transaction.
+Creating an overlay verifies that both referenced resources exist in the same account and publishes
+dependencies on the Integration and target Catalog atomically with the Overlay. A Catalog cannot be
+deleted while an Overlay references it. Renaming either resource does not rename the other because
+the binding uses immutable resource identity rather than display name. Overlay display names remain
+unique among Overlays in the account but do not reserve Catalog names.
 
-Because the owned catalog is an ordinary `Catalog`, top-level name uniqueness is the existing
-catalog by-name uniqueness. No separate top-level name reservation is required, and an overlay and a
-directly created catalog cannot share a name for the same reason two catalogs cannot.
+The target Catalog remains directly manageable. Clients may create local namespaces and relations in
+it, and other overlays may contribute non-conflicting resources. Materialized Tables and Views carry
+typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
+Namespaces are shared structural containers rather than exclusively Overlay-owned resources.
+Namespace claim state records every Overlay using a path and whether the container was originally
+created by Overlay materialization. A claim prevents structural deletion or movement of the
+Namespace while the Overlay uses it, but does not make the Namespace or Catalog generally read-only.
+Releasing a claim deletes the Namespace only when no other Overlay claims it, it contains no
+relations, and it was created for Overlay materialization; a pre-existing or directly managed
+Namespace is never deleted merely because an Overlay stops using it.
 
-An overlay-owned catalog is read-only to clients: it is created, renamed, and deleted only through
-its overlay, and the catalog API rejects direct mutation of it and of the namespaces, tables, and
-views captured beneath it. This reuses the existing structural write guard rather than introducing a
-second writability mechanism.
+A destination relation path has one writer. Reconciliation fails with a conflict rather than
+overwriting a local relation or a relation managed by another Overlay. Selecting the same upstream
+object through two Overlays is valid when they materialize to different Catalogs; after namespace
+remapping is introduced, distinct destination paths will also be valid. Selecting it into the same
+destination path is a mapping conflict. Namespace containers may be shared as long as their child
+relation names do not collide.
 
-The integration binding is immutable through update, because changing it retargets everything the
-overlay has materialized. A replacing create produces a new overlay identity and may choose a
-different binding.
+The Integration and Catalog bindings are immutable through update because changing either retargets
+everything the Overlay has materialized. A replacing create produces a new Overlay identity and may
+choose different bindings after the previous Overlay's contributions are retired.
 
-Deleting an overlay deletes the catalog it owns and everything captured beneath it. That cascade is
-the overlay's own contract, not a side effect: an overlay's contents exist only because the overlay
-selected them.
+Deleting an Overlay installs a deletion fence, removes only Tables, Views, snapshot state, and
+namespace claims managed by that Overlay, then removes its dependencies and resource record. It
+never deletes the target Catalog or unrelated content.
 
 ## Namespace selection
 
@@ -192,8 +213,8 @@ space.
 - An included path selects that namespace and all descendants.
 - An excluded path removes that namespace and all descendants; exclusion wins when both match.
 - Paths are normalized and deduplicated without flattening segment boundaries.
-- A selected upstream namespace materializes as a Floecat `Namespace` at the same path beneath the
-  overlay's catalog, preserving segment boundaries.
+- A selected upstream namespace maps to the same path in the target Catalog, preserving segment
+  boundaries. Namespace remapping is deferred.
 - Newly discovered namespaces matching the stored selection materialize on the next synchronous
   reconciliation.
 
@@ -259,11 +280,11 @@ name resolution remain outside it.
 
 ## Materialized metadata and deferred capture
 
-Synchronous metadata reconciliation materializes ordinary Floecat resources beneath the overlay's
-catalog. A selected upstream namespace becomes a `Namespace`; a selected upstream table becomes a
-`Table` definition and initial `TableRoot`; and a selected upstream view becomes a `View`. These are
-the same logical resources the Connector path produces today and use the existing repositories and
-name-resolution paths.
+Synchronous metadata reconciliation materializes ordinary Floecat resources in the Overlay's target
+Catalog. A selected upstream namespace uses or creates a `Namespace`; a selected upstream table
+becomes a `Table` definition and initial `TableRoot`; and a selected upstream view becomes a `View`.
+These are the same logical resources the Connector path produces today and use the existing
+repositories and name-resolution paths.
 
 This phase deliberately does not create `Snapshot` resources, file groups, validation results, or
 statistics. Those require extending the durable reconciler from its current Connector-rooted job
@@ -277,19 +298,48 @@ materialized object. Provider-stable IDs preserve a Floecat resource identity ac
 rename or namespace move; when a provider has no stable ID, the normalized full upstream path is an
 explicitly unstable identity and rename is observed as delete plus create.
 
-Two overlays that select the same upstream table produce two Floecat tables, one beneath each
-overlay's catalog, exactly as two connectors would today. Deduplicating captures across overlays is
-not in scope: it would require a table identity separate from the `Catalog`/`Namespace` hierarchy,
-which is precisely the parallel architecture this design avoids. If that reuse is wanted later, it
-belongs in a separately reviewed change against the table model itself, not in the Integration path.
+Two Overlays that select the same upstream table and map it to different Catalogs produce two
+Floecat Tables. Once namespace remapping exists, distinct destination paths will behave the same way.
+Their Snapshots, statistics, validation records, and visibility state are persisted independently
+under each Floecat Table identity. No persisted Snapshot, statistics, or validation object is shared
+across those Tables. Mapping both selections to the same destination relation path is a conflict, not
+an implicit deduplication mechanism.
+
+## Reconciliation publication and failure semantics
+
+Reconciliation is generation-fenced but is not one atomic transaction over an unbounded Catalog.
+Its publication order provides a monotonic safety contract:
+
+1. Validate the Integration and complete discovery for the entire selected scope without mutating
+   Floecat state.
+2. Preflight the complete desired inventory against the target Catalog, including destination name
+   conflicts and Overlay provenance.
+3. Create or update desired namespace claims, Tables, and Views while the observed Integration and
+   Overlay generations remain current.
+4. Only after all desired resources are published, retire managed relations absent from that
+   complete inventory, release unused namespace claims, and prune eligible empty namespace
+   containers.
+
+A validation, discovery, or preflight failure publishes nothing. A failure while publishing desired
+resources may leave successful creates or updates visible, but it does not retire prior resources;
+a retry converges them to the desired inventory. A failure during retirement may leave some stale
+resources temporarily visible, but every retired resource was absent from a completed discovery and
+all desired resources were published first. A retry completes cleanup.
+
+"Stale" means absent from the complete inventory produced for the same Overlay selection and
+Integration generation. Results from a partial discovery, a different Overlay, or an older
+configuration generation can never classify a resource as stale. Stale work may finish external I/O
+but cannot publish after its fence is invalidated.
 
 ## Table validation and visibility
 
-The later durable-capture phase will make an active overlay establish capture demand for the tables
-its selection matches. The integration-owned scheduler will trigger or join discovery, file
-scanning, table validation, and statistics collection for the effective union of active overlay
-selections on that integration. The synchronous metadata RPC in the current phase does not enqueue
-that work.
+The later durable-capture phase will make an active Overlay establish capture demand for the Tables
+its selection matches. The Integration-owned scheduler computes the effective union of active
+Overlay selections. The initial sharing guarantee applies only to upstream discovery and other
+external I/O that can be safely coalesced; it does not share persisted Floecat objects. Any later
+optimization that scans an upstream object once must still publish independently fenced results for
+each destination Table. The synchronous metadata RPC in the current phase does not enqueue that
+work.
 
 A table does not become query-visible until its current capture has completed validation. Validation
 compares each discovered Parquet file with the captured table format and metadata. A file that
@@ -310,13 +360,16 @@ Validation errors and table visibility follow these rules:
 - describing an integration may request revalidation in addition to connection, authentication, and
   credential-vending checks.
 
-Views have no file-validation state; resolving a view must still respect the visibility of its base
-tables and cannot be used to bypass an invalid table's visibility gate.
+Views have no file-validation state. Catalog-access providers remain responsible for enumerating and
+loading upstream View metadata, but they do not resolve View SQL or determine whether its base Tables
+are query-visible. Dependency resolution and enforcement of base-Table visibility belong to the
+ordinary name-resolution and planner/runtime path, outside the Integration and Overlay contracts.
 
 ## Refresh and reconciliation ownership
 
-Scheduling, freshness, and retention remain deferred. Overlays will state freshness and retention
-demand; integrations will own upstream connection work. For active overlays on one integration,
+Scheduling, freshness, and retention remain deferred. Overlays will state freshness, retention, and
+pause demand directly or through a reusable policy; operational scheduler state is separate from the
+Overlay resource. Integrations own upstream connection work. For active Overlays on one Integration,
 the scheduler computes one effective plan:
 
 - discovery scope is the union of selected namespaces, including matching tables and views, while
@@ -325,35 +378,41 @@ the scheduler computes one effective plan:
 - retained history satisfies the longest requested retention; and
 - pausing an overlay removes its demand, while pausing an integration stops all new upstream work.
 
-Sharing applies to upstream I/O: two overlays selecting the same upstream namespace from one
-integration issue one discovery pass, then materialize into their own catalogs.
+Sharing applies to upstream I/O: two Overlays selecting the same upstream namespace from one
+Integration may issue one discovery pass, then materialize independently into their configured
+destination paths. Persisted Tables and their descendant state remain destination-owned.
 
-The synchronous metadata reconciler already fences every resource publication on the observed
-Integration and Overlay pointer generations and the absence of account, Integration, and Overlay
+The synchronous metadata reconciler fences every resource publication on the observed Integration
+and Overlay pointer generations and the absence of account, Integration, Overlay, and target Catalog
 deletion markers. A future capture-plan generation must extend equivalent fencing to every planned
-and leased durable job. Stale work may finish external I/O but must not publish results after
-configuration, selection, pause, replacement, or deletion changes.
+and leased durable job. URI, credentials, selection, pause, replacement, target deletion, or Overlay
+deletion changes invalidate older work.
 
 ## Lifecycle and garbage collection
 
 | Operation | Current behavior | Deferred behavior |
 | --- | --- | --- |
 | Rename integration | Atomic rename with optimistic preconditions | No additional behavior required |
-| Rename overlay | Atomic rename of the overlay and the catalog it owns in one transaction | No additional behavior required |
+| Update integration endpoint | Atomic URI update with optimistic preconditions; advances the generation that fences reconciliation while preserving dependent Overlay identities | Optional validation before publication |
+| Rename overlay | Atomic Overlay-only rename with optimistic preconditions; the target Catalog name is unchanged | No additional behavior required |
+| Rename target catalog | Ordinary Catalog rename; Overlay bindings remain valid by resource ID | No additional behavior required |
 | Replace integration | New identity; rejected while dependent overlays exist | Validation may run before publication |
 | Rotate credentials | Atomic new credential generation; old generation retired after publication | Reclaim acknowledgement-uncertain orphan generations |
-| Create or replace overlay | Creates the overlay and its catalog atomically; stores selection and integration dependency; replacement fences and retires prior materializations | Trigger or join durable snapshot/file capture into that catalog |
-| Reconcile overlay | Synchronously validates the connection, discovers the selected inventory, and creates, updates, or retires namespaces, table definitions, and views behind generation fences | Schedule reconciliation and capture snapshots, files, validation, and statistics |
-| Delete overlay | Installs an Overlay deletion fence, explicitly retires materialized descendants, then atomically removes the empty catalog, overlay, dependency, and fence | Cancel and drain durable jobs |
+| Create or replace overlay | Attaches to an existing Catalog; atomically stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions | Trigger or join durable snapshot/file capture into the target Catalog |
+| Reconcile overlay | Completes discovery and collision preflight, publishes desired namespace claims, Table definitions, and Views, then retires stale managed contributions behind generation fences | Schedule reconciliation and capture Snapshots, files, validation, and statistics |
+| Delete overlay | Installs an Overlay deletion fence, explicitly retires its materialized relations and namespace claims, then removes the Overlay dependencies, resource, and fence; the target Catalog remains | Cancel and drain durable jobs |
 | Delete integration | Rejected while overlays exist | Fence integration-owned jobs |
-| Cascade integration delete | Durable Integration and Overlay deletion fences, explicit descendant retirement, dependent overlay/catalog deletion, resource deletion, and credential cleanup | Cancel and drain durable jobs |
+| Delete target catalog | Rejected while Overlays reference it, even when it is otherwise empty | Fence Catalog-targeted jobs |
+| Cascade integration delete | Durable Integration and Overlay deletion fences, explicit retirement of each dependent Overlay's contributions, Overlay and Integration resource deletion, and credential cleanup; target Catalogs remain | Cancel and drain durable jobs |
 | Delete account | Durable deletion fence, then cleanup of overlays, integrations, and integration credentials | No additional behavior required |
 
-Overlay lifecycle code explicitly deletes logical `Namespace`, `Table`, and `View` resources and
-purges table snapshot/root pointer state; existing pointer and CAS-blob garbage collection remains
-responsible for reclaiming unreachable immutable blobs. Garbage collection is not a substitute for
-retiring the logical resource pointers. Validation-error records will be retained with their table
-and atomically replaced or removed when a later validation generation is published.
+Overlay lifecycle code explicitly deletes its logical `Table` and `View` resources, releases its
+Namespace claims, prunes only eligible empty Overlay-created Namespaces, and purges Table
+snapshot/root pointer state. It never deletes the target Catalog, another Overlay's resources, or
+directly managed content. Existing pointer and CAS-blob garbage collection remains responsible for
+reclaiming unreachable immutable blobs. Garbage collection is not a substitute for retiring the
+logical resource pointers. Validation-error records will be retained with their Table and atomically
+replaced or removed when a later validation generation is published.
 
 ## Durability contract
 
@@ -377,9 +436,10 @@ Integration-owned resources instead guarantee:
   record, then publishes the immutable success receipt in the same atomic pointer transaction as
   the resource. A replay returns the recorded answer; it never re-derives one from state that a
   later mutation may have changed.
-- **Fenced dependencies and cascades.** Dependency counts, cascade deletion, and lifecycle markers
-  are asserted inside the same pointer transaction as the mutation they guard, so a concurrent
-  create cannot slip beneath a delete that has already checked for dependents.
+- **Fenced dependencies and cascades.** Integration and target Catalog dependency counts, cascade
+  deletion, and lifecycle markers are asserted inside the same pointer transaction as the mutation
+  they guard, so a concurrent Overlay create cannot slip beneath a delete that has already checked
+  for dependents.
 - **Strongly consistent reads where absence is load-bearing.** A cascade or dependency check that
   misses a row produces an orphan or a wrongly permitted delete, so those paths do not read
   secondary indexes through an eventually consistent path.
@@ -440,8 +500,9 @@ and returning the existing resource:
   one. Replacement is itself state-idempotent and cannot be combined with an idempotency key.
 - **return existing** — returns the current resource unchanged when the name is already taken.
 
-Replacement rather than update is how a caller changes an immutable binding: the integration binding
-on an overlay, and the type and URI on an integration.
+Replacement rather than update is how a caller changes an Overlay's immutable Integration or target
+Catalog binding, or an Integration's type. An Integration URI is ordinary mutable configuration and
+does not require replacement.
 
 ## Follow-on API evolution
 
@@ -450,12 +511,14 @@ After the initial delivery, follow-on changes will:
 1. Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
    catalog authentication and usable storage-credential vending; object listing distinguishes
    namespaces, tables, and views.
-2. Add synchronous, generation-fenced Overlay metadata reconciliation. This materializes namespaces,
-   table definitions, and views, but not snapshots or files.
+2. Add synchronous, generation-fenced Overlay metadata reconciliation into an existing target
+   Catalog. This materializes Namespace claims, Table definitions, and Views, but not Snapshots or
+   files.
 3. Extend the durable reconciler with Integration/Overlay-rooted jobs and capture `Snapshot`, file,
    validation, and statistics state beneath the already materialized tables.
-4. Add overlay policy and state, table validation-error persistence, visibility and override
-   handling, and integration-owned scheduling with durable job-generation fencing.
+4. Add Overlay freshness, retention, and pause demand, separate scheduler runtime state, Table
+   validation-error persistence, visibility and override handling, and Integration-owned scheduling
+   with durable job-generation fencing.
 5. Add migration from Connectors and Connector removal in separately reviewed changes.
 
 Because backwards compatibility is not a project requirement at this stage, contracts should be
@@ -477,8 +540,10 @@ or authentication combinations must fail explicitly.
 Migration is mechanical because the resources are a decomposition of the connector: each connector
 yields one integration from its `uri`, `auth`, and `kind`, and one overlay from its `source` and
 `destination`, with connectors sharing an endpoint and credentials collapsing onto one integration.
-A connector whose destination is an existing catalog migrates by making that catalog overlay-owned,
-so its existing namespaces, tables, and snapshots remain valid and are not re-materialized.
+The Overlay references the Connector's existing destination Catalog; no Catalog ownership transfer
+occurs. Existing Connector-managed Tables and their descendants may be adopted in place by replacing
+their Connector provenance with Integration and Overlay provenance during the separately reviewed
+migration, so they need not be re-materialized.
 
 ## Initial CLI name resolution
 
