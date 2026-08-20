@@ -75,6 +75,7 @@ nav:
       - Iceberg REST Gateway: iceberg-rest-gateway.md
       - Arrow Flight: arrow-flight.md
   - Catalog and Metadata:
+      - Catalog Integration Architecture and Delivery Plan: catalog-integration-design.md
       - Metadata Graph: metadata-graph.md
       - System Objects: system-objects.md
       - System Scans: system-scans.md
