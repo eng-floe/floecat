@@ -1746,6 +1746,12 @@ return:</p>
 <p>Storage authorities are generic storage infrastructure, not Iceberg-specific. Iceberg REST
 credential vending is one consumer of this layer, but the same model also applies to server-side
 Floecat workflows such as reconciliation and register/import flows that need to reach S3.</p>
+<p>For authority-backed vending, the selected authority's <code>location-prefix</code> is both the inline STS
+session-policy boundary and the prefix returned with the credential. A reconcile lease or table
+location authorizes whether credentials may be vended, but does not narrow the resulting session
+below the authority prefix. A bucket-root authority therefore vends read access across that bucket;
+a narrower authority vends read access only at and beneath its configured prefix. The assumed
+role's base IAM policy is still intersected with this session policy.</p>
 <p>Storage authorities are separate from connector auth:</p>
 <ul>
 <li>connector auth is how Floecat reaches upstream catalogs or services such as Glue, Unity Catalog,
@@ -1820,6 +1826,9 @@ storage access and the table location matches an authority prefix.</p>
 <h3 id="one-bucket-one-authority">One Bucket, One Authority<a class="headerlink" href="#one-bucket-one-authority" title="Permanent link">&para;</a></h3>
 <p>Use one storage authority per bucket or per major prefix boundary when you want clean separation of
 permissions and easy auditability.</p>
+<p>This is also a security boundary. A caller authorized to vend for one location receives credentials
+covering the full selected authority prefix. Use separate, narrower authorities when tables or
+workloads within one bucket must not share the same vended credential scope.</p>
 <h3 id="cross-account-read-only-access">Cross-Account Read-Only Access<a class="headerlink" href="#cross-account-read-only-access" title="Permanent link">&para;</a></h3>
 <p>For a production bucket in another AWS account:</p>
 <ul>
@@ -1833,6 +1842,8 @@ both.</p>
 <h2 id="common-failure-modes">Common Failure Modes<a class="headerlink" href="#common-failure-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li>prefix mismatch: the requested table location does not match any configured <code>location-prefix</code></li>
+<li>invalid authority: S3 authorities require <code>type=s3</code> and a concrete S3 bucket; blank, malformed,
+  bucketless, wildcard-containing, and otherwise invalid prefixes are rejected</li>
 <li>missing trust policy: Floecat can resolve the authority but cannot assume the target role</li>
 <li>missing S3 permissions: temporary credentials are minted but the bucket or prefix access is too narrow</li>
 <li>auth confusion: connector auth is configured correctly, but no storage authority exists for the
