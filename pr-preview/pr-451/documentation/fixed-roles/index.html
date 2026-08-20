@@ -1743,9 +1743,8 @@
   authority. Cascading integration deletion additionally requires <code>catalog-overlay.write</code> because
   it deletes the dependent overlay resources.</li>
 <li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
-  <code>catalog-integration.use</code>. Creating, renaming, and deleting an overlay additionally requires
-  <code>catalog.write</code>, because each of those operations creates, renames, or deletes the Catalog the
-  overlay owns.</li>
+  <code>catalog-integration.use</code> and <code>catalog.write</code>, because it binds an integration to an existing
+  writable target Catalog. Renaming or deleting an overlay does not rename or delete that Catalog.</li>
 </ul>
 
 
