@@ -27,8 +27,9 @@ message NamespacePath {
   repeated string segments = 1;
 }
 
-// A catalog overlay selects upstream namespaces from a catalog integration and owns the Floecat
-// catalog they are exposed beneath.
+// A catalog overlay selects upstream namespaces from a catalog integration and maps them into an
+// existing Floecat catalog. The integration and catalog retain independent identities and
+// lifecycles.
 message CatalogOverlay {
   ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
@@ -41,8 +42,7 @@ message CatalogOverlay {
   repeated NamespacePath exclude_namespaces = 5;
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp updated_at = 7;
-  // The catalog this overlay owns, assigned by the server at create time. Selected upstream
-  // namespaces are exposed beneath it. Not settable through CatalogOverlaySpec.
+  // The existing Floecat catalog selected upstream namespaces are exposed beneath.
   ai.floedb.floecat.common.ResourceId catalog_id = 8;
 }
 
@@ -55,6 +55,8 @@ message CatalogOverlaySpec {
   repeated NamespacePath include_namespaces = 3;
   // Exclusions apply to the named namespace and all descendants and take precedence over includes.
   repeated NamespacePath exclude_namespaces = 4;
+  // Existing Floecat destination. Immutable through update; a replacing create may rebind it.
+  ai.floedb.floecat.common.ResourceId catalog_id = 5;
 }
 
 message CatalogOverlayEntry {
@@ -96,7 +98,8 @@ message ListCatalogOverlaysResponse {
 
 message UpdateCatalogOverlayRequest {
   ai.floedb.floecat.common.ResourceId overlay_id = 1;
-  // display_name and the namespace-selection lists are mutable. integration_id is immutable.
+  // display_name and the namespace-selection lists are mutable. integration_id and catalog_id are
+  // immutable.
   // A list selected by update_mask is replaced in full.
   CatalogOverlaySpec spec = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;

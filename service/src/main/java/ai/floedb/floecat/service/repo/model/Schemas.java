@@ -304,6 +304,11 @@ public final class Schemas {
                       Keys.catalogOverlayPointerByIntegration(
                           v.getResourceId().getAccountId(),
                           v.getIntegrationId().getId(),
+                          v.getResourceId().getId()),
+                      "byCatalog",
+                      Keys.catalogOverlayPointerByCatalog(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
                           v.getResourceId().getId())),
               v -> {
                 var sha = Hashing.sha256Hex(v.toByteArray());

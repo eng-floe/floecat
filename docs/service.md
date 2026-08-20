@@ -117,18 +117,17 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   exact display name. Reads require
   `catalog-integration.read`; writes require `catalog-integration.write`, and cascading deletion of
   dependent overlays also requires `catalog-overlay.write`.
-- **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to the
-  Catalog the overlay owns. Creating an overlay creates that catalog in the same pointer
-  transaction, renaming the overlay renames it, and deleting the overlay deletes it, so the two are
-  never visible separately or under different names. Because the owned catalog is an ordinary
-  Catalog, top-level name uniqueness is the existing catalog by-name uniqueness. Creating an overlay atomically publishes its pointers while requiring the integration
-  pointer to remain at its validated version, and advances the integration dependency marker in the
-  same transaction. `CM_REPLACE` atomically swaps in a new overlay identity and may bind it to
-  another integration while advancing both dependency markers; `CM_RETURN_EXISTING`
+- **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to an
+  existing Catalog. The Catalog remains independently named, writable, and managed, and multiple
+  overlays may target it. Creating an overlay atomically publishes Integration and Catalog
+  dependency pointers while requiring both parents to remain at their validated versions, and
+  advances both dependency markers in the same transaction. `CM_REPLACE` atomically swaps in a new
+  overlay identity and may bind it to another Integration or Catalog while advancing all affected
+  dependency markers; `CM_RETURN_EXISTING`
   returns the existing object. Get accepts either
   resource ID or exact display name. An empty include list
   selects all namespaces; paths select subtrees, exclusions
-  take precedence, and matching is case-sensitive. The integration binding is immutable through
+  take precedence, and matching is case-sensitive. The Integration and Catalog bindings are immutable through
   update; updates only replace the selected include/exclude lists or rename the overlay. Reads require
   `catalog-overlay.read`; writes require `catalog-overlay.write`, and creation also requires
   `catalog-integration.use`. Connectivity and

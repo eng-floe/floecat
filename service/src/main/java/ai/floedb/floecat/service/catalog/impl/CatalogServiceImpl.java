@@ -46,6 +46,7 @@ import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -66,6 +67,7 @@ import org.jboss.logging.Logger;
 public class CatalogServiceImpl extends BaseServiceImpl implements CatalogService {
 
   @Inject CatalogRepository catalogRepo;
+  @Inject CatalogOverlayRepository catalogOverlayRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -337,6 +339,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var id = request.getCatalogId();
                   catalogSurfaceWritePolicy().requireDeletableCatalog(id, correlationId);
                   long markerVersion = markerStore.catalogMarkerVersion(id);
+                  long overlayMarkerVersion = markerStore.catalogOverlaysMarkerVersion(id);
 
                   MutationMeta meta;
                   try {
@@ -351,6 +354,15 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         correlationId, safe, request.getPrecondition());
                     metadataGraph.invalidate(id);
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
+                  }
+
+                  int dependentOverlays =
+                      catalogOverlayRepo.countByCatalog(id.getAccountId(), id.getId());
+                  if (dependentOverlays > 0) {
+                    throw GrpcErrors.conflict(
+                        correlationId,
+                        CATALOG_DEPENDENT_OVERLAYS,
+                        Map.of("dependent_overlays", Integer.toString(dependentOverlays)));
                   }
 
                   if (namespaceRepo.count(id.getAccountId(), id.getId(), List.of()) > 0) {
@@ -372,7 +384,17 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
-                          expected -> catalogRepo.deleteWithPrecondition(id, expected),
+                          expected -> {
+                            boolean deleted =
+                                catalogRepo.deleteWithPreconditionAndOverlayMarker(
+                                    id, expected, overlayMarkerVersion);
+                            if (!deleted
+                                && catalogRepo.metaForSafe(id).getPointerVersion() == expected) {
+                              throw new BaseResourceRepository.AbortRetryableException(
+                                  "catalog overlays changed during deletion");
+                            }
+                            return deleted;
+                          },
                           () -> catalogRepo.metaForSafe(id),
                           correlationId,
                           "catalog",
@@ -393,7 +415,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   private Catalog applyCatalogSpecPatch(

@@ -12,6 +12,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.repo.model.CatalogOverlayKey;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
@@ -30,9 +31,11 @@ import java.util.function.Function;
 public class CatalogOverlayRepository {
 
   private final GenericResourceRepository<CatalogOverlay, CatalogOverlayKey> repo;
+  private final PointerStore pointerStore;
 
   @Inject
   public CatalogOverlayRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this.pointerStore = pointerStore;
     repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -55,12 +58,9 @@ public class CatalogOverlayRepository {
       CatalogOverlay overlay,
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
-      long expectedIntegrationMarkerVersion) {
+      Map<String, Long> parentMarkerVersions) {
     return createAttachedWithMeta(
-            overlay,
-            requiredPointerVersions,
-            requiredAbsentPointers,
-            expectedIntegrationMarkerVersion)
+            overlay, requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions)
         .isPresent();
   }
 
@@ -68,50 +68,63 @@ public class CatalogOverlayRepository {
       CatalogOverlay overlay,
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
-      long expectedIntegrationMarkerVersion) {
+      Map<String, Long> parentMarkerVersions) {
     return createAttachedWithMetaAndCompanions(
-        overlay,
-        requiredPointerVersions,
-        requiredAbsentPointers,
-        expectedIntegrationMarkerVersion,
-        null);
+        overlay, requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions, null);
   }
 
   /**
-   * Creates an overlay, advancing its integration's dependency marker and publishing the caller's
-   * companion operations in the same atomic pointer transaction. The companions carry the catalog
-   * the overlay owns, and an idempotency receipt when the create is keyed, so an overlay can never
-   * be visible without its catalog.
+   * Creates an overlay while both referenced parents are at the observed versions, publishing the
+   * Integration and Catalog dependency pointers and advancing both dependency markers atomically.
+   * The optional companion is an idempotency receipt, so it cannot lag the visible resource.
    */
   public Optional<ResourceWithMeta<CatalogOverlay>> createAttachedWithMetaAndCompanions(
       CatalogOverlay overlay,
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
-      long expectedIntegrationMarkerVersion,
+      Map<String, Long> parentMarkerVersions,
       Function<ResourceWithMeta<CatalogOverlay>, List<PointerStore.CasOp>> companions) {
-    String integrationMarker =
-        Keys.catalogIntegrationOverlaysMarker(
-            overlay.getResourceId().getAccountId(), overlay.getIntegrationId().getId());
     return repo.createWithMeta(
         overlay,
         new PointerConditions(
-            requiredPointerVersions,
-            requiredAbsentPointers,
-            Map.of(integrationMarker, expectedIntegrationMarkerVersion)),
+            requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions),
         companions);
   }
 
-  /**
-   * Deletes an overlay and the catalog it owns in one atomic pointer transaction. The caller
-   * supplies the owned catalog's delete operations; an empty list means that catalog is already
-   * gone, which a retried cascade treats as work already done.
-   */
-  public boolean deleteWithOwnedCatalog(
-      ResourceId overlayId,
-      long expectedPointerVersion,
-      List<PointerStore.CasOp> ownedCatalogDeletes) {
-    return repo.deleteWithPreconditionAndCompanions(
-        key(overlayId), expectedPointerVersion, ownedCatalogDeletes);
+  public boolean beginDeletion(ResourceId overlayId, long expectedPointerVersion) {
+    if (expectedPointerVersion <= 0L) return false;
+    String canonical = Keys.catalogOverlayPointerById(overlayId.getAccountId(), overlayId.getId());
+    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
+    if (pointerStore.get(fence).isPresent()) {
+      return pointerStore
+          .get(canonical)
+          .map(pointer -> pointer.getVersion() == expectedPointerVersion)
+          .orElse(false);
+    }
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheck(canonical, expectedPointerVersion),
+            new PointerStore.CasCheckAbsent(Keys.accountDeletionMarker(overlayId.getAccountId())),
+            new PointerStore.CasUpsert(
+                fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
+  }
+
+  public long deletionFenceVersion(ResourceId overlayId) {
+    return pointerStore
+        .get(Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId()))
+        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
+        .orElse(0L);
+  }
+
+  /** Removes the Overlay, both dependency pointers, and its deletion fence atomically. */
+  public boolean deleteWithFence(
+      ResourceId overlayId, long expectedPointerVersion, long expectedFenceVersion) {
+    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        key(overlayId),
+        expectedPointerVersion,
+        PointerConditions.none(),
+        Map.of(fence, expectedFenceVersion));
   }
 
   public boolean update(CatalogOverlay overlay, long expectedPointerVersion) {
@@ -120,24 +133,16 @@ public class CatalogOverlayRepository {
 
   public Optional<MutationMeta> updateWithMetaUnlessIntegrationDeleting(
       CatalogOverlay overlay, long expectedPointerVersion) {
-    return updateWithMetaUnlessIntegrationDeleting(overlay, expectedPointerVersion, List.of());
-  }
-
-  /**
-   * Updates an overlay and publishes the caller's companion operations in the same transaction. A
-   * rename carries the owned catalog's rename operations here, so the overlay and its catalog can
-   * never end up under different names.
-   */
-  public Optional<MutationMeta> updateWithMetaUnlessIntegrationDeleting(
-      CatalogOverlay overlay, long expectedPointerVersion, List<PointerStore.CasOp> companions) {
-    String fence =
+    String integrationFence =
         Keys.catalogIntegrationDeletionMarker(
             overlay.getResourceId().getAccountId(), overlay.getIntegrationId().getId());
+    String overlayFence =
+        Keys.catalogOverlayDeletionMarker(
+            overlay.getResourceId().getAccountId(), overlay.getResourceId().getId());
     return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
         overlay,
         expectedPointerVersion,
-        new PointerConditions(Map.of(), Set.of(fence), Map.of()),
-        companions);
+        new PointerConditions(Map.of(), Set.of(integrationFence, overlayFence), Map.of()));
   }
 
   public Optional<ResourceWithMeta<CatalogOverlay>> replaceIdentityAttachedWithMeta(
@@ -146,16 +151,14 @@ public class CatalogOverlayRepository {
       CatalogOverlay replacement,
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
-      Map<String, Long> integrationMarkerVersions,
-      List<PointerStore.CasOp> companions) {
+      Map<String, Long> parentMarkerVersions) {
     return repo.replaceIdentityWithMeta(
         current,
         expectedPointerVersion,
         replacement,
         new PointerConditions(
-            requiredPointerVersions, requiredAbsentPointers, integrationMarkerVersions),
-        Map.of(),
-        companions);
+            requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions),
+        Map.of());
   }
 
   public boolean deleteWithPrecondition(ResourceId overlayId, long expectedPointerVersion) {
@@ -168,6 +171,10 @@ public class CatalogOverlayRepository {
 
   public void deleteOrConfirmAbsent(ResourceId overlayId) {
     repo.deleteOrConfirmAbsent(key(overlayId));
+    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
+    pointerStore
+        .get(fence)
+        .ifPresent(pointer -> pointerStore.compareAndDelete(fence, pointer.getVersion()));
   }
 
   public Optional<CatalogOverlay> getById(ResourceId overlayId) {
@@ -232,6 +239,12 @@ public class CatalogOverlayRepository {
         nextOut);
   }
 
+  public List<ResourceWithMeta<CatalogOverlay>> listByCatalogWithMetaConsistent(
+      String accountId, String catalogId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefixWithMetaConsistent(
+        Keys.catalogOverlayPointerByCatalogPrefix(accountId, catalogId), limit, pageToken, nextOut);
+  }
+
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogOverlayPointerByNamePrefix(accountId));
   }
@@ -239,6 +252,11 @@ public class CatalogOverlayRepository {
   public int countByIntegration(String accountId, String integrationId) {
     return repo.countByPrefixConsistent(
         Keys.catalogOverlayPointerByIntegrationPrefix(accountId, integrationId));
+  }
+
+  public int countByCatalog(String accountId, String catalogId) {
+    return repo.countByPrefixConsistent(
+        Keys.catalogOverlayPointerByCatalogPrefix(accountId, catalogId));
   }
 
   public MutationMeta metaFor(ResourceId overlayId) {

@@ -349,8 +349,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     var pc = principal.get();
     authz.require(pc, "table.write");
 
-    new CatalogSurfaceWritePolicy(graphView, catalogRepo)
-        .requireWritableTable(state.tableId, correlationId());
+    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(state.tableId, correlationId());
 
     snapshots
         .getById(state.tableId, state.snapshotId)

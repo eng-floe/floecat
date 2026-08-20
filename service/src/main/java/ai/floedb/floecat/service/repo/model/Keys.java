@@ -1142,6 +1142,38 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/catalog-overlays/by-integration/" + encode(iid) + "/";
   }
 
+  public static String catalogOverlayPointerByCatalog(
+      String accountId, String catalogId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/"
+        + encode(tid)
+        + "/catalog-overlays/by-catalog/"
+        + encode(cid)
+        + "/"
+        + encode(oid);
+  }
+
+  public static String catalogOverlayPointerByCatalogPrefix(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-catalog/" + encode(cid) + "/";
+  }
+
+  /** Fixed-key generation marker advanced by every overlay attachment to this catalog. */
+  public static String catalogOverlaysMarker(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalogs/overlays-marker/" + encode(cid);
+  }
+
+  public static String catalogOverlayDeletionMarker(String accountId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/deleting/" + encode(oid);
+  }
+
   public static String catalogOverlayBlobUri(String accountId, String overlayId, String sha256) {
     String tid = req("account_id", accountId);
     String oid = req("overlay_id", overlayId);

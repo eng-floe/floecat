@@ -28,7 +28,6 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -42,15 +41,9 @@ public final class CatalogSurfaceWritePolicy {
   private static final String PATH_DELIM = "\u001F";
 
   private final CatalogGraphView graphView;
-  private final CatalogRepository catalogs;
 
   public CatalogSurfaceWritePolicy(CatalogGraphView graphView) {
-    this(graphView, null);
-  }
-
-  public CatalogSurfaceWritePolicy(CatalogGraphView graphView, CatalogRepository catalogs) {
     this.graphView = Objects.requireNonNull(graphView, "catalog graph view is required");
-    this.catalogs = catalogs;
   }
 
   /**
@@ -82,7 +75,6 @@ public final class CatalogSurfaceWritePolicy {
   public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, field, corr);
     rejectSystemId(catalogId, "catalog", corr);
-    rejectOverlayOwnedCatalog(catalogId, corr);
     return requireVisibleCatalog(catalogId, field, corr);
   }
 
@@ -101,7 +93,6 @@ public final class CatalogSurfaceWritePolicy {
     if (namespace.origin() == GraphNodeOrigin.SYSTEM) {
       throw systemObjectImmutable(corr, namespaceId, "namespace");
     }
-    rejectOverlayOwnedCatalog(namespace.catalogId(), corr);
     return namespace;
   }
 
@@ -115,7 +106,6 @@ public final class CatalogSurfaceWritePolicy {
   public void requireDeletableCatalog(ResourceId catalogId, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
     rejectSystemId(catalogId, "catalog", corr);
-    rejectOverlayOwnedCatalog(catalogId, corr);
   }
 
   /**
@@ -129,18 +119,15 @@ public final class CatalogSurfaceWritePolicy {
   public void requireDeletableNamespace(ResourceId namespaceId, String corr) {
     CatalogSurfaceSupport.ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
     rejectSystemId(namespaceId, "namespace", corr);
-    var namespace =
-        graphView
-            .resolve(namespaceId)
-            .filter(NamespaceNode.class::isInstance)
-            .map(NamespaceNode.class::cast);
-    namespace
+    graphView
+        .resolve(namespaceId)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
         .filter(ns -> ns.origin() == GraphNodeOrigin.SYSTEM)
         .ifPresent(
             ns -> {
               throw systemObjectImmutable(corr, namespaceId, "namespace");
             });
-    namespace.ifPresent(ns -> rejectOverlayOwnedCatalog(ns.catalogId(), corr));
   }
 
   public void requireNamespaceInCatalog(
@@ -252,8 +239,7 @@ public final class CatalogSurfaceWritePolicy {
   }
 
   private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
-    if (node instanceof UserTableNode userTable) {
-      rejectOverlayOwnedCatalog(userTable.catalogId(), corr);
+    if (node instanceof UserTableNode) {
       return;
     }
 
@@ -269,28 +255,9 @@ public final class CatalogSurfaceWritePolicy {
       if (isSystemViewNode(vn)) {
         throw systemObjectImmutable(corr, viewId, "view");
       }
-      rejectOverlayOwnedCatalog(vn.catalogId(), corr);
       return;
     }
     throw GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId()));
-  }
-
-  private void rejectOverlayOwnedCatalog(ResourceId catalogId, String corr) {
-    if (catalogs == null) {
-      return;
-    }
-    catalogs
-        .getById(catalogId)
-        .filter(catalog -> catalog.hasOverlayId())
-        .ifPresent(
-            catalog -> {
-              throw GrpcErrors.permissionDenied(
-                  corr,
-                  null,
-                  Map.of(
-                      "id", catalogId.getId(),
-                      "overlay_id", catalog.getOverlayId().getId()));
-            });
   }
 
   private List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {

@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -30,7 +31,9 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @ApplicationScoped
 public class CatalogRepository {
@@ -77,6 +80,17 @@ public class CatalogRepository {
         expectedPointerVersion);
   }
 
+  public boolean deleteWithPreconditionAndOverlayMarker(
+      ResourceId catalogId, long expectedPointerVersion, long expectedMarkerVersion) {
+    String marker = Keys.catalogOverlaysMarker(catalogId.getAccountId(), catalogId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new CatalogKey(catalogId.getAccountId(), catalogId.getId()),
+        expectedPointerVersion,
+        new PointerConditions(
+            Map.of(), expectedMarkerVersion == 0L ? Set.of(marker) : Set.of(), Map.of()),
+        expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
+  }
+
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
     return repo.getByKey(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
@@ -88,29 +102,6 @@ public class CatalogRepository {
 
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
-  }
-
-  /**
-   * Pointer operations that would create this catalog, for a caller that must commit it in the same
-   * atomic transaction as another resource. Overlay creation uses this so an overlay and the
-   * catalog it owns become visible together.
-   */
-  public List<PointerStore.CasOp> prepareCreateOps(Catalog catalog) {
-    return repo.prepareCreateOps(catalog);
-  }
-
-  /**
-   * Pointer operations that would rename or otherwise update this catalog, for a caller committing
-   * it alongside another resource. Overlay rename uses this so the overlay and the catalog it owns
-   * never carry different names.
-   */
-  public List<PointerStore.CasOp> prepareUpdateOps(Catalog catalog, long expectedPointerVersion) {
-    return repo.prepareUpdateOps(catalog, expectedPointerVersion);
-  }
-
-  /** Pointer operations that would delete this catalog, for an owning resource's cascade. */
-  public List<PointerStore.CasOp> prepareDeleteOps(ResourceId catalogId) {
-    return repo.prepareDeleteOps(new CatalogKey(catalogId.getAccountId(), catalogId.getId()));
   }
 
   public List<Catalog> listConsistent(

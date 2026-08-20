@@ -33,6 +33,5 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
   authority. Cascading integration deletion additionally requires `catalog-overlay.write` because
   it deletes the dependent overlay resources.
 - `catalog-overlay.write` administers overlay records. Creating an overlay additionally requires
-  `catalog-integration.use`. Creating, renaming, and deleting an overlay additionally requires
-  `catalog.write`, because each of those operations creates, renames, or deletes the Catalog the
-  overlay owns.
+  `catalog-integration.use` and `catalog.write`, because it binds an integration to an existing
+  writable target Catalog. Renaming or deleting an overlay does not rename or delete that Catalog.

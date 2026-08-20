@@ -131,7 +131,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private void ensureTableWritable(ResourceId tableId, String corr) {
-    new CatalogSurfaceWritePolicy(graphView, catalogRepo).requireWritableTable(tableId, corr);
+    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {

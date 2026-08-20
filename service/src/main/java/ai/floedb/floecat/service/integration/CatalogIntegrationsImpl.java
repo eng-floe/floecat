@@ -10,6 +10,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_ALREADY_EXISTS;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_CHANGED;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_DELETION_IN_PROGRESS;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_DEPENDENT_OVERLAYS;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.FIELD;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SELECTOR_REQUIRED;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED;
@@ -46,7 +47,6 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
@@ -72,7 +72,6 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
 
   @Inject CatalogIntegrationRepository integrations;
   @Inject CatalogOverlayRepository overlays;
-  @Inject CatalogRepository catalogs;
   @Inject MarkerStore markerStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -356,10 +355,14 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       long markerVersion =
           markerStore.catalogIntegrationOverlaysMarkerVersion(current.value().getResourceId());
       if (markerVersion > 0L) {
+        int dependents =
+            overlays.countByIntegration(
+                current.value().getResourceId().getAccountId(),
+                current.value().getResourceId().getId());
         throw GrpcErrors.conflict(
             corr,
-            CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
-            Map.of("reason", "dependent overlays exist"));
+            CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
+            Map.of("dependent_overlays", Integer.toString(dependents)));
       }
       var replacement =
           applyAuthentication(
@@ -627,11 +630,13 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                     CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
                     Map.of("reason", "cascade deletion in progress"));
               long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
-              if (markerVersion > 0L)
+              if (markerVersion > 0L) {
+                int dependents = overlays.countByIntegration(pc.getAccountId(), id.getId());
                 throw GrpcErrors.conflict(
                     corr,
-                    CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
-                    Map.of("reason", "dependent overlays exist"));
+                    CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
+                    Map.of("dependent_overlays", Integer.toString(dependents)));
+              }
               credentialCleanup.schedule(current.get().value());
               try {
                 if (!integrations.deleteWithPreconditionAndNoOverlayMarker(
@@ -668,16 +673,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               integrationId.getAccountId(), integrationId.getId(), 100, "", next);
       if (dependents.isEmpty()) break;
       for (var dependent : dependents) {
-        if (!dependent.value().hasCatalogId()) {
-          throw new BaseResourceRepository.CorruptionException(
-              "overlay is missing its owned catalog: " + dependent.value().getResourceId().getId(),
-              null);
+        ResourceId overlayId = dependent.value().getResourceId();
+        if (!overlays.beginDeletion(overlayId, dependent.meta().getPointerVersion())) {
+          throw new BaseResourceRepository.AbortRetryableException(
+              "overlay changed while integration cascade deletion was fenced");
         }
-        var ownedCatalogDeletes = catalogs.prepareDeleteOps(dependent.value().getCatalogId());
-        if (!overlays.deleteWithOwnedCatalog(
-            dependent.value().getResourceId(),
-            dependent.meta().getPointerVersion(),
-            ownedCatalogDeletes)) {
+        long overlayFenceVersion = overlays.deletionFenceVersion(overlayId);
+        if (overlayFenceVersion == 0L
+            || !overlays.deleteWithFence(
+                overlayId, dependent.meta().getPointerVersion(), overlayFenceVersion)) {
           throw new BaseResourceRepository.AbortRetryableException(
               "overlay changed during integration cascade deletion");
         }

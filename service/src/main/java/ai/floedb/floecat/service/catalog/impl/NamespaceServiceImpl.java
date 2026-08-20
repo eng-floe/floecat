@@ -621,7 +621,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   private static byte[] canonicalFingerprint(

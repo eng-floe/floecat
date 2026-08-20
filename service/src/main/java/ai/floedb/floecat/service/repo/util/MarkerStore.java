@@ -47,6 +47,11 @@ public class MarkerStore {
     return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);
   }
 
+  public long catalogOverlaysMarkerVersion(ResourceId catalogId) {
+    String key = Keys.catalogOverlaysMarker(catalogId.getAccountId(), catalogId.getId());
+    return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);
+  }
+
   public void bumpCatalogMarker(ResourceId catalogId) {
     String key = Keys.catalogChildrenMarker(catalogId.getAccountId(), catalogId.getId());
     bumpMarker(catalogId.getAccountId(), key);

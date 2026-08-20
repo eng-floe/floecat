@@ -859,7 +859,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   /**
    * Pointer operations that would update this resource from {@code expectedCanonicalVersion},
    * without committing anything, so a caller can fold them into another repository's atomic
-   * mutation. Renaming an overlay uses this to rename the catalog it owns in the same transaction.
+   * mutation. Callers use this when a related resource must move in the same transaction.
    */
   public List<PointerStore.CasOp> prepareUpdateOps(T updatedValue, long expectedCanonicalVersion) {
     return prepareUpdate(updatedValue, expectedCanonicalVersion).ops;

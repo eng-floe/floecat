@@ -98,7 +98,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   @Override

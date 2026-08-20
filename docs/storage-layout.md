@@ -98,6 +98,9 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/catalog-overlays/by-id/{overlay_id}
 /accounts/{account_id}/catalog-overlays/by-name/{overlay_name}
 /accounts/{account_id}/catalog-overlays/by-integration/{integration_id}/{overlay_id}
+/accounts/{account_id}/catalog-overlays/by-catalog/{catalog_id}/{overlay_id}
+/accounts/{account_id}/catalog-overlays/deleting/{overlay_id}
+/accounts/{account_id}/catalogs/overlays-marker/{catalog_id}
 /accounts/{account_id}/deleting
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
@@ -105,10 +108,10 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 ```
 
-An overlay owns a Catalog whose display name is the overlay's own, so the ordinary
-`catalogs/by-name` pointer is what keeps top-level names unique. The owned catalog's pointer set is
-written, renamed, and deleted in the same transaction as the overlay's, so the two can never be
-visible under different names or outlive each other.
+An overlay references an existing Catalog. Its `by-integration` and `by-catalog` dependency
+pointers are written and removed atomically with the overlay resource. Fixed generation markers on
+both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
+while an overlay is retired. Catalog and overlay names and lifecycles remain independent.
 
 Catalog integration secret payloads are stored outside the resource blob through SecretsManager:
 

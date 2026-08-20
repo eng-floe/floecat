@@ -92,7 +92,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */

@@ -746,7 +746,7 @@ public class TransactionIntentApplierSupport {
     }
 
     try {
-      var writePolicy = new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+      var writePolicy = new CatalogSurfaceWritePolicy(graphView);
       if (checkExistingTable) {
         writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
       }

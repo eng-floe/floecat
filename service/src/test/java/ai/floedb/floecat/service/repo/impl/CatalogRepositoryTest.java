@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -166,5 +168,26 @@ class CatalogRepositoryTest {
 
     var after = catalogRepo.getByName(account, "sales").orElseThrow();
     assertEquals("v2", after.getDescription());
+  }
+
+  @Test
+  void deleteIsFencedByOverlayDependencyMarker() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var rid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId("catalog")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    catalogRepo.create(Catalog.newBuilder().setResourceId(rid).setDisplayName("analytics").build());
+    String marker = Keys.catalogOverlaysMarker(account, rid.getId());
+    assertTrue(
+        ptr.compareAndSet(marker, 0L, PointerReferences.opaqueMarkerPointer(marker, marker, 1L)));
+
+    assertFalse(catalogRepo.deleteWithPreconditionAndOverlayMarker(rid, 1L, 0L));
+    assertTrue(catalogRepo.getById(rid).isPresent());
+    assertTrue(catalogRepo.deleteWithPreconditionAndOverlayMarker(rid, 1L, 1L));
+    assertTrue(catalogRepo.getById(rid).isEmpty());
+    assertTrue(ptr.get(marker).isEmpty());
   }
 }

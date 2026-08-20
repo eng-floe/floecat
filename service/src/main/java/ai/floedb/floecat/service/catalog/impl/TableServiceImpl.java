@@ -113,7 +113,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView, catalogRepo);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   @Override
