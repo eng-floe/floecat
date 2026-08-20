@@ -96,7 +96,8 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   validation in a follow-on change; this service does not yet perform connectivity validation or
   reconciliation. Catalog endpoint URIs must
   be hierarchical HTTP(S) URLs and cannot contain user-info, secret-bearing query parameters, or
-  fragments. Type and endpoint are immutable through update. The API exposes `CM_REPLACE` and
+  fragments. Type is immutable through update; endpoint updates preserve the Integration identity
+  while advancing its etag. The API exposes `CM_REPLACE` and
   `CM_RETURN_EXISTING` as create-conflict primitives.
   Replacement publishes a new resource identity and atomically swaps the name pointer before the
   old identity is removed. Idempotent creates publish the

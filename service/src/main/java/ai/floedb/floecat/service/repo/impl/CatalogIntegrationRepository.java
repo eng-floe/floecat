@@ -126,6 +126,7 @@ public class CatalogIntegrationRepository {
   }
 
   public boolean beginCascadeDeletion(ResourceId integrationId, long expectedPointerVersion) {
+    if (expectedPointerVersion <= 0L) return false;
     String canonical =
         Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
     String fence =
@@ -180,6 +181,10 @@ public class CatalogIntegrationRepository {
 
   public Optional<CatalogIntegration> getById(ResourceId integrationId) {
     return repo.getByKey(key(integrationId));
+  }
+
+  public Optional<CatalogIntegration> getByIdForMutation(ResourceId integrationId) {
+    return repo.getByKeyForMutation(key(integrationId));
   }
 
   public Optional<ResourceWithMeta<CatalogIntegration>> getByIdWithMeta(ResourceId integrationId) {

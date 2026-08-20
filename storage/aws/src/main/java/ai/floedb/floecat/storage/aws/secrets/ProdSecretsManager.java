@@ -212,6 +212,11 @@ public class ProdSecretsManager implements SecretsManager {
       return true;
     } catch (ResourceExistsException exists) {
       return false;
+    } catch (InvalidRequestException unavailable) {
+      // AWS retains a force-deleted secret name briefly while background deletion completes.
+      // Treat that immutable generation as occupied so callers can reserve the next generation.
+      if (isPendingDeletion(unavailable)) return false;
+      throw unavailable;
     }
   }
 

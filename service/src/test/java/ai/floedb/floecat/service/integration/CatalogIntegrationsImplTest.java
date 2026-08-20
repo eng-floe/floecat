@@ -355,7 +355,7 @@ class CatalogIntegrationsImplTest {
                     current, MutationMeta.newBuilder().setPointerVersion(7L).build())));
     when(service.integrations.updateWithMetaUnlessDeleting(any(), eq(7L)))
         .thenReturn(Optional.empty());
-    when(service.integrations.getById(integrationId)).thenReturn(Optional.of(winner));
+    when(service.integrations.getByIdForMutation(integrationId)).thenReturn(Optional.of(winner));
 
     assertThrows(
         StatusRuntimeException.class,
@@ -809,30 +809,37 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
-  void updateRejectsImmutableCatalogUri() {
+  void updateCatalogUriPreservesIdentityAndAdvancesGeneration() {
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var current =
         CatalogIntegration.newBuilder()
             .setResourceId(integrationId)
+            .setDisplayName("Warehouse")
             .setCatalogUri("https://catalog.example")
             .build();
-    var error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .updateCatalogIntegration(
-                        UpdateCatalogIntegrationRequest.newBuilder()
-                            .setIntegrationId(integrationId)
-                            .setSpec(
-                                CatalogIntegrationSpec.newBuilder()
-                                    .setCatalogUri("https://other.example"))
-                            .setUpdateMask(FieldMask.newBuilder().addPaths("catalog_uri"))
-                            .build())
-                    .await()
-                    .indefinitely());
-    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
-    verify(service.integrations, never()).update(any(), anyLong());
+    var currentMeta = MutationMeta.newBuilder().setPointerVersion(4L).build();
+    var updatedMeta = MutationMeta.newBuilder().setPointerVersion(5L).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(current, currentMeta)));
+    when(service.integrations.updateWithMetaUnlessDeleting(any(), eq(4L)))
+        .thenReturn(Optional.of(updatedMeta));
+
+    var response =
+        service
+            .updateCatalogIntegration(
+                UpdateCatalogIntegrationRequest.newBuilder()
+                    .setIntegrationId(integrationId)
+                    .setSpec(
+                        CatalogIntegrationSpec.newBuilder().setCatalogUri("https://other.example"))
+                    .setUpdateMask(FieldMask.newBuilder().addPaths("catalog_uri"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(integrationId, response.getIntegration().getResourceId());
+    assertEquals("Warehouse", response.getIntegration().getDisplayName());
+    assertEquals("https://other.example", response.getIntegration().getCatalogUri());
+    assertEquals(5L, response.getMeta().getPointerVersion());
   }
 
   @Test

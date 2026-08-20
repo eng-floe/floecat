@@ -6,6 +6,14 @@
  */
 package ai.floedb.floecat.service.integration;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_ALREADY_EXISTS;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_CHANGED;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CATALOG_INTEGRATION_DELETION_IN_PROGRESS;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.FIELD;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SELECTOR_REQUIRED;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED;
+
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -53,7 +61,7 @@ import java.util.Set;
 
 @GrpcService
 public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogIntegrations {
-  private static final Set<String> MUTABLE_PATHS = Set.of("display_name");
+  private static final Set<String> MUTABLE_PATHS = Set.of("display_name", "catalog_uri");
 
   @Inject CatalogIntegrationRepository integrations;
   @Inject MarkerStore markerStore;
@@ -101,7 +109,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
               if (!request.hasIntegrationId() && !request.hasDisplayName())
                 throw GrpcErrors.invalidArgument(
-                    pc.getCorrelationId(), null, Map.of("field", "selector"));
+                    pc.getCorrelationId(), SELECTOR_REQUIRED, Map.of("field", "selector"));
               var row =
                   (request.hasIntegrationId()
                           ? integrations.getByIdWithMeta(
@@ -115,7 +123,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                                       pc.getCorrelationId()))
                               : throwMissingIntegrationSelector())
                       .orElseThrow(
-                          () -> GrpcErrors.notFound(pc.getCorrelationId(), null, Map.of()));
+                          () ->
+                              GrpcErrors.notFound(
+                                  pc.getCorrelationId(),
+                                  CATALOG_INTEGRATION,
+                                  Map.of(
+                                      "id",
+                                      request.hasIntegrationId()
+                                          ? request.getIntegrationId().getId()
+                                          : request.getDisplayName())));
               return GetCatalogIntegrationResponse.newBuilder()
                   .setIntegration(row.value())
                   .setMeta(row.meta())
@@ -164,7 +180,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   || spec.getAuthentication().getConfigurationCase()
                       == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
                 throw GrpcErrors.invalidArgument(
-                    corr, null, Map.of("field", "authentication.configuration"));
+                    corr, FIELD, Map.of("field", "authentication.configuration"));
               }
               PreparedAuthentication preparedAuthentication =
                   prepareAuthentication(
@@ -301,7 +317,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         return new CreateOutcome(current, true);
       if (mode == CreateMode.CM_RETURN_EXISTING) return new CreateOutcome(current, false);
       if (mode != CreateMode.CM_REPLACE)
-        throw GrpcErrors.alreadyExists(corr, null, Map.of("display_name", name));
+        throw GrpcErrors.alreadyExists(
+            corr, CATALOG_INTEGRATION_ALREADY_EXISTS, Map.of("display_name", name));
       long markerVersion =
           markerStore.catalogIntegrationOverlaysMarkerVersion(current.value().getResourceId());
       var replacement =
@@ -316,15 +333,21 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   authentication)
               .build();
       credentialCleanup.schedule(current.value());
-      var replaced =
-          integrations.replaceIdentityWithMeta(
-              current.value(), current.meta().getPointerVersion(), replacement, markerVersion);
-      if (replaced.isEmpty()) {
-        throw new BaseResourceRepository.AbortRetryableException(
-            "integration dependencies changed during replacement");
+      try {
+        var replaced =
+            integrations.replaceIdentityWithMeta(
+                current.value(), current.meta().getPointerVersion(), replacement, markerVersion);
+        if (replaced.isEmpty()) {
+          throw new BaseResourceRepository.AbortRetryableException(
+              "integration dependencies changed during replacement");
+        }
+        credentialCleanup.cleanIfSuperseded(current.value());
+        return new CreateOutcome(replaced.get(), true);
+      } catch (RuntimeException failure) {
+        credentialCleanup.cancelIfResourceUnchanged(
+            current.value(), current.meta().getPointerVersion());
+        throw failure;
       }
-      credentialCleanup.cleanIfSuperseded(current.value());
-      return new CreateOutcome(replaced.get(), true);
     }
     var desired =
         applyAuthentication(
@@ -365,7 +388,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       if (mode != CreateMode.CM_ERROR_IF_EXISTS)
         throw new BaseResourceRepository.AbortRetryableException(
             "integration name owner changed during create");
-      throw GrpcErrors.alreadyExists(corr, null, Map.of("display_name", name));
+      throw GrpcErrors.alreadyExists(
+          corr, CATALOG_INTEGRATION_ALREADY_EXISTS, Map.of("display_name", name));
     }
   }
 
@@ -379,32 +403,44 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
               String corr = pc.getCorrelationId();
               ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
-              FieldMask mask =
+              Set<String> paths =
                   requiredMask(request.hasUpdateMask() ? request.getUpdateMask() : null, corr);
               var current =
                   integrations
                       .getByIdWithMeta(id)
-                      .orElseThrow(() -> GrpcErrors.notFound(corr, null, Map.of("id", id.getId())));
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
               MutationOps.BaseServiceChecks.enforcePreconditions(
                   corr, current.meta(), request.getPrecondition());
-              CatalogIntegration desired =
-                  current.value().toBuilder()
-                      .setDisplayName(
-                          mustNonEmpty(request.getSpec().getDisplayName(), "display_name", corr))
-                      .setUpdatedAt(nowTs())
-                      .build();
+              var desiredBuilder = current.value().toBuilder();
+              if (paths.contains("display_name")) {
+                desiredBuilder.setDisplayName(
+                    mustNonEmpty(request.getSpec().getDisplayName(), "display_name", corr));
+              }
+              if (paths.contains("catalog_uri")) {
+                desiredBuilder.setCatalogUri(
+                    validateCatalogUri(request.getSpec().getCatalogUri(), corr));
+              }
+              CatalogIntegration desired = desiredBuilder.setUpdatedAt(nowTs()).build();
               try {
                 var meta =
                     integrations
                         .updateWithMetaUnlessDeleting(desired, current.meta().getPointerVersion())
-                        .orElseThrow(() -> GrpcErrors.preconditionFailed(corr, null, Map.of()));
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.preconditionFailed(
+                                    corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
                 return UpdateCatalogIntegrationResponse.newBuilder()
                     .setIntegration(desired)
                     .setMeta(meta)
                     .build();
               } catch (BaseResourceRepository.NameConflictException e) {
                 throw GrpcErrors.alreadyExists(
-                    corr, null, Map.of("display_name", desired.getDisplayName()));
+                    corr,
+                    CATALOG_INTEGRATION_ALREADY_EXISTS,
+                    Map.of("display_name", desired.getDisplayName()));
               }
             }),
         correlationId());
@@ -424,12 +460,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   || request.getAuthentication().getConfigurationCase()
                       == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
                 throw GrpcErrors.invalidArgument(
-                    corr, null, Map.of("field", "authentication.configuration"));
+                    corr, FIELD, Map.of("field", "authentication.configuration"));
               }
               var current =
                   integrations
                       .getByIdWithMeta(id)
-                      .orElseThrow(() -> GrpcErrors.notFound(corr, null, Map.of("id", id.getId())));
+                      .orElseThrow(
+                          () ->
+                              GrpcErrors.notFound(
+                                  corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
               MutationOps.BaseServiceChecks.enforcePreconditions(
                   corr, current.meta(), request.getPrecondition());
               long nextGeneration =
@@ -470,13 +509,18 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                 var meta =
                     integrations
                         .updateWithMetaUnlessDeleting(desired, current.meta().getPointerVersion())
-                        .orElseThrow(() -> GrpcErrors.preconditionFailed(corr, null, Map.of()));
+                        .orElseThrow(
+                            () ->
+                                GrpcErrors.preconditionFailed(
+                                    corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
                 credentialCleanup.cleanIfSuperseded(current.value());
                 return UpdateCatalogIntegrationAuthenticationResponse.newBuilder()
                     .setIntegration(desired)
                     .setMeta(meta)
                     .build();
               } catch (RuntimeException definiteFailure) {
+                credentialCleanup.cancelIfResourceUnchanged(
+                    current.value(), current.meta().getPointerVersion());
                 cleanupPreparedAuthenticationUnlessPublished(id, prepared);
                 throw definiteFailure;
               }
@@ -497,7 +541,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               var current = integrations.getByIdWithMeta(id);
               if (current.isEmpty()) {
                 if (hasMeaningfulPrecondition(request.getPrecondition()))
-                  throw GrpcErrors.notFound(corr, null, Map.of("id", id.getId()));
+                  throw GrpcErrors.notFound(corr, CATALOG_INTEGRATION, Map.of("id", id.getId()));
                 return DeleteCatalogIntegrationResponse.newBuilder()
                     .setMeta(integrations.metaForSafe(id))
                     .build();
@@ -507,13 +551,21 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   corr, meta, request.getPrecondition());
               if (integrations.cascadeDeletionFenceVersion(id) > 0L)
                 throw GrpcErrors.conflict(
-                    corr, null, Map.of("reason", "cascade deletion in progress"));
+                    corr,
+                    CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
+                    Map.of("reason", "cascade deletion in progress"));
               long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
               credentialCleanup.schedule(current.get().value());
-              if (!integrations.deleteWithPreconditionAndOverlayMarker(
-                  id, meta.getPointerVersion(), markerVersion)) {
-                throw new BaseResourceRepository.AbortRetryableException(
-                    "integration dependencies changed during deletion");
+              try {
+                if (!integrations.deleteWithPreconditionAndOverlayMarker(
+                    id, meta.getPointerVersion(), markerVersion)) {
+                  throw new BaseResourceRepository.AbortRetryableException(
+                      "integration dependencies changed during deletion");
+                }
+              } catch (RuntimeException failure) {
+                credentialCleanup.cancelIfResourceUnchanged(
+                    current.get().value(), meta.getPointerVersion());
+                throw failure;
               }
               credentialCleanup.cleanIfSuperseded(current.get().value());
               return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
@@ -521,10 +573,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         correlationId());
   }
 
-  private static FieldMask requiredMask(FieldMask mask, String corr) {
-    if (mask == null || mask.getPathsCount() != 1 || !MUTABLE_PATHS.contains(mask.getPaths(0)))
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "update_mask"));
-    return mask;
+  private static Set<String> requiredMask(FieldMask mask, String corr) {
+    if (mask == null || mask.getPathsCount() == 0) {
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of("field", "update_mask"));
+    }
+    Set<String> paths = Set.copyOf(mask.getPathsList());
+    if (paths.size() != mask.getPathsCount() || !MUTABLE_PATHS.containsAll(paths)) {
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "update_mask"));
+    }
+    return paths;
   }
 
   private void cleanupPreparedAuthenticationUnlessPublished(
@@ -533,7 +590,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         == CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
       return;
     }
-    var published = integrations.getById(integrationId);
+    var published = integrations.getByIdForMutation(integrationId);
     if (published.isPresent()
         && published.get().hasAuthentication()
         && published.get().getAuthentication().getCredentialsConfigured()
@@ -551,7 +608,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
 
   private static void validateType(CatalogIntegrationType type, String corr) {
     if (type != CatalogIntegrationType.CIT_ICEBERG_REST && type != CatalogIntegrationType.CIT_UNITY)
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "type"));
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "type"));
   }
 
   private static void validateAuthenticationType(
@@ -561,14 +618,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     if (integrationType == CatalogIntegrationType.CIT_UNITY
         && configuration != CatalogAuthentication.ConfigurationCase.OAUTH_CLIENT_CREDENTIALS
         && configuration != CatalogAuthentication.ConfigurationCase.BEARER) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "authentication.configuration"));
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.configuration"));
     }
   }
 
   private static String validateCatalogUri(String value, String corr) {
     String candidate = value;
     if (candidate == null || candidate.isBlank() || candidate.indexOf('\0') >= 0)
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "catalog_uri"));
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "catalog_uri"));
     try {
       URI uri = URI.create(candidate);
       if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
@@ -595,7 +653,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       }
       return candidate;
     } catch (IllegalArgumentException e) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "catalog_uri"));
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "catalog_uri"));
     }
   }
 
@@ -608,12 +666,13 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       long generation,
       String corr) {
     if (requested.getCredentialsConfigured() || requested.getCredentialGeneration() != 0L) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "authentication.state"));
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "authentication.state"));
     }
     var configuration = requested.getConfigurationCase();
     var credential = credentials.getCredentialCase();
     if (configuration == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "authentication.configuration"));
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.configuration"));
     }
 
     switch (configuration) {
@@ -626,7 +685,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           scopes.add(requireNonBlank(scope, "authentication.scopes", corr));
         }
         if (scopes.size() != config.getScopesCount()) {
-          throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "authentication.scopes"));
+          throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "authentication.scopes"));
         }
         requireCredentialCase(
             credential, CatalogIntegrationCredentials.CredentialCase.OAUTH_CLIENT_SECRET, corr);
@@ -681,7 +740,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           }
           case CREDENTIALS_NOT_SET ->
               throw GrpcErrors.invalidArgument(
-                  corr, null, Map.of("field", "authentication.aws_sigv4.credentials"));
+                  corr, FIELD, Map.of("field", "authentication.aws_sigv4.credentials"));
         }
       }
       case CONFIGURATION_NOT_SET -> throw new IllegalStateException("handled above");
@@ -722,12 +781,12 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       CatalogIntegrationCredentials.CredentialCase expected,
       String corr) {
     if (actual == expected) return;
-    throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "credentials"));
+    throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "credentials"));
   }
 
   private static String requireNonBlank(String value, String field, String corr) {
     if (value == null || value.isBlank()) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", field));
+      throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", field));
     }
     return value.trim();
   }
@@ -747,7 +806,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     mustNonEmpty(id.getId(), "integration_id.id", correlationId());
     if (!accountId.equals(id.getAccountId()))
       throw GrpcErrors.invalidArgument(
-          correlationId(), null, Map.of("field", "integration_id.account_id"));
+          correlationId(), FIELD, Map.of("field", "integration_id.account_id"));
     return id.toBuilder().setAccountId(accountId).build();
   }
 }

@@ -101,6 +101,14 @@ class CatalogIntegrationRepositoryTest {
   }
 
   @Test
+  void cascadeDeletionRejectsNonPositiveExpectedVersion() {
+    var repo =
+        new CatalogIntegrationRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    assertFalse(repo.beginCascadeDeletion(id("integration"), 0L));
+  }
+
+  @Test
   void accountDeletionFenceRejectsNewResources() {
     var pointers = new InMemoryPointerStore();
     var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
@@ -118,7 +126,9 @@ class CatalogIntegrationRepositoryTest {
             .setDisplayName("warehouse")
             .build();
 
-    assertThrows(BaseResourceRepository.NotFoundException.class, () -> repo.create(integration));
+    assertThrows(
+        BaseResourceRepository.AccountDeletionInProgressException.class,
+        () -> repo.create(integration));
     assertTrue(repo.getById(integration.getResourceId()).isEmpty());
   }
 

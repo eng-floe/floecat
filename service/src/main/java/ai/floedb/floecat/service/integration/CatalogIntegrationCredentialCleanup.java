@@ -19,6 +19,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -52,6 +53,23 @@ public class CatalogIntegrationCredentialCleanup {
         == CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET) return;
     schedule(integrationId, generation);
     cleanIfSuperseded(integrationId, generation);
+  }
+
+  public boolean cancelIfResourceUnchanged(
+      CatalogIntegration integration, long expectedPointerVersion) {
+    if (!CatalogIntegrationCredentialStore.hasStoredCredentials(integration)
+        || expectedPointerVersion <= 0L) return false;
+    ResourceId integrationId = integration.getResourceId();
+    String markerKey =
+        key(integrationId, integration.getAuthentication().getCredentialGeneration());
+    Pointer marker = pointerStore.get(markerKey).orElse(null);
+    if (marker == null) return false;
+    String canonicalKey =
+        Keys.catalogIntegrationPointerById(integrationId.getAccountId(), integrationId.getId());
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheck(canonicalKey, expectedPointerVersion),
+            new PointerStore.CasDelete(markerKey, marker.getVersion())));
   }
 
   public Result drain(long deadlineMs, int pageSize) {
@@ -92,7 +110,7 @@ public class CatalogIntegrationCredentialCleanup {
     Pointer marker = pointerStore.get(key).orElse(null);
     if (marker == null) return false;
     try {
-      var current = integrations.getById(integrationId);
+      var current = integrations.getByIdForMutation(integrationId);
       if (current.isPresent()
           && CatalogIntegrationCredentialStore.hasStoredCredentials(current.get())
           && current.get().getAuthentication().getCredentialGeneration() == generation) {

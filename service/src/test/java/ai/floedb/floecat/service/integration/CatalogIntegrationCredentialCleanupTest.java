@@ -7,6 +7,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -22,6 +23,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.SecretValue;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +51,7 @@ class CatalogIntegrationCredentialCleanupTest {
     ResourceId id = id("integration");
     CatalogIntegration integration = storedIntegration(id, 7L);
     String marker = Keys.catalogIntegrationCredentialCleanupPointer("acct", "integration", 7L);
-    when(integrations.getById(id))
+    when(integrations.getByIdForMutation(id))
         .thenReturn(Optional.of(integration), Optional.empty(), Optional.empty());
     doThrow(new IllegalStateException("secrets unavailable"))
         .doNothing()
@@ -73,7 +75,7 @@ class CatalogIntegrationCredentialCleanupTest {
   @Test
   void preparedCredentialCleanupIsDurable() {
     ResourceId id = id("prepared");
-    when(integrations.getById(id)).thenReturn(Optional.empty());
+    when(integrations.getByIdForMutation(id)).thenReturn(Optional.empty());
     CatalogIntegrationCredentials prepared =
         CatalogIntegrationCredentials.newBuilder()
             .setBearerToken(SecretValue.newBuilder().setValue("token"))
@@ -86,6 +88,28 @@ class CatalogIntegrationCredentialCleanupTest {
         pointers
             .get(Keys.catalogIntegrationCredentialCleanupPointer("acct", "prepared", 3L))
             .isEmpty());
+  }
+
+  @Test
+  void failedReplacementCancelsMarkerOnlyWhileResourceIsUnchanged() {
+    ResourceId id = id("integration");
+    CatalogIntegration integration = storedIntegration(id, 7L);
+    String canonical = Keys.catalogIntegrationPointerById("acct", "integration");
+    String marker = Keys.catalogIntegrationCredentialCleanupPointer("acct", "integration", 7L);
+    assertTrue(
+        pointers.compareAndSet(
+            canonical, 0L, PointerReferences.opaqueMarkerPointer(canonical, canonical, 1L)));
+
+    cleanup.schedule(integration);
+    assertTrue(cleanup.cancelIfResourceUnchanged(integration, 1L));
+    assertTrue(pointers.get(marker).isEmpty());
+
+    cleanup.schedule(integration);
+    assertTrue(
+        pointers.compareAndSet(
+            canonical, 1L, PointerReferences.opaqueMarkerPointer(canonical, canonical, 2L)));
+    assertFalse(cleanup.cancelIfResourceUnchanged(integration, 1L));
+    assertTrue(pointers.get(marker).isPresent());
   }
 
   private static ResourceId id(String value) {

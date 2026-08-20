@@ -95,6 +95,33 @@ class CatalogIntegrationCredentialStoreTest {
   }
 
   @Test
+  void rotationAdvancesWhenReservationReportsGenerationOccupied() {
+    var secretsManager = mock(SecretsManager.class);
+    var store = new CatalogIntegrationCredentialStore();
+    store.secretsManager = secretsManager;
+    var integrationId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("integration")
+            .setKind(ResourceKind.RK_CATALOG_INTEGRATION)
+            .build();
+    var credentials =
+        CatalogIntegrationCredentials.newBuilder()
+            .setBearerToken(SecretValue.newBuilder().setValue("replacement"))
+            .build();
+    when(secretsManager.get(any(), any(), any())).thenReturn(Optional.empty());
+    when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(false, true);
+
+    assertEquals(3L, store.storeRotation(integrationId, 2L, credentials));
+    verify(secretsManager)
+        .putIfAbsent(
+            "acct",
+            CatalogIntegrationCredentialStore.SECRET_TYPE,
+            CatalogIntegrationCredentialStore.reference(integrationId, 3L),
+            credentials.toByteArray());
+  }
+
+  @Test
   void resolvesTypedCredentialsFromResourceState() {
     var secretsManager = mock(SecretsManager.class);
     var store = new CatalogIntegrationCredentialStore();

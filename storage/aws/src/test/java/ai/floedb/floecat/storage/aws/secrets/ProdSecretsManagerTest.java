@@ -95,6 +95,21 @@ class ProdSecretsManagerTest {
   }
 
   @Test
+  void pendingDeletionIsAnOccupiedImmutableGeneration() {
+    ClientHandle pending =
+        ClientHandle.secretsFailure(
+            InvalidRequestException.builder()
+                .message("The secret was scheduled for deletion")
+                .build());
+    ProdSecretsManager manager =
+        new ProdSecretsManager(pending.secretsClient, ClientHandle.sts().stsClient);
+
+    assertFalse(
+        manager.putIfAbsent("acct", "catalog-integrations", "id:2", "replacement".getBytes()));
+    manager.shutdown();
+  }
+
+  @Test
   void immediateDeleteBypassesRecoveryWindow() {
     ClientHandle available = ClientHandle.secretsValue("unused");
     ProdSecretsManager manager =
