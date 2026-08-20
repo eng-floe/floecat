@@ -236,8 +236,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /** Load the current value through the raw stores that participate in a mutation transaction. */
-  private Optional<T> getByKeyForMutation(K key) {
-    return readForMutation(schema.canonicalPointerForKey.apply(key));
+  public Optional<T> getByKeyForMutation(K key) {
+    return observeRepository(
+        "get_by_key_for_mutation", () -> readForMutation(schema.canonicalPointerForKey.apply(key)));
+  }
+
+  /** Resolve any pointer through the raw stores that participate in a mutation transaction. */
+  public Optional<T> getForMutation(String pointerKey) {
+    return observeRepository("get_for_mutation", () -> readForMutation(pointerKey));
   }
 
   private boolean existsByKeyUnobserved(K key) {
@@ -334,9 +340,12 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return Optional.of(new ResourceWithMeta<>(value, commit.meta()));
   }
 
-  private NotFoundException accountDeletionInProgress(T value) {
-    return new NotFoundException(
-        "account deletion in progress: " + schema.keyFromValue.apply(value).accountId());
+  private AccountDeletionInProgressException accountDeletionInProgress(T value) {
+    return accountDeletionInProgress(schema.keyFromValue.apply(value));
+  }
+
+  private AccountDeletionInProgressException accountDeletionInProgress(K key) {
+    return new AccountDeletionInProgressException(key.accountId());
   }
 
   /** Resolves a secondary pointer and returns the body with its exact canonical metadata. */
@@ -370,10 +379,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "create",
         () -> {
-          PreparedCreate prepared = prepareCreate(value);
           K resourceKey = schema.keyFromValue.apply(value);
+          String accountDeletionMarker = Keys.accountDeletionMarker(resourceKey.accountId());
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            throw accountDeletionInProgress(resourceKey);
+          }
+          PreparedCreate prepared = prepareCreate(value);
           Set<String> effectiveRequiredAbsent = new HashSet<>(conditions.requiredAbsent());
-          effectiveRequiredAbsent.add(Keys.accountDeletionMarker(resourceKey.accountId()));
+          effectiveRequiredAbsent.add(accountDeletionMarker);
           List<PointerStore.CasOp> ops =
               new ArrayList<>(
                   prepared.ops.size()
@@ -406,6 +419,12 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(prepared.blobUri, value);
             return new CreateCommit(true, prepared.committedCanonical, committedMeta);
+          }
+
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            cleanupCreateIfAbsentBlobOnCasMiss(
+                prepared.canonicalPointerKey, prepared.blobUri, prepared.blobExistedBefore);
+            throw accountDeletionInProgress(resourceKey);
           }
 
           if (!pointerConditionsStillMatch(requiredPointerVersions, effectiveRequiredAbsent)) {
@@ -525,6 +544,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     guardSystemObject(key);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     String blobUri = schema.blobUriForKey.apply(key);
+    boolean blobExistedBefore = mutationBlobStore.head(blobUri).isPresent();
     int blobBytes = writeBlobAndGetSize(blobUri, value);
 
     Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
@@ -541,7 +561,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         committedCanonical = reserved.toBuilder().setVersion(1L).build();
       }
     }
-    return new PreparedCreate(blobUri, canonicalPointer, committedCanonical, pointerKeys, ops);
+    return new PreparedCreate(
+        blobUri, canonicalPointer, committedCanonical, pointerKeys, ops, blobExistedBefore);
   }
 
   private record PreparedCreate(
@@ -549,7 +570,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       String canonicalPointerKey,
       Pointer committedCanonical,
       List<String> pointerKeys,
-      List<PointerStore.CasOp> ops) {}
+      List<PointerStore.CasOp> ops,
+      boolean blobExistedBefore) {}
 
   /**
    * Raises a name conflict when a companion operation that reserves a fresh pointer (expected
@@ -666,7 +688,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
           if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
             cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
-            throw new NotFoundException("account deletion in progress: " + key.accountId());
+            throw accountDeletionInProgress(key);
           }
           List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size() + 1);
           for (String pointerKey : pointerKeys) {
@@ -682,7 +704,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
             cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
-            throw new NotFoundException("account deletion in progress: " + key.accountId());
+            throw accountDeletionInProgress(key);
           }
           return classifyCreateIfAbsentConflict(
               canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
@@ -953,6 +975,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "update_with_meta",
         () -> {
           K key = schema.keyFromValue.apply(updatedValue);
+          String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            throw accountDeletionInProgress(key);
+          }
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           PreparedUpdate prepared = prepareUpdate(updatedValue, expectedCanonicalVersion);
           String blobUri = prepared.blobUri;
@@ -961,7 +987,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<PointerStore.CasOp> ops = new ArrayList<>(prepared.ops);
           Pointer committedCanonical = prepared.committedCanonical;
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
-          String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
           if (batchedKeys.add(accountDeletionMarker)) {
             ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
           }
@@ -985,7 +1010,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
-          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) return Optional.empty();
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            throw accountDeletionInProgress(key);
+          }
           if (!markerVersionsStillMatch(markerVersions)) return Optional.empty();
           classifyCompanionConflict(companions);
           classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
@@ -1060,6 +1087,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!currentKey.accountId().equals(replacementKey.accountId())) {
             throw new IllegalArgumentException("replacement cannot cross accounts");
           }
+          String accountDeletionMarker = Keys.accountDeletionMarker(currentKey.accountId());
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            throw accountDeletionInProgress(currentKey);
+          }
 
           String currentCanonical = schema.canonicalPointerForKey.apply(currentKey);
           String replacementCanonical = schema.canonicalPointerForKey.apply(replacementKey);
@@ -1075,6 +1106,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           String replacementBlobUri = schema.blobUriForKey.apply(replacementKey);
+          boolean replacementBlobExistedBefore =
+              mutationBlobStore.head(replacementBlobUri).isPresent();
           int replacementBlobBytes = writeBlobAndGetSize(replacementBlobUri, replacementValue);
           Map<String, String> currentSecondaries =
               schema.secondaryPointersFromValue.apply(currentValue);
@@ -1144,13 +1177,17 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           addPointerDeletes(pointerVersionsToDelete, batchedKeys, ops);
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
-          String accountDeletionMarker = Keys.accountDeletionMarker(currentKey.accountId());
           if (batchedKeys.add(accountDeletionMarker)) {
             ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
           }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "replacement");
 
           if (!mutationPointerStore.compareAndSetBatch(ops)) {
+            if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+              cleanupCreateIfAbsentBlobOnCasMiss(
+                  replacementCanonical, replacementBlobUri, replacementBlobExistedBefore);
+              throw accountDeletionInProgress(currentKey);
+            }
             return Optional.empty();
           }
           healCanonicalBlobIfMissing(replacementBlobUri, replacementValue);
@@ -1206,6 +1243,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           return true;
         });
+  }
+
+  /** Deletes a resource or confirms through the raw mutation stores that it is already absent. */
+  public void deleteOrConfirmAbsent(K key) {
+    if (!delete(key) && getByKeyForMutation(key).isPresent()) {
+      throw new AbortRetryableException(schema.resourceName + " changed during deletion");
+    }
   }
 
   public boolean deleteWithPrecondition(K key, long expectedCanonicalVersion) {

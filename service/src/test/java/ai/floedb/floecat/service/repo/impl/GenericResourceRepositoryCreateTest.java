@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.ConflictingBatc
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
 import ai.floedb.floecat.service.repo.model.AccountKey;
+import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -71,6 +73,21 @@ class GenericResourceRepositoryCreateTest {
         .build();
   }
 
+  private static Catalog catalog(String id, String name) {
+    return Catalog.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder().setAccountId("acct").setId(id).setKind(ResourceKind.RK_CATALOG))
+        .setDisplayName(name)
+        .build();
+  }
+
+  private void installAccountDeletionFence(String accountId) {
+    String key = Keys.accountDeletionMarker(accountId);
+    assertThat(
+            ptr.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, "deleting", 1L)))
+        .isTrue();
+  }
+
   @Test
   void create_happyPath_resolvesByIdAndByName_atVersionOne() {
     var repo = new AccountRepository(ptr, blobs);
@@ -83,6 +100,81 @@ class GenericResourceRepositoryCreateTest {
     assertThat(ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getVersion()).isEqualTo(1L);
     assertThat(ptr.get(Keys.accountPointerByName("alpha")).orElseThrow().getVersion())
         .isEqualTo(1L);
+  }
+
+  @Test
+  void createDuringAccountDeletionUsesTypedFailureAndReclaimsReservedBlob() {
+    var racingFence =
+        new RepoTestPointerStores.DelegatingPointerStore(ptr) {
+          @Override
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            installAccountDeletionFence("acct-1");
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    var repo = new AccountRepository(racingFence, blobs);
+    var value = account("acct-1", "alpha", "");
+    String blobUri = Schemas.ACCOUNT.blobUriForKey.apply(Schemas.ACCOUNT.keyFromValue.apply(value));
+
+    assertThatThrownBy(() -> repo.create(value))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class)
+        .extracting("accountId")
+        .isEqualTo("acct-1");
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isEmpty();
+    assertThat(blobs.head(blobUri)).isEmpty();
+  }
+
+  @Test
+  void updateDuringAccountDeletionUsesTypedFailureAndPreservesResource() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.CATALOG,
+            Catalog::parseFrom,
+            Catalog::toByteArray,
+            "application/x-protobuf");
+    var current = catalog("catalog-1", "alpha");
+    repo.create(current);
+    installAccountDeletionFence("acct");
+
+    assertThatThrownBy(() -> repo.update(current.toBuilder().setDisplayName("beta").build(), 1L))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(repo.getByKey(new CatalogKey("acct", "catalog-1"))).contains(current);
+    assertThat(ptr.get(Keys.catalogPointerByName("acct", "alpha"))).isPresent();
+    assertThat(ptr.get(Keys.catalogPointerByName("acct", "beta"))).isEmpty();
+  }
+
+  @Test
+  void replacementDuringAccountDeletionUsesTypedFailureAndPreservesCurrentIdentity() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.CATALOG,
+            Catalog::parseFrom,
+            Catalog::toByteArray,
+            "application/x-protobuf");
+    var current = catalog("catalog-1", "alpha");
+    var replacement = catalog("catalog-2", "alpha");
+    repo.create(current);
+    installAccountDeletionFence("acct");
+
+    assertThatThrownBy(
+            () ->
+                repo.replaceIdentityWithMeta(
+                    current,
+                    1L,
+                    replacement,
+                    GenericResourceRepository.PointerConditions.none(),
+                    Map.of()))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(repo.getByKey(new CatalogKey("acct", "catalog-1"))).contains(current);
+    assertThat(repo.getByKey(new CatalogKey("acct", "catalog-2"))).isEmpty();
   }
 
   @Test

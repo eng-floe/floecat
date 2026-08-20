@@ -84,6 +84,11 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  public void deleteOrConfirmAbsent(ResourceId namespaceResourceId) {
+    repo.deleteOrConfirmAbsent(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
   public boolean deleteWithPrecondition(
       ResourceId namespaceResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
@@ -96,9 +101,19 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  public Optional<Namespace> getByIdForMutation(ResourceId namespaceResourceId) {
+    return repo.getByKeyForMutation(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
+  }
+
+  public Optional<Namespace> getByPathForMutation(
+      String accountId, String catalogId, List<String> pathSegments) {
+    return repo.getForMutation(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
   }
 
   public List<Namespace> list(

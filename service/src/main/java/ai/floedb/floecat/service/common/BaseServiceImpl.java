@@ -266,6 +266,13 @@ public abstract class BaseServiceImpl {
       // surface it as the same PERMISSION_DENIED the policy would have produced.
       return GrpcErrors.permissionDenied(corrId, SYSTEM_OBJECT_IMMUTABLE, null, t);
     }
+    if (t instanceof BaseResourceRepository.AccountDeletionInProgressException deleting) {
+      return GrpcErrors.preconditionFailed(
+          corrId,
+          ACCOUNT_DELETION_IN_PROGRESS,
+          Map.of("account_id", deleting.accountId()),
+          deleting);
+    }
     if (t instanceof BaseResourceRepository.NameConflictException
         || t instanceof StorageConflictException) {
       return GrpcErrors.conflict(corrId, null, null, t);

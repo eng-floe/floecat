@@ -106,6 +106,20 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
+  /** A resource mutation was rejected because its owning account is being deleted. */
+  public static class AccountDeletionInProgressException extends PreconditionFailedException {
+    private final String accountId;
+
+    public AccountDeletionInProgressException(String accountId) {
+      super("account deletion in progress: " + accountId);
+      this.accountId = accountId;
+    }
+
+    public String accountId() {
+      return accountId;
+    }
+  }
+
   public static class AbortRetryableException extends RepoException {
     public AbortRetryableException(String msg) {
       super(msg);

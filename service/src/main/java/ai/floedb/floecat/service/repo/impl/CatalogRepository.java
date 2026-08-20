@@ -71,6 +71,11 @@ public class CatalogRepository {
     return repo.delete(new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  public void deleteOrConfirmAbsent(ResourceId catalogResourceId) {
+    repo.deleteOrConfirmAbsent(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
+  }
+
   public boolean deleteWithPrecondition(ResourceId catalogResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()),

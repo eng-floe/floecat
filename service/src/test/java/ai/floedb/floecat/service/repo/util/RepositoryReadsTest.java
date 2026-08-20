@@ -16,6 +16,7 @@
 package ai.floedb.floecat.service.repo.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -25,7 +26,9 @@ import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
@@ -81,6 +84,23 @@ class RepositoryReadsTest {
     assertThat(admittedReads).hasValue(0);
   }
 
+  @Test
+  void deleteConfirmationUsesRawStoresAfterTransactionConflict() {
+    ConflictNextBatchPointerStore pointers = new ConflictNextBatchPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    AtomicInteger admittedReads = new AtomicInteger();
+    GenericResourceRepository<Catalog, CatalogKey> repository =
+        repository(pointers, blobs, null, countedReads(pointers, blobs, admittedReads));
+    repository.create(catalog("sales"));
+    admittedReads.set(0);
+    pointers.conflictNextBatch = true;
+
+    assertThatThrownBy(() -> repository.deleteOrConfirmAbsent(KEY))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+    assertThat(admittedReads).hasValue(0);
+    assertThat(repository.getByKey(KEY)).isPresent();
+  }
+
   /** Build a catalog repository with explicit read policy and optional immutable cache. */
   private static GenericResourceRepository<Catalog, CatalogKey> repository(
       InMemoryPointerStore pointers,
@@ -122,5 +142,18 @@ class RepositoryReadsTest {
             return operation.get();
           }
         });
+  }
+
+  private static final class ConflictNextBatchPointerStore extends InMemoryPointerStore {
+    private boolean conflictNextBatch;
+
+    @Override
+    public synchronized boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      if (conflictNextBatch) {
+        conflictNextBatch = false;
+        return false;
+      }
+      return super.compareAndSetBatch(ops);
+    }
   }
 }

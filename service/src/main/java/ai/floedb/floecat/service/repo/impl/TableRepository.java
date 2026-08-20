@@ -75,6 +75,11 @@ public class TableRepository {
     return repo.delete(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  public void deleteOrConfirmAbsent(ResourceId tableResourceId) {
+    repo.deleteOrConfirmAbsent(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
   public boolean deleteWithPrecondition(ResourceId tableResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
