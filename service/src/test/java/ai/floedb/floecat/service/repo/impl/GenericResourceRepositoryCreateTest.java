@@ -27,8 +27,12 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.ConflictingBatchPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
+import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -288,5 +292,40 @@ class GenericResourceRepositoryCreateTest {
 
     assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
     assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+  }
+
+  @Test
+  void deleteWithCompanions_whenResourceBlobIsCorrupt_deletesCompanionAtomically() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.ACCOUNT,
+            Account::parseFrom,
+            Account::toByteArray,
+            "application/x-protobuf");
+    var account = account("acct-1", "alpha", "");
+    repo.create(account);
+
+    String canonicalKey = Keys.accountPointerById("acct-1");
+    var canonical = ptr.get(canonicalKey).orElseThrow();
+    assertThat(blobs.delete(canonical.getBlobUri())).isTrue();
+
+    String companionKey = "/test/owned-resource";
+    assertThat(
+            ptr.compareAndSet(
+                companionKey, 0L, PointerReferences.opaqueMarkerPointer(companionKey, "owned", 1L)))
+        .isTrue();
+    long companionVersion = ptr.get(companionKey).orElseThrow().getVersion();
+
+    assertThat(
+            repo.deleteWithPreconditionAndCompanions(
+                new AccountKey("acct-1"),
+                canonical.getVersion(),
+                List.of(new PointerStore.CasDelete(companionKey, companionVersion))))
+        .isTrue();
+
+    assertThat(ptr.get(canonicalKey)).isEmpty();
+    assertThat(ptr.get(companionKey)).isEmpty();
   }
 }

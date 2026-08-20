@@ -152,6 +152,88 @@ public class IdempotencyGuardTest {
   }
 
   @Test
+  void reservedCreateAdopterDoesNotDeleteTheExistingPendingReservationOnFailure() throws Exception {
+    String idemKey = "adopted-reservation";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String requestHash = sha256B64(request);
+    Timestamp expiresAt = expiresFrom(NOW, 60);
+    ResourceId reservedId = resourceId("reserved");
+    assertThat(repo.createPending(ACCOUNT, key, OP, requestHash, reservedId, NOW, expiresAt))
+        .isTrue();
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceReserved(
+                    ACCOUNT,
+                    OP,
+                    idemKey,
+                    request,
+                    () -> {
+                      throw new AssertionError("existing reservation must be adopted");
+                    },
+                    (id, committer) -> {
+                      throw new BaseResourceRepository.NameConflictException("lost create race");
+                    },
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class);
+
+    assertThat(repo.get(key))
+        .get()
+        .satisfies(
+            pending -> {
+              assertThat(pending.getStatus()).isEqualTo(IdempotencyRecord.Status.PENDING);
+              assertThat(pending.getResourceId()).isEqualTo(reservedId);
+            });
+  }
+
+  @Test
+  void reservedCreateReplaysWinnerThatCompletesBeforeLoserReportsConflict() throws Exception {
+    String idemKey = "concurrent-winner";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String requestHash = sha256B64(request);
+    Timestamp expiresAt = expiresFrom(NOW, 60);
+    ResourceId reservedId = resourceId("reserved");
+    MutationMeta winnerMeta = meta(7);
+
+    var out =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> reservedId,
+            (id, committer) -> {
+              repo.finalizeSuccess(
+                  ACCOUNT,
+                  key,
+                  OP,
+                  requestHash,
+                  id,
+                  winnerMeta,
+                  "WINNER".getBytes(StandardCharsets.UTF_8),
+                  NOW,
+                  expiresAt);
+              throw new BaseResourceRepository.NameConflictException("lost create race");
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(out.resource()).isEqualTo("WINNER");
+    assertThat(out.meta()).isEqualTo(winnerMeta);
+  }
+
+  @Test
   void runOnceReplay() throws Exception {
     var creator =
         (Supplier<IdempotencyGuard.CreateResult<String>>)

@@ -1220,12 +1220,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           try {
             current = getByKeyForMutation(key);
           } catch (CorruptionException e) {
-            if (!deleteCanonicalPointer(
+            if (!deleteAtomically(
                 canonicalPointer,
                 expectedCanonicalVersion,
+                Set.of(),
                 requiredPointerVersions,
                 requiredAbsentPointers,
-                pointerVersionsToDelete)) {
+                pointerVersionsToDelete,
+                companions)) {
               return false;
             }
             if (!schema.casBlobs && !blobUri.isBlank()) {

@@ -88,6 +88,7 @@ public final class IdempotencyGuard {
     ResourceId reservedId;
     Timestamp reservationCreatedAt;
     Timestamp reservationExpiresAt;
+    boolean reservationCreatedByCaller = false;
     Optional<ai.floedb.floecat.storage.rpc.IdempotencyRecord> existing = store.get(key);
     if (existing.isPresent()) {
       var replay = existing.get();
@@ -134,6 +135,7 @@ public final class IdempotencyGuard {
         reservationCreatedAt = replay.getCreatedAt();
         reservationExpiresAt = replay.getExpiresAt();
       } else {
+        reservationCreatedByCaller = true;
         reservationCreatedAt = now;
         reservationExpiresAt = expiresAt;
       }
@@ -172,8 +174,23 @@ public final class IdempotencyGuard {
           failure instanceof BaseResourceRepository.AbortRetryableException
               || failure instanceof StorageAbortRetryableException;
       if (!committed && !retryable) {
-        deletePendingIfOwned(
-            store, key, opName, requestHash, reservationCreatedAt, reservationExpiresAt, corrId);
+        var completed = store.get(key);
+        if (completed.isPresent()
+            && completed.get().getStatus()
+                == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED) {
+          var exact = completed.get();
+          requireMatchingRequest(
+              exact.getRequestHash(), requestHash, opName, idempotencyKey, corrId);
+          if (!exact.hasMeta()) {
+            throw new BaseResourceRepository.CorruptionException(
+                "idempotency meta missing for succeeded record: key=" + key, null);
+          }
+          return new Result<>(parser.apply(exact.getPayload().toByteArray()), exact.getMeta());
+        }
+        if (reservationCreatedByCaller) {
+          deletePendingIfOwned(
+              store, key, opName, requestHash, reservationCreatedAt, reservationExpiresAt, corrId);
+        }
       }
       throw failure;
     }
