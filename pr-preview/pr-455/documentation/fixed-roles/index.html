@@ -1786,17 +1786,16 @@
   separate from broad catalog/table/connector management permissions.</li>
 <li><code>catalog-integration.write</code> administers integration records, while <code>catalog-integration.use</code>
   permits an integration to be bound to an overlay without granting integration-management
-  authority. Cascading integration deletion additionally requires <code>catalog-overlay.delete</code> and
-  <code>catalog.write</code> because it deletes the dependent overlay aggregates and their owned catalogs.</li>
+  authority. Cascading integration deletion additionally requires <code>catalog-overlay.delete</code> because
+  it deletes the dependent overlay resources.</li>
 <li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
-  <code>catalog-integration.use</code>. Creating and renaming an overlay additionally require <code>catalog.write</code>,
-  because those operations create or rename the Catalog the overlay owns.</li>
+  <code>catalog-integration.use</code> and <code>catalog.write</code>, because it binds an integration to an existing
+  writable target Catalog. Renaming an overlay does not rename that Catalog.</li>
 <li><code>catalog-overlay.reconcile</code> authorizes materializing upstream metadata into an overlay and also
   requires <code>catalog-integration.use</code>. It is not implied by <code>catalog-overlay.write</code> or the
   namespace/table/view write permissions.</li>
-<li><code>catalog-overlay.delete</code> authorizes deletion of an overlay aggregate and additionally requires
-  <code>catalog.write</code> because the operation deletes the Catalog the overlay owns. It is not implied by
-  <code>catalog-overlay.write</code>.</li>
+<li><code>catalog-overlay.delete</code> authorizes deletion of an overlay and its managed contributions. It does
+  not delete the target Catalog and is not implied by <code>catalog-overlay.write</code>.</li>
 </ul>
 
 
