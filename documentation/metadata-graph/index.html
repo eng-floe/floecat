@@ -2023,9 +2023,9 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
   against <code>EngineKey</code>, and caches payloads so planners never race over engine versions.</li>
 <li><code>service/metagraph/overlay/</code> – <code>UserGraph</code> (the Metadata Graph façade, see
   <code>service/metagraph/overlay/user/UserGraph.java</code>) composes the helpers above, exposes the public API,
-  and keeps a <code>CatalogOverlay</code>-friendly view via <code>MetaGraph</code>. <code>SystemGraph</code> (in
+  and keeps a <code>CatalogGraphView</code>-friendly view via <code>MetaGraph</code>. <code>SystemGraph</code> (in
   <code>overlay/systemobjects/SystemGraph.java</code>) consumes <code>SystemNodeRegistry</code> snapshots so pg_catalog-style
-  system tables/views merge with the user metadata when callers go through the overlay.</li>
+  system tables/views merge with the user metadata when callers go through the composite graph view.</li>
 </ul>
 <h2 id="node-model">Node Model<a class="headerlink" href="#node-model" title="Permanent link">&para;</a></h2>
 <p>Nodes live under <code>core/metagraph/model</code> and each implements <code>GraphNode</code>. They are Java records with
@@ -2111,7 +2111,7 @@ rule as the one to publish.</p>
 given <code>(engine_kind, engine_version)</code> pair, only the rules that match the naturally-ordered version
 boundaries are retained. The <code>BuiltinNodes</code> returned by <code>SystemNodeRegistry.nodesFor</code> therefore already
 represent the exact set applicable for that engine release. <code>SystemGraph</code> consumes those nodes to build
-a <code>_system</code> <code>GraphSnapshot</code> that <code>MetaGraph</code> exposes via <code>CatalogOverlay</code>, so pg_catalog-style system
+a <code>_system</code> <code>GraphSnapshot</code> that <code>MetaGraph</code> exposes via <code>CatalogGraphView</code>, so pg_catalog-style system
 objects live alongside the user metadata when scanners run. <code>SystemObjectsServiceImpl</code> reuses the same
 <code>SystemNodeRegistry</code>/<code>SystemCatalogProtoMapper</code> pipeline to answer <code>GetSystemObjects()</code> calls without
 recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
@@ -2227,7 +2227,7 @@ the graph defines the single source of truth for list/prefix resolution.</p>
 <p><code>UserObjectsService.GetUserObjects</code> streams <code>UserObjectsBundleChunk</code>s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (<code>RelationResolutions</code>) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
-shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogOverlay.resolve</code>,
+shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogGraphView.resolve</code>,
 <code>snapshotPinFor</code>, and view metadata stored in <code>ViewNode</code> to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through <code>QueryInputResolver</code> so their snapshot pins are merged into
