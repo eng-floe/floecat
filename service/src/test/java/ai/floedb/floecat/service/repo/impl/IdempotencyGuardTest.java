@@ -47,6 +47,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -149,6 +150,83 @@ public class IdempotencyGuardTest {
         .isInstanceOf(StorageAbortRetryableException.class);
     assertThat(creates).hasValue(1);
     assertThat(createdId.get()).isEqualTo(resourceId("reserved"));
+  }
+
+  @Test
+  void reservedCreateCommitsTheSuccessReceiptWithTheResourcePointer() {
+    String idemKey = "atomic-receipt";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String resourcePointerKey = "acct/" + ACCOUNT + "/thing/reserved";
+    ResourceId reservedId = resourceId("reserved");
+    MutationMeta createdMeta = meta(1);
+
+    var out =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> reservedId,
+            (id, committer) -> {
+              var committed = new IdempotencyGuard.CommittedCreate<>("RESOURCE", id, createdMeta);
+              PointerStore.CasUpsert receipt = committer.prepare(committed);
+              String blobUri = "blob://thing/" + id.getId();
+              blobs.put(
+                  blobUri, "RESOURCE".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+              var resourcePointer =
+                  PointerReferences.asBlobPointer(
+                          Pointer.newBuilder().setKey(resourcePointerKey).setVersion(1L), blobUri)
+                      .build();
+              assertThat(
+                      ptr.compareAndSetBatch(
+                          List.of(
+                              new PointerStore.CasUpsert(resourcePointerKey, 0L, resourcePointer),
+                              receipt)))
+                  .isTrue();
+              return committed;
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(out.resource()).isEqualTo("RESOURCE");
+    assertThat(out.meta()).isEqualTo(createdMeta);
+    assertThat(ptr.get(resourcePointerKey)).isPresent();
+    assertThat(repo.get(key))
+        .get()
+        .satisfies(
+            receipt -> {
+              assertThat(receipt.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+              assertThat(receipt.getResourceId()).isEqualTo(reservedId);
+              assertThat(receipt.getMeta()).isEqualTo(createdMeta);
+              assertThat(receipt.getPayload().toStringUtf8()).isEqualTo("RESOURCE");
+            });
+
+    var replay =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> {
+              throw new AssertionError("committed receipt must be replayed");
+            },
+            (id, committer) -> {
+              throw new AssertionError("committed receipt must be replayed");
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(replay.resource()).isEqualTo("RESOURCE");
+    assertThat(replay.meta()).isEqualTo(createdMeta);
   }
 
   @Test
