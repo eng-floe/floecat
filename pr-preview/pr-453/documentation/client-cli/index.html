@@ -1910,7 +1910,7 @@ reconciliation) show job IDs that can be polled via <code>connector job &lt;id&g
 only. They do not connect to the upstream catalog, reconcile metadata, or affect query execution.
 To exercise the resource model from the Shell, create an integration and overlay:</p>
 <div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
-  --auth-type bearer --cred token=secret
+  --auth-type bearer --cred token=secret --props warehouse=analytics
 overlay create sales-overlay lakehouse --include prod.sales
 </code></pre></div>
 <p>Legacy connector commands remain the operational path for external catalog connectivity.</p>
