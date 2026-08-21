@@ -1073,12 +1073,16 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Set<String> allSecondaries = new HashSet<>(currentSecondaryKeys);
           allSecondaries.addAll(replacementSecondaryKeys);
           for (String pointerKey : allSecondaries) {
+            boolean inCurrent = currentSecondaryKeys.contains(pointerKey);
+            boolean inReplacement = replacementSecondaryKeys.contains(pointerKey);
+            if ((pointerKey.equals(currentCanonical) && inCurrent && !inReplacement)
+                || (pointerKey.equals(replacementCanonical) && inReplacement && !inCurrent)) {
+              continue;
+            }
             if (!batchedKeys.add(pointerKey)) {
               throw new IllegalArgumentException(
                   "secondary collides with canonical pointer: " + pointerKey);
             }
-            boolean inCurrent = currentSecondaryKeys.contains(pointerKey);
-            boolean inReplacement = replacementSecondaryKeys.contains(pointerKey);
             Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
             if (inCurrent) {
               if (existing == null

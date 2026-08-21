@@ -31,6 +31,7 @@ import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -186,6 +188,39 @@ class GenericResourceRepositoryCreateTest {
 
     assertThatCode(() -> snapshotRepo.create(snapshot)).doesNotThrowAnyException();
     assertThat(snapshotRepo.getById(tableId, 42L)).isPresent();
+  }
+
+  @Test
+  void replaceIdentity_deduplicatesCanonicalSecondaryAliases() {
+    var rejecting = new DuplicateKeyRejectingPointerStore(ptr);
+    var repo =
+        new GenericResourceRepository<>(
+            rejecting,
+            blobs,
+            Schemas.SNAPSHOT,
+            Snapshot::parseFrom,
+            Snapshot::toByteArray,
+            "application/x-protobuf");
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("tbl-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var current = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(42L).build();
+    var replacement = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(43L).build();
+    repo.create(current);
+
+    assertThat(
+            repo.replaceIdentityWithMeta(
+                current,
+                1L,
+                replacement,
+                GenericResourceRepository.PointerConditions.none(),
+                Map.of()))
+        .isPresent();
+    assertThat(repo.getByKey(new SnapshotKey("acct-1", "tbl-1", 42L, ""))).isEmpty();
+    assertThat(repo.getByKey(new SnapshotKey("acct-1", "tbl-1", 43L, ""))).contains(replacement);
   }
 
   @Test
