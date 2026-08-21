@@ -798,6 +798,7 @@ class DurableReconcileJobStoreTest {
         firstPredecessor,
         store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask.indexPredecessor());
     StoredReconcileJob stored = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals(StoredReconcileJob.CURRENT_READY_INDEX_VERSION, stored.readyIndexVersion);
     assertTrue(stored.snapshotTaskIndexPredecessorPresent);
     assertFalse(stored.snapshotTaskIndexPredecessorPinPending);
     assertEquals(
