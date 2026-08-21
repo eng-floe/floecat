@@ -52,6 +52,9 @@ integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --cred client_secret=secret \
   --props warehouse=analytics
 overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
+integration validate lakehouse
+integration namespaces lakehouse
+integration objects lakehouse prod.sales --kinds table,view
 ```
 
 The overlay command accepts either a resource ID or display name for the integration.
@@ -67,6 +70,9 @@ integration get <name|id>
 integration create <name> <type> <uri> --auth-type <type> [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
 integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
 integration update-auth <name|id> --auth-type <type> [--auth k=v ...] [--cred k=v ...]
+integration validate <name|id>
+integration namespaces <name|id> [--parent <namespace>]
+integration objects <name|id> <namespace> [--kinds table,view]
 integration delete <name|id>
 
 overlays [--integration <name|id>]

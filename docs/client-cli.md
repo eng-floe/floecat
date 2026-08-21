@@ -93,14 +93,18 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
-Integration and overlay records currently provide CRUD configuration and credential lifecycle
-only. They do not connect to the upstream catalog, reconcile metadata, or affect query execution.
+Integration validation and discovery connect directly through the catalog-access SPI. Overlay
+records remain configuration-only at this stack stage; they do not reconcile metadata or affect
+query execution.
 To exercise the resource model from the Shell, create an integration and overlay:
 
 ```text
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth-type bearer --cred token=secret --props warehouse=analytics
 overlay create sales-overlay lakehouse local-catalog --include prod.sales
+integration validate lakehouse
+integration namespaces lakehouse
+integration objects lakehouse prod.sales --kinds table,view
 ```
 
 Legacy connector commands remain the operational path for external catalog connectivity.
