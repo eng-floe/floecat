@@ -89,7 +89,11 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
         throw new IllegalStateException("Iceberg REST catalog does not support namespaces");
       }
       return new IcebergRestCatalogClient(
-          catalog, namespaces, viewCatalog, () -> closeCatalog(sessionCatalog));
+          catalog,
+          namespaces,
+          viewCatalog,
+          () -> closeCatalog(sessionCatalog),
+          IcebergRestCatalogClient.storageRoutingProperties(properties));
     } catch (RuntimeException | Error e) {
       closeCatalog(sessionCatalog);
       throw e;

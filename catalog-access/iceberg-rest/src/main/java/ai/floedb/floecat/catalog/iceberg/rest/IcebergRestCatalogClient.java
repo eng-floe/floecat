@@ -57,6 +57,8 @@ final class IcebergRestCatalogClient implements CatalogClient {
           "s3.region",
           "s3.endpoint",
           "s3.path-style-access");
+  private static final List<String> STORAGE_ROUTING_KEYS =
+      List.of("s3.region", "s3.endpoint", "s3.path-style-access");
   private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
   private static final CatalogCapabilities CAPABILITIES =
       CatalogCapabilities.of(
@@ -73,6 +75,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
   private final SupportsNamespaces namespaceCatalog;
   private final ViewCatalog viewCatalog;
   private final Runnable closeHook;
+  private final Map<String, String> storageRoutingProperties;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   IcebergRestCatalogClient(
@@ -80,10 +83,21 @@ final class IcebergRestCatalogClient implements CatalogClient {
       SupportsNamespaces namespaceCatalog,
       ViewCatalog viewCatalog,
       Runnable closeHook) {
+    this(catalog, namespaceCatalog, viewCatalog, closeHook, Map.of());
+  }
+
+  IcebergRestCatalogClient(
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
+      Runnable closeHook,
+      Map<String, String> storageRoutingProperties) {
     this.catalog = Objects.requireNonNull(catalog, "catalog");
     this.namespaceCatalog = Objects.requireNonNull(namespaceCatalog, "namespaceCatalog");
     this.viewCatalog = Objects.requireNonNull(viewCatalog, "viewCatalog");
     this.closeHook = Objects.requireNonNull(closeHook, "closeHook");
+    this.storageRoutingProperties =
+        Map.copyOf(Objects.requireNonNull(storageRoutingProperties, "storageRoutingProperties"));
   }
 
   @Override
@@ -194,13 +208,14 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return Optional.empty();
     }
 
-    Map<String, String> vended = filterVendedStorageProperties(selected.config());
+    Map<String, String> vended = new LinkedHashMap<>(storageRoutingProperties);
+    vended.putAll(filterVendedStorageProperties(selected.config()));
     if (!vended.containsKey("s3.access-key-id") || !vended.containsKey("s3.secret-access-key")) {
       return Optional.empty();
     }
     return Optional.of(
         new VendedStorageCredentials(
-            vended,
+            Map.copyOf(vended),
             Optional.ofNullable(selected.prefix()).orElse(""),
             Optional.ofNullable(parseVendedExpiry(selected.config()))));
   }
@@ -260,6 +275,17 @@ final class IcebergRestCatalogClient implements CatalogClient {
   private static Map<String, String> filterVendedStorageProperties(Map<String, String> source) {
     Map<String, String> filtered = new LinkedHashMap<>();
     for (String key : VENDED_STORAGE_KEYS) {
+      String value = source.get(key);
+      if (value != null && !value.isBlank()) {
+        filtered.put(key, value);
+      }
+    }
+    return Map.copyOf(filtered);
+  }
+
+  static Map<String, String> storageRoutingProperties(Map<String, String> source) {
+    Map<String, String> filtered = new LinkedHashMap<>();
+    for (String key : STORAGE_ROUTING_KEYS) {
       String value = source.get(key);
       if (value != null && !value.isBlank()) {
         filtered.put(key, value);

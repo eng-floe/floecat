@@ -187,6 +187,44 @@ class IcebergRestCatalogClientTest {
   }
 
   @Test
+  void carriesConfiguredStorageRoutingWithProtocolVendedCredentials() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class);
+    FileIO io =
+        mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+    when(table.io()).thenReturn(io);
+    when(table.location()).thenReturn("s3://warehouse/sales/orders/data");
+    when(((SupportsStorageCredentials) io).credentials())
+        .thenReturn(
+            List.of(
+                StorageCredential.create(
+                    "s3://warehouse/",
+                    Map.of(
+                        "s3.access-key-id", "vended-access",
+                        "s3.secret-access-key", "vended-secret"))));
+    when(catalog.loadTable(identifier)).thenReturn(table);
+    var client =
+        new IcebergRestCatalogClient(
+            catalog,
+            namespaces,
+            views,
+            () -> {},
+            Map.of(
+                "s3.endpoint", "http://localstack:4566",
+                "s3.region", "us-east-1",
+                "s3.path-style-access", "true"));
+
+    var properties = client.vendStorageCredentials(name).orElseThrow().properties();
+
+    assertEquals("http://localstack:4566", properties.get("s3.endpoint"));
+    assertEquals("us-east-1", properties.get("s3.region"));
+    assertEquals("true", properties.get("s3.path-style-access"));
+    assertEquals("vended-access", properties.get("s3.access-key-id"));
+  }
+
+  @Test
   void doesNotTreatOrdinaryFileIoPropertiesAsProtocolVendedCredentials() {
     CatalogObjectName name =
         new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
