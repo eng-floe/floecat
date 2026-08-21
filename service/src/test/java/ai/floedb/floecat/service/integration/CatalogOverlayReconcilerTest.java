@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -171,6 +172,7 @@ class CatalogOverlayReconcilerTest {
             .orElseThrow();
     assertEquals(integration.getResourceId(), table.getUpstream().getCatalogIntegrationId());
     assertEquals(overlay.getResourceId(), table.getUpstream().getCatalogOverlayId());
+    assertFalse(table.getUpstream().hasConnectorId());
     assertEquals(SCHEMA_JSON, table.getSchemaJson());
     assertTrue(
         views

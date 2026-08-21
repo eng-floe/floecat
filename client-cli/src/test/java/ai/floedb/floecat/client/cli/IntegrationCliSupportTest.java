@@ -45,6 +45,8 @@ import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesResponse;
 import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest;
 import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsResponse;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
@@ -329,6 +331,18 @@ class IntegrationCliSupportTest {
     }
   }
 
+  @Test
+  void reconcilesOverlayByName() throws Exception {
+    try (Harness h = new Harness()) {
+      String output = h.run("overlay", List.of("reconcile", "sales", "--etag", "etag-1"));
+
+      assertEquals(OVERLAY_ID, h.overlays.lastReconcile.getOverlayId().getId());
+      assertEquals("etag-1", h.overlays.lastReconcile.getPrecondition().getExpectedEtag());
+      assertTrue(output.contains("namespaces_created: 1"));
+      assertTrue(output.contains("tables_created: 1"));
+    }
+  }
+
   private static ResourceId id(String id, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId("account").setId(id).setKind(kind).build();
   }
@@ -526,6 +540,7 @@ class IntegrationCliSupportTest {
     UpdateCatalogOverlayRequest lastUpdate;
     DeleteCatalogOverlayRequest lastDelete;
     int listCalls;
+    ReconcileCatalogOverlayRequest lastReconcile;
 
     @Override
     public void listCatalogOverlays(
@@ -571,6 +586,19 @@ class IntegrationCliSupportTest {
         StreamObserver<DeleteCatalogOverlayResponse> observer) {
       lastDelete = request;
       respond(observer, DeleteCatalogOverlayResponse.getDefaultInstance());
+    }
+
+    @Override
+    public void reconcileCatalogOverlay(
+        ReconcileCatalogOverlayRequest request,
+        StreamObserver<ReconcileCatalogOverlayResponse> observer) {
+      lastReconcile = request;
+      respond(
+          observer,
+          ReconcileCatalogOverlayResponse.newBuilder()
+              .setNamespacesCreated(1)
+              .setTablesCreated(1)
+              .build());
     }
   }
 
