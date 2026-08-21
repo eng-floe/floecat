@@ -100,7 +100,7 @@ To exercise the resource model from the Shell, create an integration and overlay
 ```text
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth-type bearer --cred token=secret --props warehouse=analytics
-overlay create sales-overlay lakehouse --include prod.sales
+overlay create sales-overlay lakehouse local-catalog --include prod.sales
 ```
 
 Legacy connector commands remain the operational path for external catalog connectivity.

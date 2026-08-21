@@ -29,7 +29,7 @@ integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth client_id=floecat token_uri=https://identity.example/token \
   --cred client_secret=secret \
   --props warehouse=analytics
-overlay create sales-overlay lakehouse --include prod.sales,prod.reference
+overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
 ```
 
 The overlay command accepts either a resource ID or display name for the integration.
@@ -50,7 +50,7 @@ integration delete <name|id>
 overlays [--integration <name|id>]
 overlay list [--integration <name|id>]
 overlay get <name|id>
-overlay create <name> <integration-name|id> [options]
+overlay create <name> <integration-name|id> <catalog-name|id> [options]
 overlay update <name|id> [options]
 overlay delete <name|id>
 ```

@@ -589,7 +589,7 @@ public class Shell implements Runnable {
          integration delete <name|id> [--cascade] [--etag <etag>]
          overlays [--integration <name|id>]
          overlay get <name|id>
-         overlay create <name> <integration>
+         overlay create <name> <integration> <catalog>
              [--include ns[,ns...]] [--exclude ns[,ns...]]
          overlay update <name|id> [--display <name>]
              [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
