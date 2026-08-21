@@ -962,6 +962,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
           if (!markerVersionsStillMatch(markerVersions)) return Optional.empty();
+          classifyCompanionConflict(companions);
           classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
           return Optional.empty();
         });

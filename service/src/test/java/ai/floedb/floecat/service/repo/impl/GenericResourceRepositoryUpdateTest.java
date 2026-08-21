@@ -20,13 +20,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +120,32 @@ class GenericResourceRepositoryUpdateTest {
     assertThat(ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getVersion()).isEqualTo(1L);
     assertThat(repo.getByName("alpha")).isPresent();
     assertThat(repo.getByName("beta").orElseThrow().getResourceId().getId()).isEqualTo("acct-2");
+  }
+
+  @Test
+  void update_companionCreateCollision_throwsNameConflict() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.ACCOUNT,
+            Account::parseFrom,
+            Account::toByteArray,
+            "application/x-protobuf");
+    repo.create(account("acct-1", "alpha", "v1"));
+    String companionKey = "companion/by-name/taken";
+    Pointer companion = Pointer.newBuilder().setKey(companionKey).setVersion(1L).build();
+    assertThat(ptr.compareAndSet(companionKey, 0L, companion)).isTrue();
+
+    assertThatThrownBy(
+            () ->
+                repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
+                    account("acct-1", "alpha", "v2"),
+                    1L,
+                    GenericResourceRepository.PointerConditions.none(),
+                    List.of(new PointerStore.CasUpsert(companionKey, 0L, companion))))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class)
+        .hasMessageContaining(companionKey);
   }
 
   @Test
