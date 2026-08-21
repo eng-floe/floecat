@@ -1279,6 +1279,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * partially completed earlier attempt as work already done rather than as an error.
    */
   public List<PointerStore.CasOp> prepareDeleteOps(K key) {
+    guardSystemObject(key);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical == null) {
