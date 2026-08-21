@@ -1719,7 +1719,7 @@ for external catalog connectivity.</p>
   --auth client_id=floecat token_uri=https://identity.example/token \
   --cred client_secret=secret \
   --props warehouse=analytics
-overlay create sales-overlay lakehouse --include prod.sales,prod.reference
+overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
 </code></pre></div>
 <p>The overlay command accepts either a resource ID or display name for the integration.
 Namespace filters are comma-separated paths supplied with <code>--include</code> and <code>--exclude</code>. Omitting both
@@ -1736,7 +1736,7 @@ integration delete &lt;name|id&gt;
 overlays [--integration &lt;name|id&gt;]
 overlay list [--integration &lt;name|id&gt;]
 overlay get &lt;name|id&gt;
-overlay create &lt;name&gt; &lt;integration-name|id&gt; [options]
+overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt; [options]
 overlay update &lt;name|id&gt; [options]
 overlay delete &lt;name|id&gt;
 </code></pre></div>
