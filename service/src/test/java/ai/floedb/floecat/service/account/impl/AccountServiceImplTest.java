@@ -15,6 +15,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -24,6 +25,9 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountSpec;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
+import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -40,15 +44,20 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
@@ -71,6 +80,7 @@ class AccountServiceImplTest {
     service.tableRepo = mock(TableRepository.class);
     service.tableRootRepo = mock(TableRootRepository.class);
     service.connectorRepo = mock(ConnectorRepository.class);
+    service.storageAuthorityRepo = mock(StorageAuthorityRepository.class);
     service.viewRepo = mock(ViewRepository.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
@@ -80,6 +90,7 @@ class AccountServiceImplTest {
     pointers = new TrackingPointerStore();
     service.pointerStore = pointers;
     service.credentialResolver = mock(DefaultCredentialResolver.class);
+    service.secretsManager = mock(SecretsManager.class);
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(
@@ -95,6 +106,66 @@ class AccountServiceImplTest {
             .setId("acct")
             .setKind(ResourceKind.RK_ACCOUNT)
             .build();
+  }
+
+  @Test
+  void accountDeletionRemovesStorageAuthoritySecretBeforeRepositoryState() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    ResourceId authorityId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("authority")
+            .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+            .build();
+    StorageAuthority authority = StorageAuthority.newBuilder().setResourceId(authorityId).build();
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+    when(service.storageAuthorityRepo.listConsistent(eq("acct"), eq(200), anyString(), any()))
+        .thenReturn(List.of(authority));
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    var ordered = inOrder(service.secretsManager, service.storageAuthorityRepo);
+    ordered
+        .verify(service.secretsManager)
+        .delete(
+            "acct", StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
+    ordered.verify(service.storageAuthorityRepo).deleteOrConfirmAbsent(authorityId);
+  }
+
+  @Test
+  void accountDeletionPurgesSnapshotConstraintPointers() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    ResourceId catalogId = resourceId("catalog", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = resourceId("namespace", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId = resourceId("table", ResourceKind.RK_TABLE);
+    Catalog catalog = Catalog.newBuilder().setResourceId(catalogId).build();
+    Namespace namespace =
+        Namespace.newBuilder().setResourceId(namespaceId).setCatalogId(catalogId).build();
+    Table table = Table.newBuilder().setResourceId(tableId).setNamespaceId(namespaceId).build();
+    String constraintKey = Keys.snapshotConstraintsPointer("acct", "table", 7L);
+    pointers.compareAndSet(
+        constraintKey, 0L, PointerReferences.opaqueMarkerPointer(constraintKey, "constraint", 1L));
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+    when(service.catalogRepo.listConsistent(eq("acct"), eq(200), anyString(), any()))
+        .thenReturn(List.of(catalog));
+    when(service.namespaceRepo.listIdsConsistent("acct", "catalog"))
+        .thenReturn(List.of(namespaceId));
+    when(service.namespaceRepo.getByIdForMutation(namespaceId)).thenReturn(Optional.of(namespace));
+    when(service.tableRepo.listConsistent(
+            eq("acct"), eq("catalog"), eq("namespace"), eq(200), anyString(), any()))
+        .thenReturn(List.of(table));
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    assertFalse(pointers.get(constraintKey).isPresent());
   }
 
   @Test
@@ -247,6 +318,10 @@ class AccountServiceImplTest {
     } catch (ReflectiveOperationException e) {
       throw new AssertionError("Failed to inject BaseServiceImpl principal provider", e);
     }
+  }
+
+  private static ResourceId resourceId(String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("acct").setId(id).setKind(kind).build();
   }
 
   private static final class TrackingPointerStore extends InMemoryPointerStore {

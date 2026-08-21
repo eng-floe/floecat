@@ -60,6 +60,11 @@ public class StorageAuthorityRepository {
     return repo.delete(new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()));
   }
 
+  public void deleteOrConfirmAbsent(ResourceId authorityId) {
+    repo.deleteOrConfirmAbsent(
+        new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()));
+  }
+
   public boolean deleteWithPrecondition(ResourceId authorityId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()),
@@ -77,6 +82,12 @@ public class StorageAuthorityRepository {
   public List<StorageAuthority> list(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(
+        Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
+  }
+
+  public List<StorageAuthority> listConsistent(
+      String accountId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefixConsistent(
         Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

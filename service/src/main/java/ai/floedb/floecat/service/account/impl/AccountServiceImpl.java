@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -59,6 +60,8 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -83,6 +86,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject TableRepository tableRepo;
   @Inject TableRootRepository tableRootRepo;
   @Inject ConnectorRepository connectorRepo;
+  @Inject StorageAuthorityRepository storageAuthorityRepo;
   @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -91,6 +95,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
   @Inject DefaultCredentialResolver credentialResolver;
+  @Inject SecretsManager secretsManager;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -535,21 +540,42 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     var summary = new AccountCleanupSummary(accountKey);
     CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
     try {
+      cleanupStorageAuthorities(accountKey, summary);
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d constraint_prefix_deletes=%d",
           summary.accountId,
+          summary.storageAuthoritiesDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
           summary.catalogsDeleted,
           summary.namespacesDeleted,
           summary.tablesDeleted,
           summary.viewsDeleted,
-          summary.snapshotPrefixesDeleted);
+          summary.snapshotPrefixesDeleted,
+          summary.constraintPrefixesDeleted);
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
+    }
+  }
+
+  private void cleanupStorageAuthorities(String accountId, AccountCleanupSummary summary) {
+    for (var authority :
+        listAllPages(
+            (token, next) -> storageAuthorityRepo.listConsistent(accountId, 200, token, next))) {
+      var authorityId = authority.getResourceId();
+      CLEANUP_LOG.infof(
+          "account_delete_cleanup_storage_authority account_id=%s authority_id=%s",
+          accountId, authorityId.getId());
+      // Delete the secret first. If repository deletion then races, a replay can still discover the
+      // authority and safely retry both idempotent operations.
+      secretsManager.delete(
+          accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
+      storageAuthorityRepo.deleteOrConfirmAbsent(authorityId);
+      summary.storageAuthoritiesDeleted++;
+      summary.credentialsDeleted++;
     }
   }
 
@@ -682,6 +708,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
         tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+    pointerStore.deleteByPrefix(
+        Keys.snapshotConstraintsPointerPrefix(tableId.getAccountId(), tableId.getId()));
     // Through the repository, not a bare pointer-store delete: the root-pointer cache must drop
     // its entry with the pointer (same-process read-your-writes).
     tableRootRepo.purgeRoot(tableId);
@@ -693,6 +721,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     // account).
     pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
     summary.snapshotPrefixesDeleted++;
+    summary.constraintPrefixesDeleted++;
   }
 
   private void bumpParentNamespaceMarkers(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
@@ -709,6 +738,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private static final class AccountCleanupSummary {
     private final String accountId;
+    private int storageAuthoritiesDeleted;
     private int connectorsDeleted;
     private int credentialsDeleted;
     private int catalogsDeleted;
@@ -716,6 +746,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     private int tablesDeleted;
     private int viewsDeleted;
     private int snapshotPrefixesDeleted;
+    private int constraintPrefixesDeleted;
 
     private AccountCleanupSummary(String accountId) {
       this.accountId = accountId;
