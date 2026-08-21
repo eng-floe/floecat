@@ -781,21 +781,23 @@ quit")
       local localstack_authority_setup_out
 
       storage_bucket="$bucket"
-      storage_authority_name="smoke-upstream-iceberg-storage-${storage_bucket//[^a-zA-Z0-9]/_}-${COMPOSE_SMOKE_RUN_ID}"
-      localstack_authority_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+      if [ "$smoke_scope" = "full" ]; then
+        storage_authority_name="smoke-upstream-iceberg-storage-${storage_bucket//[^a-zA-Z0-9]/_}-${COMPOSE_SMOKE_RUN_ID}"
+        localstack_authority_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 storage-authority create $storage_authority_name --location-prefix s3://$storage_bucket/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
 quit")
-      echo "$localstack_authority_setup_out"
-      assert_contains "$label upstream iceberg storage authority setup (${storage_bucket})" "$localstack_authority_setup_out" "$storage_authority_name"
+        echo "$localstack_authority_setup_out"
+        assert_contains "$label upstream iceberg storage authority setup (${storage_bucket})" "$localstack_authority_setup_out" "$storage_authority_name"
 
-      if [ "$storage_bucket" = "floecat" ]; then
-        localstack_storage_authority_name="$storage_authority_name"
+        if [ "$storage_bucket" = "floecat" ]; then
+          localstack_storage_authority_name="$storage_authority_name"
+        fi
       fi
 
       localstack_storage_bucket_resource_list+="\\\"arn:aws:s3:::${storage_bucket}\\\",\\\"arn:aws:s3:::${storage_bucket}/*\\\","
     done
     localstack_storage_bucket_resource_list=${localstack_storage_bucket_resource_list%,}
-    if [ -z "$localstack_storage_authority_name" ]; then
+    if [ "$smoke_scope" = "full" ] && [ -z "$localstack_storage_authority_name" ]; then
       echo "[FAIL] $label upstream iceberg expected floecat storage authority name not resolved"
       return 1
     fi
@@ -971,10 +973,65 @@ quit")
         "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
     }
 
-    run_upstream_iceberg_scenario "storage-authority" "" "" "false"
-    if [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; then
-      run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
+    if [ "$smoke_scope" = "full" ]; then
+      run_upstream_iceberg_scenario "storage-authority" "" "" "false"
+      if [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; then
+        run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
+      fi
     fi
+
+    echo "==> [SMOKE] upstream iceberg Catalog Integration overlay reconciliation"
+    local integration_name="smoke-polaris-integration"
+    local overlay_name="smoke-polaris-overlay"
+    local integration_catalog_name="${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG}_integration"
+    local integration_expected_table="${integration_catalog_name}.${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE#*.}"
+    local integration_setup_out
+    integration_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $integration_catalog_name --desc compose-smoke-polaris-integration
+integration create $integration_name iceberg-rest $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI --auth-type oauth-client-credentials --auth client_id=root token_uri=${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/oauth/tokens scopes=PRINCIPAL_ROLE:ALL --cred client_secret=s3cr3t --props warehouse=$warehouse s3.endpoint=http://localstack:4566 s3.path-style-access=true s3.region=us-east-1
+overlay create $overlay_name $integration_name $integration_catalog_name --include $source_namespace
+quit")
+    echo "$integration_setup_out"
+    assert_contains "$label Polaris integration setup" "$integration_setup_out" "INTEGRATION_ID"
+    assert_contains "$label Polaris overlay setup" "$integration_setup_out" "OVERLAY_ID"
+
+    local integration_validation_out
+    integration_validation_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration validate $integration_name
+quit")
+    echo "$integration_validation_out"
+    assert_contains "$label Polaris integration validation" "$integration_validation_out" "valid: true"
+    assert_contains "$label Polaris discovery validation" "$integration_validation_out" "DISCOVERY"
+    assert_contains "$label Polaris credential vending validation" "$integration_validation_out" "CREDENTIAL_VENDING"
+    assert_contains "$label Polaris storage access validation" "$integration_validation_out" "STORAGE_ACCESS"
+
+    local integration_discovery_out
+    integration_discovery_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration namespaces $integration_name
+integration objects $integration_name $source_namespace
+quit")
+    echo "$integration_discovery_out"
+    assert_contains "$label Polaris namespace discovery" "$integration_discovery_out" "$source_namespace"
+    assert_contains "$label Polaris object discovery" "$integration_discovery_out" "$source_table"
+    assert_contains "$label Polaris table-kind discovery" "$integration_discovery_out" "TABLE"
+
+    local overlay_reconcile_out
+    overlay_reconcile_out=$(run_cli_script "$compose_cmd" "account t-0001
+overlay reconcile $overlay_name
+quit")
+    echo "$overlay_reconcile_out"
+    assert_contains "$label Polaris overlay reconciliation" "$overlay_reconcile_out" "tables_created: 1"
+
+    local integration_table_out
+    integration_table_out=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $integration_expected_table
+describe table $integration_expected_table
+quit")
+    echo "$integration_table_out"
+    assert_contains "$label Polaris overlay table materialized" "$integration_table_out" "table id:"
+    assert_contains "$label Polaris overlay avoids Connector identity" "$integration_table_out" "connector_id: -"
+    assert_contains "$label Polaris overlay carries Integration identity" "$integration_table_out" "floecat.catalog-integration.id ="
+    assert_contains "$label Polaris overlay carries Overlay identity" "$integration_table_out" "floecat.catalog-overlay.id ="
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
   fi
@@ -1680,6 +1737,19 @@ for raw_mode in "${mode_list[@]}"; do
         "" \
         "QUARKUS_PROFILE_SERVICE=prod FLOECAT_RECONCILER_WORKER_MODE=local FLOECAT_RECONCILER_MAX_PARALLELISM=1 FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED=false FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS" \
         "0"
+      ;;
+    polaris-integration)
+      run_mode \
+        ./env.localstack \
+        localstack \
+        polaris-integration \
+        "localstack" \
+        "" \
+        "" \
+        "" \
+        "QUARKUS_PROFILE_SERVICE=prod FLOECAT_RECONCILER_WORKER_MODE=local FLOECAT_RECONCILER_MAX_PARALLELISM=1 FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED=false FLOECAT_SECURITY_ALLOWED_TOKEN_ENDPOINT_DOMAINS=$SMOKE_TOKEN_ENDPOINT_ALLOWLIST FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=$SMOKE_ALLOW_PRIVATE_TOKEN_ENDPOINTS" \
+        "0" \
+        "polaris-integration"
       ;;
     localstack-remote)
       run_mode \
