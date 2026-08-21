@@ -93,7 +93,7 @@ public class CatalogIntegrationCredentialStore {
     if (credentialGeneration <= 0L) {
       throw new IllegalArgumentException("credential generation must be positive");
     }
-    return integrationId.getId() + ":" + Long.toUnsignedString(credentialGeneration);
+    return integrationId.getId() + ".credentials." + Long.toUnsignedString(credentialGeneration);
   }
 
   static boolean hasStoredCredentials(CatalogIntegration integration) {

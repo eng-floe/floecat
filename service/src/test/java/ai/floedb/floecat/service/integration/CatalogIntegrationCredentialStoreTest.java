@@ -27,6 +27,20 @@ import org.junit.jupiter.api.Test;
 
 class CatalogIntegrationCredentialStoreTest {
   @Test
+  void referenceUsesAwsSecretsManagerSafeCharacters() {
+    var integrationId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("integration")
+            .setKind(ResourceKind.RK_CATALOG_INTEGRATION)
+            .build();
+
+    assertEquals(
+        "integration.credentials.7",
+        CatalogIntegrationCredentialStore.reference(integrationId, 7L));
+  }
+
+  @Test
   void existingGenerationIsImmutable() {
     var secretsManager = mock(SecretsManager.class);
     var store = new CatalogIntegrationCredentialStore();
