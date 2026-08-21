@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -43,34 +43,34 @@ public final class ConstraintProviderFactory {
   private final ConstraintRepository repository;
   private final SnapshotRepository snapshots;
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final ConstraintProvider systemProvider;
 
   @Inject
   public ConstraintProviderFactory(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       SystemConstraintProvider systemProvider) {
-    this(repository, snapshots, overlay, (ConstraintProvider) systemProvider);
+    this(repository, snapshots, graphView, (ConstraintProvider) systemProvider);
   }
 
   static ConstraintProviderFactory forTesting(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       ConstraintProvider systemProvider) {
-    return new ConstraintProviderFactory(repository, snapshots, overlay, systemProvider);
+    return new ConstraintProviderFactory(repository, snapshots, graphView, systemProvider);
   }
 
   private ConstraintProviderFactory(
       ConstraintRepository repository,
       SnapshotRepository snapshots,
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       ConstraintProvider systemProvider) {
     this.repository = repository;
     this.snapshots = snapshots;
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.systemProvider = systemProvider == null ? ConstraintProvider.NONE : systemProvider;
   }
 
@@ -83,7 +83,7 @@ public final class ConstraintProviderFactory {
    */
   public ConstraintProvider provider() {
     ConstraintProvider userProvider = new CachedUserConstraintProvider(repository, snapshots);
-    return new RoutedConstraintProvider(userProvider, systemProvider, overlay);
+    return new RoutedConstraintProvider(userProvider, systemProvider, graphView);
   }
 
   /**
@@ -92,22 +92,22 @@ public final class ConstraintProviderFactory {
    * on its pin, never from the live pointer this factory's user provider reads.
    */
   public ConstraintProvider pinnedQueryProvider() {
-    return new RoutedConstraintProvider(ConstraintProvider.NONE, systemProvider, overlay);
+    return new RoutedConstraintProvider(ConstraintProvider.NONE, systemProvider, graphView);
   }
 
   private static final class RoutedConstraintProvider implements ConstraintProvider {
 
     private final ConstraintProvider userProvider;
     private final ConstraintProvider systemProvider;
-    private final CatalogOverlay overlay;
+    private final CatalogGraphView graphView;
 
     private RoutedConstraintProvider(
         ConstraintProvider userProvider,
         ConstraintProvider systemProvider,
-        CatalogOverlay overlay) {
+        CatalogGraphView graphView) {
       this.userProvider = userProvider;
       this.systemProvider = systemProvider;
-      this.overlay = overlay;
+      this.graphView = graphView;
     }
 
     @Override
@@ -128,7 +128,7 @@ public final class ConstraintProviderFactory {
 
     private boolean isSystemRelation(ResourceId relationId) {
       try {
-        return overlay
+        return graphView
             .resolve(relationId)
             .map(node -> node.origin() == GraphNodeOrigin.SYSTEM)
             .orElse(false);

@@ -34,7 +34,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SqlDefinition;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
@@ -63,18 +63,18 @@ final class RelationBundleBuilder {
 
   static final String BUILD_FAILED_CODE = "catalog_bundle.build_failed";
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final EngineRelationDecorator engineRelationDecorator;
   private final SystemExecutionResolver systemExecutionResolver;
   private final PinValidator pinValidator;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
 
   RelationBundleBuilder(
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       EngineRelationDecorator engineRelationDecorator,
       SystemExecutionResolver systemExecutionResolver,
       PinValidator pinValidator) {
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.engineRelationDecorator = engineRelationDecorator;
     this.systemExecutionResolver = systemExecutionResolver;
     this.pinValidator = pinValidator;
@@ -248,7 +248,7 @@ final class RelationBundleBuilder {
                     logicalSchemaForRelation(
                             correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
-                : Optional.ofNullable(overlay.tableSchema(relation.node().id()))
+                : Optional.ofNullable(graphView.tableSchema(relation.node().id()))
                     .orElseGet(List::of);
 
     List<SchemaColumn> pruned =
@@ -427,8 +427,8 @@ final class RelationBundleBuilder {
     // pin before the relation entered worker fan-out.
     SnapshotRef snapshotRef =
         SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    CatalogOverlay.SchemaResolution resolved =
-        overlay.schemaFor(
+    CatalogGraphView.SchemaResolution resolved =
+        graphView.schemaFor(
             correlationId,
             relationId,
             snapshotRef,

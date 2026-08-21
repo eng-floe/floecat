@@ -27,7 +27,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -36,7 +36,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
+public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   private static final String SYSTEM_ACCOUNT = "_system";
 
   protected final Map<ResourceId, GraphNode> nodes = new HashMap<>();
@@ -44,24 +44,24 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   protected final Map<ResourceId, List<FunctionNode>> functionsByNamespace = new HashMap<>();
   protected final Map<ResourceId, List<SchemaColumn>> explicitSchemas = new HashMap<>();
 
-  public BaseTestCatalogOverlay addNode(GraphNode node) {
+  public BaseTestCatalogGraphView addNode(GraphNode node) {
     nodes.put(node.id(), node);
     return this;
   }
 
-  public BaseTestCatalogOverlay addRelation(ResourceId namespaceId, RelationNode node) {
+  public BaseTestCatalogGraphView addRelation(ResourceId namespaceId, RelationNode node) {
     relationsByNamespace.computeIfAbsent(namespaceId, k -> new ArrayList<>()).add(node);
     addNode(node);
     return this;
   }
 
-  public BaseTestCatalogOverlay addFunction(ResourceId namespaceId, FunctionNode fn) {
+  public BaseTestCatalogGraphView addFunction(ResourceId namespaceId, FunctionNode fn) {
     functionsByNamespace.computeIfAbsent(namespaceId, k -> new ArrayList<>()).add(fn);
     addNode(fn);
     return this;
   }
 
-  public BaseTestCatalogOverlay setTableSchema(ResourceId tableId, List<SchemaColumn> schema) {
+  public BaseTestCatalogGraphView setTableSchema(ResourceId tableId, List<SchemaColumn> schema) {
     explicitSchemas.put(tableId, List.copyOf(schema));
     return this;
   }

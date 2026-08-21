@@ -37,7 +37,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -54,16 +54,16 @@ class CatalogSurfaceTablesTest {
   private final ResourceId namespaceId = id(ResourceKind.RK_NAMESPACE, "ns");
 
   private TableRepository tableRepo;
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
   private CatalogSurfaceTables surface;
 
   @BeforeEach
   void setup() {
     tableRepo = mock(TableRepository.class);
-    overlay = new TestCatalogOverlay();
-    surface = new CatalogSurfaceTables(tableRepo, overlay);
+    graphView = new TestCatalogGraphView();
+    surface = new CatalogSurfaceTables(tableRepo, graphView);
 
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -86,8 +86,8 @@ class CatalogSurfaceTablesTest {
               return List.of(userTable);
             });
     when(tableRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(1);
-    overlay.addRelation(namespaceId, systemTable("z_system"));
-    overlay.addRelation(namespaceId, systemTable("a_system"));
+    graphView.addRelation(namespaceId, systemTable("z_system"));
+    graphView.addRelation(namespaceId, systemTable("a_system"));
 
     var firstPage =
         surface.listTables(
@@ -161,7 +161,7 @@ class CatalogSurfaceTablesTest {
   @Test
   void getTableReadsSystemTableFromCatalogSurfaceWithoutRepoLookup() {
     var systemTable = systemTable("engine_tables");
-    overlay.addRelation(namespaceId, systemTable);
+    graphView.addRelation(namespaceId, systemTable);
 
     var response =
         surface.getTable(

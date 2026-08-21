@@ -29,7 +29,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -43,7 +43,7 @@ final class TypeResolverTest {
 
   private final SystemObjectScanContext ctx =
       new SystemObjectScanContext(
-          new TestCatalogOverlay(),
+          new TestCatalogGraphView(),
           NameRef.getDefaultInstance(),
           catalogId(),
           EngineContext.empty());
@@ -51,9 +51,9 @@ final class TypeResolverTest {
   @Test
   void resolve_returnsMappedTypeNode() {
     TypeNode type = type("pg_catalog.int4");
-    TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
-    overlay.addNode(namespace("pg_catalog"));
-    overlay.addNode(type);
+    TestCatalogGraphView graphView = (TestCatalogGraphView) ctx.graph();
+    graphView.addNode(namespace("pg_catalog"));
+    graphView.addNode(type);
 
     AtomicInteger invocations = new AtomicInteger();
     EngineTypeMapper mapper =
@@ -77,9 +77,9 @@ final class TypeResolverTest {
 
   @Test
   void resolve_returnsEmptyWhenMapperUnknown() {
-    TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
-    overlay.addNode(namespace("pg_catalog"));
-    overlay.addNode(type("pg_catalog.text"));
+    TestCatalogGraphView graphView = (TestCatalogGraphView) ctx.graph();
+    graphView.addNode(namespace("pg_catalog"));
+    graphView.addNode(type("pg_catalog.text"));
 
     EngineTypeMapper mapper = (logicalType, lookup) -> Optional.empty();
     TypeResolver resolver = new TypeResolver(ctx, mapper);
@@ -90,15 +90,15 @@ final class TypeResolverTest {
 
   @Test
   void resolve_withOnlySystemTypesSkipsUserNamespaceResolution() {
-    CountingOverlay overlay = new CountingOverlay();
+    CountingGraphView graphView = new CountingGraphView();
     ResourceId currentCatalog = userCatalog("user-cat");
     SystemObjectScanContext userCtx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
     NamespaceNode systemNamespace = namespace("pg_catalog");
     TypeNode systemType = type("pg_catalog.int4");
-    overlay.addNode(systemNamespace);
-    overlay.addNode(systemType);
+    graphView.addNode(systemNamespace);
+    graphView.addNode(systemType);
 
     EngineTypeMapper mapper =
         (logicalType, lookup) ->
@@ -108,19 +108,22 @@ final class TypeResolverTest {
 
     TypeResolver resolver = TypeResolver.forContext(userCtx, mapper);
     assertThat(resolver.resolve(LogicalType.of(LogicalKind.INT))).contains(systemType);
-    assertThat(overlay.listTypesCount()).isEqualTo(1);
-    assertThat(overlay.resolveCount()).isZero();
-    assertThat(overlay.listNamespacesCount()).isZero();
+    assertThat(graphView.listTypesCount()).isEqualTo(1);
+    assertThat(graphView.resolveCount()).isZero();
+    assertThat(graphView.listNamespacesCount()).isZero();
   }
 
   @Test
   void forContext_reusesResolverForSameContextAndMapper() {
-    CountingOverlay overlay = new CountingOverlay();
+    CountingGraphView graphView = new CountingGraphView();
     SystemObjectScanContext userCtx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), userCatalog("user-cat"), EngineContext.empty());
-    overlay.addNode(namespace("pg_catalog"));
-    overlay.addNode(type("pg_catalog.int4"));
+            graphView,
+            NameRef.getDefaultInstance(),
+            userCatalog("user-cat"),
+            EngineContext.empty());
+    graphView.addNode(namespace("pg_catalog"));
+    graphView.addNode(type("pg_catalog.int4"));
 
     EngineTypeMapper mapper =
         (logicalType, lookup) ->
@@ -132,26 +135,26 @@ final class TypeResolverTest {
     TypeResolver second = TypeResolver.forContext(userCtx, mapper);
 
     assertThat(first).isSameAs(second);
-    assertThat(overlay.listTypesCount()).isEqualTo(1);
+    assertThat(graphView.listTypesCount()).isEqualTo(1);
   }
 
   @Test
   void resolve_prefersUserTypeOverSystemTypeWhenNamesCollide() {
-    TestCatalogOverlay overlay = new TestCatalogOverlay();
+    TestCatalogGraphView graphView = new TestCatalogGraphView();
     ResourceId currentCatalog = userCatalog("user-cat");
     SystemObjectScanContext userCtx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
 
     NamespaceNode systemNamespace = namespace("pg_catalog");
     TypeNode systemType = type("pg_catalog.int4");
     NamespaceNode userNamespace = userNamespace("pg_catalog", currentCatalog, "user-ns-pg_catalog");
     TypeNode userType = userType("pg_catalog.int4", userNamespace.id());
 
-    overlay.addNode(systemNamespace);
-    overlay.addNode(systemType);
-    overlay.addNode(userNamespace);
-    overlay.addNode(userType);
+    graphView.addNode(systemNamespace);
+    graphView.addNode(systemType);
+    graphView.addNode(userNamespace);
+    graphView.addNode(userType);
 
     EngineTypeMapper mapper =
         (logicalType, lookup) ->
@@ -165,11 +168,11 @@ final class TypeResolverTest {
 
   @Test
   void resolve_usesOnlyCurrentCatalogForUserTypes() {
-    TestCatalogOverlay overlay = new TestCatalogOverlay();
+    TestCatalogGraphView graphView = new TestCatalogGraphView();
     ResourceId currentCatalog = userCatalog("user-cat-a");
     SystemObjectScanContext userCtx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), currentCatalog, EngineContext.empty());
 
     NamespaceNode currentNamespace = userNamespace("pg_catalog", currentCatalog, "user-ns-a");
     NamespaceNode otherNamespace =
@@ -177,10 +180,10 @@ final class TypeResolverTest {
     TypeNode currentType = userType("pg_catalog.int4", currentNamespace.id(), "user-type-a");
     TypeNode otherType = userType("pg_catalog.int4", otherNamespace.id(), "user-type-b");
 
-    overlay.addNode(currentNamespace);
-    overlay.addNode(otherNamespace);
-    overlay.addNode(currentType);
-    overlay.addNode(otherType);
+    graphView.addNode(currentNamespace);
+    graphView.addNode(otherNamespace);
+    graphView.addNode(currentType);
+    graphView.addNode(otherType);
 
     EngineTypeMapper mapper =
         (logicalType, lookup) ->
@@ -194,10 +197,10 @@ final class TypeResolverTest {
 
   @Test
   void resolve_throwsWhenDuplicateCanonicalSystemTypesExist() {
-    TestCatalogOverlay overlay = new TestCatalogOverlay();
+    TestCatalogGraphView graphView = new TestCatalogGraphView();
     SystemObjectScanContext systemCtx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), catalogId(), EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), catalogId(), EngineContext.empty());
 
     NamespaceNode first = namespaceWithId("pg_catalog", "ns-1");
     NamespaceNode second = namespaceWithId("pg_catalog", "ns-2");
@@ -215,10 +218,10 @@ final class TypeResolverTest {
             ResourceId.getDefaultInstance(),
             Map.of());
 
-    overlay.addNode(first);
-    overlay.addNode(second);
-    overlay.addNode(firstTypeRebound);
-    overlay.addNode(secondType);
+    graphView.addNode(first);
+    graphView.addNode(second);
+    graphView.addNode(firstTypeRebound);
+    graphView.addNode(secondType);
 
     EngineTypeMapper mapper =
         (logicalType, lookup) ->
@@ -361,7 +364,7 @@ final class TypeResolverTest {
         Map.of());
   }
 
-  private static final class CountingOverlay extends TestCatalogOverlay {
+  private static final class CountingGraphView extends TestCatalogGraphView {
     private final AtomicInteger resolveCount = new AtomicInteger();
     private final AtomicInteger listTypesCount = new AtomicInteger();
     private final AtomicInteger listNamespacesCount = new AtomicInteger();

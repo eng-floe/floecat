@@ -36,7 +36,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
@@ -85,7 +85,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject TableRootWriter rootWriter;
   @Inject TableRootRepository tableRoots;
   @Inject EngineHintSchemaCleaner hintCleaner;
-  @Inject CatalogOverlay overlay;
+  @Inject CatalogGraphView graphView;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
@@ -107,11 +107,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
   private CatalogSurfaceTables catalogSurfaceTables() {
-    return new CatalogSurfaceTables(tableRepo, overlay);
+    return new CatalogSurfaceTables(tableRepo, graphView);
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(overlay);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   @Override

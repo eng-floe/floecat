@@ -100,8 +100,8 @@ class TablesScannerTest {
     ResourceId catalogId = rid("catalog", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("namespace", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("table", ResourceKind.RK_TABLE);
-    var overlay = new NamespaceListingFailsOverlay();
-    overlay.addNode(
+    var graphView = new NamespaceListingFailsGraphView();
+    graphView.addNode(
         new CatalogNode(
             catalogId,
             "blob://test/v1",
@@ -111,12 +111,12 @@ class TablesScannerTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay
+    graphView
         .withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"))
         .withRelationRef(namespaceId, tableId, "orders", ResourceKind.RK_TABLE);
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
 
     var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
 
@@ -129,8 +129,8 @@ class TablesScannerTest {
     ResourceId catalogId = rid("catalog", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("sales", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("orders", ResourceKind.RK_TABLE);
-    var overlay = new NamespaceListingFailsOverlay();
-    overlay.addNode(
+    var graphView = new NamespaceListingFailsGraphView();
+    graphView.addNode(
         new CatalogNode(
             catalogId,
             "blob://test/v1",
@@ -140,14 +140,14 @@ class TablesScannerTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay
+    graphView
         .withNamespaceRef(namespaceId, "sales", catalogId, List.of("sales"))
         .withRelationRef(namespaceId, tableId, "orders", ResourceKind.RK_TABLE)
         .failNamespaceRefs("schema predicate should use namespace lookup by name")
         .failRelationRefs("table_name predicate should use relation lookup by name");
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
     SystemScanRequest request =
         SystemScanRequest.of(
             new Expr.And(
@@ -159,8 +159,9 @@ class TablesScannerTest {
 
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0)).containsExactly("catalog", "sales", "orders", "BASE TABLE");
-    assertThat(overlay.namespaceNames()).containsExactly("sales");
-    assertThat(overlay.relationNames(namespaceId)).containsExactlyInAnyOrder("orders", "customers");
+    assertThat(graphView.namespaceNames()).containsExactly("sales");
+    assertThat(graphView.relationNames(namespaceId))
+        .containsExactlyInAnyOrder("orders", "customers");
   }
 
   @Test
@@ -168,8 +169,8 @@ class TablesScannerTest {
     ResourceId catalogId = rid("catalog", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("foo.bar", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("orders", ResourceKind.RK_TABLE);
-    var overlay = new NamespaceListingFailsOverlay();
-    overlay.addNode(
+    var graphView = new NamespaceListingFailsGraphView();
+    graphView.addNode(
         new CatalogNode(
             catalogId,
             "blob://test/v1",
@@ -179,13 +180,13 @@ class TablesScannerTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay
+    graphView
         .withNamespaceRef(namespaceId, "foo.bar", catalogId, List.of())
         .withRelationRef(namespaceId, tableId, "orders", ResourceKind.RK_TABLE)
         .failNamespaceRefsByName("dotted schema names must not use direct namespace lookup");
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
-            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+            graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
     SystemScanRequest request =
         SystemScanRequest.of(
             new Expr.And(eq("table_schema", "foo.bar"), eq("table_name", "orders")), List.of());
@@ -194,7 +195,7 @@ class TablesScannerTest {
 
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0)).containsExactly("catalog", "foo.bar", "orders", "BASE TABLE");
-    assertThat(overlay.relationNames(namespaceId)).containsExactly("orders");
+    assertThat(graphView.relationNames(namespaceId)).containsExactly("orders");
   }
 
   @Test
@@ -288,7 +289,7 @@ class TablesScannerTest {
     return new Expr.Eq(new Expr.ColumnRef(column), new Expr.Literal(value));
   }
 
-  private static final class NamespaceListingFailsOverlay extends TestRefCatalogOverlay {
+  private static final class NamespaceListingFailsGraphView extends TestRefCatalogGraphView {
     @Override
     public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
       throw new AssertionError("ref scan should not materialize namespaces");

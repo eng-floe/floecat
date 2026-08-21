@@ -46,7 +46,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -62,7 +62,7 @@ class TableConstraintsServiceImplSystemTableTest {
   private PrincipalProvider principal;
   private Authorizer authz;
   private IdempotencyRepository idempotencyStore;
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
 
   @BeforeEach
   void setup() {
@@ -73,14 +73,14 @@ class TableConstraintsServiceImplSystemTableTest {
     principal = mock(PrincipalProvider.class);
     authz = mock(Authorizer.class);
     idempotencyStore = mock(IdempotencyRepository.class);
-    overlay = new TestCatalogOverlay();
+    graphView = new TestCatalogGraphView();
 
     service.snapshots = snapshots;
     service.constraints = constraints;
     service.principal = principal;
     service.authz = authz;
     service.idempotencyStore = idempotencyStore;
-    service.overlay = overlay;
+    service.graphView = graphView;
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);
   }
@@ -88,7 +88,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void putTableConstraints_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_put");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_put"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_put"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -113,7 +113,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void deleteTableConstraints_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_delete");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_delete"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_delete"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -135,7 +135,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void addTableConstraint_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_add_one");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_add_one"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_add_one"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -160,7 +160,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void mergeTableConstraints_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_merge");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_merge"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_merge"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -184,7 +184,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void appendTableConstraints_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_append");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_append"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_append"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -208,7 +208,7 @@ class TableConstraintsServiceImplSystemTableTest {
   @Test
   void deleteTableConstraint_systemTable_isPermissionDenied() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_delete_one");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_delete_one"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_delete_one"));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -229,9 +229,9 @@ class TableConstraintsServiceImplSystemTableTest {
   }
 
   @Test
-  void getTableConstraints_systemTable_resolvesViaOverlay() {
+  void getTableConstraints_systemTable_resolvesViaGraphView() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_get");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_get"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_get"));
 
     when(constraints.getSnapshotConstraints(tableId, 13L)).thenReturn(Optional.empty());
 
@@ -253,9 +253,9 @@ class TableConstraintsServiceImplSystemTableTest {
   }
 
   @Test
-  void listTableConstraints_systemTable_resolvesViaOverlay() {
+  void listTableConstraints_systemTable_resolvesViaGraphView() {
     ResourceId tableId = systemTableId("sys_tbl_constraints_list");
-    overlay.addNode(systemTableNode(tableId, "system_constraints_list"));
+    graphView.addNode(systemTableNode(tableId, "system_constraints_list"));
 
     when(constraints.listSnapshotConstraints(
             any(), anyInt(), anyString(), any(StringBuilder.class)))

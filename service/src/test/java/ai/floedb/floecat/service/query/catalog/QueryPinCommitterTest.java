@@ -32,7 +32,7 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -91,13 +91,13 @@ class QueryPinCommitterTest {
           .setKind(ResourceKind.RK_TABLE)
           .build();
 
-  private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
   private TestQueryInputResolver resolver;
   private TimingAccumulator timings;
 
   @BeforeEach
   void setUp() {
-    overlay.clear();
+    graphView.clear();
     registerTable(TABLE_A, "a");
     registerTable(TABLE_B, "b");
     registerTable(TABLE_C, "c");
@@ -211,7 +211,7 @@ class QueryPinCommitterTest {
   }
 
   private void registerTable(ResourceId id, String name) {
-    overlay.registerTable(
+    graphView.registerTable(
         id,
         UserObjectBundleTestSupport.schemaFor("id_" + name),
         NameRef.newBuilder().setCatalog("cat").setName(name).build());
@@ -222,7 +222,7 @@ class QueryPinCommitterTest {
   }
 
   private ResolvedRelation resolved(ResourceId table, QueryInput selectedInput) {
-    RelationNode node = (RelationNode) overlay.resolve(table).orElseThrow();
+    RelationNode node = (RelationNode) graphView.resolve(table).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(table))
@@ -230,7 +230,9 @@ class QueryPinCommitterTest {
         table,
         node,
         selectedInput,
-        overlay.tableName(table).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView
+            .tableName(table)
+            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static QueryInput selected(ResourceId table, long snapshotId) {

@@ -834,7 +834,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointerStore);
     inject(support, "blobStore", blobStore);
-    inject(support, "overlay", permissiveOverlay());
+    inject(support, "graphView", permissiveGraphView());
     return support;
   }
 
@@ -863,18 +863,19 @@ class TransactionIntentApplierSupportTest {
   }
 
   /**
-   * Permissive overlay for the apply-time write-eligibility guard: resolves the acct/cat-1/ns-1/
+   * Permissive graph view for the apply-time write-eligibility guard: resolves the acct/cat-1/ns-1/
    * table-1 objects the table-payload tests use as writable user objects, so eligibility passes and
    * each test exercises its actual pointer/claim assertion. (The guard now fails closed on a null
-   * overlay, so tests must supply one.)
+   * graph view, so tests must supply one.)
    */
-  private static ai.floedb.floecat.scanner.spi.CatalogOverlay permissiveOverlay() {
-    // Permit-all overlay: resolves any catalog/namespace/table id as a writable user object so the
+  private static ai.floedb.floecat.scanner.spi.CatalogGraphView permissiveGraphView() {
+    // Permit-all graph view: resolves any catalog/namespace/table id as a writable user object so
+    // the
     // apply-time write-eligibility guard passes and each test exercises its actual pointer/claim
-    // assertion. (The guard now fails closed on a null overlay, so tests must supply one.) The
+    // assertion. (The guard now fails closed on a null graph view, so tests must supply one.) The
     // synthesized namespace reports catalog "cat-1" to satisfy requireNamespaceInCatalog, matching
     // the catalog id these table payloads use.
-    return new ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay() {
+    return new ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView() {
       @Override
       public java.util.Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(
           ResourceId id) {

@@ -40,7 +40,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsView;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -198,7 +198,7 @@ class TableStatisticsServiceImplTest {
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.graphView = mock(CatalogGraphView.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -207,7 +207,8 @@ class TableStatisticsServiceImplTest {
             .setId("sys_stats_table")
             .build();
 
-    when(svc.overlay.resolve(tableId)).thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     var request =
@@ -231,7 +232,7 @@ class TableStatisticsServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.statsOrchestrator = mock(StatsOrchestrator.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.graphView = mock(CatalogGraphView.class);
     svc.rootWriter = mock(TableRootWriter.class);
 
     var tableId =
@@ -240,7 +241,8 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.overlay.resolve(tableId)).thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(123L).build()));
@@ -277,7 +279,7 @@ class TableStatisticsServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.statsOrchestrator = mock(StatsOrchestrator.class);
-    svc.overlay = mock(CatalogOverlay.class);
+    svc.graphView = mock(CatalogGraphView.class);
     svc.rootWriter = mock(TableRootWriter.class);
 
     var tableId =
@@ -286,7 +288,8 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.overlay.resolve(tableId)).thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
+    when(svc.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(123L).build()));

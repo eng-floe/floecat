@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
@@ -35,7 +35,7 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Context;
 import java.util.List;
 import java.util.Map;
@@ -66,7 +66,7 @@ class SystemScannerResolverTest {
     SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
     SystemScannerResolver resolver =
         buildResolver(
-            new TestCatalogOverlay().addNode(pgNode).addNode(fallbackNode),
+            new TestCatalogGraphView().addNode(pgNode).addNode(fallbackNode),
             Map.of(
                 "pg-scanner", pgScanner,
                 "internal-scanner", internalScanner));
@@ -84,7 +84,7 @@ class SystemScannerResolverTest {
     SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
     SystemScannerResolver resolver =
         buildResolver(
-            new TestCatalogOverlay().addNode(fallbackNode),
+            new TestCatalogGraphView().addNode(fallbackNode),
             Map.of("internal-scanner", internalScanner));
 
     assertThat(withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
@@ -92,9 +92,9 @@ class SystemScannerResolverTest {
   }
 
   private static SystemScannerResolver buildResolver(
-      CatalogOverlay overlay, Map<String, SystemObjectScanner> scanners) {
+      CatalogGraphView graphView, Map<String, SystemObjectScanner> scanners) {
     SystemScannerResolver resolver = new SystemScannerResolver();
-    resolver.graph = overlay;
+    resolver.graph = graphView;
     resolver.engine = new EngineContextProvider();
     resolver.providers = List.of(new TestScannerProvider(scanners));
     return resolver;

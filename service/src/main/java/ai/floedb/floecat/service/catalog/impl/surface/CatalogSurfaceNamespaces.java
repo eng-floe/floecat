@@ -24,7 +24,7 @@ import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -36,13 +36,13 @@ import java.util.Map;
 public final class CatalogSurfaceNamespaces {
 
   private final NamespaceRepository namespaceRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceNamespaces(NamespaceRepository namespaceRepo, CatalogOverlay overlay) {
+  public CatalogSurfaceNamespaces(NamespaceRepository namespaceRepo, CatalogGraphView graphView) {
     this.namespaceRepo = namespaceRepo;
-    this.overlay = overlay;
-    this.writePolicy = new CatalogSurfaceWritePolicy(overlay);
+    this.graphView = graphView;
+    this.writePolicy = new CatalogSurfaceWritePolicy(graphView);
   }
 
   public ListNamespacesResponse listNamespaces(
@@ -111,7 +111,7 @@ public final class CatalogSurfaceNamespaces {
     if (catalogId == null) {
       return List.of();
     }
-    return overlay.listSystemNamespaces(catalogId);
+    return graphView.listSystemNamespaces(catalogId);
   }
 
   private static ArrayList<String> append(List<String> parents, String last) {

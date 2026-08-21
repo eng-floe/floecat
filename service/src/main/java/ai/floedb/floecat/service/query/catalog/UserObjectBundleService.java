@@ -36,7 +36,7 @@ import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -93,7 +93,7 @@ public class UserObjectBundleService {
 
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final QueryInputResolver inputResolver;
   private final QueryContextStore queryStore;
   private final EngineContextProvider engineContext;
@@ -112,7 +112,7 @@ public class UserObjectBundleService {
 
   @Inject Observability observability;
 
-  // Selection is overlay-only; payload builds also depend on a decorator's callback affinity.
+  // Selection is graph-view-only; payload builds also depend on a decorator's callback affinity.
   private final MetadataFanout selectionFanout;
   private final int maxParallelRelations;
 
@@ -146,7 +146,7 @@ public class UserObjectBundleService {
 
   @Inject
   public UserObjectBundleService(
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       CancelledQueryPinCleanup cancelledQueryPinCleanup,
@@ -168,7 +168,7 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250") long slowRpcMs,
       @ConfigProperty(name = "floecat.catalog.bundle.max_parallel_relations", defaultValue = "8")
           int maxParallelRelations) {
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
     this.cancelledQueryPinCleanup = cancelledQueryPinCleanup;
@@ -186,7 +186,7 @@ public class UserObjectBundleService {
     }
     this.maxParallelRelations = Math.max(1, maxParallelRelations);
     this.selectionFanout =
-        overlay.supportsConcurrentResolution()
+        graphView.supportsConcurrentResolution()
             ? MetadataFanout.concurrent(this.maxParallelRelations)
             : MetadataFanout.serial();
     FlightEndpointRef advertisedFlightEndpoint =
@@ -201,7 +201,7 @@ public class UserObjectBundleService {
         new EngineRelationDecorator(decoratorProvider, engineSpecificEnabled);
     this.relationBuilder =
         new RelationBundleBuilder(
-            overlay, engineRelationDecorator, systemExecutionResolver, pinValidator);
+            graphView, engineRelationDecorator, systemExecutionResolver, pinValidator);
     this.relationPayloadPolicy =
         new RelationPayloadPolicy(
             relationBuilder,
@@ -212,7 +212,7 @@ public class UserObjectBundleService {
   }
 
   UserObjectBundleService(
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       StatsProviderFactory statsFactory,
@@ -224,9 +224,9 @@ public class UserObjectBundleService {
       boolean grpcPlainText,
       String quarkusProfile) {
     // Test-only: these tests never reach per-read pin validation (their schema flows go through
-    // the fake overlay). Fail explicitly if one ever does, rather than NPE-ing on null repos.
+    // the fake graph view). Fail explicitly if one ever does, rather than NPE-ing on null repos.
     this(
-        overlay,
+        graphView,
         inputResolver,
         queryStore,
         new CancelledQueryPinCleanup(queryStore, Runnable::run),
@@ -371,9 +371,9 @@ public class UserObjectBundleService {
     return value == null ? "" : value;
   }
 
-  /** Select a build scheduler without letting overlay capability change decorator affinity. */
+  /** Select a build scheduler without letting graph-view capability change decorator affinity. */
   private MetadataFanout buildFanout(EngineRelationDecorator.Selection decorationSelection) {
-    if (!overlay.supportsConcurrentResolution()) {
+    if (!graphView.supportsConcurrentResolution()) {
       return MetadataFanout.serial();
     }
     return decorationSelection.supportsWorkerThreadCallbacks()
@@ -471,14 +471,14 @@ public class UserObjectBundleService {
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
           MetadataResolutionContext.of(
-              overlay,
+              graphView,
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.resolutionMemo =
-          new RelationResolutionMemo(overlay, correlationId, requestEngine, timings);
+          new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.pinCommitter =
           new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
@@ -1301,7 +1301,7 @@ public class UserObjectBundleService {
         long startNs = System.nanoTime();
         try {
           defaultCatalogName =
-              overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+              graphView.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
           defaultCatalogResolved = true;
           timings.recordDefaultCatalogLookup();
         } finally {

@@ -31,7 +31,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -58,7 +58,7 @@ class TableConstraintsServiceImplRootCommitTest {
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
-    service.overlay = mock(CatalogOverlay.class);
+    service.graphView = mock(CatalogGraphView.class);
     service.rootWriter = mock(TableRootWriter.class);
     TestPrincipals.stubPrincipal(service.principal, service.authz);
 
@@ -68,9 +68,9 @@ class TableConstraintsServiceImplRootCommitTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(service.overlay.resolve(tableId))
+    when(service.graphView.resolve(tableId))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
-    when(service.overlay.catalog(any())).thenReturn(Optional.empty());
+    when(service.graphView.catalog(any())).thenReturn(Optional.empty());
     when(service.snapshots.getById(tableId, 5L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5L).build()));

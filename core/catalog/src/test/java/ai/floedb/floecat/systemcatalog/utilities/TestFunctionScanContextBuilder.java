@@ -60,8 +60,8 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
             Map.of(),
             Map.of());
 
-    // Make it discoverable via overlay.listNamespaces()
-    overlay.addNode(ns);
+    // Make it discoverable via graphView.listNamespaces()
+    graphView.addNode(ns);
     return ns;
   }
 
@@ -86,7 +86,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
             window,
             hints);
 
-    overlay.addFunction(ns.id(), fn);
+    graphView.addFunction(ns.id(), fn);
     return fn;
   }
 

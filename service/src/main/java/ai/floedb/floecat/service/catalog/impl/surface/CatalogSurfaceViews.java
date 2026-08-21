@@ -26,7 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -37,13 +37,13 @@ import java.util.Objects;
 public final class CatalogSurfaceViews {
 
   private final ViewRepository viewRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceViews(ViewRepository viewRepo, CatalogOverlay overlay) {
+  public CatalogSurfaceViews(ViewRepository viewRepo, CatalogGraphView graphView) {
     this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
-    this.overlay = overlay;
-    this.writePolicy = new CatalogSurfaceWritePolicy(overlay);
+    this.graphView = graphView;
+    this.writePolicy = new CatalogSurfaceWritePolicy(graphView);
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
@@ -56,7 +56,7 @@ public final class CatalogSurfaceViews {
         CatalogSurfaceRelationPager.list(
             want,
             pageIn.token,
-            new CatalogSurfaceViewPageSource(viewRepo, overlay, accountId, nsNode, namespaceId),
+            new CatalogSurfaceViewPageSource(viewRepo, graphView, accountId, nsNode, namespaceId),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
@@ -66,12 +66,12 @@ public final class CatalogSurfaceViews {
   public GetViewResponse getView(GetViewRequest request, String corr) {
     var viewId = request.getViewId();
     ViewNode node = writePolicy.requireVisibleView(viewId, corr);
-    var view = viewFromOverlayNodeOrRepo(node, viewId, corr);
+    var view = viewFromGraphNodeOrRepo(node, viewId, corr);
 
     return GetViewResponse.newBuilder().setView(view).build();
   }
 
-  private View viewFromOverlayNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {
+  private View viewFromGraphNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {
     if (isSystemViewNode(node)) {
       // GetView reports the system view's canonical catalog id, unlike ListViews which rewrites it
       // to the catalog being browsed (see CatalogSurfaceViewPageSource#mapSystemNode). The rewrite

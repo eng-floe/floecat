@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.query.resolver;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -40,7 +40,7 @@ import java.util.UUID;
 @ApplicationScoped
 public final class SystemScannerResolver {
 
-  @Inject CatalogOverlay graph;
+  @Inject CatalogGraphView graph;
   @Inject EngineContextProvider engine;
   @Inject List<SystemObjectScannerProvider> providers;
 
@@ -117,7 +117,7 @@ public final class SystemScannerResolver {
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
-      CatalogOverlay graph, ResourceId tableId, String effectiveEngineKind) {
+      CatalogGraphView graph, ResourceId tableId, String effectiveEngineKind) {
     if (tableId == null || tableId.getId() == null) {
       return Optional.empty();
     }
@@ -146,7 +146,7 @@ public final class SystemScannerResolver {
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> translateToDefault(
-      CatalogOverlay graph, ResourceId tableId, byte[] incoming, String sourceEngineKind) {
+      CatalogGraphView graph, ResourceId tableId, byte[] incoming, String sourceEngineKind) {
     if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(sourceEngineKind)) {
       return Optional.empty();
     }

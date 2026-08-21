@@ -24,7 +24,7 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -48,13 +48,15 @@ public final class CatalogSurfaceCatalogs {
       "System catalog (global; visible from all catalogs)";
 
   private final CatalogRepository catalogRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final EngineContextProvider engineContext;
 
   public CatalogSurfaceCatalogs(
-      CatalogRepository catalogRepo, CatalogOverlay overlay, EngineContextProvider engineContext) {
+      CatalogRepository catalogRepo,
+      CatalogGraphView graphView,
+      EngineContextProvider engineContext) {
     this.catalogRepo = catalogRepo;
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.engineContext = engineContext;
   }
 
@@ -195,11 +197,11 @@ public final class CatalogSurfaceCatalogs {
 
   private Optional<Catalog> visibleSystemCatalogForCurrentEngine() {
     Catalog systemCatalog = systemCatalogForCurrentEngine();
-    return overlay.catalog(systemCatalog.getResourceId()).map(ignored -> systemCatalog);
+    return graphView.catalog(systemCatalog.getResourceId()).map(ignored -> systemCatalog);
   }
 
   private boolean isVisibleSystemCatalog(ResourceId catalogId) {
-    return normalizedCurrentSystemCatalogId(catalogId).flatMap(overlay::catalog).isPresent();
+    return normalizedCurrentSystemCatalogId(catalogId).flatMap(graphView::catalog).isPresent();
   }
 
   private static final class CatalogPageCursor {

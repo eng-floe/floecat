@@ -50,7 +50,7 @@ public final class TypeResolver {
           if (namespace == null || namespace.isBlank() || name == null || name.isBlank()) {
             return Optional.empty();
           }
-          return ctx.overlay().resolveSystemType(namespace, name);
+          return ctx.graphView().resolveSystemType(namespace, name);
         };
     this.lookup = new LayeredTypeLookup(userLookup, systemLookup);
   }

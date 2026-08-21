@@ -49,7 +49,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -67,7 +67,7 @@ class ViewServiceImplSystemViewTest {
   private PrincipalProvider principal;
   private Authorizer authz;
 
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
 
   @BeforeEach
   void setup() {
@@ -76,12 +76,12 @@ class ViewServiceImplSystemViewTest {
     viewRepo = mock(ViewRepository.class);
     principal = mock(PrincipalProvider.class);
     authz = mock(Authorizer.class);
-    overlay = new TestCatalogOverlay();
+    graphView = new TestCatalogGraphView();
 
     svc.viewRepo = viewRepo;
     svc.principal = principal;
     svc.authz = authz;
-    svc.overlay = overlay;
+    svc.graphView = graphView;
     svc.metadataGraph = mock(UserGraph.class);
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);
@@ -96,7 +96,7 @@ class ViewServiceImplSystemViewTest {
             .setId("sys_view_update")
             .build();
 
-    overlay.addNode(systemViewNode(viewId));
+    graphView.addNode(systemViewNode(viewId));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -123,7 +123,7 @@ class ViewServiceImplSystemViewTest {
             .setId("sys_view_delete")
             .build();
 
-    overlay.addNode(systemViewNode(viewId));
+    graphView.addNode(systemViewNode(viewId));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -159,7 +159,7 @@ class ViewServiceImplSystemViewTest {
             .setId("view_user_v")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new CatalogNode(
             systemCatalogId,
             "blob://test/v1",
@@ -169,7 +169,7 @@ class ViewServiceImplSystemViewTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",
@@ -179,7 +179,7 @@ class ViewServiceImplSystemViewTest {
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of()));
-    overlay.addNode(userViewNode(viewId, userCatalogId, namespaceId));
+    graphView.addNode(userViewNode(viewId, userCatalogId, namespaceId));
 
     when(viewRepo.metaFor(viewId)).thenReturn(MutationMeta.getDefaultInstance());
     when(viewRepo.getById(viewId))
@@ -257,7 +257,7 @@ class ViewServiceImplSystemViewTest {
   }
 
   /**
-   * Builds a CreateViewRequest into a writable user catalog/namespace registered in the overlay.
+   * Builds a CreateViewRequest into a writable user catalog/namespace registered in the graph view.
    */
   private CreateViewRequest writableViewContext() {
     ResourceId userCatalogId =
@@ -273,7 +273,7 @@ class ViewServiceImplSystemViewTest {
             .setId("ns_user_cv")
             .build();
 
-    overlay.addNode(
+    graphView.addNode(
         new CatalogNode(
             userCatalogId,
             "blob://test/v1",
@@ -283,7 +283,7 @@ class ViewServiceImplSystemViewTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    overlay.addNode(
+    graphView.addNode(
         new NamespaceNode(
             namespaceId,
             "blob://test/v1",

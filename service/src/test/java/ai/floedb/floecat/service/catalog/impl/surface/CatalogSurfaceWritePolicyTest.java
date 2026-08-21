@@ -35,10 +35,10 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -57,13 +57,13 @@ class CatalogSurfaceWritePolicyTest {
   private final ResourceId tableId = id(ResourceKind.RK_TABLE, "tbl");
   private final ResourceId viewId = id(ResourceKind.RK_VIEW, "view");
 
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
   private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
-    overlay = new TestCatalogOverlay();
-    writePolicy = new CatalogSurfaceWritePolicy(overlay);
+    graphView = new TestCatalogGraphView();
+    writePolicy = new CatalogSurfaceWritePolicy(graphView);
   }
 
   @Test
@@ -72,10 +72,10 @@ class CatalogSurfaceWritePolicyTest {
     var namespace = namespaceNode(namespaceId, "public", GraphNodeOrigin.USER);
     var table = userTableNode(tableId);
     var view = viewNode(viewId, GraphNodeOrigin.USER);
-    overlay.addNode(catalog);
-    overlay.addNode(namespace);
-    overlay.addRelation(namespaceId, table);
-    overlay.addRelation(namespaceId, view);
+    graphView.addNode(catalog);
+    graphView.addNode(namespace);
+    graphView.addRelation(namespaceId, table);
+    graphView.addRelation(namespaceId, view);
 
     assertEquals(catalog, writePolicy.requireWritableCatalog(catalogId, CORRELATION_ID));
     assertEquals(namespace, writePolicy.requireWritableNamespace(namespaceId, CORRELATION_ID));
@@ -98,7 +98,7 @@ class CatalogSurfaceWritePolicyTest {
 
   @Test
   void requireWritableNamespaceRejectsSystemOriginNode() {
-    overlay.addNode(namespaceNode(namespaceId, "information_schema", GraphNodeOrigin.SYSTEM));
+    graphView.addNode(namespaceNode(namespaceId, "information_schema", GraphNodeOrigin.SYSTEM));
 
     assertStatus(
         Status.Code.PERMISSION_DENIED,
@@ -106,9 +106,9 @@ class CatalogSurfaceWritePolicyTest {
   }
 
   @Test
-  void requireWritableSystemIdsRejectBeforeOverlayLookup() {
-    CatalogOverlay mockedOverlay = mock(CatalogOverlay.class);
-    var policy = new CatalogSurfaceWritePolicy(mockedOverlay);
+  void requireWritableSystemIdsRejectBeforeGraphViewLookup() {
+    CatalogGraphView mockedGraphView = mock(CatalogGraphView.class);
+    var policy = new CatalogSurfaceWritePolicy(mockedGraphView);
     var systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
     var systemNamespaceId =
         SystemNodeRegistry.resourceId("engine", ResourceKind.RK_NAMESPACE, "information_schema");
@@ -119,15 +119,15 @@ class CatalogSurfaceWritePolicyTest {
     assertStatus(
         Status.Code.PERMISSION_DENIED,
         () -> policy.requireWritableNamespace(systemNamespaceId, CORRELATION_ID));
-    verifyNoInteractions(mockedOverlay);
+    verifyNoInteractions(mockedGraphView);
   }
 
   @Test
   void requireWritableRelationsRejectSystemOriginNodes() {
     var systemTable = systemTableNode(tableId);
     var systemView = viewNode(viewId, GraphNodeOrigin.SYSTEM);
-    overlay.addRelation(namespaceId, systemTable);
-    overlay.addRelation(namespaceId, systemView);
+    graphView.addRelation(namespaceId, systemTable);
+    graphView.addRelation(namespaceId, systemView);
 
     assertStatus(
         Status.Code.PERMISSION_DENIED,
@@ -139,7 +139,7 @@ class CatalogSurfaceWritePolicyTest {
 
   @Test
   void requireNamespacePathWriteEligibleRejectsSystemNamespacePaths() {
-    overlay.addNode(namespaceNode(namespaceId, "information_schema", GraphNodeOrigin.SYSTEM));
+    graphView.addNode(namespaceNode(namespaceId, "information_schema", GraphNodeOrigin.SYSTEM));
 
     assertStatus(
         Status.Code.ALREADY_EXISTS,
@@ -162,13 +162,13 @@ class CatalogSurfaceWritePolicyTest {
   }
 
   @Test
-  void requireWritableDeleteChecksIgnoreOverlayResolutionFailuresWhenCallerDoesNotCare() {
-    CatalogOverlay throwingOverlay = mock(CatalogOverlay.class);
-    var throwingPolicy = new CatalogSurfaceWritePolicy(throwingOverlay);
-    when(throwingOverlay.resolve(tableId))
-        .thenThrow(new IllegalStateException("overlay unavailable"));
-    when(throwingOverlay.resolve(viewId))
-        .thenThrow(new IllegalStateException("overlay unavailable"));
+  void requireWritableDeleteChecksIgnoreGraphViewResolutionFailuresWhenCallerDoesNotCare() {
+    CatalogGraphView throwingGraphView = mock(CatalogGraphView.class);
+    var throwingPolicy = new CatalogSurfaceWritePolicy(throwingGraphView);
+    when(throwingGraphView.resolve(tableId))
+        .thenThrow(new IllegalStateException("graphView unavailable"));
+    when(throwingGraphView.resolve(viewId))
+        .thenThrow(new IllegalStateException("graphView unavailable"));
 
     assertDoesNotThrow(
         () -> throwingPolicy.requireWritableTableForDelete(tableId, CORRELATION_ID, false));
@@ -180,8 +180,8 @@ class CatalogSurfaceWritePolicyTest {
   void requireWritableDeleteChecksStillRejectSystemObjectsWhenResolved() {
     var systemTable = systemTableNode(tableId);
     var systemView = viewNode(viewId, GraphNodeOrigin.SYSTEM);
-    overlay.addRelation(namespaceId, systemTable);
-    overlay.addRelation(namespaceId, systemView);
+    graphView.addRelation(namespaceId, systemTable);
+    graphView.addRelation(namespaceId, systemView);
 
     assertStatus(
         Status.Code.PERMISSION_DENIED,

@@ -40,6 +40,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -164,6 +165,7 @@ class ViewCliSupportTest {
           () -> ACCT_ID);
 
       assertEquals(1, h.viewService.getViewCalls.get());
+      assertEquals(ResourceKind.RK_VIEW, h.viewService.lastGetRequest.getViewId().getKind());
       assertTrue(buf.toString().contains(UUID_1));
       assertTrue(buf.toString().contains("[ansi] SELECT 1"));
       assertTrue(buf.toString().contains("[spark] SELECT `id`"));
@@ -196,6 +198,7 @@ class ViewCliSupportTest {
 
       assertEquals(1, h.viewService.deleteViewCalls.get());
       assertEquals(UUID_1, h.viewService.lastDeleteRequest.getViewId().getId());
+      assertEquals(ResourceKind.RK_VIEW, h.viewService.lastDeleteRequest.getViewId().getKind());
       assertTrue(buf.toString().contains("ok"));
     }
   }

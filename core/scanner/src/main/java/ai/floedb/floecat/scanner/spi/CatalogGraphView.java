@@ -37,7 +37,7 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Shared overlay between metadata/system objects that exposes the graph operations needed by
+ * Shared view over metadata and system objects that exposes the graph operations needed by
  * scanners, planners, and traversal helpers.
  *
  * <p>This interface unifies the MetadataGraph view and the builtin graph so callers can depend on a
@@ -45,7 +45,7 @@ import java.util.Set;
  *
  * <p>Engine context is resolved implicitly from the request context.
  */
-public interface CatalogOverlay {
+public interface CatalogGraphView {
 
   /** Resolves any graph node for the given resource. Engine context is resolved implicitly. */
   Optional<GraphNode> resolve(ResourceId id);
@@ -103,7 +103,7 @@ public interface CatalogOverlay {
   }
 
   /**
-   * Whether this overlay can enumerate lightweight refs without materializing full graph nodes.
+   * Whether this graph view can enumerate lightweight refs without materializing full graph nodes.
    *
    * <p>Default implementations below are correct but derive refs from full objects, so callers that
    * need a true no-hydration path should check this before relying on refs for performance.
@@ -114,7 +114,8 @@ public interface CatalogOverlay {
 
   /**
    * Lists namespace refs for callers that only need topology metadata. Default derives refs from
-   * full namespace nodes; production overlays should override this with cache-backed pointer refs.
+   * full namespace nodes; production graph views should override this with cache-backed pointer
+   * refs.
    */
   default List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
     return listNamespaces(catalogId).stream()
@@ -138,7 +139,8 @@ public interface CatalogOverlay {
 
   /**
    * Lists relation refs for callers that only need relation name/id/kind. Default derives refs from
-   * full relation nodes; production overlays should override this with cache-backed pointer refs.
+   * full relation nodes; production graph views should override this with cache-backed pointer
+   * refs.
    */
   default List<TopologyGraph.RelationRef> listRelationRefs(
       ResourceId catalogId, ResourceId namespaceId) {
@@ -180,9 +182,9 @@ public interface CatalogOverlay {
   Optional<ResourceId> resolveName(String correlationId, NameRef ref);
 
   /**
-   * Batch kind-agnostic name resolution. The default loops {@link #resolveName}; overlays backed by
-   * per-name storage reads should override so names sharing a catalog/namespace resolve their scope
-   * once per batch instead of once per name.
+   * Batch kind-agnostic name resolution. The default loops {@link #resolveName}; graph views backed
+   * by per-name storage reads should override so names sharing a catalog/namespace resolve their
+   * scope once per batch instead of once per name.
    */
   default java.util.Map<NameRef, Optional<ResourceId>> resolveNames(
       String correlationId, List<NameRef> refs) {
@@ -194,18 +196,19 @@ public interface CatalogOverlay {
   }
 
   /**
-   * Whether independent resolution callbacks may run concurrently on this overlay instance.
+   * Whether independent resolution callbacks may run concurrently on this graph-view instance.
    *
-   * <p>The default preserves compatibility for existing overlays, whose lifecycle state may be tied
-   * to one request thread. Implementations backed by thread-safe services may opt in to concurrent
-   * resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code resolveName(s)}, and
-   * {@link #tablePinFor} callbacks to execute concurrently and off the caller thread, together with
-   * overlay-owned schema/name callbacks used while assembling GetUserObjects relations ({@link
-   * #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId, EngineContext)}, and {@link
-   * #viewName(ResourceId, EngineContext)}). It does not change the caller-thread contract of
-   * separately injected stats, pin-validation, or engine-decoration collaborators. Implementations
-   * opting in must make the listed overlay callbacks thread-safe and must not depend on custom
-   * caller-thread state that service context propagation does not capture.
+   * <p>The default preserves compatibility for existing implementations whose lifecycle state may
+   * be tied to one request thread. Implementations backed by thread-safe services may opt in to
+   * concurrent resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code
+   * resolveName(s)}, and {@link #tablePinFor} callbacks to execute concurrently and off the caller
+   * thread, together with graph-view schema/name callbacks used while assembling GetUserObjects
+   * relations ({@link #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId,
+   * EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It does not change the
+   * caller-thread contract of separately injected stats, pin-validation, or engine-decoration
+   * collaborators. Implementations opting in must make the listed graph-view callbacks thread-safe
+   * and must not depend on custom caller-thread state that service context propagation does not
+   * capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;
@@ -234,8 +237,8 @@ public interface CatalogOverlay {
 
   /**
    * Build the coherent {@link TablePin} the query context stores and downstream reads reuse. The
-   * user graph resolves every pin kind through the table's immutable root; other overlays resolve
-   * the snapshot directly. Pin kind follows the request intent (explicit snapshot / as-of /
+   * user graph resolves every pin kind through the table's immutable root; other graph views
+   * resolve the snapshot directly. Pin kind follows the request intent (explicit snapshot / as-of /
    * current) so dedupe can rank pins for the same table.
    */
   TablePin tablePinFor(
@@ -305,8 +308,8 @@ public interface CatalogOverlay {
   List<SchemaColumn> tableSchema(ResourceId tableId);
 
   /**
-   * Simplified result returned by the overlay whenever caller requests a paged list of tables or
-   * views.
+   * Simplified result returned by the graph view whenever a caller requests a paged list of tables
+   * or views.
    */
   record ResolveResult(List<QualifiedRelation> relations, int totalSize, String nextToken) {}
 

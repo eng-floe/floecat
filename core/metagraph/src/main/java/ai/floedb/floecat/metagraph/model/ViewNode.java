@@ -32,7 +32,7 @@ import java.util.Optional;
  *
  * <p>{@code baseRelations} holds the fully-qualified names of relations this view directly depends
  * on, expressed as {@link NameRef} objects so that resolution can be performed directly via {@code
- * CatalogOverlay.resolveName()} without any string parsing. The list is an optional performance
+ * CatalogGraphView.resolveName()} without any string parsing. The list is an optional performance
  * hint: when non-empty, {@code UserObjectBundleService} eagerly resolves base-table metadata in the
  * same {@code GetUserObjects} response, saving the planner a round-trip.
  */

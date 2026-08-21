@@ -33,7 +33,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import java.util.Optional;
@@ -65,7 +65,7 @@ class RelationPayloadPolicyTest {
 
   private static final EngineContext ENGINE = EngineContext.of("pg", "16.0");
 
-  private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
 
   // A PinValidator that fails loudly if reached: these tests read schema/pins straight from the
   // fakes and never reach per-read pin validation. Mirrors the test-only service constructor.
@@ -81,9 +81,9 @@ class RelationPayloadPolicyTest {
 
   @BeforeEach
   void setUp() {
-    overlay.clear();
-    overlay.registerCatalog(CATALOG, "cat");
-    overlay.registerTable(
+    graphView.clear();
+    graphView.registerCatalog(CATALOG, "cat");
+    graphView.registerTable(
         TABLE,
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
@@ -94,13 +94,13 @@ class RelationPayloadPolicyTest {
         new EngineRelationDecorator(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder builder =
         new RelationBundleBuilder(
-            overlay, engineRelationDecorator, systemExecutionResolver, throwingPinValidator);
+            graphView, engineRelationDecorator, systemExecutionResolver, throwingPinValidator);
     policy =
         new RelationPayloadPolicy(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }
 
   private ResolvedRelation resolved() {
-    RelationNode node = (RelationNode) overlay.resolve(TABLE).orElseThrow();
+    RelationNode node = (RelationNode) graphView.resolve(TABLE).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE))
@@ -108,7 +108,9 @@ class RelationPayloadPolicyTest {
         TABLE,
         node,
         QueryInput.newBuilder().setTableId(TABLE).build(),
-        overlay.tableName(TABLE).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView
+            .tableName(TABLE)
+            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static QueryContext pinnedWith(TablePin pin) {

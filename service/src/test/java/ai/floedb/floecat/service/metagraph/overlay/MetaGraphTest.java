@@ -38,7 +38,7 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -259,7 +259,7 @@ class MetaGraphTest {
   }
 
   private UserGraph.ResolveResult userResolveResult(
-      int total, String token, CatalogOverlay.QualifiedRelation... relations) {
+      int total, String token, CatalogGraphView.QualifiedRelation... relations) {
     List<FullyQualifiedResolver.QualifiedRelation> delegate =
         Arrays.stream(relations)
             .map(rel -> new FullyQualifiedResolver.QualifiedRelation(rel.name(), rel.resourceId()))
@@ -287,10 +287,10 @@ class MetaGraphTest {
         .thenReturn(Optional.empty());
 
     UserGraph.ResolveResult userResult =
-        userResolveResult(1, "user-token", new CatalogOverlay.QualifiedRelation(userRef, userId));
+        userResolveResult(1, "user-token", new CatalogGraphView.QualifiedRelation(userRef, userId));
     when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
 
-    CatalogOverlay.ResolveResult merged =
+    CatalogGraphView.ResolveResult merged =
         meta.batchResolveTables("cid", List.of(systemRef, userRef), 2, "");
 
     assertThat(merged.relations()).hasSize(2);
@@ -309,7 +309,7 @@ class MetaGraphTest {
         .thenReturn(
             Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
 
-    CatalogOverlay.ResolveResult resolved = meta.batchResolveTables("cid", List.of(ref), 1, "");
+    CatalogGraphView.ResolveResult resolved = meta.batchResolveTables("cid", List.of(ref), 1, "");
 
     assertThat(resolved.relations()).hasSize(1);
     assertThat(resolved.relations().get(0).resourceId()).isEqualTo(sysTable);
@@ -341,12 +341,12 @@ class MetaGraphTest {
         userResolveResult(
             1,
             "user-token",
-            new CatalogOverlay.QualifiedRelation(
+            new CatalogGraphView.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
                 usrTable));
     when(user.resolveTables(eq("cid"), eq(prefix), eq(49), eq(""))).thenReturn(userResult);
 
-    CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
+    CatalogGraphView.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
 
     assertThat(merged.relations()).hasSize(2);
     assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
@@ -379,7 +379,7 @@ class MetaGraphTest {
             new UserGraph.ResolveResult(
                 new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
 
-    CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
+    CatalogGraphView.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
 
     assertThat(merged.relations()).hasSize(1);
     assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
@@ -410,19 +410,19 @@ class MetaGraphTest {
         userResolveResult(
             1,
             "",
-            new CatalogOverlay.QualifiedRelation(
+            new CatalogGraphView.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
                 usrTable));
     when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
     when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
 
-    CatalogOverlay.ResolveResult firstPage = meta.listTablesByPrefix("cid", prefix, 1, "");
+    CatalogGraphView.ResolveResult firstPage = meta.listTablesByPrefix("cid", prefix, 1, "");
 
     assertThat(firstPage.relations()).hasSize(1);
     assertThat(firstPage.relations().get(0).resourceId()).isEqualTo(sysTable);
     assertThat(firstPage.totalSize()).isEqualTo(2);
 
-    CatalogOverlay.ResolveResult secondPage =
+    CatalogGraphView.ResolveResult secondPage =
         meta.listTablesByPrefix("cid", prefix, 1, firstPage.nextToken());
 
     assertThat(secondPage.relations()).hasSize(1);
@@ -455,7 +455,7 @@ class MetaGraphTest {
             Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
     when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(0);
 
-    CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, "");
+    CatalogGraphView.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, "");
 
     assertThat(page.relations()).hasSize(1);
     assertThat(page.relations().get(0).resourceId()).isEqualTo(sysTable);
@@ -504,7 +504,7 @@ class MetaGraphTest {
     var collected = new java.util.ArrayList<ResourceId>();
     String token = "";
     for (int guard = 0; guard < 10 && collected.size() < 2; guard++) {
-      CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, token);
+      CatalogGraphView.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, token);
       page.relations().forEach(rel -> collected.add(rel.resourceId()));
       assertThat(page.totalSize()).isEqualTo(2);
       token = page.nextToken();
@@ -545,15 +545,15 @@ class MetaGraphTest {
         userResolveResult(
             5,
             "more",
-            new CatalogOverlay.QualifiedRelation(
+            new CatalogGraphView.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("u1").build(),
                 usrTable),
-            new CatalogOverlay.QualifiedRelation(
+            new CatalogGraphView.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("u2").build(),
                 userTableB));
     when(user.resolveTables(eq("cid"), eq(prefix), eq(2), eq(""))).thenReturn(userResult);
 
-    CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 3, "");
+    CatalogGraphView.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 3, "");
 
     assertThat(page.relations()).hasSize(3);
     assertThat(page.relations().get(0).resourceId()).isEqualTo(sysTable);
@@ -598,19 +598,19 @@ class MetaGraphTest {
         userResolveResult(
             1,
             "",
-            new CatalogOverlay.QualifiedRelation(
+            new CatalogGraphView.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("uv").build(),
                 usrView));
     when(user.resolveViews(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
     when(user.countViewsByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
 
-    CatalogOverlay.ResolveResult firstPage = meta.listViewsByPrefix("cid", prefix, 1, "");
+    CatalogGraphView.ResolveResult firstPage = meta.listViewsByPrefix("cid", prefix, 1, "");
 
     assertThat(firstPage.relations()).hasSize(1);
     assertThat(firstPage.relations().get(0).resourceId()).isEqualTo(sysView);
     assertThat(firstPage.totalSize()).isEqualTo(2);
 
-    CatalogOverlay.ResolveResult secondPage =
+    CatalogGraphView.ResolveResult secondPage =
         meta.listViewsByPrefix("cid", prefix, 1, firstPage.nextToken());
 
     assertThat(secondPage.relations()).hasSize(1);

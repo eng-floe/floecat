@@ -47,9 +47,9 @@ facade sit inside `service/metagraph`. The split looks like this:
   against `EngineKey`, and caches payloads so planners never race over engine versions.
 - `service/metagraph/overlay/` – `UserGraph` (the Metadata Graph façade, see
   `service/metagraph/overlay/user/UserGraph.java`) composes the helpers above, exposes the public API,
-  and keeps a `CatalogOverlay`-friendly view via `MetaGraph`. `SystemGraph` (in
+  and keeps a `CatalogGraphView`-friendly view via `MetaGraph`. `SystemGraph` (in
   `overlay/systemobjects/SystemGraph.java`) consumes `SystemNodeRegistry` snapshots so pg_catalog-style
-  system tables/views merge with the user metadata when callers go through the overlay.
+  system tables/views merge with the user metadata when callers go through the composite graph view.
 
 ## Node Model
 Nodes live under `core/metagraph/model` and each implements `GraphNode`. They are Java records with
@@ -121,7 +121,7 @@ The matcher applies all engine-specific constraints eagerly when materialising b
 given `(engine_kind, engine_version)` pair, only the rules that match the naturally-ordered version
 boundaries are retained. The `BuiltinNodes` returned by `SystemNodeRegistry.nodesFor` therefore already
 represent the exact set applicable for that engine release. `SystemGraph` consumes those nodes to build
-a `_system` `GraphSnapshot` that `MetaGraph` exposes via `CatalogOverlay`, so pg_catalog-style system
+a `_system` `GraphSnapshot` that `MetaGraph` exposes via `CatalogGraphView`, so pg_catalog-style system
 objects live alongside the user metadata when scanners run. `SystemObjectsServiceImpl` reuses the same
 `SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetSystemObjects()` calls without
 recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
@@ -207,7 +207,7 @@ the graph defines the single source of truth for list/prefix resolution.
 `UserObjectsService.GetUserObjects` streams `UserObjectsBundleChunk`s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
-shares the same `QueryContext` as the other query RPCs and relies on `CatalogOverlay.resolve`,
+shares the same `QueryContext` as the other query RPCs and relies on `CatalogGraphView.resolve`,
 `snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into

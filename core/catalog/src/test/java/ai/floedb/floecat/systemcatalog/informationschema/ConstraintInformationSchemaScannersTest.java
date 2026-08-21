@@ -30,7 +30,7 @@ import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.util.Arrays;
 import java.util.List;
@@ -422,9 +422,9 @@ class ConstraintInformationSchemaScannersTest {
     var rows =
         new ConstraintColumnUsageScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
     assertThat(rows).isEmpty();
-    TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
-    assertThat(overlay.tableSchemaLookupCountTotal()).isEqualTo(1);
-    assertThat(overlay.tableSchemaLookupCount(orders.id())).isEqualTo(1);
+    TestCatalogGraphView graphView = (TestCatalogGraphView) ctx.graph();
+    assertThat(graphView.tableSchemaLookupCountTotal()).isEqualTo(1);
+    assertThat(graphView.tableSchemaLookupCount(orders.id())).isEqualTo(1);
   }
 
   @Test
@@ -495,10 +495,10 @@ class ConstraintInformationSchemaScannersTest {
         new ConstraintColumnUsageScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
     assertThat(rows).hasSize(2);
 
-    TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
-    assertThat(overlay.tableSchemaLookupCount(orders.id())).isEqualTo(1);
-    assertThat(overlay.tableSchemaLookupCount(customers.id())).isEqualTo(1);
-    assertThat(overlay.resolveTableLookupCountTotal()).isEqualTo(1);
+    TestCatalogGraphView graphView = (TestCatalogGraphView) ctx.graph();
+    assertThat(graphView.tableSchemaLookupCount(orders.id())).isEqualTo(1);
+    assertThat(graphView.tableSchemaLookupCount(customers.id())).isEqualTo(1);
+    assertThat(graphView.resolveTableLookupCountTotal()).isEqualTo(1);
   }
 
   private static SystemObjectScanContext contextWithConstraints() {

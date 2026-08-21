@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,7 +41,7 @@ import java.util.function.Supplier;
  */
 final class RelationResolutionMemo {
 
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final String correlationId;
   // Engine captured at construction is threaded through every lookup: re-reading it from the
   // request context per lookup is fragile across executor hops, and an empty engine silently
@@ -56,11 +56,11 @@ final class RelationResolutionMemo {
   private final Map<ResourceId, Optional<NameRef>> canonicalNameCache = new ConcurrentHashMap<>();
 
   RelationResolutionMemo(
-      CatalogOverlay overlay,
+      CatalogGraphView graphView,
       String correlationId,
       EngineContext engineContext,
       TimingAccumulator timings) {
-    this.overlay = overlay;
+    this.graphView = graphView;
     this.correlationId = correlationId;
     this.engineContext = engineContext;
     this.timings = timings;
@@ -71,7 +71,7 @@ final class RelationResolutionMemo {
         memoize(
             nameResolutionCache,
             normalizedNameRef(ref),
-            () -> overlay.resolveName(correlationId, ref, engineContext),
+            () -> graphView.resolveName(correlationId, ref, engineContext),
             timings::addNameResolveNanos);
     if (m.resolved()) {
       timings.recordNameCacheMiss();
@@ -86,7 +86,7 @@ final class RelationResolutionMemo {
         memoize(
             nodeResolutionCache,
             id,
-            () -> overlay.resolve(id, engineContext),
+            () -> graphView.resolve(id, engineContext),
             timings::addNodeResolveNanos);
     if (m.resolved()) {
       timings.recordNodeCacheMiss();
@@ -96,7 +96,7 @@ final class RelationResolutionMemo {
     return m.value();
   }
 
-  /** Resolve and memoize the overlay-owned canonical name for one relation. */
+  /** Resolve and memoize the graph-view canonical name for one relation. */
   NameRef canonicalName(RelationNode node) {
     NameRef nameOnly = NameRef.newBuilder().setName(node.displayName()).build();
     Optional<NameRef> canonical =
@@ -104,8 +104,8 @@ final class RelationResolutionMemo {
             node.id(),
             id ->
                 switch (node.kind()) {
-                  case TABLE -> overlay.tableName(id, engineContext);
-                  case VIEW -> overlay.viewName(id, engineContext);
+                  case TABLE -> graphView.tableName(id, engineContext);
+                  case VIEW -> graphView.viewName(id, engineContext);
                   default -> Optional.empty();
                 });
     return canonical.orElse(nameOnly);

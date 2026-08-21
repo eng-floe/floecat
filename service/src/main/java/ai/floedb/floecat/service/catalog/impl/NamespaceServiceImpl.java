@@ -32,7 +32,7 @@ import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceNamespaces;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -77,8 +77,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
 
-  // Overlay gives access to system namespaces (and other system objects)
-  @Inject CatalogOverlay overlay;
+  // The graph view gives access to system namespaces (and other system objects).
+  @Inject CatalogGraphView graphView;
 
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
@@ -617,11 +617,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private CatalogSurfaceNamespaces namespaceSurface() {
-    return new CatalogSurfaceNamespaces(namespaceRepo, overlay);
+    return new CatalogSurfaceNamespaces(namespaceRepo, graphView);
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(overlay);
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   private static byte[] canonicalFingerprint(

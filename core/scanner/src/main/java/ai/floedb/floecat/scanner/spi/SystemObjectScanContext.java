@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  * is safe, cache-aware, and keeps core decoupled from the full MetadataGraph implementation.
  */
 public record SystemObjectScanContext(
-    CatalogOverlay graph,
+    CatalogGraphView graph,
     NameRef name,
     ResourceId queryDefaultCatalogId,
     EngineContext engineContext,
@@ -59,7 +59,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext) {
@@ -74,7 +74,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext,
@@ -90,7 +90,7 @@ public record SystemObjectScanContext(
   }
 
   public SystemObjectScanContext(
-      CatalogOverlay graph,
+      CatalogGraphView graph,
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext,
@@ -111,7 +111,7 @@ public record SystemObjectScanContext(
   }
 
   @Override
-  public CatalogOverlay overlay() {
+  public CatalogGraphView graphView() {
     return graph;
   }
 
@@ -124,7 +124,7 @@ public record SystemObjectScanContext(
     return graph.resolve(id);
   }
 
-  /** Lightweight namespace refs from the overlay; production avoids full node hydration. */
+  /** Lightweight namespace refs from the graph view; production avoids full node hydration. */
   public List<TopologyGraph.NamespaceRef> listNamespaceRefs() {
     return graph.listNamespaceRefs(queryDefaultCatalogId);
   }
@@ -134,7 +134,7 @@ public record SystemObjectScanContext(
     return graph.listNamespaceRefsByName(queryDefaultCatalogId, names);
   }
 
-  /** Whether the overlay has a true lightweight ref implementation. */
+  /** Whether the graph view has a true lightweight ref implementation. */
   public boolean supportsLightweightRefs() {
     return graph.supportsLightweightRefs();
   }

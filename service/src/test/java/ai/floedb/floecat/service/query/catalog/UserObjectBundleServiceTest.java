@@ -55,7 +55,7 @@ import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CollectingSubscriber;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
+import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -132,7 +132,7 @@ class UserObjectBundleServiceTest {
       SnapshotTestSupport.relationPins(
           SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
 
-  private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
+  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
   private final EngineMetadataDecoratorProvider decoratorProvider = ctx -> Optional.empty();
   private final EngineContextProvider engineContextProvider = new EngineContextProvider();
   private StatsRepository statsRepository;
@@ -162,16 +162,16 @@ class UserObjectBundleServiceTest {
   void setUp() {
     resolver = new TestQueryInputResolver();
     queryStore = new TestQueryContextStore();
-    overlay.clear();
-    overlay.registerTable(
+    graphView.clear();
+    graphView.registerTable(
         TABLE_A,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE_B,
         UserObjectBundleTestSupport.schemaFor("id_b"),
         NameRef.newBuilder().setCatalog("cat").setName("b").build());
-    overlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    graphView.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -184,7 +184,7 @@ class UserObjectBundleServiceTest {
     statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
     service =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -242,7 +242,7 @@ class UserObjectBundleServiceTest {
     // A build failure is isolated to the relation that hit it: TABLE_A's schema read throws, so it
     // resolves ERROR while TABLE_B still resolves FOUND. An ERROR counts toward neither found nor
     // not_found, and the stream still completes with an end marker.
-    overlay.failSchemaFor(TABLE_A);
+    graphView.failSchemaFor(TABLE_A);
 
     TableReferenceCandidate a =
         TableReferenceCandidate.newBuilder()
@@ -297,15 +297,15 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void treatsANullOverlaySchemaAsAnEmptySchema() {
-    FakeCatalogOverlay nullSchemaOverlay =
-        new FakeCatalogOverlay() {
+  void treatsANullGraphViewSchemaAsAnEmptySchema() {
+    FakeCatalogGraphView nullSchemaGraphView =
+        new FakeCatalogGraphView() {
           @Override
           public List<SchemaColumn> tableSchema(ResourceId tableId) {
             return null;
           }
         };
-    service = serviceWith(nullSchemaOverlay);
+    service = serviceWith(nullSchemaGraphView);
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
@@ -495,7 +495,7 @@ class UserObjectBundleServiceTest {
         c -> Optional.of(new CountingDecorator(decorations, true, false));
     UserObjectBundleService decorated =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -564,7 +564,7 @@ class UserObjectBundleServiceTest {
         c -> Optional.of(new CountingDecorator(new AtomicInteger(), false, false));
     UserObjectBundleService failing =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -595,7 +595,7 @@ class UserObjectBundleServiceTest {
         c -> Optional.of(new CountingDecorator(new AtomicInteger(), true, false));
     UserObjectBundleService succeeding =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -617,7 +617,7 @@ class UserObjectBundleServiceTest {
   @Test
   void projectedResponsePreservesIdentityButBlanksThePayloadToken() {
     // A two-column table so a single-column projection is a genuine strict subset.
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE_A,
         List.of(
             SchemaColumn.newBuilder().setName("id_a").setNullable(true).build(),
@@ -726,7 +726,7 @@ class UserObjectBundleServiceTest {
         new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
     UserObjectBundleService localService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             deterministicResolver,
             localStore,
             localStatsFactory,
@@ -922,7 +922,7 @@ class UserObjectBundleServiceTest {
         };
     service =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             emptyResolver,
             queryStore,
             statsFactory,
@@ -1003,7 +1003,7 @@ class UserObjectBundleServiceTest {
     assertThat(items.get(1).getInputIndex()).isEqualTo(1);
     assertThat(items).allMatch(r -> r.getStatus() == ResolutionStatus.RESOLUTION_STATUS_FOUND);
     assertThat(items).allMatch(r -> r.getRelation().getRelationId().equals(TABLE_A));
-    assertThat(overlay.tableSchemaCount(TABLE_A)).isEqualTo(1);
+    assertThat(graphView.tableSchemaCount(TABLE_A)).isEqualTo(1);
   }
 
   @Test
@@ -1022,7 +1022,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -1115,7 +1115,7 @@ class UserObjectBundleServiceTest {
 
   @Test
   void systemTableStatsAreSkippedWhenUnpinned() throws Exception {
-    overlay.registerTable(
+    graphView.registerTable(
         SYSTEM_TABLE,
         UserObjectBundleTestSupport.schemaFor("sys_id"),
         NameRef.newBuilder().setCatalog("sys").setName("system_table").build(),
@@ -1186,12 +1186,12 @@ class UserObjectBundleServiceTest {
     System.setProperty(prefixB + "tls", "false");
 
     try {
-      overlay.registerRelation(
+      graphView.registerRelation(
           systemStorageA,
           storageSystemTableNode(systemStorageA, "sys://a", keyA),
           UserObjectBundleTestSupport.schemaFor("col_a"),
           NameRef.newBuilder().setCatalog("sys").setName("storage_a").build());
-      overlay.registerRelation(
+      graphView.registerRelation(
           systemStorageB,
           storageSystemTableNode(systemStorageB, "sys://b", keyB),
           UserObjectBundleTestSupport.schemaFor("col_b"),
@@ -1260,12 +1260,12 @@ class UserObjectBundleServiceTest {
             .setId("SYS_B")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    overlay.registerRelation(
+    graphView.registerRelation(
         sysA,
         storageSystemTableNode(sysA, "sys://a", "k"),
         UserObjectBundleTestSupport.schemaFor("a"),
         NameRef.newBuilder().setCatalog("sys").setName("sys_a").build());
-    overlay.registerRelation(
+    graphView.registerRelation(
         sysB,
         storageSystemTableNode(sysB, "sys://b", "k"),
         UserObjectBundleTestSupport.schemaFor("b"),
@@ -1361,10 +1361,10 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void threadConfinedOverlayLookupsStayOnTheStreamProducer() {
+  void threadConfinedGraphViewLookupsStayOnTheStreamProducer() {
     Thread producer = Thread.currentThread();
-    CallerThreadOnlyOverlay threadConfinedOverlay = new CallerThreadOnlyOverlay(producer);
-    service = serviceWith(threadConfinedOverlay);
+    CallerThreadOnlyGraphView threadConfinedGraphView = new CallerThreadOnlyGraphView(producer);
+    service = serviceWith(threadConfinedGraphView);
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setName(NameRef.newBuilder().setName("a")))
@@ -1374,18 +1374,18 @@ class UserObjectBundleServiceTest {
         service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
 
     assertThat(chunks).anyMatch(UserObjectsBundleChunk::hasResolutions);
-    assertThat(threadConfinedOverlay.callbackCount.get()).isGreaterThanOrEqualTo(3);
+    assertThat(threadConfinedGraphView.callbackCount.get()).isGreaterThanOrEqualTo(3);
   }
 
   @Test
-  void concurrentOverlayDoesNotMoveThreadConfinedDecoratorCallbacks() {
+  void concurrentGraphViewDoesNotMoveThreadConfinedDecoratorCallbacks() {
     Thread producer = Thread.currentThread();
-    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
-    concurrentOverlay.registerTable(
+    ConcurrentCatalogGraphView concurrentGraphView = new ConcurrentCatalogGraphView();
+    concurrentGraphView.registerTable(
         TABLE_A,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    concurrentGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
     AtomicReference<Thread> callbackThread = new AtomicReference<>();
     EngineMetadataDecoratorProvider provider =
         ignored ->
@@ -1401,7 +1401,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            concurrentOverlay,
+            concurrentGraphView,
             new TestQueryInputResolver(),
             queryStore,
             statsFactory,
@@ -1439,8 +1439,8 @@ class UserObjectBundleServiceTest {
   void concurrentBuildKeepsPinValidationOnTheStreamProducer() {
     Thread producer = Thread.currentThread();
     var userTable = TestNodes.tableNode(TABLE_A, "{}");
-    FakeCatalogOverlay concurrentOverlay =
-        new FakeCatalogOverlay() {
+    FakeCatalogGraphView concurrentGraphView =
+        new FakeCatalogGraphView() {
           @Override
           public boolean supportsConcurrentResolution() {
             return true;
@@ -1456,12 +1456,12 @@ class UserObjectBundleServiceTest {
             return new SchemaResolution(userTable, "{}");
           }
         };
-    concurrentOverlay.registerRelation(
+    concurrentGraphView.registerRelation(
         TABLE_A,
         userTable,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    concurrentGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
     AtomicReference<Thread> validationThread = new AtomicReference<>();
     PinValidator threadConfinedValidator =
         new PinValidator(null, RootRepairRequests.disabled()) {
@@ -1472,7 +1472,7 @@ class UserObjectBundleServiceTest {
         };
     UserObjectBundleService concurrentService =
         new UserObjectBundleService(
-            concurrentOverlay,
+            concurrentGraphView,
             resolver,
             queryStore,
             new CancelledQueryPinCleanup(queryStore, Runnable::run),
@@ -1505,12 +1505,12 @@ class UserObjectBundleServiceTest {
   @Test
   void workerCapableDecoratorIsSelectedOnceOnTheProducerThread() {
     Thread producer = Thread.currentThread();
-    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
-    concurrentOverlay.registerTable(
+    ConcurrentCatalogGraphView concurrentGraphView = new ConcurrentCatalogGraphView();
+    concurrentGraphView.registerTable(
         TABLE_A,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    concurrentGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
     AtomicInteger selections = new AtomicInteger();
     AtomicReference<Thread> callbackThread = new AtomicReference<>();
     EngineMetadataDecorator workerCapable =
@@ -1535,7 +1535,7 @@ class UserObjectBundleServiceTest {
         };
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            concurrentOverlay,
+            concurrentGraphView,
             new TestQueryInputResolver(),
             queryStore,
             statsFactory,
@@ -1571,7 +1571,7 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void concurrentOverlayDoesNotReenterStatsProviderFromBuildWorkers() {
+  void concurrentGraphViewDoesNotReenterStatsProviderFromBuildWorkers() {
     Thread producer = Thread.currentThread();
     AtomicReference<Thread> batchThread = new AtomicReference<>();
     AtomicInteger directCalls = new AtomicInteger();
@@ -1595,19 +1595,19 @@ class UserObjectBundleServiceTest {
     StatsProviderFactory threadConfinedFactory = Mockito.mock(StatsProviderFactory.class);
     Mockito.when(threadConfinedFactory.forQuery(Mockito.any(), Mockito.anyString()))
         .thenReturn(threadConfinedStats);
-    ConcurrentCatalogOverlay concurrentOverlay = new ConcurrentCatalogOverlay();
-    concurrentOverlay.registerTable(
+    ConcurrentCatalogGraphView concurrentGraphView = new ConcurrentCatalogGraphView();
+    concurrentGraphView.registerTable(
         TABLE_A,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    concurrentOverlay.registerTable(
+    concurrentGraphView.registerTable(
         TABLE_B,
         UserObjectBundleTestSupport.schemaFor("id_b"),
         NameRef.newBuilder().setCatalog("cat").setName("b").build());
-    concurrentOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    concurrentGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
     UserObjectBundleService concurrentService =
         new UserObjectBundleService(
-            concurrentOverlay,
+            concurrentGraphView,
             new TestQueryInputResolver(),
             queryStore,
             threadConfinedFactory,
@@ -1664,7 +1664,7 @@ class UserObjectBundleServiceTest {
         };
     service =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             cancellingResolver,
             queryStore,
             statsFactory,
@@ -1745,7 +1745,7 @@ class UserObjectBundleServiceTest {
     RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
     assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
     assertThat(resolution.getRelation().getRelationId()).isEqualTo(TABLE_A);
-    assertThat(overlay.resolveNameCount(unusedFallback)).isZero();
+    assertThat(graphView.resolveNameCount(unusedFallback)).isZero();
   }
 
   @Test
@@ -1779,11 +1779,11 @@ class UserObjectBundleServiceTest {
             .setId("TABLE_LOWER")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    overlay.registerTable(
+    graphView.registerTable(
         mixedCase,
         UserObjectBundleTestSupport.schemaFor("mixed_col"),
         NameRef.newBuilder().setCatalog("cat").setName("TableX").build());
-    overlay.registerTable(
+    graphView.registerTable(
         lowerCase,
         UserObjectBundleTestSupport.schemaFor("lower_col"),
         NameRef.newBuilder().setCatalog("cat").setName("tablex").build());
@@ -1829,12 +1829,12 @@ class UserObjectBundleServiceTest {
 
     service.stream("cid", ctx, List.of(first, second)).collect().asList().await().indefinitely();
 
-    assertThat(overlay.resolveCount(TABLE_A)).isEqualTo(1);
+    assertThat(graphView.resolveCount(TABLE_A)).isEqualTo(1);
   }
 
   @Test
   void graphNodeMissingEmitsErrorWithoutDroppingStream() {
-    overlay.hideNode(TABLE_A);
+    graphView.hideNode(TABLE_A);
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
             .addCandidates(
@@ -1859,7 +1859,7 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -1892,7 +1892,7 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -1938,7 +1938,7 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations, false, false));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -1991,7 +1991,7 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations, false, true));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2057,7 +2057,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2108,7 +2108,7 @@ class UserObjectBundleServiceTest {
     EngineMetadataDecoratorProvider provider = ignored -> Optional.empty();
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2167,7 +2167,7 @@ class UserObjectBundleServiceTest {
                 .setNullable(true)
                 .setOrdinal(2)
                 .build());
-    overlay.registerTable(
+    graphView.registerTable(
         TABLE_C, schema, NameRef.newBuilder().setCatalog("cat").setName("c").build());
 
     AtomicReference<Boolean> commitRelationHints = new AtomicReference<>();
@@ -2205,7 +2205,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2297,7 +2297,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2352,7 +2352,7 @@ class UserObjectBundleServiceTest {
                 });
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             resolver,
             queryStore,
             statsFactory,
@@ -2478,7 +2478,7 @@ class UserObjectBundleServiceTest {
             .build();
 
     NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("base_tbl").build();
-    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+    graphView.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
 
     ViewNode viewNode =
         new ViewNode(
@@ -2497,7 +2497,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("base_col"),
@@ -2553,8 +2553,8 @@ class UserObjectBundleServiceTest {
             .build();
 
     NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("failing_base").build();
-    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
-    overlay.failSchemaFor(baseId);
+    graphView.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+    graphView.failSchemaFor(baseId);
 
     ViewNode viewNode =
         new ViewNode(
@@ -2573,7 +2573,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("base_col"),
@@ -2634,7 +2634,7 @@ class UserObjectBundleServiceTest {
               .setKind(ResourceKind.RK_TABLE)
               .build();
       NameRef baseRef = NameRef.newBuilder().setCatalog("cat").setName("wb_base_" + i).build();
-      overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseRef);
+      graphView.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseRef);
       baseRefs.add(baseRef);
     }
     ViewNode viewNode =
@@ -2654,7 +2654,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("c0"),
@@ -2745,7 +2745,7 @@ class UserObjectBundleServiceTest {
             .build();
 
     NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("base_as_of").build();
-    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+    graphView.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
 
     ViewNode viewNode =
         new ViewNode(
@@ -2764,7 +2764,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("base_col"),
@@ -2783,10 +2783,10 @@ class UserObjectBundleServiceTest {
             .build();
     queryStore.seed(asOfCtx);
 
-    QueryInputResolver realResolver = new QueryInputResolver(overlay);
+    QueryInputResolver realResolver = new QueryInputResolver(graphView);
     UserObjectBundleService realService =
         new UserObjectBundleService(
-            overlay,
+            graphView,
             realResolver,
             queryStore,
             statsFactory,
@@ -2852,7 +2852,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("c"),
@@ -2896,7 +2896,7 @@ class UserObjectBundleServiceTest {
             .build();
 
     NameRef sharedBaseName = NameRef.newBuilder().setCatalog("cat").setName("base_shared").build();
-    overlay.registerTable(
+    graphView.registerTable(
         sharedBaseId, UserObjectBundleTestSupport.schemaFor("base_col"), sharedBaseName);
 
     ViewNode view1 =
@@ -2933,12 +2933,12 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         view1Id,
         view1,
         UserObjectBundleTestSupport.schemaFor("base_col"),
         NameRef.newBuilder().setCatalog("cat").setName("view_shared_1").build());
-    overlay.registerRelation(
+    graphView.registerRelation(
         view2Id,
         view2,
         UserObjectBundleTestSupport.schemaFor("base_col"),
@@ -2988,7 +2988,7 @@ class UserObjectBundleServiceTest {
               .setKind(ResourceKind.RK_TABLE)
               .build();
       NameRef baseName = NameRef.newBuilder().setCatalog("cat").setName("base_" + i).build();
-      overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseName);
+      graphView.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseName);
       baseRefs.add(baseName);
     }
     ViewNode viewNode =
@@ -3008,7 +3008,7 @@ class UserObjectBundleServiceTest {
             Optional.empty(),
             Map.of(),
             Map.of());
-    overlay.registerRelation(
+    graphView.registerRelation(
         viewId,
         viewNode,
         UserObjectBundleTestSupport.schemaFor("c"),
@@ -3041,14 +3041,14 @@ class UserObjectBundleServiceTest {
     assertThat(allResolutions.stream().filter(r -> r.getInputIndex() == -1).count()).isEqualTo(30);
   }
 
-  private UserObjectBundleService serviceWith(FakeCatalogOverlay testOverlay) {
-    testOverlay.registerTable(
+  private UserObjectBundleService serviceWith(FakeCatalogGraphView testGraphView) {
+    testGraphView.registerTable(
         TABLE_A,
         UserObjectBundleTestSupport.schemaFor("id_a"),
         NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    testOverlay.registerCatalog(DEFAULT_CATALOG, "cat");
+    testGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
     return new UserObjectBundleService(
-        testOverlay,
+        testGraphView,
         resolver,
         queryStore,
         statsFactory,
@@ -3061,12 +3061,14 @@ class UserObjectBundleServiceTest {
         "test");
   }
 
-  /** Fails when an overlay that opts out of concurrency is called away from its producer thread. */
-  private static final class CallerThreadOnlyOverlay extends FakeCatalogOverlay {
+  /**
+   * Fails when a graph view that opts out of concurrency is called away from its producer thread.
+   */
+  private static final class CallerThreadOnlyGraphView extends FakeCatalogGraphView {
     private final Thread producer;
     private final AtomicInteger callbackCount = new AtomicInteger();
 
-    private CallerThreadOnlyOverlay(Thread producer) {
+    private CallerThreadOnlyGraphView(Thread producer) {
       this.producer = producer;
     }
 
@@ -3096,13 +3098,13 @@ class UserObjectBundleServiceTest {
 
     private void assertProducerThread() {
       if (Thread.currentThread() != producer) {
-        throw new AssertionError("thread-confined overlay callback left the stream producer");
+        throw new AssertionError("thread-confined graph-view callback left the stream producer");
       }
       callbackCount.incrementAndGet();
     }
   }
 
-  private static final class ConcurrentCatalogOverlay extends FakeCatalogOverlay {
+  private static final class ConcurrentCatalogGraphView extends FakeCatalogGraphView {
     @Override
     public boolean supportsConcurrentResolution() {
       return true;

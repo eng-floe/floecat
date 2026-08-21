@@ -38,7 +38,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
@@ -55,22 +55,22 @@ class CatalogSurfaceNamespacesTest {
   private final ResourceId catalogId = id(ResourceKind.RK_CATALOG, "cat");
 
   private NamespaceRepository namespaceRepo;
-  private TestCatalogOverlay overlay;
+  private TestCatalogGraphView graphView;
   private CatalogSurfaceNamespaces surface;
 
   @BeforeEach
   void setup() {
     namespaceRepo = mock(NamespaceRepository.class);
-    overlay = new TestCatalogOverlay();
-    surface = new CatalogSurfaceNamespaces(namespaceRepo, overlay);
+    graphView = new TestCatalogGraphView();
+    surface = new CatalogSurfaceNamespaces(namespaceRepo, graphView);
 
-    overlay.addNode(catalogNode(catalogId, "examples"));
+    graphView.addNode(catalogNode(catalogId, "examples"));
   }
 
   @Test
   void listNamespacesKeepsRepoPhaseBeforeSystemPhase() {
     stubUserNamespaces(List.of(namespace("alpha", List.of())));
-    overlay.addNode(
+    graphView.addNode(
         namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
     var firstPage =
@@ -108,7 +108,7 @@ class CatalogSurfaceNamespacesTest {
     // Regression: a page that exactly consumes the last system namespace must not advertise an
     // ns: continuation, whose next page would come back empty.
     stubUserNamespaces(List.of());
-    overlay.addNode(
+    graphView.addNode(
         namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
     var page =
@@ -166,7 +166,7 @@ class CatalogSurfaceNamespacesTest {
     var pointers = new ai.floedb.floecat.storage.memory.InMemoryPointerStore();
     var blobs = new ai.floedb.floecat.storage.memory.InMemoryBlobStore();
     var realRepo = new NamespaceRepository(pointers, blobs);
-    var realSurface = new CatalogSurfaceNamespaces(realRepo, overlay);
+    var realSurface = new CatalogSurfaceNamespaces(realRepo, graphView);
 
     var expected = new java.util.ArrayList<String>();
     for (int i = 0; i < 150; i++) {
@@ -188,8 +188,8 @@ class CatalogSurfaceNamespacesTest {
     // Regression: the system phase must resume by a system relative name, not by the last user
     // relative name. "alpha" sorts before the last user namespace "orders" and must still appear.
     stubUserNamespaces(List.of(namespace("orders", List.of())));
-    overlay.addNode(namespaceNode(systemNamespaceId("alpha"), "alpha", List.of()));
-    overlay.addNode(
+    graphView.addNode(namespaceNode(systemNamespaceId("alpha"), "alpha", List.of()));
+    graphView.addNode(
         namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
     assertEquals(
@@ -216,7 +216,7 @@ class CatalogSurfaceNamespacesTest {
   @Test
   void getNamespaceReadsSystemNamespaceFromCatalogSurface() {
     ResourceId namespaceId = systemNamespaceId("information_schema");
-    overlay.addNode(namespaceNode(namespaceId, "information_schema", List.of()));
+    graphView.addNode(namespaceNode(namespaceId, "information_schema", List.of()));
     when(namespaceRepo.getById(namespaceId)).thenReturn(Optional.empty());
 
     var res =

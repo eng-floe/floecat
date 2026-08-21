@@ -27,7 +27,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -38,13 +38,13 @@ import java.util.Objects;
 public final class CatalogSurfaceTables {
 
   private final TableRepository tableRepo;
-  private final CatalogOverlay overlay;
+  private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceTables(TableRepository tableRepo, CatalogOverlay overlay) {
+  public CatalogSurfaceTables(TableRepository tableRepo, CatalogGraphView graphView) {
     this.tableRepo = Objects.requireNonNull(tableRepo, "table repository is required");
-    this.overlay = overlay;
-    this.writePolicy = new CatalogSurfaceWritePolicy(overlay);
+    this.graphView = graphView;
+    this.writePolicy = new CatalogSurfaceWritePolicy(graphView);
   }
 
   public ListTablesResponse listTables(ListTablesRequest request, String accountId, String corr) {
@@ -58,7 +58,7 @@ public final class CatalogSurfaceTables {
         CatalogSurfaceRelationPager.list(
             want,
             pageIn.token,
-            new CatalogSurfaceTablePageSource(tableRepo, overlay, accountId, nsNode, namespaceId),
+            new CatalogSurfaceTablePageSource(tableRepo, graphView, accountId, nsNode, namespaceId),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
@@ -67,7 +67,7 @@ public final class CatalogSurfaceTables {
 
   public GetTableResponse getTable(GetTableRequest request, String corr) {
     TableNode node = writePolicy.requireVisibleTable(request.getTableId(), corr);
-    Table table = tableFromOverlayNodeOrRepo(node, request.getTableId(), corr);
+    Table table = tableFromGraphNodeOrRepo(node, request.getTableId(), corr);
     MutationMeta meta =
         node.origin() == GraphNodeOrigin.SYSTEM
             ? MutationMeta.getDefaultInstance()
@@ -76,7 +76,7 @@ public final class CatalogSurfaceTables {
     return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
   }
 
-  private Table tableFromOverlayNodeOrRepo(TableNode node, ResourceId tableId, String corr) {
+  private Table tableFromGraphNodeOrRepo(TableNode node, ResourceId tableId, String corr) {
     if (node.origin() == GraphNodeOrigin.SYSTEM) {
       return node.toTableProtoTable();
     }

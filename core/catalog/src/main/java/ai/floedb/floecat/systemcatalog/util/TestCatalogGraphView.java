@@ -23,7 +23,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.scanner.utils.BaseTestCatalogOverlay;
+import ai.floedb.floecat.scanner.utils.BaseTestCatalogGraphView;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import java.util.HashMap;
 import java.util.List;
@@ -31,14 +31,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Shared stub implementation of {@link BaseTestCatalogOverlay} for unit tests. */
-public class TestCatalogOverlay extends BaseTestCatalogOverlay {
+/** Shared stub implementation of {@link BaseTestCatalogGraphView} for unit tests. */
+public class TestCatalogGraphView extends BaseTestCatalogGraphView {
 
   private final Map<TypeKey, TypeNode> typesByQName = new HashMap<>();
   private final Map<ResourceId, AtomicInteger> tableSchemaLookups = new HashMap<>();
   private final Map<String, AtomicInteger> resolveTableLookups = new HashMap<>();
 
-  public TestCatalogOverlay addType(TypeNode type) {
+  public TestCatalogGraphView addType(TypeNode type) {
     addNode(type);
     ResourceId namespaceId = type.namespaceId();
     typesByQName.put(new TypeKey(namespaceId, type.displayName()), type);
