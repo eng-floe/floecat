@@ -54,6 +54,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -102,6 +103,8 @@ class CatalogIntegrationsImplTest {
                             .setDisplayName("Warehouse")
                             .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
                             .setCatalogUri("https://catalog.example/v1")
+                            .putProperties("warehouse", "analytics")
+                            .putProperties("s3.region", "us-east-1")
                             .setAuthentication(oauthAuthentication()))
                     .setCredentials(oauthCredentials())
                     .build())
@@ -112,6 +115,34 @@ class CatalogIntegrationsImplTest {
     verify(service.integrations).createWithMeta(persisted.capture());
     assertEquals("Warehouse", persisted.getValue().getDisplayName());
     assertEquals("https://catalog.example/v1", response.getIntegration().getCatalogUri());
+    assertEquals("analytics", response.getIntegration().getPropertiesMap().get("warehouse"));
+    assertEquals("us-east-1", response.getIntegration().getPropertiesMap().get("s3.region"));
+  }
+
+  @Test
+  void createRejectsSecretBearingConnectionProperties() {
+    for (String key : List.of("token", "s3.secret-access-key", "header.Authorization")) {
+      var error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  service
+                      .createCatalogIntegration(
+                          CreateCatalogIntegrationRequest.newBuilder()
+                              .setSpec(
+                                  CatalogIntegrationSpec.newBuilder()
+                                      .setDisplayName("Warehouse")
+                                      .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+                                      .setCatalogUri("https://catalog.example/v1")
+                                      .putProperties(key, "redacted"))
+                              .build())
+                      .await()
+                      .indefinitely(),
+              key);
+
+      assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode(), key);
+    }
+    verify(service.integrations, never()).createWithMeta(any());
   }
 
   @Test
@@ -839,6 +870,42 @@ class CatalogIntegrationsImplTest {
     assertEquals(integrationId, response.getIntegration().getResourceId());
     assertEquals("Warehouse", response.getIntegration().getDisplayName());
     assertEquals("https://other.example", response.getIntegration().getCatalogUri());
+    assertEquals(5L, response.getMeta().getPointerVersion());
+  }
+
+  @Test
+  void updateConnectionPropertiesReplacesThePersistedMap() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var current =
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setDisplayName("Warehouse")
+            .setCatalogUri("https://catalog.example")
+            .putProperties("warehouse", "old-catalog")
+            .putProperties("removed", "value")
+            .build();
+    var currentMeta = MutationMeta.newBuilder().setPointerVersion(4L).build();
+    var updatedMeta = MutationMeta.newBuilder().setPointerVersion(5L).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(current, currentMeta)));
+    when(service.integrations.updateWithMetaUnlessDeleting(any(), eq(4L)))
+        .thenReturn(Optional.of(updatedMeta));
+
+    var response =
+        service
+            .updateCatalogIntegration(
+                UpdateCatalogIntegrationRequest.newBuilder()
+                    .setIntegrationId(integrationId)
+                    .setSpec(
+                        CatalogIntegrationSpec.newBuilder()
+                            .putProperties("warehouse", "new-catalog"))
+                    .setUpdateMask(FieldMask.newBuilder().addPaths("properties"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(Map.of("warehouse", "new-catalog"), response.getIntegration().getPropertiesMap());
+    assertEquals("https://catalog.example", response.getIntegration().getCatalogUri());
     assertEquals(5L, response.getMeta().getPointerVersion());
   }
 

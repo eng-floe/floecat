@@ -100,6 +100,8 @@ message CatalogIntegration {
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
   CatalogAuthentication authentication = 7;
+  // Non-secret provider connection properties.
+  map<string, string> properties = 99;
 }
 
 message CatalogIntegrationSpec {
@@ -108,6 +110,8 @@ message CatalogIntegrationSpec {
   // HTTP(S) catalog endpoint URL. User-info, secret-bearing query parameters, and fragments are rejected.
   optional string catalog_uri = 3;
   CatalogAuthentication authentication = 4;
+  // Non-secret provider connection properties.
+  map<string, string> properties = 99;
 }
 
 message CatalogIntegrationEntry {

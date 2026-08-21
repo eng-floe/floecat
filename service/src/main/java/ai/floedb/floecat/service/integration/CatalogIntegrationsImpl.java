@@ -61,7 +61,8 @@ import java.util.Set;
 
 @GrpcService
 public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogIntegrations {
-  private static final Set<String> MUTABLE_PATHS = Set.of("display_name", "catalog_uri");
+  private static final Set<String> MUTABLE_PATHS =
+      Set.of("display_name", "catalog_uri", "properties");
 
   @Inject CatalogIntegrationRepository integrations;
   @Inject MarkerStore markerStore;
@@ -176,6 +177,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               }
               validateType(spec.getType(), corr);
               String uri = validateCatalogUri(spec.getCatalogUri(), corr);
+              Map<String, String> properties =
+                  validateConnectionProperties(spec.getPropertiesMap(), corr);
               if (!spec.hasAuthentication()
                   || spec.getAuthentication().getConfigurationCase()
                       == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
@@ -199,6 +202,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       .scalar("display_name", name)
                       .scalar("type", spec.getType())
                       .scalar("catalog_uri", uri)
+                      .map("properties", properties)
                       .scalar("authentication", preparedAuthentication.authentication())
                       .bytes();
               var now = nowTs();
@@ -217,6 +221,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                           name,
                           spec.getType(),
                           uri,
+                          properties,
                           preparedAuthentication.authentication(),
                           mode,
                           false,
@@ -265,6 +270,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                                           name,
                                           spec.getType(),
                                           uri,
+                                          properties,
                                           preparedAuthentication.authentication(),
                                           CreateMode.CM_ERROR_IF_EXISTS,
                                           true,
@@ -304,6 +310,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       String name,
       CatalogIntegrationType type,
       String uri,
+      Map<String, String> properties,
       CatalogAuthentication authentication,
       CreateMode mode,
       boolean reservedIdentity,
@@ -328,6 +335,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                       .setDisplayName(name)
                       .setType(type)
                       .setCatalogUri(uri)
+                      .putAllProperties(properties)
                       .setCreatedAt(now)
                       .setUpdatedAt(now),
                   authentication)
@@ -356,6 +364,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                     .setDisplayName(name)
                     .setType(type)
                     .setCatalogUri(uri)
+                    .putAllProperties(properties)
                     .setCreatedAt(now)
                     .setUpdatedAt(now),
                 authentication)
@@ -422,6 +431,12 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               if (paths.contains("catalog_uri")) {
                 desiredBuilder.setCatalogUri(
                     validateCatalogUri(request.getSpec().getCatalogUri(), corr));
+              }
+              if (paths.contains("properties")) {
+                desiredBuilder
+                    .clearProperties()
+                    .putAllProperties(
+                        validateConnectionProperties(request.getSpec().getPropertiesMap(), corr));
               }
               CatalogIntegration desired = desiredBuilder.setUpdatedAt(nowTs()).build();
               try {
@@ -655,6 +670,13 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     } catch (IllegalArgumentException e) {
       throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "catalog_uri"));
     }
+  }
+
+  private static Map<String, String> validateConnectionProperties(
+      Map<String, String> properties, String corr) {
+    ai.floedb.floecat.service.common.PersistedSecretPropertyValidator.validateNoSecretKeys(
+        properties, corr, "properties");
+    return Map.copyOf(properties);
   }
 
   private record PreparedAuthentication(
