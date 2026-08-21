@@ -142,7 +142,7 @@ public class CatalogIntegrationAccess {
         new CatalogConnectionConfig(
             protocol,
             URI.create(integration.getCatalogUri()),
-            Map.of(),
+            integration.getPropertiesMap(),
             new ai.floedb.floecat.catalog.access.CatalogAuthentication(
                 scheme, Map.copyOf(authenticationProperties)));
     return new ResolvedAccess(

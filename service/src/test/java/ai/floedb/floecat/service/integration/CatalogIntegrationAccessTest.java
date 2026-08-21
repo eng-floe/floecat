@@ -56,7 +56,11 @@ class CatalogIntegrationAccessTest {
             .setCredentialsConfigured(true)
             .setCredentialGeneration(1L)
             .build();
-    CatalogIntegration integration = integration(authentication);
+    CatalogIntegration integration =
+        integration(authentication).toBuilder()
+            .putProperties("warehouse", "polaris-catalog")
+            .putProperties("s3.region", "us-east-1")
+            .build();
     when(credentials.resolve(integration))
         .thenReturn(
             Optional.of(
@@ -72,6 +76,9 @@ class CatalogIntegrationAccessTest {
         "https://identity.example/token",
         resolved.config().authentication().properties().get("oauth2-server-uri"));
     assertEquals("catalog read", resolved.config().authentication().properties().get("scope"));
+    assertEquals(
+        java.util.Map.of("warehouse", "polaris-catalog", "s3.region", "us-east-1"),
+        resolved.config().properties());
     assertEquals("client:secret", resolved.credentials().properties().get("credential"));
   }
 

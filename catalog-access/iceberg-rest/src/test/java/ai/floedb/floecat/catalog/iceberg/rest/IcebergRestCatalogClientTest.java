@@ -51,6 +51,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
+import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.StorageCredential;
@@ -438,6 +439,18 @@ class IcebergRestCatalogClientTest {
 
     assertEquals(CatalogAccessException.Code.UNAUTHENTICATED, error.code());
     assertFalse(error.getMessage().contains("secret-token"));
+  }
+
+  @Test
+  void translatesInvalidRootNamespaceForDiscoveryFallback() {
+    when(catalog.listTables(Namespace.empty()))
+        .thenThrow(new NoSuchNamespaceException("Invalid namespace: secret-detail"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().listTables(NamespacePath.root()));
+
+    assertEquals(CatalogAccessException.Code.NOT_FOUND, error.code());
+    assertFalse(error.getMessage().contains("secret-detail"));
   }
 
   @Test
