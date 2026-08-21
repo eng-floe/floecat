@@ -525,6 +525,41 @@ public class IdempotencyGuardTest {
   }
 
   @Test
+  void deletePendingIfOwnedDoesNotDeleteSuccessFinalizedAfterOwnershipCheck() throws Exception {
+    InMemoryPointerStore rawPtr = new InMemoryPointerStore();
+    InMemoryBlobStore rawBlobs = new InMemoryBlobStore();
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "pending-cleanup-race");
+    String requestHash = sha256B64("REQ".getBytes(StandardCharsets.UTF_8));
+    Timestamp expiresAt = expiresFrom(NOW, 300);
+    var racingPtr = new CompareDeleteRacePointerStore(rawPtr);
+    var racingRepo = new IdempotencyRepositoryImpl(racingPtr, rawBlobs);
+
+    assertThat(racingRepo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt)).isTrue();
+    racingPtr.beforeNextCompareAndDelete(
+        key,
+        () ->
+            racingRepo.finalizeSuccess(
+                ACCOUNT,
+                key,
+                OP,
+                requestHash,
+                resourceId("winner"),
+                meta(2),
+                "WINNER".getBytes(StandardCharsets.UTF_8),
+                NOW,
+                expiresAt));
+
+    assertThat(racingRepo.deletePendingIfOwned(key, OP, requestHash, NOW, expiresAt)).isFalse();
+    assertThat(racingRepo.get(key))
+        .get()
+        .satisfies(
+            winner -> {
+              assertThat(winner.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+              assertThat(winner.getPayload().toStringUtf8()).isEqualTo("WINNER");
+            });
+  }
+
+  @Test
   void staleLegacyFinalizerCannotCompleteAReusedIdempotencyKey() throws Exception {
     String key = Keys.idempotencyKey(ACCOUNT, OP, "reused-key");
     Timestamp expiresAt = expiresFrom(NOW, 300);

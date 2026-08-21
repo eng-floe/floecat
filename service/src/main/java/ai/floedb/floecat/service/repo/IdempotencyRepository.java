@@ -38,16 +38,14 @@ public interface IdempotencyRepository {
    * Reserves the stable identity of a resource before its create transaction is attempted. The
    * reserved identity lets the resource and its immutable success receipt commit atomically.
    */
-  default boolean createPending(
+  boolean createPending(
       String accountId,
       String key,
       String opName,
       String requestHash,
       ResourceId resourceId,
       Timestamp createdAt,
-      Timestamp expiresAt) {
-    return createPending(accountId, key, opName, requestHash, createdAt, expiresAt);
-  }
+      Timestamp expiresAt);
 
   void finalizeSuccess(
       String accountId,
@@ -74,4 +72,7 @@ public interface IdempotencyRepository {
   }
 
   boolean delete(String key);
+
+  boolean deletePendingIfOwned(
+      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt);
 }

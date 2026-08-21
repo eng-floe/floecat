@@ -487,16 +487,7 @@ public final class IdempotencyGuard {
       Timestamp expiresAt,
       Supplier<String> corrId) {
     try {
-      var current = store.get(key);
-      if (current.isEmpty()) return;
-      var record = current.get();
-      if (record.getStatus() == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.PENDING
-          && record.getOpName().equals(opName)
-          && record.getRequestHash().equals(requestHash)
-          && record.getCreatedAt().equals(createdAt)
-          && record.getExpiresAt().equals(expiresAt)) {
-        store.delete(key);
-      }
+      store.deletePendingIfOwned(key, opName, requestHash, createdAt, expiresAt);
     } catch (Throwable deleteError) {
       LOG.warnf(deleteError, "idempotency.delete_failed key=%s corr=%s", key, corrId.get());
     }

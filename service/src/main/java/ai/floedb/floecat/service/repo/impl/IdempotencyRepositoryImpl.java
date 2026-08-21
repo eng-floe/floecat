@@ -290,4 +290,26 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
     blobs.delete(pointer.getBlobUri());
     return true;
   }
+
+  @Override
+  public boolean deletePendingIfOwned(
+      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt) {
+    Pointer pointer = ptr.get(key).orElse(null);
+    if (pointer == null) {
+      return false;
+    }
+    IdempotencyRecord record = readRecord(pointer);
+    if (record.getStatus() != IdempotencyRecord.Status.PENDING
+        || !record.getOpName().equals(opName)
+        || !record.getRequestHash().equals(requestHash)
+        || !record.getCreatedAt().equals(createdAt)
+        || !record.getExpiresAt().equals(expiresAt)) {
+      return false;
+    }
+    if (!ptr.compareAndDelete(key, pointer.getVersion())) {
+      return false;
+    }
+    blobs.delete(pointer.getBlobUri());
+    return true;
+  }
 }
