@@ -73,7 +73,10 @@ class IntegrationCliSupportTest {
               "token_uri=https://identity.example/token",
               "scopes=catalog.read,catalog.write",
               "--cred",
-              "client_secret=secret"));
+              "client_secret=secret",
+              "--props",
+              "warehouse=analytics",
+              "s3.region=us-east-1"));
 
       var spec = h.integrations.lastCreate.getSpec();
       assertEquals("lakehouse", spec.getDisplayName());
@@ -85,6 +88,8 @@ class IntegrationCliSupportTest {
           spec.getAuthentication().getOauthClientCredentials().getScopesList());
       assertEquals(
           "secret", h.integrations.lastCreate.getCredentials().getOauthClientSecret().getValue());
+      assertEquals("analytics", spec.getPropertiesMap().get("warehouse"));
+      assertEquals("us-east-1", spec.getPropertiesMap().get("s3.region"));
     }
   }
 
@@ -128,10 +133,20 @@ class IntegrationCliSupportTest {
   @Test
   void updatesAndDeletesIntegrationById() throws Exception {
     try (Harness h = new Harness()) {
-      h.run("integration", List.of("update", INTEGRATION_ID, "--display", "renamed"));
+      h.run(
+          "integration",
+          List.of(
+              "update", INTEGRATION_ID, "--display", "renamed", "--props", "warehouse=reporting"));
       assertEquals(
-          List.of("display_name"), h.integrations.lastUpdate.getUpdateMask().getPathsList());
+          List.of("display_name", "properties"),
+          h.integrations.lastUpdate.getUpdateMask().getPathsList());
       assertEquals("renamed", h.integrations.lastUpdate.getSpec().getDisplayName());
+      assertEquals(
+          "reporting", h.integrations.lastUpdate.getSpec().getPropertiesMap().get("warehouse"));
+
+      h.run("integration", List.of("update", INTEGRATION_ID, "--props"));
+      assertEquals(List.of("properties"), h.integrations.lastUpdate.getUpdateMask().getPathsList());
+      assertTrue(h.integrations.lastUpdate.getSpec().getPropertiesMap().isEmpty());
 
       h.run("integration", List.of("delete", INTEGRATION_ID, "--cascade"));
       assertEquals(INTEGRATION_ID, h.integrations.lastDelete.getIntegrationId().getId());

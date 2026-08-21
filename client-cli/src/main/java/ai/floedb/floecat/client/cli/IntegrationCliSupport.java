@@ -103,16 +103,19 @@ final class IntegrationCliSupport {
         if (args.size() < 4) {
           out.println(
               "usage: integration create <name> <iceberg-rest|unity> <uri>"
-                  + " --auth-type <type> [--auth k=v ...] [--cred k=v ...]");
+                  + " --auth-type <type> [--auth k=v ...] [--cred k=v ...]"
+                  + " [--props k=v ...]");
           return;
         }
         ParsedAuthentication parsedAuthentication = parseAuthentication(args);
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
         CatalogIntegrationSpec spec =
             integrationSpec(
                 Quotes.unquote(args.get(1)),
                 parseIntegrationType(Quotes.unquote(args.get(2))),
                 Quotes.unquote(args.get(3)),
-                parsedAuthentication.authentication());
+                parsedAuthentication.authentication(),
+                properties);
         var row =
             integrations
                 .createCatalogIntegration(
@@ -125,7 +128,9 @@ final class IntegrationCliSupport {
       }
       case "update" -> {
         if (args.size() < 2) {
-          out.println("usage: integration update <name|id> --display <name> [--etag <etag>]");
+          out.println(
+              "usage: integration update <name|id> [--display <name>] [--props k=v ...]"
+                  + " [--etag <etag>]");
           return;
         }
         ResourceId id = resolveIntegration(args.get(1), integrations, accountId);
@@ -270,12 +275,17 @@ final class IntegrationCliSupport {
   }
 
   private static CatalogIntegrationSpec integrationSpec(
-      String name, CatalogIntegrationType type, String uri, CatalogAuthentication authentication) {
+      String name,
+      CatalogIntegrationType type,
+      String uri,
+      CatalogAuthentication authentication,
+      Map<String, String> properties) {
     return CatalogIntegrationSpec.newBuilder()
         .setDisplayName(name)
         .setType(type)
         .setCatalogUri(uri)
         .setAuthentication(authentication)
+        .putAllProperties(properties)
         .build();
   }
 
@@ -392,12 +402,14 @@ final class IntegrationCliSupport {
     var b = CatalogIntegrationSpec.newBuilder();
     if (args.contains("--display"))
       b.setDisplayName(Quotes.unquote(CliArgs.parseStringFlag(args, "--display", "")));
+    if (args.contains("--props")) b.putAllProperties(CliUtils.parseKeyValueList(args, "--props"));
     return b.build();
   }
 
   private static FieldMask integrationUpdateMask(List<String> args) {
     var paths = new ArrayList<String>();
     addIfPresent(paths, args, "--display", "display_name");
+    addIfPresent(paths, args, "--props", "properties");
     return FieldMask.newBuilder().addAllPaths(paths).build();
   }
 

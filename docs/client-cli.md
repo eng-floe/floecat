@@ -99,7 +99,7 @@ To exercise the resource model from the Shell, create an integration and overlay
 
 ```text
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
-  --auth-type bearer --cred token=secret
+  --auth-type bearer --cred token=secret --props warehouse=analytics
 overlay create sales-overlay lakehouse --include prod.sales
 ```
 

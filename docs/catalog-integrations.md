@@ -3,9 +3,9 @@
 Catalog integrations and overlays establish the resource, authentication, and SQL naming
 foundation for external-catalog connectivity:
 
-- A **catalog integration** records an upstream catalog type, URI, display name, and typed,
-  non-secret authentication configuration. Credential material is stored separately and is never
-  returned by the API.
+- A **catalog integration** records an upstream catalog type, URI, display name, non-secret
+  connection properties, and typed authentication configuration. Credential material is stored
+  separately and is never returned by the API.
 - A **catalog overlay** defines a top-level Floecat catalog backed by an integration and filtered
   to selected upstream namespaces.
 
@@ -27,7 +27,8 @@ Create the integration record, then define a top-level overlay catalog:
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth-type oauth-client-credentials \
   --auth client_id=floecat token_uri=https://identity.example/token \
-  --cred client_secret=secret
+  --cred client_secret=secret \
+  --props warehouse=analytics
 overlay create sales-overlay lakehouse --include prod.sales,prod.reference
 ```
 
@@ -41,8 +42,8 @@ The available commands are:
 integrations
 integration list
 integration get <name|id>
-integration create <name> <type> <uri> --auth-type <type> [--auth k=v ...] [--cred k=v ...]
-integration update <name|id> [options]
+integration create <name> <type> <uri> --auth-type <type> [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
+integration update <name|id> [--display <name>] [--props k=v ...] [--etag <etag>]
 integration update-auth <name|id> --auth-type <type> [--auth k=v ...] [--cred k=v ...]
 integration delete <name|id>
 
@@ -67,6 +68,11 @@ Authentication types and their properties are:
 For SigV4, `credential_source` is `default`, `assume-role`, or `access-key`. Assume-role uses the
 role properties above. Access-key uses the access-key properties above. The CLI rejects unknown
 properties instead of silently dropping them.
+
+`--props` supplies non-secret provider connection properties. For Iceberg REST catalogs such as
+Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in
+the base URI. Updating properties replaces the complete map; passing `--props` with no values clears
+it.
 
 ## Lifecycle
 
