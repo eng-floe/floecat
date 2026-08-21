@@ -41,6 +41,9 @@ import org.apache.iceberg.rest.RESTUtil;
 
 /** Opens Iceberg REST catalogs without any dependency on Connector resources or RPC contracts. */
 public final class IcebergRestCatalogClientProvider implements CatalogClientProvider {
+  private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
+      "header.X-Iceberg-Access-Delegation";
+  private static final String VENDED_CREDENTIALS = "vended-credentials";
   private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final AwsCredentialKeys CATALOG_AWS_KEYS =
       new AwsCredentialKeys(
@@ -107,6 +110,7 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
     resolvedCredentials.headers().forEach((name, value) -> properties.put("header." + name, value));
+    properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
 
     switch (config.authentication().scheme()) {
       case NONE -> {

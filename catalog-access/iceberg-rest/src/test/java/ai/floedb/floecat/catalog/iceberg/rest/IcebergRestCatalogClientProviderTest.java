@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegis
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RegistryBackedAwsCredentialsProvider;
 import java.net.URI;
 import java.util.Map;
+import org.apache.iceberg.rest.RESTUtil;
 import org.junit.jupiter.api.Test;
 
 class IcebergRestCatalogClientProviderTest {
@@ -45,6 +46,10 @@ class IcebergRestCatalogClientProviderTest {
 
     assertEquals("https://catalog.example/v1", properties.get("uri"));
     assertEquals("sales", properties.get("warehouse"));
+    assertEquals("vended-credentials", properties.get("header.X-Iceberg-Access-Delegation"));
+    assertEquals(
+        "vended-credentials",
+        RESTUtil.configHeaders(properties).get("X-Iceberg-Access-Delegation"));
     assertFalse(properties.containsKey("token"));
   }
 
@@ -63,6 +68,20 @@ class IcebergRestCatalogClientProviderTest {
     assertEquals("oauth2", properties.get("rest.auth.type"));
     assertEquals("secret-token", properties.get("token"));
     assertEquals("tenant-a", properties.get("header.X-Tenant"));
+  }
+
+  @Test
+  void accessDelegationCannotBeDowngradedByResolvedHeaders() {
+    Map<String, String> properties =
+        IcebergRestCatalogClientProvider.catalogProperties(
+            config(
+                new CatalogAuthentication(CatalogAuthenticationScheme.OAUTH2, Map.of()), Map.of()),
+            new ResolvedCatalogCredentials(
+                Map.of("token", "secret-token"),
+                Map.of("X-Iceberg-Access-Delegation", "remote-signing"),
+                null));
+
+    assertEquals("vended-credentials", properties.get("header.X-Iceberg-Access-Delegation"));
   }
 
   @Test
