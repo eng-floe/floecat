@@ -492,7 +492,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 Long.class)
             .orElse(60_000L));
     projectionMaintenanceService.bind(
-        pointerStore, this::refreshProjectedParentAndAdvance, readyScanLimit);
+        pointerStore,
+        this::refreshProjectedParentAndAdvance,
+        Keys.reconcileDirtyParentPointerPrefix(workerAffinity.value()),
+        readyScanLimit);
     return projectionMaintenanceService;
   }
 
@@ -4232,7 +4235,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (effectiveAccountId.isBlank() || effectiveParentJobId.isBlank()) {
       return null;
     }
-    String key = Keys.reconcileDirtyParentPointer(effectiveAccountId, effectiveParentJobId);
+    String key =
+        Keys.reconcileDirtyParentPointer(
+            workerAffinity.value(), effectiveAccountId, effectiveParentJobId);
     long generation = System.currentTimeMillis();
     long markerToken = ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE);
     String payload =

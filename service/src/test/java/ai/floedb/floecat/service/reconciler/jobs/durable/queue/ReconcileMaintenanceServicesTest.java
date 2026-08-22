@@ -48,6 +48,43 @@ import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
 class ReconcileMaintenanceServicesTest {
+  private static final String WORKER_AFFINITY = "reconciler-v1";
+  private static final String DIRTY_PARENT_PREFIX =
+      Keys.reconcileDirtyParentPointerPrefix(WORKER_AFFINITY);
+
+  @Test
+  void projectionMaintenanceOnlyConsumesItsWorkerAffinityNamespace() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    List<String> refreshed = new ArrayList<>();
+    putDirtyMarker(pointerStore, WORKER_AFFINITY, "acct", "owned-parent", 1L, 0L);
+    putDirtyMarker(pointerStore, "reconciler-v2", "acct", "other-parent", 1L, 0L);
+    String legacyKey = "/accounts/by-id/reconcile/jobs/dirty-parents/acct/legacy-parent";
+    pointerStore.compareAndSet(
+        legacyKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            legacyKey, "acct\nlegacy-parent", 1L));
+
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          refreshed.add(parentJobId);
+          return RefreshResult.OBSOLETE;
+        },
+        DIRTY_PARENT_PREFIX,
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+
+    assertEquals(List.of("owned-parent"), refreshed);
+    assertTrue(pointerStore.get(legacyKey).isPresent());
+    assertTrue(
+        pointerStore
+            .get(dirtyParentKey("reconciler-v2", "acct", "other-parent"))
+            .isPresent());
+  }
+
   @Test
   void refreshDirtyParentsAdvancesPaginationTokenUnderChurn() {
     PointerStore pointerStore = new TestPointerStore();
@@ -68,6 +105,7 @@ class ReconcileMaintenanceServicesTest {
           }
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         1);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -101,6 +139,7 @@ class ReconcileMaintenanceServicesTest {
           }
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         1);
 
     service.runProjectionMaintenanceOnce(1L);
@@ -136,13 +175,14 @@ class ReconcileMaintenanceServicesTest {
           events.add("refresh:" + parentJobId);
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
 
     assertTrue(events.size() == 1);
     assertTrue("refresh:parent".equals(events.get(0)));
-    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isEmpty());
+    assertTrue(pointerStore.get(dirtyParentKey("acct", "parent")).isEmpty());
   }
 
   @Test
@@ -156,13 +196,14 @@ class ReconcileMaintenanceServicesTest {
     service.bind(
         pointerStore,
         (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
 
     assertTrue(events.isEmpty());
     assertTrue(
-        pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "cancelled-child")).isEmpty());
+        pointerStore.get(dirtyParentKey("acct", "cancelled-child")).isEmpty());
   }
 
   @Test
@@ -177,6 +218,7 @@ class ReconcileMaintenanceServicesTest {
           events.add(parentJobId);
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -185,7 +227,7 @@ class ReconcileMaintenanceServicesTest {
 
     assertTrue(events.isEmpty());
     assertEquals(readsAfterFirstTick, pointerStore.prefixReads.get());
-    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isPresent());
+    assertTrue(pointerStore.get(dirtyParentKey("acct", "parent")).isPresent());
   }
 
   @Test
@@ -202,14 +244,15 @@ class ReconcileMaintenanceServicesTest {
           }
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
-    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isPresent());
+    assertTrue(pointerStore.get(dirtyParentKey("acct", "parent")).isPresent());
     service.runProjectionMaintenanceOnce(200L);
 
     assertEquals(2, refreshes.get());
-    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isEmpty());
+    assertTrue(pointerStore.get(dirtyParentKey("acct", "parent")).isEmpty());
   }
 
   @Test
@@ -217,7 +260,7 @@ class ReconcileMaintenanceServicesTest {
     PointerStore pointerStore = new TestPointerStore();
     ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
     AtomicInteger attempts = new AtomicInteger();
-    String markerKey = Keys.reconcileDirtyParentPointer("acct", "parent");
+    String markerKey = dirtyParentKey("acct", "parent");
     putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
     service.bind(
         pointerStore,
@@ -225,6 +268,7 @@ class ReconcileMaintenanceServicesTest {
             attempts.incrementAndGet() == 1
                 ? RefreshResult.PROJECTION_CONFLICT
                 : RefreshResult.OBSOLETE,
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -240,7 +284,7 @@ class ReconcileMaintenanceServicesTest {
     PointerStore pointerStore = new TestPointerStore();
     ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
     AtomicInteger attempts = new AtomicInteger();
-    String markerKey = Keys.reconcileDirtyParentPointer("acct", "parent");
+    String markerKey = dirtyParentKey("acct", "parent");
     putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
     service.bind(
         pointerStore,
@@ -251,6 +295,7 @@ class ReconcileMaintenanceServicesTest {
           }
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -275,6 +320,7 @@ class ReconcileMaintenanceServicesTest {
           refreshed.add(parentJobId);
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(1_000L, 2);
@@ -290,6 +336,7 @@ class ReconcileMaintenanceServicesTest {
     service.bind(
         pointerStore,
         (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -311,6 +358,7 @@ class ReconcileMaintenanceServicesTest {
     service.bind(
         pointerStore,
         (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -331,6 +379,7 @@ class ReconcileMaintenanceServicesTest {
           service.signalWork();
           return RefreshResult.OBSOLETE;
         },
+        DIRTY_PARENT_PREFIX,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -446,11 +495,31 @@ class ReconcileMaintenanceServicesTest {
       String parentJobId,
       long generation,
       long dirtyAtMs) {
-    String key = Keys.reconcileDirtyParentPointer(accountId, parentJobId);
+    putDirtyMarker(
+        pointerStore, WORKER_AFFINITY, accountId, parentJobId, generation, dirtyAtMs);
+  }
+
+  private static void putDirtyMarker(
+      PointerStore pointerStore,
+      String workerAffinity,
+      String accountId,
+      String parentJobId,
+      long generation,
+      long dirtyAtMs) {
+    String key = dirtyParentKey(workerAffinity, accountId, parentJobId);
     String payload = accountId + "\n" + parentJobId + "\n" + generation + "\n" + dirtyAtMs;
     long nextVersion = pointerStore.get(key).map(Pointer::getVersion).orElse(0L) + 1L;
     pointerStore.compareAndSet(
         key, nextVersion - 1L, PointerReferences.opaqueMarkerPointer(key, payload, nextVersion));
+  }
+
+  private static String dirtyParentKey(String accountId, String parentJobId) {
+    return dirtyParentKey(WORKER_AFFINITY, accountId, parentJobId);
+  }
+
+  private static String dirtyParentKey(
+      String workerAffinity, String accountId, String parentJobId) {
+    return Keys.reconcileDirtyParentPointer(workerAffinity, accountId, parentJobId);
   }
 
   private static void putCancellationMarker(

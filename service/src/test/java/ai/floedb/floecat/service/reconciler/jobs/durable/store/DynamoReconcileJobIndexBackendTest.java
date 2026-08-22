@@ -838,7 +838,7 @@ class DynamoReconcileJobIndexBackendTest {
         .thenReturn(TransactWriteItemsResponse.builder().build());
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
-    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, JOB_ID);
+    String markerKey = Keys.reconcileDirtyParentPointer("reconciler-v1", ACCOUNT_ID, JOB_ID);
 
     assertTrue(
         backend.compareAndSetBatch(

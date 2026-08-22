@@ -122,6 +122,7 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
+  private static final String WORKER_AFFINITY = "reconciler-v1";
 
   private static DynamoDbClient sharedDynamoDbClient;
   private static DynamoDbAsyncClient sharedDynamoDbAsyncClient;
@@ -1248,7 +1249,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
             .isPresent());
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
@@ -2054,7 +2055,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
             .isPresent());
   }
 
@@ -2648,7 +2649,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, tableJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, tableJobId))
             .isPresent());
 
     runProjectionMaintenance(4);
@@ -2703,7 +2704,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
             .isEmpty());
     assertEquals(
         1L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().snapshotsProcessed());
@@ -3452,7 +3453,7 @@ class DurableReconcileJobStoreTest {
   @Test
   void projectionMaintenanceDeletesMarkerForMissingParent() {
     String missingParentJobId = "missing-parent";
-    String dirtyMarkerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, missingParentJobId);
+    String dirtyMarkerKey = dirtyParentKey(ACCOUNT_ID, missingParentJobId);
 
     requestProjectionRefresh(missingParentJobId);
     assertTrue(store.pointerStore.get(dirtyMarkerKey).isPresent());
@@ -3469,7 +3470,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId);
+    String markerKey = dirtyParentKey(ACCOUNT_ID, parentJobId);
 
     requestProjectionRefresh(parentJobId);
     Pointer first = store.pointerStore.get(markerKey).orElseThrow();
@@ -3493,7 +3494,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob before =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     Optional<Pointer> markerBefore =
-        store.pointerStore.get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId));
+        store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, parentJobId));
     PointerStore originalPointerStore = store.pointerStore;
     store.pointerStore = new DirtyParentFailingPointerStore(originalPointerStore);
 
@@ -3515,7 +3516,7 @@ class DurableReconcileJobStoreTest {
     assertEquals(before.expectedDirectChildren, after.expectedDirectChildren);
     assertEquals(
         markerBefore,
-        store.pointerStore.get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId)));
+        store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, parentJobId)));
   }
 
   @Test
@@ -4966,11 +4967,11 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.pointerStore.delete(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId));
+    store.pointerStore.delete(dirtyParentKey(ACCOUNT_ID, snapshotJobId));
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
             .isEmpty());
     persistFileGroupResult(
         store,
@@ -4991,7 +4992,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
             .isPresent());
     runProjectionMaintenance();
 
@@ -5166,7 +5167,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId))
+            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
             .isEmpty());
   }
 
@@ -7651,6 +7652,14 @@ class DurableReconcileJobStoreTest {
                 parentJobId));
   }
 
+  private static String dirtyParentKey(String accountId, String parentJobId) {
+    return Keys.reconcileDirtyParentPointer(WORKER_AFFINITY, accountId, parentJobId);
+  }
+
+  private static String dirtyParentPrefix() {
+    return Keys.reconcileDirtyParentPointerPrefix(WORKER_AFFINITY);
+  }
+
   private StoredReconcileJob readStoredRecord(String canonicalPointerKey) {
     return assertDoesNotThrow(
             () -> store.jobIndexStore.readCanonicalRecordByKey(canonicalPointerKey))
@@ -7790,7 +7799,7 @@ class DurableReconcileJobStoreTest {
 
     @Override
     public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-      if (key != null && key.startsWith(Keys.reconcileDirtyParentPointerPrefix())) {
+      if (key != null && key.startsWith(dirtyParentPrefix())) {
         return false;
       }
       return delegate.compareAndSet(key, expectedVersion, next);
@@ -7813,7 +7822,7 @@ class DurableReconcileJobStoreTest {
               .filter(UnconditionalUpsert.class::isInstance)
               .map(UnconditionalUpsert.class::cast)
               .anyMatch(
-                  upsert -> upsert.key().startsWith(Keys.reconcileDirtyParentPointerPrefix()))) {
+                  upsert -> upsert.key().startsWith(dirtyParentPrefix()))) {
         return false;
       }
       return delegate.compareAndSetBatch(ops);
