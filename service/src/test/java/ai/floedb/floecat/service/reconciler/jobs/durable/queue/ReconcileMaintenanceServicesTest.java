@@ -61,10 +61,7 @@ class ReconcileMaintenanceServicesTest {
     putDirtyMarker(pointerStore, "reconciler-v2", "acct", "other-parent", 1L, 0L);
     String legacyKey = "/accounts/by-id/reconcile/jobs/dirty-parents/acct/legacy-parent";
     pointerStore.compareAndSet(
-        legacyKey,
-        0L,
-        PointerReferences.opaqueMarkerPointer(
-            legacyKey, "acct\nlegacy-parent", 1L));
+        legacyKey, 0L, PointerReferences.opaqueMarkerPointer(legacyKey, "acct\nlegacy-parent", 1L));
 
     service.bind(
         pointerStore,
@@ -80,9 +77,7 @@ class ReconcileMaintenanceServicesTest {
     assertEquals(List.of("owned-parent"), refreshed);
     assertTrue(pointerStore.get(legacyKey).isPresent());
     assertTrue(
-        pointerStore
-            .get(dirtyParentKey("reconciler-v2", "acct", "other-parent"))
-            .isPresent());
+        pointerStore.get(dirtyParentKey("reconciler-v2", "acct", "other-parent")).isPresent());
   }
 
   @Test
@@ -202,8 +197,7 @@ class ReconcileMaintenanceServicesTest {
     service.runProjectionMaintenanceOnce(200L);
 
     assertTrue(events.isEmpty());
-    assertTrue(
-        pointerStore.get(dirtyParentKey("acct", "cancelled-child")).isEmpty());
+    assertTrue(pointerStore.get(dirtyParentKey("acct", "cancelled-child")).isEmpty());
   }
 
   @Test
@@ -495,8 +489,7 @@ class ReconcileMaintenanceServicesTest {
       String parentJobId,
       long generation,
       long dirtyAtMs) {
-    putDirtyMarker(
-        pointerStore, WORKER_AFFINITY, accountId, parentJobId, generation, dirtyAtMs);
+    putDirtyMarker(pointerStore, WORKER_AFFINITY, accountId, parentJobId, generation, dirtyAtMs);
   }
 
   private static void putDirtyMarker(

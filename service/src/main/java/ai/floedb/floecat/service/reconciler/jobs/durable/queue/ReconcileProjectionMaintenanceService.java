@@ -143,8 +143,7 @@ public class ReconcileProjectionMaintenanceService {
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(
-              dirtyParentPointerPrefix, readyScanLimit, token, next);
+          pointerStore.listPointersByPrefix(dirtyParentPointerPrefix, readyScanLimit, token, next);
       if (pointers.isEmpty()) {
         dirtyParentScanToken = "";
         return new DirtyParentStats(

@@ -68,8 +68,7 @@ class MemoryReconcileLeaseBackendTest {
         new MemoryReconcileLeaseBackend(pointers, jobIndexBackend);
     ReconcileJobIndexCleanupManifest manifest =
         new ReconcileJobIndexCleanupManifest(List.of("index-1"), List.of("ready-1"));
-    String markerKey =
-        Keys.reconcileDirtyParentPointer("reconciler-v1", ACCOUNT_ID, "parent-1");
+    String markerKey = Keys.reconcileDirtyParentPointer("reconciler-v1", ACCOUNT_ID, "parent-1");
     PointerStore.UnconditionalUpsert markerTouch =
         new PointerStore.UnconditionalUpsert(
             markerKey,
@@ -125,8 +124,7 @@ class MemoryReconcileLeaseBackendTest {
     MemoryReconcileJobIndexBackend jobIndexBackend = new MemoryReconcileJobIndexBackend(pointers);
     MemoryReconcileLeaseBackend leaseBackend =
         new MemoryReconcileLeaseBackend(pointers, jobIndexBackend);
-    String markerKey =
-        Keys.reconcileDirtyParentPointer("reconciler-v1", ACCOUNT_ID, "parent-1");
+    String markerKey = Keys.reconcileDirtyParentPointer("reconciler-v1", ACCOUNT_ID, "parent-1");
     PointerStore.UnconditionalUpsert markerTouch =
         new PointerStore.UnconditionalUpsert(
             markerKey,

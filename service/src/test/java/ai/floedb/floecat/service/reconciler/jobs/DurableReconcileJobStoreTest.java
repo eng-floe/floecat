@@ -1246,11 +1246,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals(1L, parentRecord.expectedDirectChildren);
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
-            .isPresent());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, connectorJobId)).isPresent());
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
   }
@@ -2052,11 +2048,7 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_SUCCEEDED", tableCanonical.state);
     assertEquals("JS_WAITING", connectorCanonical.state);
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
-            .isPresent());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, connectorJobId)).isPresent());
   }
 
   @Test
@@ -2646,11 +2638,7 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(tableGenerationBefore, tableAfterProgress.projectionRequestedGeneration);
     assertEquals(connectorGenerationBefore, connectorAfterProgress.projectionRequestedGeneration);
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, tableJobId))
-            .isPresent());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, tableJobId)).isPresent());
 
     runProjectionMaintenance(4);
 
@@ -2701,11 +2689,7 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markProgress(tableJobId, tableLease.leaseEpoch, 0L, 0L, 0L, 0L, 0L, 1L, 0L, "progress");
     runProjectionMaintenance(4);
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, connectorJobId))
-            .isEmpty());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, connectorJobId)).isEmpty());
     assertEquals(
         1L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().snapshotsProcessed());
 
@@ -3514,9 +3498,7 @@ class DurableReconcileJobStoreTest {
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId));
     assertEquals(before.projectionRequestedGeneration, after.projectionRequestedGeneration);
     assertEquals(before.expectedDirectChildren, after.expectedDirectChildren);
-    assertEquals(
-        markerBefore,
-        store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, parentJobId)));
+    assertEquals(markerBefore, store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, parentJobId)));
   }
 
   @Test
@@ -4968,11 +4950,7 @@ class DurableReconcileJobStoreTest {
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
     store.pointerStore.delete(dirtyParentKey(ACCOUNT_ID, snapshotJobId));
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
-            .isEmpty());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, snapshotJobId)).isEmpty());
     persistFileGroupResult(
         store,
         execJobId,
@@ -4989,11 +4967,7 @@ class DurableReconcileJobStoreTest {
                     2L,
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 3L))));
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
-            .isPresent());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, snapshotJobId)).isPresent());
     runProjectionMaintenance();
 
     StoredReconcileJobProjection snapshotProjection =
@@ -5164,11 +5138,7 @@ class DurableReconcileJobStoreTest {
             "",
             "");
 
-    assertTrue(
-        store
-            .pointerStore
-            .get(dirtyParentKey(ACCOUNT_ID, snapshotJobId))
-            .isEmpty());
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, snapshotJobId)).isEmpty());
   }
 
   @Test
@@ -7821,8 +7791,7 @@ class DurableReconcileJobStoreTest {
           && ops.stream()
               .filter(UnconditionalUpsert.class::isInstance)
               .map(UnconditionalUpsert.class::cast)
-              .anyMatch(
-                  upsert -> upsert.key().startsWith(dirtyParentPrefix()))) {
+              .anyMatch(upsert -> upsert.key().startsWith(dirtyParentPrefix()))) {
         return false;
       }
       return delegate.compareAndSetBatch(ops);
