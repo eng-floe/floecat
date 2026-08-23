@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.floecat.service.it.profiles.ReconcilerWorkerLocalProfile;
+import ai.floedb.floecat.service.it.profiles.StatsOrchestratorProfile;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -54,7 +54,7 @@ import org.junit.jupiter.api.Test;
  * FAILED, TIMEOUT — and that async follow-up jobs are enqueued when required.
  */
 @QuarkusTest
-@TestProfile(ReconcilerWorkerLocalProfile.class)
+@TestProfile(StatsOrchestratorProfile.class)
 class StatsOrchestratorIT {
 
   @GrpcClient("floecat")
@@ -299,6 +299,8 @@ class StatsOrchestratorIT {
 
     Connector conn = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "cancel");
     attachConnectorToTable(tableId, conn);
+    String connectorId = conn.getResourceId().getId();
+    Set<String> existingRootJobIds = listRootJobIds(tableId.getAccountId());
 
     // 2s budget: long enough for us to find and cancel the sync job before it times out
     StatsCaptureRequest req =
@@ -311,20 +313,30 @@ class StatsOrchestratorIT {
     CompletableFuture<StatsResolutionResult> future =
         CompletableFuture.supplyAsync(() -> orchestrator.resolve(req));
 
-    // Poll until the sync capture job appears, then cancel it to force FAILED outcome
-    String jobId = null;
+    // Poll for the newly-created queued root for this connector. This test's profile disables
+    // workers so the root cannot advance and enqueue children before cancellation.
+    ReconcileJobStore.ReconcileJob syncJob = null;
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-    while (jobId == null && System.nanoTime() < deadline) {
-      var page = jobStore.list(tableId.getAccountId(), 10, "", "", Set.of("JS_QUEUED"));
-      if (!page.jobs.isEmpty()) {
-        jobId = page.jobs.get(0).jobId;
-      } else {
+    while (syncJob == null && System.nanoTime() < deadline) {
+      var page = jobStore.list(tableId.getAccountId(), 100, "", "", Set.of("JS_QUEUED"));
+      syncJob =
+          page.jobs.stream()
+              .filter(job -> !existingRootJobIds.contains(job.jobId))
+              .filter(job -> job.parentJobId == null || job.parentJobId.isBlank())
+              .filter(job -> connectorId.equals(job.connectorId))
+              .findFirst()
+              .orElse(null);
+      if (syncJob == null) {
         Thread.sleep(20);
       }
     }
-    assertNotNull(jobId, "sync capture job must appear in job store within 3s");
+    assertNotNull(syncJob, "sync capture root job must appear in job store within 3s");
 
-    jobStore.cancel(tableId.getAccountId(), jobId, "test_cancel");
+    var cancelled = jobStore.cancel(tableId.getAccountId(), syncJob.jobId, "test_cancel");
+    assertTrue(cancelled.isPresent(), "sync capture root job must be cancellable");
+    assertTrue(
+        Set.of("JS_CANCELLED", "JS_CANCELLING").contains(cancelled.get().state),
+        "sync capture root job must enter a cancellation state");
     StatsResolutionResult result = future.get(5, TimeUnit.SECONDS);
 
     assertEquals(StatsSyncOutcome.FAILED, result.outcome());
@@ -386,6 +398,12 @@ class StatsOrchestratorIT {
 
   private Set<String> listJobIds(String accountId) {
     return jobStore.list(accountId, 100, "", "", ALL_JOB_STATES).jobs.stream()
+        .map(job -> job.jobId)
+        .collect(java.util.stream.Collectors.toSet());
+  }
+
+  private Set<String> listRootJobIds(String accountId) {
+    return jobStore.listRootJobs(accountId, 100, "", "", Set.of()).jobs.stream()
         .map(job -> job.jobId)
         .collect(java.util.stream.Collectors.toSet());
   }
