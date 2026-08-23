@@ -49,7 +49,7 @@ public class TestDataResetter {
   private static final List<String> GLOBAL_RECONCILE_PREFIXES =
       List.of(
           Keys.reconcileJobLookupPointerByIdPrefix(),
-          Keys.reconcileDirtyParentPointerPrefix(),
+          Keys.reconcileDirtyParentPointerRootPrefix(),
           Keys.reconcileJobByStatePointerPrefix(),
           Keys.reconcileReadyPointerPrefix(),
           Keys.reconcileReadyByExecutionClassPointerPrefix(),

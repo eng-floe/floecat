@@ -23,6 +23,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import java.util.Map;
 
 public class StoredReconcileJob {
+  public static final int CURRENT_READY_INDEX_VERSION = 2;
+
   public String jobId;
   public String accountId;
   public String connectorId;
@@ -125,6 +127,7 @@ public class StoredReconcileJob {
   public String laneKey;
   public String dedupeKeyHash;
   public String readyPointerKey;
+  public int readyIndexVersion;
   public String connectorIndexPointerKey;
   public String canonicalPointerKey;
   public long createdAtMs;

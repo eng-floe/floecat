@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -48,6 +47,7 @@ public class ReconcileProjectionMaintenanceService {
 
   private PointerStore pointerStore;
   private RefreshDirtyParentProjection refreshDirtyParentProjection;
+  private String dirtyParentPointerPrefix;
   private int readyScanLimit;
   private int maxMarkersPerTick = Integer.MAX_VALUE;
 
@@ -61,9 +61,14 @@ public class ReconcileProjectionMaintenanceService {
   public void bind(
       PointerStore pointerStore,
       RefreshDirtyParentProjection refreshDirtyParentProjection,
+      String dirtyParentPointerPrefix,
       int readyScanLimit) {
     this.pointerStore = pointerStore;
     this.refreshDirtyParentProjection = refreshDirtyParentProjection;
+    if (dirtyParentPointerPrefix == null || dirtyParentPointerPrefix.isBlank()) {
+      throw new IllegalArgumentException("dirtyParentPointerPrefix is required");
+    }
+    this.dirtyParentPointerPrefix = dirtyParentPointerPrefix;
     this.readyScanLimit = readyScanLimit;
   }
 
@@ -138,8 +143,7 @@ public class ReconcileProjectionMaintenanceService {
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(
-              Keys.reconcileDirtyParentPointerPrefix(), readyScanLimit, token, next);
+          pointerStore.listPointersByPrefix(dirtyParentPointerPrefix, readyScanLimit, token, next);
       if (pointers.isEmpty()) {
         dirtyParentScanToken = "";
         return new DirtyParentStats(

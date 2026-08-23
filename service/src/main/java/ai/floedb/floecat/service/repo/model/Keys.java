@@ -1104,14 +1104,24 @@ public final class Keys {
         + String.format("%019d", sid);
   }
 
-  public static String reconcileDirtyParentPointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/dirty-parents/";
+  public static String reconcileDirtyParentPointerRootPrefix() {
+    // This namespace deliberately does not descend from the legacy "dirty-parents/" prefix.
+    // Older deployments scan that entire prefix and delete markers whose payload schema they do
+    // not understand.
+    return "/accounts/by-id/reconcile/jobs/dirty-parents-by-worker-affinity/";
   }
 
-  public static String reconcileDirtyParentPointer(String accountId, String parentJobId) {
+  public static String reconcileDirtyParentPointerPrefix(String workerAffinity) {
+    String affinity = req("worker_affinity", workerAffinity);
+    return reconcileDirtyParentPointerRootPrefix() + encode(affinity) + "/";
+  }
+
+  public static String reconcileDirtyParentPointer(
+      String workerAffinity, String accountId, String parentJobId) {
+    String affinity = req("worker_affinity", workerAffinity);
     String tid = req("account_id", accountId);
     String pid = req("parent_job_id", parentJobId);
-    return reconcileDirtyParentPointerPrefix() + encode(tid) + "/" + encode(pid);
+    return reconcileDirtyParentPointerPrefix(affinity) + encode(tid) + "/" + encode(pid);
   }
 
   public static String reconcileCancellationCleanupPointerPrefix() {
