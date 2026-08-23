@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Proxy;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -133,5 +134,75 @@ class IcebergPlannerTest {
             Types.TimestampNanoType.withZone(), 1_735_734_896_123_456_789L);
 
     assertThat(canonical).isEqualTo(Instant.parse("2025-01-01T12:34:56.123456789Z"));
+  }
+
+  @Test
+  void decodeBoundsSkipsVariantBoundsAndKeepsPrimitives() {
+    // Iceberg v3 stores variant bounds as a serialized Variant keyed by normalized
+    // JSON path, which Conversions (primitives only) rejects with
+    // UnsupportedOperationException. Planning must drop the stat, not fail.
+    // Payload below is a real DuckDB-written lower bound: root path '$' -> "apple".
+    byte[] variantBound = {
+      0x11, 0x01, 0x00, 0x01, '$', 0x02, 0x01, 0x00, 0x00, 0x06, 0x15, 'a', 'p', 'p', 'l', 'e'
+    };
+
+    Schema schema =
+        new Schema(
+            1,
+            Types.NestedField.optional(1, "id", Types.IntegerType.get()),
+            Types.NestedField.optional(2, "var", Types.VariantType.get()));
+    Table table = tableWithSchema(schema, 1);
+
+    try (IcebergPlanner planner =
+        new IcebergPlanner(table, 1L, Set.of(1, 2), Set.of(), null, false)) {
+      Map<Integer, Object> decoded =
+          planner.decodeBounds(
+              Map.of(
+                  1, ByteBuffer.wrap(new byte[] {0x2A, 0x00, 0x00, 0x00}),
+                  2, ByteBuffer.wrap(variantBound)));
+
+      // int bounds are widened to long by LogicalCoercions.coerceStatValue
+      assertThat(decoded).containsEntry(1, 42L).doesNotContainKey(2);
+    }
+  }
+
+  @Test
+  void decodeBoundsReturnsNullWhenOnlyVariantBoundsArePresent() {
+    byte[] variantBound = {
+      0x11, 0x01, 0x00, 0x01, '$', 0x02, 0x01, 0x00, 0x00, 0x06, 0x15, 'a', 'p', 'p', 'l', 'e'
+    };
+
+    Schema schema = new Schema(1, Types.NestedField.optional(2, "var", Types.VariantType.get()));
+    Table table = tableWithSchema(schema, 1);
+
+    try (IcebergPlanner planner = new IcebergPlanner(table, 1L, Set.of(2), Set.of(), null, false)) {
+      assertThat(planner.decodeBounds(Map.of(2, ByteBuffer.wrap(variantBound)))).isNull();
+    }
+  }
+
+  private static Table tableWithSchema(Schema schema, int schemaId) {
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> schemaId;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    return (Table)
+        Proxy.newProxyInstance(
+            Table.class.getClassLoader(),
+            new Class<?>[] {Table.class},
+            (proxy, method, args) ->
+                switch (method.getName()) {
+                  case "snapshot" -> snapshot;
+                  case "schema" -> schema;
+                  case "schemas" -> Map.of(schemaId, schema);
+                  case "specs" -> Map.of();
+                  case "spec" -> null;
+                  default -> throw new UnsupportedOperationException(method.getName());
+                });
   }
 }

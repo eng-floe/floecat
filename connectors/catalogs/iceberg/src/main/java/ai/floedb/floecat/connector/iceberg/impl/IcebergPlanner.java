@@ -246,7 +246,7 @@ final class IcebergPlanner implements Planner<Integer> {
         sequenceNumber);
   }
 
-  private Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {
+  Map<Integer, Object> decodeBounds(Map<Integer, ByteBuffer> raw) {
     if (raw == null || raw.isEmpty()) {
       return null;
     }
@@ -270,7 +270,13 @@ final class IcebergPlanner implements Planner<Integer> {
           dup.get(bytes);
           decoded = new String(bytes, StandardCharsets.UTF_8);
         }
-      } catch (IllegalArgumentException | BufferUnderflowException e) {
+      } catch (IllegalArgumentException
+          | BufferUnderflowException
+          | UnsupportedOperationException e) {
+        // UnsupportedOperationException covers bound types Conversions cannot decode.
+        // Iceberg v3 variant bounds are the known case: the spec stores them as a
+        // serialized Variant keyed by normalized JSON path, which Conversions (a
+        // primitives-only decoder) rejects. Drop the stat rather than fail planning.
         logSkippedBound(id, type, e.getClass().getSimpleName() + ": " + e.getMessage());
         continue;
       }
