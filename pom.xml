@@ -125,6 +125,7 @@
 
       <!-- Tools -->
       <module>tools/builtin-validator</module>
+      <module>tools/connector-transfer</module>
       <module>tools/error-messages-generator</module>
 
       <!-- Telemetry hub -->

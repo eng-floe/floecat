@@ -253,6 +253,34 @@ message ValidateConnectorResponse {
   map<string,string> capabilities = 3;
 }
 
+// Administrative export payload. Unlike GetConnector/ListConnectors, this response is not
+// masked. Access is guarded by the connector.export permission.
+message ExportConnectorRequest {
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
+  bool include_credentials = 2;
+}
+
+message ExportConnectorResponse {
+  Connector connector = 1;
+  optional AuthCredentials credentials = 2;
+}
+
+// Portable on-disk format used by floecat-connector-transfer. connector preserves the exact
+// source record for inspection, while portable_spec replaces account-scoped destination IDs with
+// names and paths suitable for CreateConnector in another account.
+message ConnectorTransferEntry {
+  Connector connector = 1;
+  ConnectorSpec portable_spec = 2;
+  optional AuthCredentials credentials = 3;
+}
+
+message ConnectorTransferBundle {
+  uint32 format_version = 1;
+  string source_account_id = 2;
+  google.protobuf.Timestamp exported_at = 3;
+  repeated ConnectorTransferEntry entries = 4;
+}
+
 service Connectors {
   rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse);
   rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);
@@ -261,4 +289,5 @@ service Connectors {
   rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse);
 
   rpc ValidateConnector(ValidateConnectorRequest) returns (ValidateConnectorResponse);
+  rpc ExportConnector(ExportConnectorRequest) returns (ExportConnectorResponse);
 }

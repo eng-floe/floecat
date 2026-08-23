@@ -37,6 +37,7 @@ class RolePermissionsTest {
           "view.read",
           "view.write",
           "connector.manage",
+          "connector.export",
           "system-objects.read",
           "account.delete");
   private static final List<String> INIT_ACCOUNT_PERMS =

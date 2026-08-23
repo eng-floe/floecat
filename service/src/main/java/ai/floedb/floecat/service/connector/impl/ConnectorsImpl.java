@@ -32,6 +32,8 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.ExportConnectorRequest;
+import ai.floedb.floecat.connector.rpc.ExportConnectorResponse;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
@@ -223,6 +225,58 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   @Override
+  public Uni<ExportConnectorResponse> exportConnector(ExportConnectorRequest request) {
+    var L = LogHelper.start(LOG, "ExportConnector");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principalProvider.get();
+                  var correlationId = principalContext.getCorrelationId();
+                  var accountId = principalContext.getAccountId();
+
+                  authz.require(principalContext, "connector.export");
+                  var connectorId =
+                      scopedConnectorId(accountId, request.getConnectorId(), correlationId);
+
+                  for (int attempt = 0; attempt < 3; attempt++) {
+                    var before = connectorRepo.getById(connectorId);
+                    if (before.isEmpty()) {
+                      throw GrpcErrors.notFound(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.CONNECTOR,
+                          Map.of("id", connectorId.getId()));
+                    }
+
+                    Optional<AuthCredentials> firstCredentials = Optional.empty();
+                    Optional<AuthCredentials> secondCredentials = Optional.empty();
+                    if (request.getIncludeCredentials()) {
+                      firstCredentials = credentialResolver.resolve(accountId, connectorId.getId());
+                      secondCredentials =
+                          credentialResolver.resolve(accountId, connectorId.getId());
+                    }
+                    var after = connectorRepo.getById(connectorId);
+
+                    if (after.isPresent()
+                        && before.get().equals(after.get())
+                        && firstCredentials.equals(secondCredentials)) {
+                      var response =
+                          ExportConnectorResponse.newBuilder().setConnector(before.get());
+                      firstCredentials.ifPresent(response::setCredentials);
+                      return response.build();
+                    }
+                  }
+
+                  throw GrpcErrors.aborted(correlationId, Map.of("id", connectorId.getId()));
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
   public Uni<CreateConnectorResponse> createConnector(CreateConnectorRequest request) {
     var L = LogHelper.start(LOG, "CreateConnector");
 
@@ -246,6 +300,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+                  var initialState = initialConnectorState(spec.getState(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -324,7 +379,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (destB.hasCatalogId()
                       && destB.hasNamespaceId()
                       && dest.hasTableDisplayName()
-                      && !dest.hasTableId()) {
+                      && !dest.hasTableId()
+                      && spec.hasSource()
+                      && spec.getSource().hasTable()
+                      && !spec.getSource().getTable().isBlank()) {
                     String dTbl = dest.getTableDisplayName().trim();
                     var tblOpt =
                         tableRepo.getByName(
@@ -373,7 +431,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .setPolicy(spec.getPolicy())
                           .setCreatedAt(tsNow)
                           .setUpdatedAt(tsNow)
-                          .setState(ConnectorState.CS_ACTIVE);
+                          .setState(initialState);
 
                   if (spec.hasDescription()) builder.setDescription(spec.getDescription());
                   if (spec.hasSource()) builder.setSource(spec.getSource());
@@ -520,63 +578,79 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       Map.of("id", connectorId.getId())));
 
                   FieldMask normalizedMask = normalizeMask(request.getUpdateMask());
+                  String accountId = pc.getAccountId();
                   var desired =
                       applyConnectorSpecPatch(current, request.getSpec(), normalizedMask, corr)
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  boolean destinationTouched =
+                      maskTargets(normalizedMask, "destination")
+                          || maskTargetsUnder(normalizedMask, "destination");
+                  if (destinationTouched && desired.hasDestination()) {
+                    desired =
+                        desired.toBuilder()
+                            .setDestination(
+                                resolveUpdatedDestination(
+                                    desired.getDestination(), desired.getSource(), accountId, corr))
+                            .build();
+                  }
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
                   validateReconcilePolicy(desired.getPolicy(), corr);
-                  String accountId = pc.getAccountId();
                   String secretId = connectorId.getId();
                   boolean authTouched =
                       maskTargets(normalizedMask, "auth")
                           || maskTargets(normalizedMask, "auth.credentials");
                   boolean incomingHasCredentials = hasAuthCredentials(desired.getAuth());
-                  Optional<AuthCredentials> priorCredentials = Optional.empty();
+                  boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
+                  Optional<AuthCredentials> priorCredentials =
+                      authTouched
+                          ? credentialResolver.resolve(accountId, secretId)
+                          : Optional.empty();
                   AuthConfig storedAuth = desired.getAuth();
                   if (incomingHasCredentials) {
-                    priorCredentials = credentialResolver.resolve(accountId, secretId);
                     storedAuth =
                         storeAuthCredentials(desired.getAuth(), accountId, connectorId.getId());
                     if (storedAuth != desired.getAuth()) {
                       desired = desired.toBuilder().setAuth(storedAuth).build();
                     }
+                  } else if (shouldDeleteSecret) {
+                    credentialResolver.delete(accountId, secretId);
                   }
                   ensureNoStoredCredentials(desired.getAuth());
-                  boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
 
                   if (desired.equals(current)) {
-                    if (shouldDeleteSecret) {
-                      credentialResolver.delete(accountId, secretId);
+                    try {
+                      var metaNoop = connectorRepo.metaFor(connectorId);
+                      boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                      if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                        throw GrpcErrors.preconditionFailed(
+                            corr,
+                            GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
+                            Map.of(
+                                "expected", Long.toString(meta.getPointerVersion()),
+                                "actual", Long.toString(metaNoop.getPointerVersion())));
+                      }
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          corr, metaNoop, request.getPrecondition());
+                      return UpdateConnectorResponse.newBuilder()
+                          .setConnector(maskConnector(current))
+                          .setMeta(metaNoop)
+                          .build();
+                    } catch (RuntimeException failure) {
+                      if (authTouched) {
+                        restoreCredentials(accountId, secretId, priorCredentials);
+                      }
+                      throw failure;
                     }
-                    var metaNoop = connectorRepo.metaFor(connectorId);
-                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
-                      throw GrpcErrors.preconditionFailed(
-                          corr,
-                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(metaNoop.getPointerVersion())));
-                    }
-                    MutationOps.BaseServiceChecks.enforcePreconditions(
-                        corr, metaNoop, request.getPrecondition());
-                    return UpdateConnectorResponse.newBuilder()
-                        .setConnector(maskConnector(current))
-                        .setMeta(metaNoop)
-                        .build();
                   }
 
                   try {
                     boolean ok = connectorRepo.update(desired, meta.getPointerVersion());
                     if (!ok) {
                       var nowMeta = connectorRepo.metaForSafe(connectorId);
-                      if (incomingHasCredentials) {
-                        restoreCredentials(accountId, secretId, priorCredentials);
-                      }
                       throw GrpcErrors.preconditionFailed(
                           corr,
                           GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
@@ -585,7 +659,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    if (incomingHasCredentials) {
+                    if (authTouched) {
                       restoreCredentials(accountId, secretId, priorCredentials);
                     }
                     throw GrpcErrors.alreadyExists(
@@ -594,7 +668,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = connectorRepo.metaForSafe(connectorId);
-                    if (incomingHasCredentials) {
+                    if (authTouched) {
                       restoreCredentials(accountId, secretId, priorCredentials);
                     }
                     throw GrpcErrors.preconditionFailed(
@@ -603,10 +677,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
-                  }
-
-                  if (shouldDeleteSecret) {
-                    credentialResolver.delete(accountId, secretId);
+                  } catch (RuntimeException failure) {
+                    if (authTouched) {
+                      restoreCredentials(accountId, secretId, priorCredentials);
+                    }
+                    throw failure;
                   }
 
                   var outMeta = connectorRepo.metaForSafe(connectorId);
@@ -772,6 +847,57 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     return auth.getCredentials().getCredentialCase()
         != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
+  }
+
+  static ConnectorState initialConnectorState(ConnectorState requestedState, String corr) {
+    return switch (requestedState) {
+      case CS_UNSPECIFIED, CS_ACTIVE -> ConnectorState.CS_ACTIVE;
+      case CS_PAUSED -> ConnectorState.CS_PAUSED;
+      case CS_DELETING, UNRECOGNIZED ->
+          throw GrpcErrors.invalidArgument(
+              corr, GeneratedErrorMessages.MessageKey.FIELD, Map.of("field", "state"));
+    };
+  }
+
+  private DestinationTarget resolveUpdatedDestination(
+      DestinationTarget destination, SourceSelector source, String accountId, String corr) {
+    var resolved = destination.toBuilder();
+    if (destination.hasCatalogDisplayName()) {
+      String displayName = destination.getCatalogDisplayName().trim();
+      var catalog = catalogRepo.getByName(accountId, displayName);
+      if (catalog.isEmpty()) {
+        throw GrpcErrors.notFound(
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_NOT_FOUND,
+            Map.of("display_name", displayName));
+      }
+      resolved.setCatalogId(catalog.get().getResourceId());
+    }
+    if (resolved.hasCatalogId() && destination.hasNamespace()) {
+      namespaceRepo
+          .getByPath(
+              accountId,
+              resolved.getCatalogId().getId(),
+              destination.getNamespace().getSegmentsList())
+          .ifPresent(namespace -> resolved.setNamespaceId(namespace.getResourceId()));
+    }
+    if (resolved.hasCatalogId()
+        && resolved.hasNamespaceId()
+        && destination.hasTableDisplayName()
+        && source.hasTable()
+        && !source.getTable().isBlank()) {
+      String displayName = destination.getTableDisplayName().trim();
+      tableRepo
+          .getByName(
+              accountId,
+              resolved.getCatalogId().getId(),
+              resolved.getNamespaceId().getId(),
+              displayName)
+          .ifPresentOrElse(
+              table -> resolved.setTableId(table.getResourceId()),
+              () -> resolved.setTableDisplayName(displayName));
+    }
+    return resolved.build();
   }
 
   private void restoreCredentials(
@@ -1110,21 +1236,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       boolean hasCatalogRef =
           inDst.hasCatalogId()
               || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
-      boolean hasNamespaceRef =
-          inDst.hasNamespaceId()
-              || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
 
       if (!hasCatalogRef) {
         throw GrpcErrors.invalidArgument(
             corr,
             GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
             Map.of("field", "destination.catalog"));
-      }
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
       }
       if (inDst.hasCatalogId()) {
         ensureKind(
@@ -1304,14 +1421,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             corr,
             GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
             Map.of("field", "destination.catalog"));
-      }
-      boolean hasNamespaceRef =
-          d.hasNamespaceId() || (d.hasNamespace() && d.getNamespace().getSegmentsCount() > 0);
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
       }
     }
 
