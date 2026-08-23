@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import java.util.Optional;
 
@@ -33,6 +34,19 @@ public interface IdempotencyRepository {
       Timestamp createdAt,
       Timestamp expiresAt);
 
+  /**
+   * Reserves the stable identity of a resource before its create transaction is attempted. The
+   * reserved identity lets the resource and its immutable success receipt commit atomically.
+   */
+  boolean createPending(
+      String accountId,
+      String key,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      Timestamp createdAt,
+      Timestamp expiresAt);
+
   void finalizeSuccess(
       String accountId,
       String key,
@@ -44,5 +58,21 @@ public interface IdempotencyRepository {
       Timestamp createdAt,
       Timestamp expiresAt);
 
+  default PointerStore.CasUpsert prepareSuccess(
+      String accountId,
+      String key,
+      String opName,
+      String requestHash,
+      ResourceId resourceId,
+      MutationMeta meta,
+      byte[] payloadBytes,
+      Timestamp createdAt,
+      Timestamp expiresAt) {
+    throw new UnsupportedOperationException("atomic idempotency completion is not supported");
+  }
+
   boolean delete(String key);
+
+  boolean deletePendingIfOwned(
+      String key, String opName, String requestHash, Timestamp createdAt, Timestamp expiresAt);
 }

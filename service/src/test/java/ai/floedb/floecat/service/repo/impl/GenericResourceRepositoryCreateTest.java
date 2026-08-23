@@ -27,13 +27,19 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.ConflictingBatchPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
+import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -185,6 +191,39 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
+  void replaceIdentity_deduplicatesCanonicalSecondaryAliases() {
+    var rejecting = new DuplicateKeyRejectingPointerStore(ptr);
+    var repo =
+        new GenericResourceRepository<>(
+            rejecting,
+            blobs,
+            Schemas.SNAPSHOT,
+            Snapshot::parseFrom,
+            Snapshot::toByteArray,
+            "application/x-protobuf");
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("tbl-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var current = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(42L).build();
+    var replacement = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(43L).build();
+    repo.create(current);
+
+    assertThat(
+            repo.replaceIdentityWithMeta(
+                current,
+                1L,
+                replacement,
+                GenericResourceRepository.PointerConditions.none(),
+                Map.of()))
+        .isPresent();
+    assertThat(repo.getByKey(new SnapshotKey("acct-1", "tbl-1", 42L, ""))).isEmpty();
+    assertThat(repo.getByKey(new SnapshotKey("acct-1", "tbl-1", 43L, ""))).contains(replacement);
+  }
+
+  @Test
   void delete_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
     var baseRepo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
@@ -288,5 +327,40 @@ class GenericResourceRepositoryCreateTest {
 
     assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
     assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+  }
+
+  @Test
+  void deleteWithCompanions_whenResourceBlobIsCorrupt_deletesCompanionAtomically() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.ACCOUNT,
+            Account::parseFrom,
+            Account::toByteArray,
+            "application/x-protobuf");
+    var account = account("acct-1", "alpha", "");
+    repo.create(account);
+
+    String canonicalKey = Keys.accountPointerById("acct-1");
+    var canonical = ptr.get(canonicalKey).orElseThrow();
+    assertThat(blobs.delete(canonical.getBlobUri())).isTrue();
+
+    String companionKey = "/test/owned-resource";
+    assertThat(
+            ptr.compareAndSet(
+                companionKey, 0L, PointerReferences.opaqueMarkerPointer(companionKey, "owned", 1L)))
+        .isTrue();
+    long companionVersion = ptr.get(companionKey).orElseThrow().getVersion();
+
+    assertThat(
+            repo.deleteWithPreconditionAndCompanions(
+                new AccountKey("acct-1"),
+                canonical.getVersion(),
+                List.of(new PointerStore.CasDelete(companionKey, companionVersion))))
+        .isTrue();
+
+    assertThat(ptr.get(canonicalKey)).isEmpty();
+    assertThat(ptr.get(companionKey)).isEmpty();
   }
 }

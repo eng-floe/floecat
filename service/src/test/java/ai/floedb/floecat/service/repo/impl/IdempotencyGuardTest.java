@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
@@ -46,7 +47,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -87,6 +92,223 @@ public class IdempotencyGuardTest {
             () -> "corr");
 
     assertThat(out.resource()).isEqualTo("R1");
+  }
+
+  @Test
+  void reservedCreateNeverReconstructsAReceiptFromMutableResourceState() {
+    var body = new AtomicReference<String>();
+    var createdId = new AtomicReference<ResourceId>();
+    var creates = new AtomicInteger();
+    var allocator = (Supplier<ResourceId>) () -> resourceId("reserved");
+    BiFunction<
+            ResourceId,
+            IdempotencyGuard.SuccessCommitter<String>,
+            IdempotencyGuard.CommittedCreate<String>>
+        creator =
+            (id, ignored) -> {
+              if (createdId.get() == null) {
+                createdId.set(id);
+                body.set("original-name");
+                creates.incrementAndGet();
+              }
+              return new IdempotencyGuard.CommittedCreate<>(body.get(), id, meta(1));
+            };
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceReserved(
+                    ACCOUNT,
+                    OP,
+                    "reserved-key",
+                    "request".getBytes(StandardCharsets.UTF_8),
+                    allocator,
+                    creator,
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(StorageAbortRetryableException.class);
+
+    body.set("renamed-after-commit");
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceReserved(
+                    ACCOUNT,
+                    OP,
+                    "reserved-key",
+                    "request".getBytes(StandardCharsets.UTF_8),
+                    allocator,
+                    creator,
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(StorageAbortRetryableException.class);
+    assertThat(creates).hasValue(1);
+    assertThat(createdId.get()).isEqualTo(resourceId("reserved"));
+  }
+
+  @Test
+  void reservedCreateCommitsTheSuccessReceiptWithTheResourcePointer() {
+    String idemKey = "atomic-receipt";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String resourcePointerKey = "acct/" + ACCOUNT + "/thing/reserved";
+    ResourceId reservedId = resourceId("reserved");
+    MutationMeta createdMeta = meta(1);
+
+    var out =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> reservedId,
+            (id, committer) -> {
+              var committed = new IdempotencyGuard.CommittedCreate<>("RESOURCE", id, createdMeta);
+              PointerStore.CasUpsert receipt = committer.prepare(committed);
+              String blobUri = "blob://thing/" + id.getId();
+              blobs.put(
+                  blobUri, "RESOURCE".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+              var resourcePointer =
+                  PointerReferences.asBlobPointer(
+                          Pointer.newBuilder().setKey(resourcePointerKey).setVersion(1L), blobUri)
+                      .build();
+              assertThat(
+                      ptr.compareAndSetBatch(
+                          List.of(
+                              new PointerStore.CasUpsert(resourcePointerKey, 0L, resourcePointer),
+                              receipt)))
+                  .isTrue();
+              return committed;
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(out.resource()).isEqualTo("RESOURCE");
+    assertThat(out.meta()).isEqualTo(createdMeta);
+    assertThat(ptr.get(resourcePointerKey)).isPresent();
+    assertThat(repo.get(key))
+        .get()
+        .satisfies(
+            receipt -> {
+              assertThat(receipt.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+              assertThat(receipt.getResourceId()).isEqualTo(reservedId);
+              assertThat(receipt.getMeta()).isEqualTo(createdMeta);
+              assertThat(receipt.getPayload().toStringUtf8()).isEqualTo("RESOURCE");
+            });
+
+    var replay =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> {
+              throw new AssertionError("committed receipt must be replayed");
+            },
+            (id, committer) -> {
+              throw new AssertionError("committed receipt must be replayed");
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(replay.resource()).isEqualTo("RESOURCE");
+    assertThat(replay.meta()).isEqualTo(createdMeta);
+  }
+
+  @Test
+  void reservedCreateAdopterDoesNotDeleteTheExistingPendingReservationOnFailure() throws Exception {
+    String idemKey = "adopted-reservation";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String requestHash = sha256B64(request);
+    Timestamp expiresAt = expiresFrom(NOW, 60);
+    ResourceId reservedId = resourceId("reserved");
+    assertThat(repo.createPending(ACCOUNT, key, OP, requestHash, reservedId, NOW, expiresAt))
+        .isTrue();
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceReserved(
+                    ACCOUNT,
+                    OP,
+                    idemKey,
+                    request,
+                    () -> {
+                      throw new AssertionError("existing reservation must be adopted");
+                    },
+                    (id, committer) -> {
+                      throw new BaseResourceRepository.NameConflictException("lost create race");
+                    },
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class);
+
+    assertThat(repo.get(key))
+        .get()
+        .satisfies(
+            pending -> {
+              assertThat(pending.getStatus()).isEqualTo(IdempotencyRecord.Status.PENDING);
+              assertThat(pending.getResourceId()).isEqualTo(reservedId);
+            });
+  }
+
+  @Test
+  void reservedCreateReplaysWinnerThatCompletesBeforeLoserReportsConflict() throws Exception {
+    String idemKey = "concurrent-winner";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String requestHash = sha256B64(request);
+    Timestamp expiresAt = expiresFrom(NOW, 60);
+    ResourceId reservedId = resourceId("reserved");
+    MutationMeta winnerMeta = meta(7);
+
+    var out =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            idemKey,
+            request,
+            () -> reservedId,
+            (id, committer) -> {
+              repo.finalizeSuccess(
+                  ACCOUNT,
+                  key,
+                  OP,
+                  requestHash,
+                  id,
+                  winnerMeta,
+                  "WINNER".getBytes(StandardCharsets.UTF_8),
+                  NOW,
+                  expiresAt);
+              throw new BaseResourceRepository.NameConflictException("lost create race");
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(out.resource()).isEqualTo("WINNER");
+    assertThat(out.meta()).isEqualTo(winnerMeta);
   }
 
   @Test
@@ -378,6 +600,74 @@ public class IdempotencyGuardTest {
     assertThat(rawBlobs.head(winnerUri)).isPresent();
     assertThat(racingRepo.get(key)).isPresent();
     assertThat(racingRepo.get(key).orElseThrow().getPayload().toStringUtf8()).isEqualTo("WINNER");
+  }
+
+  @Test
+  void deletePendingIfOwnedDoesNotDeleteSuccessFinalizedAfterOwnershipCheck() throws Exception {
+    InMemoryPointerStore rawPtr = new InMemoryPointerStore();
+    InMemoryBlobStore rawBlobs = new InMemoryBlobStore();
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "pending-cleanup-race");
+    String requestHash = sha256B64("REQ".getBytes(StandardCharsets.UTF_8));
+    Timestamp expiresAt = expiresFrom(NOW, 300);
+    var racingPtr = new CompareDeleteRacePointerStore(rawPtr);
+    var racingRepo = new IdempotencyRepositoryImpl(racingPtr, rawBlobs);
+
+    assertThat(racingRepo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt)).isTrue();
+    racingPtr.beforeNextCompareAndDelete(
+        key,
+        () ->
+            racingRepo.finalizeSuccess(
+                ACCOUNT,
+                key,
+                OP,
+                requestHash,
+                resourceId("winner"),
+                meta(2),
+                "WINNER".getBytes(StandardCharsets.UTF_8),
+                NOW,
+                expiresAt));
+
+    assertThat(racingRepo.deletePendingIfOwned(key, OP, requestHash, NOW, expiresAt)).isFalse();
+    assertThat(racingRepo.get(key))
+        .get()
+        .satisfies(
+            winner -> {
+              assertThat(winner.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+              assertThat(winner.getPayload().toStringUtf8()).isEqualTo("WINNER");
+            });
+  }
+
+  @Test
+  void staleLegacyFinalizerCannotCompleteAReusedIdempotencyKey() throws Exception {
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "reused-key");
+    Timestamp expiresAt = expiresFrom(NOW, 300);
+    String requestHash = sha256B64("SAME".getBytes(StandardCharsets.UTF_8));
+    Timestamp newerCreatedAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(1).build());
+    Timestamp newerExpiresAt = expiresFrom(newerCreatedAt, 300);
+
+    assertThat(repo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt)).isTrue();
+    assertThat(repo.delete(key)).isTrue();
+    assertThat(repo.createPending(ACCOUNT, key, OP, requestHash, newerCreatedAt, newerExpiresAt))
+        .isTrue();
+
+    assertThatThrownBy(
+            () ->
+                repo.finalizeSuccess(
+                    ACCOUNT,
+                    key,
+                    OP,
+                    requestHash,
+                    resourceId("old-resource"),
+                    meta(1),
+                    "old-payload".getBytes(StandardCharsets.UTF_8),
+                    NOW,
+                    expiresAt))
+        .isInstanceOf(StorageAbortRetryableException.class);
+
+    var current = repo.get(key).orElseThrow();
+    assertThat(current.getStatus()).isEqualTo(IdempotencyRecord.Status.PENDING);
+    assertThat(current.getRequestHash()).isEqualTo(requestHash);
+    assertThat(current.getCreatedAt()).isEqualTo(newerCreatedAt);
   }
 
   private static Function<String, byte[]> strSer() {

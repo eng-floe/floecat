@@ -112,6 +112,28 @@ final class RepoTestPointerStores {
     }
   }
 
+  /** Commits a successful batch, then loses its acknowledgement to the caller. */
+  static final class CommitThenFailBatchPointerStore extends DelegatingPointerStore {
+    CommitThenFailBatchPointerStore(PointerStore delegate) {
+      super(delegate);
+    }
+
+    static final class InjectedAcknowledgementFailure extends RuntimeException {
+      InjectedAcknowledgementFailure(String message) {
+        super(message);
+      }
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<CasOp> ops) {
+      boolean committed = delegate.compareAndSetBatch(ops);
+      if (committed) {
+        throw new InjectedAcknowledgementFailure("injected failure after batch commit");
+      }
+      return false;
+    }
+  }
+
   /**
    * Reports every batch CAS as a non-committing conflict, mimicking a DynamoDB {@code
    * TransactionConflict} / {@code ConditionalCheckFailed} cancellation: nothing is mutated and

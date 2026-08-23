@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.Message;
 import com.google.protobuf.Timestamp;
 import java.util.Map;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -121,6 +122,46 @@ public final class MutationOps {
         now,
         ttlSeconds,
         correlationIdSupplier);
+  }
+
+  /** For creators that can find and return an already-committed resource after a retry. */
+  public static <T extends Message> OpResult<T> createProtoRecoverable(
+      String account,
+      String operationName,
+      String idempotencyKey,
+      Fingerprinter fingerprint,
+      Supplier<ai.floedb.floecat.common.rpc.ResourceId> resourceIdAllocator,
+      BiFunction<
+              ai.floedb.floecat.common.rpc.ResourceId,
+              IdempotencyGuard.SuccessCommitter<T>,
+              IdempotencyGuard.CommittedCreate<T>>
+          creator,
+      IdempotencyRepository idempotencyStore,
+      Timestamp now,
+      long ttlSeconds,
+      Supplier<String> correlationIdSupplier,
+      ThrowingParser<T> parser) {
+    var result =
+        IdempotencyGuard.runOnceReserved(
+            account,
+            operationName,
+            idempotencyKey,
+            fingerprint.fingerprint(),
+            resourceIdAllocator,
+            creator,
+            Message::toByteArray,
+            bytes -> {
+              try {
+                return parser.parse(bytes);
+              } catch (Exception e) {
+                throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
+              }
+            },
+            idempotencyStore,
+            ttlSeconds,
+            now,
+            correlationIdSupplier);
+    return new OpResult<>(result.resource(), result.meta());
   }
 
   public static final class PageIn {

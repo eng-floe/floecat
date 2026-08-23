@@ -611,7 +611,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    var header = blobReads.head(blobUri);
+    return meta(blobReads.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+  }
+
+  /**
+   * Meta assembly for a mutation that has just committed. It heads the raw mutation blob store
+   * rather than the read adapter: the etag describes bytes this call wrote moments ago, so it must
+   * not be resolved through a read path that may be cached, eventually consistent, or subject to
+   * read admission. Mutation protocols keep every prerequisite and post-commit read on the raw
+   * stores they mutate.
+   */
+  protected MutationMeta committedMeta(
+      Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
+    return meta(mutationBlobStore.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+  }
+
+  private static MutationMeta meta(
+      Optional<BlobHeader> header,
+      Optional<Pointer> pointerOpt,
+      String pointerKey,
+      String blobUri,
+      Timestamp nowTs) {
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
     String etag = header.map(BlobHeader::getEtag).orElse("");
 

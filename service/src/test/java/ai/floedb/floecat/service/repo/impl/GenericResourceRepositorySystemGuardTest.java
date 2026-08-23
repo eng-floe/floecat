@@ -22,7 +22,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.CatalogKey;
+import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -76,6 +79,24 @@ class GenericResourceRepositorySystemGuardTest {
   @Test
   void deleteWithPrecondition_systemCatalog_rejected() {
     assertThatThrownBy(() -> repo.deleteWithPrecondition(systemCatalogId(), 1L))
+        .isInstanceOf(BaseResourceRepository.SystemObjectImmutableException.class);
+  }
+
+  @Test
+  void prepareDeleteOps_systemCatalog_rejected() {
+    ResourceId systemId = systemCatalogId();
+    var generic =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.CATALOG,
+            Catalog::parseFrom,
+            Catalog::toByteArray,
+            "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                generic.prepareDeleteOps(new CatalogKey(systemId.getAccountId(), systemId.getId())))
         .isInstanceOf(BaseResourceRepository.SystemObjectImmutableException.class);
   }
 
