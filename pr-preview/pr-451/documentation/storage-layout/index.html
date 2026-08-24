@@ -1797,7 +1797,7 @@ pointers are written and removed atomically with the overlay resource. Fixed gen
 both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
 while an overlay is retired. Catalog and overlay names and lifecycles remain independent.</p>
 <p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
-<div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}:{credential_generation}
+<div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 </code></pre></div>
 <p>The key is derived internally from the persisted integration identity and credential generation; it
 is not present in the resource payload. A new secret is written before publishing the matching
