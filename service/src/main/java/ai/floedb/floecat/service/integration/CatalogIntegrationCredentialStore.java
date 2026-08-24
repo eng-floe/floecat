@@ -10,6 +10,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -34,12 +35,21 @@ public class CatalogIntegrationCredentialStore {
     if (secretsManager.get(integrationId.getAccountId(), SECRET_TYPE, reference).isPresent()) {
       return;
     }
+    boolean stored;
     try {
-      secretsManager.putIfAbsent(integrationId.getAccountId(), SECRET_TYPE, reference, payload);
+      stored =
+          secretsManager.putIfAbsent(
+              integrationId.getAccountId(), SECRET_TYPE, reference, payload);
     } catch (RuntimeException failure) {
       if (secretsManager.get(integrationId.getAccountId(), SECRET_TYPE, reference).isEmpty()) {
         throw failure;
       }
+      return;
+    }
+    if (!stored
+        && secretsManager.get(integrationId.getAccountId(), SECRET_TYPE, reference).isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "Catalog integration credential generation is not yet available");
     }
   }
 

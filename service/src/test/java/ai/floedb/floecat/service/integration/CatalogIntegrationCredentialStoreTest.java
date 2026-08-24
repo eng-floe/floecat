@@ -7,6 +7,7 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -21,6 +22,7 @@ import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.SecretValue;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -70,6 +72,51 @@ class CatalogIntegrationCredentialStoreTest {
 
     verify(secretsManager, never()).putIfAbsent(any(), any(), any(), any());
     verify(secretsManager, never()).update(any(), any(), any(), any());
+  }
+
+  @Test
+  void storeAcceptsGenerationThatBecomesVisibleAfterLosingReservation() {
+    var secretsManager = mock(SecretsManager.class);
+    var store = new CatalogIntegrationCredentialStore();
+    store.secretsManager = secretsManager;
+    var integrationId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("integration")
+            .setKind(ResourceKind.RK_CATALOG_INTEGRATION)
+            .build();
+    var credentials =
+        CatalogIntegrationCredentials.newBuilder()
+            .setBearerToken(SecretValue.newBuilder().setValue("token"))
+            .build();
+    when(secretsManager.get(any(), any(), any()))
+        .thenReturn(Optional.empty(), Optional.of(credentials.toByteArray()));
+    when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(false);
+
+    store.store(integrationId, 1L, credentials);
+  }
+
+  @Test
+  void storeFailsRetryablyWhenLosingReservationRemainsUnavailable() {
+    var secretsManager = mock(SecretsManager.class);
+    var store = new CatalogIntegrationCredentialStore();
+    store.secretsManager = secretsManager;
+    var integrationId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("integration")
+            .setKind(ResourceKind.RK_CATALOG_INTEGRATION)
+            .build();
+    var credentials =
+        CatalogIntegrationCredentials.newBuilder()
+            .setBearerToken(SecretValue.newBuilder().setValue("token"))
+            .build();
+    when(secretsManager.get(any(), any(), any())).thenReturn(Optional.empty());
+    when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(false);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> store.store(integrationId, 1L, credentials));
   }
 
   @Test
