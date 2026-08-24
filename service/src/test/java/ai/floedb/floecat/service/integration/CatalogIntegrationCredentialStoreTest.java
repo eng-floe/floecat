@@ -12,6 +12,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -94,6 +95,14 @@ class CatalogIntegrationCredentialStoreTest {
     when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(false);
 
     store.store(integrationId, 1L, credentials);
+
+    verify(secretsManager, times(2))
+        .get(
+            "acct",
+            CatalogIntegrationCredentialStore.SECRET_TYPE,
+            CatalogIntegrationCredentialStore.reference(integrationId, 1L));
+    verify(secretsManager, never()).put(any(), any(), any(), any());
+    verify(secretsManager, never()).update(any(), any(), any(), any());
   }
 
   @Test

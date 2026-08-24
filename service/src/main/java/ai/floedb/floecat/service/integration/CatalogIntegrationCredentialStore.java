@@ -49,7 +49,7 @@ public class CatalogIntegrationCredentialStore {
     if (!stored
         && secretsManager.get(integrationId.getAccountId(), SECRET_TYPE, reference).isEmpty()) {
       throw new BaseResourceRepository.AbortRetryableException(
-          "Catalog integration credential generation is not yet available");
+          "catalog integration credential generation is not yet available");
     }
   }
 
