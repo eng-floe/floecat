@@ -102,10 +102,6 @@ public class CatalogIntegrationRepository {
         Map.of());
   }
 
-  public boolean deleteWithPrecondition(ResourceId integrationId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(key(integrationId), expectedPointerVersion);
-  }
-
   public boolean deleteWithPreconditionAndNoOverlayMarker(
       ResourceId integrationId, long expectedPointerVersion) {
     String marker =
@@ -170,7 +166,7 @@ public class CatalogIntegrationRepository {
         .orElse(0L);
   }
 
-  public boolean deleteWithPreconditionAndOverlayMarkerAndFence(
+  public boolean deleteWithPreconditionForCascadeDeletion(
       ResourceId integrationId,
       long expectedPointerVersion,
       long expectedMarkerVersion,
@@ -188,10 +184,6 @@ public class CatalogIntegrationRepository {
         new PointerConditions(
             Map.of(), expectedMarkerVersion == 0L ? Set.of(marker) : Set.of(), Map.of()),
         Map.copyOf(deletes));
-  }
-
-  public boolean delete(ResourceId integrationId) {
-    return repo.delete(key(integrationId));
   }
 
   public Optional<CatalogIntegration> getById(ResourceId integrationId) {
