@@ -328,6 +328,12 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
             corr, CATALOG_INTEGRATION_ALREADY_EXISTS, Map.of("display_name", name));
       long markerVersion =
           markerStore.catalogIntegrationOverlaysMarkerVersion(current.value().getResourceId());
+      if (markerVersion > 0L) {
+        throw GrpcErrors.conflict(
+            corr,
+            CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
+            Map.of("reason", "dependent overlays exist"));
+      }
       var replacement =
           applyAuthentication(
                   CatalogIntegration.newBuilder()
@@ -344,7 +350,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       try {
         var replaced =
             integrations.replaceIdentityWithMeta(
-                current.value(), current.meta().getPointerVersion(), replacement, markerVersion);
+                current.value(), current.meta().getPointerVersion(), replacement);
         if (replaced.isEmpty()) {
           throw new BaseResourceRepository.AbortRetryableException(
               "integration dependencies changed during replacement");
@@ -570,10 +576,15 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                     CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
                     Map.of("reason", "cascade deletion in progress"));
               long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
+              if (markerVersion > 0L)
+                throw GrpcErrors.conflict(
+                    corr,
+                    CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
+                    Map.of("reason", "dependent overlays exist"));
               credentialCleanup.schedule(current.get().value());
               try {
-                if (!integrations.deleteWithPreconditionAndOverlayMarker(
-                    id, meta.getPointerVersion(), markerVersion)) {
+                if (!integrations.deleteWithPreconditionAndNoOverlayMarker(
+                    id, meta.getPointerVersion())) {
                   throw new BaseResourceRepository.AbortRetryableException(
                       "integration dependencies changed during deletion");
                 }

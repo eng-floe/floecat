@@ -79,8 +79,7 @@ public class CatalogIntegrationRepository {
   public Optional<ResourceWithMeta<CatalogIntegration>> replaceIdentityWithMeta(
       CatalogIntegration current,
       long expectedPointerVersion,
-      CatalogIntegration replacement,
-      long expectedOverlayMarkerVersion) {
+      CatalogIntegration replacement) {
     String accountId = current.getResourceId().getAccountId();
     String oldMarker =
         Keys.catalogIntegrationOverlaysMarker(accountId, current.getResourceId().getId());
@@ -92,36 +91,52 @@ public class CatalogIntegrationRepository {
         Keys.catalogIntegrationDeletionMarker(accountId, replacement.getResourceId().getId());
     Set<String> requiredAbsent = new java.util.HashSet<>();
     requiredAbsent.add(newMarker);
+    requiredAbsent.add(oldMarker);
     requiredAbsent.add(oldDeletionFence);
     requiredAbsent.add(newDeletionFence);
-    if (expectedOverlayMarkerVersion == 0L) requiredAbsent.add(oldMarker);
     return repo.replaceIdentityWithMeta(
         current,
         expectedPointerVersion,
         replacement,
         new PointerConditions(Map.of(), Set.copyOf(requiredAbsent), Map.of()),
-        expectedOverlayMarkerVersion == 0L
-            ? Map.of()
-            : Map.of(oldMarker, expectedOverlayMarkerVersion));
+        Map.of());
   }
 
   public boolean deleteWithPrecondition(ResourceId integrationId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(key(integrationId), expectedPointerVersion);
   }
 
-  public boolean deleteWithPreconditionAndOverlayMarker(
-      ResourceId integrationId, long expectedPointerVersion, long expectedMarkerVersion) {
+  public boolean deleteWithPreconditionAndNoOverlayMarker(
+      ResourceId integrationId, long expectedPointerVersion) {
     String marker =
         Keys.catalogIntegrationOverlaysMarker(integrationId.getAccountId(), integrationId.getId());
     String fence =
         Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
-    Set<String> requiredAbsent = new java.util.HashSet<>();
-    requiredAbsent.add(fence);
-    if (expectedMarkerVersion == 0L) requiredAbsent.add(marker);
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         key(integrationId),
         expectedPointerVersion,
-        new PointerConditions(Map.of(), Set.copyOf(requiredAbsent), Map.of()),
+        new PointerConditions(Map.of(), Set.of(marker, fence), Map.of()),
+        Map.of());
+  }
+
+  public boolean deleteWithPreconditionForAccountDeletion(
+      ResourceId integrationId,
+      long expectedPointerVersion,
+      long expectedMarkerVersion,
+      long expectedAccountDeletionFenceVersion) {
+    if (expectedAccountDeletionFenceVersion <= 0L) return false;
+    String marker =
+        Keys.catalogIntegrationOverlaysMarker(integrationId.getAccountId(), integrationId.getId());
+    String fence =
+        Keys.catalogIntegrationDeletionMarker(integrationId.getAccountId(), integrationId.getId());
+    String accountFence = Keys.accountDeletionMarker(integrationId.getAccountId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        key(integrationId),
+        expectedPointerVersion,
+        new PointerConditions(
+            Map.of(accountFence, expectedAccountDeletionFenceVersion),
+            expectedMarkerVersion == 0L ? Set.of(marker, fence) : Set.of(fence),
+            Map.of()),
         expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
   }
 

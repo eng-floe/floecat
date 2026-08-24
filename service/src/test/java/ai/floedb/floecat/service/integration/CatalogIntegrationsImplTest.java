@@ -624,7 +624,7 @@ class CatalogIntegrationsImplTest {
             Optional.of(
                 new ResourceWithMeta<>(
                     existing, MutationMeta.newBuilder().setPointerVersion(7L).build())));
-    when(service.integrations.replaceIdentityWithMeta(any(), eq(7L), any(), anyLong()))
+    when(service.integrations.replaceIdentityWithMeta(any(), eq(7L), any()))
         .thenAnswer(
             invocation ->
                 Optional.of(
@@ -651,6 +651,46 @@ class CatalogIntegrationsImplTest {
     assertNotEquals(existingId, response.getIntegration().getResourceId());
     assertEquals(1L, response.getMeta().getPointerVersion());
     assertEquals("https://new.example", response.getIntegration().getCatalogUri());
+  }
+
+  @Test
+  void createOrReplaceRejectsDependentOverlays() {
+    ResourceId existingId = id("existing", ResourceKind.RK_CATALOG_INTEGRATION);
+    var existing =
+        CatalogIntegration.newBuilder()
+            .setResourceId(existingId)
+            .setDisplayName("Warehouse")
+            .setType(CatalogIntegrationType.CIT_UNITY)
+            .setCatalogUri("https://old.example")
+            .build();
+    when(service.integrations.getByNameWithMeta("acct", "Warehouse"))
+        .thenReturn(
+            Optional.of(
+                new ResourceWithMeta<>(
+                    existing, MutationMeta.newBuilder().setPointerVersion(7L).build())));
+    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(existingId)).thenReturn(4L);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        CreateCatalogIntegrationRequest.newBuilder()
+                            .setCreateMode(CreateMode.CM_REPLACE)
+                            .setSpec(
+                                CatalogIntegrationSpec.newBuilder()
+                                    .setDisplayName("Warehouse")
+                                    .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+                                    .setCatalogUri("https://new.example")
+                                    .setAuthentication(oauthAuthentication()))
+                            .setCredentials(oauthCredentials())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.integrations, never()).replaceIdentityWithMeta(any(), anyLong(), any());
   }
 
   @Test
@@ -948,7 +988,7 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
-  void deleteChecksDependencyMarkerInSameTransaction() {
+  void deleteRequiresDependencyMarkerAbsentInSameTransaction() {
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var current =
         CatalogIntegration.newBuilder()
@@ -965,8 +1005,7 @@ class CatalogIntegrationsImplTest {
             Optional.of(
                 new ai.floedb.floecat.service.repo.util.GenericResourceRepository
                     .ResourceWithMeta<>(current, meta)));
-    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
-    when(service.integrations.deleteWithPreconditionAndOverlayMarker(integrationId, 7L, 4L))
+    when(service.integrations.deleteWithPreconditionAndNoOverlayMarker(integrationId, 7L))
         .thenReturn(true);
 
     service
@@ -976,12 +1015,38 @@ class CatalogIntegrationsImplTest {
         .indefinitely();
 
     verify(service.markerStore).catalogIntegrationOverlaysMarkerVersion(integrationId);
-    verify(service.integrations).deleteWithPreconditionAndOverlayMarker(integrationId, 7L, 4L);
+    verify(service.integrations).deleteWithPreconditionAndNoOverlayMarker(integrationId, 7L);
     verify(secretsManager)
         .deleteImmediately(
             "acct",
             CatalogIntegrationCredentialStore.SECRET_TYPE,
             CatalogIntegrationCredentialStore.reference(integrationId, 1L));
+  }
+
+  @Test
+  void deleteRejectsDependentOverlaysBeforeSchedulingCredentialCleanup() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var current = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
+    var meta = MutationMeta.newBuilder().setPointerVersion(7).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(Optional.of(new ResourceWithMeta<>(current, meta)));
+    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteCatalogIntegration(
+                        DeleteCatalogIntegrationRequest.newBuilder()
+                            .setIntegrationId(integrationId)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
+    verify(service.integrations, never())
+        .deleteWithPreconditionAndNoOverlayMarker(any(), anyLong());
   }
 
   private static PrincipalContext principal() {

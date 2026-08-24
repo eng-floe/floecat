@@ -78,7 +78,7 @@ class CatalogIntegrationRepositoryTest {
         CatalogIntegration.newBuilder().setResourceId(id).setDisplayName("warehouse").build());
     long version = repo.metaFor(id).getPointerVersion();
 
-    assertTrue(repo.deleteWithPreconditionAndOverlayMarker(id, version, 0L));
+    assertTrue(repo.deleteWithPreconditionAndNoOverlayMarker(id, version));
     assertFalse(repo.getById(id).isPresent());
     assertFalse(
         pointers.get(Keys.catalogIntegrationOverlaysMarker("account", "integration")).isPresent());
@@ -94,10 +94,56 @@ class CatalogIntegrationRepositoryTest {
     long version = repo.metaFor(id).getPointerVersion();
 
     assertTrue(repo.beginCascadeDeletion(id, version));
-    assertFalse(repo.deleteWithPreconditionAndOverlayMarker(id, version, 0L));
+    assertFalse(repo.deleteWithPreconditionAndNoOverlayMarker(id, version));
     assertTrue(repo.getById(id).isPresent());
     assertTrue(
         pointers.get(Keys.catalogIntegrationDeletionMarker("account", "integration")).isPresent());
+  }
+
+  @Test
+  void nonCascadeDeleteRejectsExistingOverlayMarker() {
+    var pointers = new InMemoryPointerStore();
+    var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
+    var id = id("integration");
+    repo.create(
+        CatalogIntegration.newBuilder().setResourceId(id).setDisplayName("warehouse").build());
+    long version = repo.metaFor(id).getPointerVersion();
+    String marker = Keys.catalogIntegrationOverlaysMarker("account", "integration");
+    assertTrue(
+        pointers.compareAndSet(
+            marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "dependent", 1L)));
+
+    assertFalse(repo.deleteWithPreconditionAndNoOverlayMarker(id, version));
+
+    assertTrue(repo.getById(id).isPresent());
+    assertTrue(pointers.get(marker).isPresent());
+  }
+
+  @Test
+  void accountDeletionMayRemoveOverlayMarkerOnlyWhileAccountFenceExists() {
+    var pointers = new InMemoryPointerStore();
+    var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
+    var id = id("integration");
+    repo.create(
+        CatalogIntegration.newBuilder().setResourceId(id).setDisplayName("warehouse").build());
+    long version = repo.metaFor(id).getPointerVersion();
+    String marker = Keys.catalogIntegrationOverlaysMarker("account", "integration");
+    String accountFence = Keys.accountDeletionMarker("account");
+    assertTrue(
+        pointers.compareAndSet(
+            marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "dependent", 1L)));
+    assertFalse(repo.deleteWithPreconditionForAccountDeletion(id, version, 1L, 1L));
+    assertTrue(
+        pointers.compareAndSet(
+            accountFence,
+            0L,
+            PointerReferences.opaqueMarkerPointer(accountFence, "deleting", 1L)));
+
+    assertTrue(repo.deleteWithPreconditionForAccountDeletion(id, version, 1L, 1L));
+
+    assertTrue(repo.getById(id).isEmpty());
+    assertTrue(pointers.get(marker).isEmpty());
+    assertTrue(pointers.get(accountFence).isPresent());
   }
 
   @Test
@@ -184,7 +230,7 @@ class CatalogIntegrationRepositoryTest {
 
     var replaced =
         repo.replaceIdentityWithMeta(
-                current.value(), current.meta().getPointerVersion(), replacement, 0L)
+                current.value(), current.meta().getPointerVersion(), replacement)
             .orElseThrow();
 
     assertTrue(repo.getById(original.getResourceId()).isEmpty());
@@ -192,6 +238,33 @@ class CatalogIntegrationRepositoryTest {
     assertEquals(
         replacement.getResourceId(),
         repo.getByName("account", "warehouse").orElseThrow().getResourceId());
+  }
+
+  @Test
+  void replacementRejectsExistingOverlayMarker() {
+    var pointers = new InMemoryPointerStore();
+    var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
+    var original =
+        CatalogIntegration.newBuilder()
+            .setResourceId(id("old"))
+            .setDisplayName("warehouse")
+            .build();
+    repo.create(original);
+    var current = repo.getByIdWithMeta(original.getResourceId()).orElseThrow();
+    var replacement = original.toBuilder().setResourceId(id("new")).build();
+    String marker = Keys.catalogIntegrationOverlaysMarker("account", "old");
+    assertTrue(
+        pointers.compareAndSet(
+            marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "dependent", 1L)));
+
+    assertTrue(
+        repo.replaceIdentityWithMeta(
+                current.value(), current.meta().getPointerVersion(), replacement)
+            .isEmpty());
+
+    assertEquals(original, repo.getById(original.getResourceId()).orElseThrow());
+    assertTrue(repo.getById(replacement.getResourceId()).isEmpty());
+    assertTrue(pointers.get(marker).isPresent());
   }
 
   @Test
