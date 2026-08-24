@@ -249,6 +249,10 @@ public class TransactionIntentApplierSupport {
 
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    ApplyOutcome fenceOutcome = appendAccountDeletionFenceChecks(intents, touchedKeys, ops);
+    if (fenceOutcome.status != ApplyStatus.APPLIED) {
+      return fenceOutcome;
+    }
     for (var intent : intents) {
       ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
       if (planOutcome.status != ApplyStatus.APPLIED) {
@@ -265,6 +269,10 @@ public class TransactionIntentApplierSupport {
     }
 
     if (!ops.isEmpty() && !pointerStore.compareAndSetBatch(ops)) {
+      ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
+      if (fenceOutcomeAfterFailure != null) {
+        return fenceOutcomeAfterFailure;
+      }
       ApplyOutcome conflictOutcome = findExpectedVersionConflict(intents);
       if (conflictOutcome != null) {
         return conflictOutcome;
@@ -293,6 +301,10 @@ public class TransactionIntentApplierSupport {
 
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    ApplyOutcome fenceOutcome = appendAccountDeletionFenceChecks(intents, touchedKeys, ops);
+    if (fenceOutcome.status != ApplyStatus.APPLIED) {
+      return fenceOutcome;
+    }
     for (var intent : intents) {
       ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
       if (planOutcome.status != ApplyStatus.APPLIED) {
@@ -330,8 +342,50 @@ public class TransactionIntentApplierSupport {
     if (pointerStore.compareAndSetBatch(ops)) {
       return ApplyOutcome.applied();
     }
+    ApplyOutcome fenceOutcomeAfterFailure = findAccountDeletionConflict(intents);
+    if (fenceOutcomeAfterFailure != null) {
+      return fenceOutcomeAfterFailure;
+    }
     return classifyAtomicApplyFailure(
         appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
+  }
+
+  private ApplyOutcome appendAccountDeletionFenceChecks(
+      List<TransactionIntent> intents, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    for (TransactionIntent intent : intents) {
+      if (intent == null || intent.getAccountId().isBlank()) {
+        return ApplyOutcome.conflict(
+            "TRANSACTION_INTENT_INVALID_ACCOUNT",
+            "transaction intent account_id is required",
+            null,
+            null,
+            null);
+      }
+      String markerKey = Keys.accountDeletionMarker(intent.getAccountId());
+      if (pointerStore.get(markerKey).isPresent()) {
+        return accountDeletionConflict(intent.getAccountId());
+      }
+      if (touchedKeys.add(markerKey)) {
+        ops.add(new PointerStore.CasCheckAbsent(markerKey));
+      }
+    }
+    return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome findAccountDeletionConflict(List<TransactionIntent> intents) {
+    for (TransactionIntent intent : intents) {
+      if (intent != null
+          && !intent.getAccountId().isBlank()
+          && pointerStore.get(Keys.accountDeletionMarker(intent.getAccountId())).isPresent()) {
+        return accountDeletionConflict(intent.getAccountId());
+      }
+    }
+    return null;
+  }
+
+  private ApplyOutcome accountDeletionConflict(String accountId) {
+    return ApplyOutcome.conflict(
+        "ACCOUNT_DELETION_IN_PROGRESS", "account deletion is in progress", null, null, accountId);
   }
 
   private ApplyOutcome planIntentOps(

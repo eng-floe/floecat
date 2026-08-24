@@ -629,6 +629,12 @@ class ReconcileMaintenanceServicesTest {
     }
 
     @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
     public String pageTokenAfterKey(String key) {
       return key;
     }
@@ -650,6 +656,11 @@ class ReconcileMaintenanceServicesTest {
         }
       }
       return count;
+    }
+
+    @Override
+    public int countByPrefixConsistent(String prefix) {
+      return countByPrefix(prefix);
     }
 
     @Override

@@ -486,9 +486,8 @@ dependent would let a delete that should be rejected succeed. The storage SPI th
 strongly consistent variants of prefix listing and counting alongside the ordinary reads, and
 cascade and dependency paths use those variants. Ordinary listing RPCs keep the default reads.
 
-The variants are defaults on the SPI interfaces that delegate to the existing reads, so a backend
-without a separate consistent-read mode inherits correct behavior. `storage/aws` overrides them
-with DynamoDB consistent reads.
+SPI implementations must define the variants explicitly. Backends whose ordinary reads are already
+strongly consistent may delegate explicitly; `storage/aws` requests DynamoDB consistent reads.
 
 ## Create-conflict behavior
 

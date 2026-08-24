@@ -391,8 +391,8 @@ class TransactionGcTest {
     var failingStore =
         new InMemoryPointerStore() {
           @Override
-          public boolean compareAndSet(
-              String key, long expectedVersion, ai.floedb.floecat.common.rpc.Pointer pointer) {
+          public boolean compareAndSetBatch(
+              java.util.List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops) {
             throw new IllegalStateException("store down");
           }
         };

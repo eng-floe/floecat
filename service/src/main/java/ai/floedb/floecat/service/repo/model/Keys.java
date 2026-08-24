@@ -170,6 +170,11 @@ public final class Keys {
 
   // ===== Transactions =====
 
+  public static String transactionPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/transactions/";
+  }
+
   public static String transactionPointerById(String accountId, String txId) {
     String tid = req("account_id", accountId);
     String tx = req("tx_id", txId);

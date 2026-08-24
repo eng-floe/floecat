@@ -19,11 +19,12 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -37,11 +38,11 @@ class RootResyncQueueTest {
     var pointers =
         new InMemoryPointerStore() {
           @Override
-          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
             if (transientFailures.getAndDecrement() > 0) {
               throw new IllegalStateException("transient pointer-store failure");
             }
-            return super.compareAndSet(key, expectedVersion, next);
+            return super.compareAndSetBatch(ops);
           }
         };
     var backoffs = new ArrayList<Long>();
@@ -59,5 +60,23 @@ class RootResyncQueueTest {
     assertTrue(
         pointers.get(Keys.rootResyncPendingPointer("acct", "tbl-transient")).isPresent(),
         "the recovered enqueue still records the pending root resync marker");
+  }
+
+  @Test
+  void enqueueDoesNotRecreateMarkerForDeletingAccount() {
+    var pointers = new InMemoryPointerStore();
+    var queue = new RootResyncQueue(pointers);
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-deleting")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String fence = Keys.accountDeletionMarker("acct");
+    pointers.compareAndSet(fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "acct", 1L));
+
+    queue.enqueue(tableId);
+
+    assertTrue(pointers.get(Keys.rootResyncPendingPointer("acct", "tbl-deleting")).isEmpty());
   }
 }

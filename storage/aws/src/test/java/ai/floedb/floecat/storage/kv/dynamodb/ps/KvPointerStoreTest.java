@@ -92,6 +92,16 @@ class KvPointerStoreTest {
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       throw new UnsupportedOperationException();
     }

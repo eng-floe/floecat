@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 
 @ApplicationScoped
 public class MarkerStore {
@@ -42,36 +43,54 @@ public class MarkerStore {
 
   public void bumpCatalogMarker(ResourceId catalogId) {
     String key = Keys.catalogChildrenMarker(catalogId.getAccountId(), catalogId.getId());
-    bumpMarker(key);
+    bumpMarker(catalogId.getAccountId(), key);
   }
 
   public void bumpNamespaceMarker(ResourceId namespaceId) {
     String key = Keys.namespaceChildrenMarker(namespaceId.getAccountId(), namespaceId.getId());
-    bumpMarker(key);
+    bumpMarker(namespaceId.getAccountId(), key);
   }
 
   public boolean advanceCatalogMarker(ResourceId catalogId, long expectedVersion) {
     String key = Keys.catalogChildrenMarker(catalogId.getAccountId(), catalogId.getId());
-    return advanceMarker(key, expectedVersion);
+    return advanceMarker(catalogId.getAccountId(), key, expectedVersion);
   }
 
   public boolean advanceNamespaceMarker(ResourceId namespaceId, long expectedVersion) {
     String key = Keys.namespaceChildrenMarker(namespaceId.getAccountId(), namespaceId.getId());
-    return advanceMarker(key, expectedVersion);
+    return advanceMarker(namespaceId.getAccountId(), key, expectedVersion);
   }
 
-  private void bumpMarker(String key) {
+  private void bumpMarker(String accountId, String key) {
     for (int i = 0; i < CAS_MAX; i++) {
+      if (pointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
+        return;
+      }
       var current = pointerStore.get(key).orElse(null);
       long expected = current == null ? 0L : current.getVersion();
-      if (advanceMarker(key, expected)) {
+      if (tryAdvanceMarker(accountId, key, expected)) {
         return;
       }
     }
   }
 
-  private boolean advanceMarker(String key, long expectedVersion) {
+  private boolean advanceMarker(String accountId, String key, long expectedVersion) {
+    String fenceKey = Keys.accountDeletionMarker(accountId);
+    if (pointerStore.get(fenceKey).isPresent()) {
+      throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
+    }
+    boolean advanced = tryAdvanceMarker(accountId, key, expectedVersion);
+    if (!advanced && pointerStore.get(fenceKey).isPresent()) {
+      throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
+    }
+    return advanced;
+  }
+
+  private boolean tryAdvanceMarker(String accountId, String key, long expectedVersion) {
     var next = PointerReferences.opaqueMarkerPointer(key, key, expectedVersion + 1);
-    return pointerStore.compareAndSet(key, expectedVersion, next);
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasCheckAbsent(Keys.accountDeletionMarker(accountId)),
+            new PointerStore.CasUpsert(key, expectedVersion, next)));
   }
 }

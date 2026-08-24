@@ -260,6 +260,12 @@ public class TestDataResetterTest {
     }
 
     @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
     public int deleteByPrefix(String prefix) {
       final String pfx = prefix == null ? "" : prefix;
       int before = map.size();
@@ -277,6 +283,11 @@ public class TestDataResetterTest {
         }
       }
       return count;
+    }
+
+    @Override
+    public int countByPrefixConsistent(String prefix) {
+      return countByPrefix(prefix);
     }
 
     @Override

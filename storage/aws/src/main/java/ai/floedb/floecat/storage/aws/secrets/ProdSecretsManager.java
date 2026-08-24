@@ -36,7 +36,9 @@ import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
 import software.amazon.awssdk.services.secretsmanager.model.DeleteSecretRequest;
+import software.amazon.awssdk.services.secretsmanager.model.DescribeSecretRequest;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.InvalidRequestException;
 import software.amazon.awssdk.services.secretsmanager.model.PutSecretValueRequest;
 import software.amazon.awssdk.services.secretsmanager.model.ResourceExistsException;
 import software.amazon.awssdk.services.secretsmanager.model.ResourceNotFoundException;
@@ -224,6 +226,19 @@ public class ProdSecretsManager implements SecretsManager {
       client.deleteSecret(
           DeleteSecretRequest.builder().secretId(secretName).recoveryWindowInDays(7L).build());
     } catch (ResourceNotFoundException ignored) {
+    } catch (InvalidRequestException invalidState) {
+      try {
+        var description =
+            client.describeSecret(DescribeSecretRequest.builder().secretId(secretName).build());
+        if (description != null && description.deletedDate() != null) {
+          return;
+        }
+      } catch (ResourceNotFoundException ignored) {
+        return;
+      } catch (RuntimeException describeFailure) {
+        invalidState.addSuppressed(describeFailure);
+      }
+      throw invalidState;
     }
   }
 

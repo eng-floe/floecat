@@ -25,6 +25,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountSpec;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
+import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -55,9 +56,11 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
@@ -70,6 +73,7 @@ class AccountServiceImplTest {
   private AccountServiceImpl service;
   private ResourceId accountId;
   private TrackingPointerStore pointers;
+  private InMemoryBlobStore blobs;
 
   @BeforeEach
   void setUp() {
@@ -89,6 +93,8 @@ class AccountServiceImplTest {
     service.markerStore = mock(MarkerStore.class);
     pointers = new TrackingPointerStore();
     service.pointerStore = pointers;
+    blobs = new InMemoryBlobStore();
+    service.blobStore = blobs;
     service.credentialResolver = mock(DefaultCredentialResolver.class);
     service.secretsManager = mock(SecretsManager.class);
     installBasePrincipal(service, service.principal);
@@ -166,6 +172,36 @@ class AccountServiceImplTest {
         .indefinitely();
 
     assertFalse(pointers.get(constraintKey).isPresent());
+  }
+
+  @Test
+  void accountDeletionPurgesPreparedTransactionsAndIntents() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    String transactionPointer = Keys.transactionPointerById("acct", "tx-1");
+    String intentPointer =
+        Keys.transactionIntentPointerByTarget("acct", "/accounts/acct/tables/by-id/table-1");
+    String transactionBlob = Keys.transactionBlobUri("acct", "tx-1", "transaction-sha");
+    String intentBlob = Keys.transactionIntentBlobUri("acct", "tx-1", "intent-sha");
+    pointers.compareAndSet(
+        transactionPointer,
+        0L,
+        PointerReferences.blobPointer(transactionPointer, transactionBlob, 1L));
+    pointers.compareAndSet(
+        intentPointer, 0L, PointerReferences.blobPointer(intentPointer, intentBlob, 1L));
+    blobs.put(transactionBlob, new byte[] {1}, "application/x-protobuf");
+    blobs.put(intentBlob, new byte[] {2}, "application/x-protobuf");
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    assertTrue(pointers.get(transactionPointer).isEmpty());
+    assertTrue(pointers.get(intentPointer).isEmpty());
+    assertTrue(blobs.get(transactionBlob) == null);
+    assertTrue(blobs.get(intentBlob) == null);
   }
 
   @Test
@@ -305,6 +341,36 @@ class AccountServiceImplTest {
     FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
     assertEquals(Status.Code.FAILED_PRECONDITION, decoded.canonicalCode());
     assertEquals(ErrorCode.MC_PRECONDITION_FAILED, decoded.errorCode());
+    assertEquals("account.deletion.in.progress", decoded.messageKey());
+    assertEquals("acct", decoded.params().get("account_id"));
+  }
+
+  @Test
+  void fenceBlockedUpdateUsesStructuredFailedPrecondition() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    Account current = Account.newBuilder().setResourceId(accountId).setDisplayName("alpha").build();
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.getById(accountId)).thenReturn(Optional.of(current));
+    doThrow(new BaseResourceRepository.AccountDeletionInProgressException("acct"))
+        .when(service.accountRepo)
+        .update(any(Account.class), eq(7L));
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateAccount(
+                        UpdateAccountRequest.newBuilder()
+                            .setAccountId(accountId)
+                            .setSpec(AccountSpec.newBuilder().setDisplayName("beta"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("display_name"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.FAILED_PRECONDITION, decoded.canonicalCode());
     assertEquals("account.deletion.in.progress", decoded.messageKey());
     assertEquals("acct", decoded.params().get("account_id"));
   }

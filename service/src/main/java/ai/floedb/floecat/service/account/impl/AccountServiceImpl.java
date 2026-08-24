@@ -62,6 +62,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -94,6 +95,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject BlobStore blobStore;
   @Inject DefaultCredentialResolver credentialResolver;
   @Inject SecretsManager secretsManager;
 
@@ -540,12 +542,15 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     var summary = new AccountCleanupSummary(accountKey);
     CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
     try {
+      cleanupTransactions(accountKey, summary);
       cleanupStorageAuthorities(accountKey, summary);
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d constraint_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s transaction_pointer_deletes=%d transaction_blob_deletes=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d constraint_prefix_deletes=%d",
           summary.accountId,
+          summary.transactionPointersDeleted,
+          summary.transactionBlobsDeleted,
           summary.storageAuthoritiesDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
@@ -559,6 +564,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
     }
+  }
+
+  private void cleanupTransactions(String accountId, AccountCleanupSummary summary) {
+    String prefix = Keys.transactionPrefix(accountId);
+    summary.transactionPointersDeleted += pointerStore.deleteByPrefix(prefix);
+    summary.transactionBlobsDeleted += blobStore.deletePrefix(prefix);
   }
 
   private void cleanupStorageAuthorities(String accountId, AccountCleanupSummary summary) {
@@ -738,6 +749,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private static final class AccountCleanupSummary {
     private final String accountId;
+    private int transactionPointersDeleted;
+    private int transactionBlobsDeleted;
     private int storageAuthoritiesDeleted;
     private int connectorsDeleted;
     private int credentialsDeleted;

@@ -7804,6 +7804,12 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return delegate.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
     public int deleteByPrefix(String prefix) {
       return delegate.deleteByPrefix(prefix);
     }
@@ -7811,6 +7817,11 @@ class DurableReconcileJobStoreTest {
     @Override
     public int countByPrefix(String prefix) {
       return delegate.countByPrefix(prefix);
+    }
+
+    @Override
+    public int countByPrefixConsistent(String prefix) {
+      return delegate.countByPrefixConsistent(prefix);
     }
 
     @Override

@@ -154,14 +154,12 @@ public interface KvStore {
   Uni<Page> queryByPartitionKeyPrefix(
       String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken);
 
-  default Uni<Page> queryByPartitionKeyPrefix(
+  Uni<Page> queryByPartitionKeyPrefix(
       String partitionKey,
       String sortKeyPrefix,
       int limit,
       Optional<String> pageToken,
-      boolean consistentRead) {
-    return queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, limit, pageToken);
-  }
+      boolean consistentRead);
 
   /**
    * Returns a page token that resumes a {@link #queryByPartitionKeyPrefix} scan immediately after

@@ -196,6 +196,16 @@ public final class InMemoryKvStore implements KvStore {
   }
 
   @Override
+  public Uni<Page> queryByPartitionKeyPrefix(
+      String partitionKey,
+      String sortKeyPrefix,
+      int limit,
+      Optional<String> pageToken,
+      boolean consistentRead) {
+    return queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, limit, pageToken);
+  }
+
+  @Override
   public String pageTokenAfterKey(Key key) {
     // Same encoding as end-of-page tokens: base64 of the sort key to resume after.
     return encodeToken(key.sortKey());

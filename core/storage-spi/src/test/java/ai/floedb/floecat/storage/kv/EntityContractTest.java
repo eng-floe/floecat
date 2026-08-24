@@ -608,6 +608,16 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      return queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, limit, pageToken);
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       int before = records.size();
       records

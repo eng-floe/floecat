@@ -555,6 +555,17 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      return delegate.queryByPartitionKeyPrefix(
+          partitionKey, sortKeyPrefix, limit, pageToken, consistentRead);
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       return delegate.deleteByPrefix(partitionKey, sortKeyPrefix);
     }
