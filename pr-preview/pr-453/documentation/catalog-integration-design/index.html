@@ -2642,9 +2642,8 @@ consistent path: a missed overlay would leave an orphan behind a deleted integra
 dependent would let a delete that should be rejected succeed. The storage SPI therefore exposes
 strongly consistent variants of prefix listing and counting alongside the ordinary reads, and
 cascade and dependency paths use those variants. Ordinary listing RPCs keep the default reads.</p>
-<p>The variants are defaults on the SPI interfaces that delegate to the existing reads, so a backend
-without a separate consistent-read mode inherits correct behavior. <code>storage/aws</code> overrides them
-with DynamoDB consistent reads.</p>
+<p>SPI implementations must define the variants explicitly. Backends whose ordinary reads are already
+strongly consistent may delegate explicitly; <code>storage/aws</code> requests DynamoDB consistent reads.</p>
 <h2 id="create-conflict-behavior">Create-conflict behavior<a class="headerlink" href="#create-conflict-behavior" title="Permanent link">&para;</a></h2>
 <p>Create requests carry an explicit conflict mode so a caller can choose between failing, replacing,
 and returning the existing resource:</p>
