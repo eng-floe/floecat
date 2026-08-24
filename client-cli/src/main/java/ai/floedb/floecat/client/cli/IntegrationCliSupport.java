@@ -92,10 +92,7 @@ final class IntegrationCliSupport {
         }
         var row =
             integrations
-                .getCatalogIntegration(
-                    GetCatalogIntegrationRequest.newBuilder()
-                        .setIntegrationId(resolveIntegration(args.get(1), integrations, accountId))
-                        .build())
+                .getCatalogIntegration(integrationSelector(args.get(1), accountId))
                 .getIntegration();
         printIntegrations(List.of(row), out);
       }
@@ -129,8 +126,8 @@ final class IntegrationCliSupport {
       case "update" -> {
         if (args.size() < 2) {
           out.println(
-              "usage: integration update <name|id> [--display <name>] [--props k=v ...]"
-                  + " [--etag <etag>]");
+              "usage: integration update <name|id> [--display <name>] [--uri <uri>]"
+                  + " [--props k=v ...] [--etag <etag>]");
           return;
         }
         ResourceId id = resolveIntegration(args.get(1), integrations, accountId);
@@ -206,13 +203,7 @@ final class IntegrationCliSupport {
           out.println("usage: overlay get <name|id>");
           return;
         }
-        var row =
-            overlays
-                .getCatalogOverlay(
-                    GetCatalogOverlayRequest.newBuilder()
-                        .setOverlayId(resolveOverlay(args.get(1), overlays, accountId))
-                        .build())
-                .getOverlay();
+        var row = overlays.getCatalogOverlay(overlaySelector(args.get(1), accountId)).getOverlay();
         printOverlays(List.of(row), out);
       }
       case "create" -> {
@@ -400,8 +391,8 @@ final class IntegrationCliSupport {
 
   private static CatalogIntegrationSpec integrationUpdateSpec(List<String> args) {
     var b = CatalogIntegrationSpec.newBuilder();
-    if (args.contains("--display"))
-      b.setDisplayName(Quotes.unquote(CliArgs.parseStringFlag(args, "--display", "")));
+    if (args.contains("--display")) b.setDisplayName(requiredFlagValue(args, "--display"));
+    if (args.contains("--uri")) b.setCatalogUri(requiredFlagValue(args, "--uri"));
     if (args.contains("--props")) b.putAllProperties(CliUtils.parseKeyValueList(args, "--props"));
     return b.build();
   }
@@ -409,6 +400,7 @@ final class IntegrationCliSupport {
   private static FieldMask integrationUpdateMask(List<String> args) {
     var paths = new ArrayList<String>();
     addIfPresent(paths, args, "--display", "display_name");
+    addIfPresent(paths, args, "--uri", "catalog_uri");
     addIfPresent(paths, args, "--props", "properties");
     return FieldMask.newBuilder().addAllPaths(paths).build();
   }
@@ -426,8 +418,7 @@ final class IntegrationCliSupport {
 
   private static CatalogOverlaySpec overlayUpdateSpec(List<String> args) {
     var b = CatalogOverlaySpec.newBuilder();
-    if (args.contains("--display"))
-      b.setDisplayName(Quotes.unquote(CliArgs.parseStringFlag(args, "--display", "")));
+    if (args.contains("--display")) b.setDisplayName(requiredFlagValue(args, "--display"));
     if (args.contains("--include")) b.addAllIncludeNamespaces(paths(args, "--include"));
     if (args.contains("--exclude")) b.addAllExcludeNamespaces(paths(args, "--exclude"));
     return b.build();
@@ -442,7 +433,7 @@ final class IntegrationCliSupport {
   }
 
   private static List<NamespacePath> paths(List<String> args, String flag) {
-    String value = Quotes.unquote(CliArgs.parseStringFlag(args, flag, ""));
+    String value = args.contains(flag) ? requiredFlagValue(args, flag) : "";
     if (value.isBlank()) return List.of();
     return CliUtils.csvList(value).stream()
         .map(
@@ -496,25 +487,14 @@ final class IntegrationCliSupport {
       CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations,
       Supplier<String> accountId) {
     String value = Quotes.unquote(token);
-    if (CliUtils.looksLikeUuid(value))
+    if (CliUtils.looksLikeUuid(value)) {
       return rid(value, ResourceKind.RK_CATALOG_INTEGRATION, accountId);
-    var matches = new ArrayList<CatalogIntegration>();
-    CliArgs.forEachPage(
-        DEFAULT_PAGE_SIZE,
-        page ->
-            integrations.listCatalogIntegrations(
-                ListCatalogIntegrationsRequest.newBuilder().setPage(page).build()),
-        response ->
-            response.getEntriesList().stream().map(entry -> entry.getIntegration()).toList(),
-        response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
-        rows ->
-            rows.stream()
-                .filter(row -> row.getDisplayName().equalsIgnoreCase(value))
-                .forEach(matches::add));
-    return uniqueId(
-        value,
-        "Catalog integration",
-        matches.stream().map(CatalogIntegration::getResourceId).toList());
+    }
+    return integrations
+        .getCatalogIntegration(
+            GetCatalogIntegrationRequest.newBuilder().setDisplayName(value).build())
+        .getIntegration()
+        .getResourceId();
   }
 
   private static ResourceId resolveOverlay(
@@ -525,26 +505,34 @@ final class IntegrationCliSupport {
     if (CliUtils.looksLikeUuid(value)) {
       return rid(value, ResourceKind.RK_CATALOG_OVERLAY, accountId);
     }
-    var matches = new ArrayList<CatalogOverlay>();
-    CliArgs.forEachPage(
-        DEFAULT_PAGE_SIZE,
-        page ->
-            overlays.listCatalogOverlays(
-                ListCatalogOverlaysRequest.newBuilder().setPage(page).build()),
-        response -> response.getEntriesList().stream().map(entry -> entry.getOverlay()).toList(),
-        response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
-        rows ->
-            rows.stream()
-                .filter(row -> row.getDisplayName().equalsIgnoreCase(value))
-                .forEach(matches::add));
-    return uniqueId(
-        value, "Catalog overlay", matches.stream().map(CatalogOverlay::getResourceId).toList());
+    return overlays
+        .getCatalogOverlay(GetCatalogOverlayRequest.newBuilder().setDisplayName(value).build())
+        .getOverlay()
+        .getResourceId();
   }
 
-  private static ResourceId uniqueId(String value, String label, List<ResourceId> ids) {
-    if (ids.size() == 1) return ids.getFirst();
-    if (ids.isEmpty()) throw new IllegalArgumentException(label + " not found: " + value);
-    throw new IllegalArgumentException(label + " name is ambiguous: " + value);
+  private static GetCatalogIntegrationRequest integrationSelector(
+      String token, Supplier<String> accountId) {
+    String value = Quotes.unquote(token);
+    var request = GetCatalogIntegrationRequest.newBuilder();
+    if (CliUtils.looksLikeUuid(value)) {
+      request.setIntegrationId(rid(value, ResourceKind.RK_CATALOG_INTEGRATION, accountId));
+    } else {
+      request.setDisplayName(value);
+    }
+    return request.build();
+  }
+
+  private static GetCatalogOverlayRequest overlaySelector(
+      String token, Supplier<String> accountId) {
+    String value = Quotes.unquote(token);
+    var request = GetCatalogOverlayRequest.newBuilder();
+    if (CliUtils.looksLikeUuid(value)) {
+      request.setOverlayId(rid(value, ResourceKind.RK_CATALOG_OVERLAY, accountId));
+    } else {
+      request.setDisplayName(value);
+    }
+    return request.build();
   }
 
   private static ResourceId rid(
@@ -570,6 +558,14 @@ final class IntegrationCliSupport {
   private static void addIfPresent(
       List<String> paths, List<String> args, String flag, String path) {
     if (args.contains(flag)) paths.add(path);
+  }
+
+  private static String requiredFlagValue(List<String> args, String flag) {
+    int index = args.indexOf(flag);
+    if (index + 1 >= args.size() || args.get(index + 1).startsWith("--")) {
+      throw new IllegalArgumentException("Missing value for " + flag);
+    }
+    return Quotes.unquote(args.get(index + 1));
   }
 
   private static void printIntegrations(List<CatalogIntegration> rows, PrintStream out) {
@@ -598,16 +594,32 @@ final class IntegrationCliSupport {
   }
 
   private static void printOverlayHeader(PrintStream out) {
-    out.printf("%-36s  %-24s  %-36s%n", "OVERLAY_ID", "NAME", "INTEGRATION_ID");
+    out.printf(
+        "%-36s  %-24s  %-36s  %-36s  %-24s  %s%n",
+        "OVERLAY_ID",
+        "NAME",
+        "INTEGRATION_ID",
+        "CATALOG_ID",
+        "INCLUDE_NAMESPACES",
+        "EXCLUDE_NAMESPACES");
   }
 
   private static void printOverlayRows(List<CatalogOverlay> rows, PrintStream out) {
     for (var row : rows) {
       out.printf(
-          "%-36s  %-24s  %-36s%n",
+          "%-36s  %-24s  %-36s  %-36s  %-24s  %s%n",
           CliUtils.rid(row.getResourceId()),
           row.getDisplayName(),
-          CliUtils.rid(row.getIntegrationId()));
+          CliUtils.rid(row.getIntegrationId()),
+          CliUtils.rid(row.getCatalogId()),
+          formatNamespacePaths(row.getIncludeNamespacesList()),
+          formatNamespacePaths(row.getExcludeNamespacesList()));
     }
+  }
+
+  private static String formatNamespacePaths(List<NamespacePath> paths) {
+    return paths.stream()
+        .map(path -> String.join(".", path.getSegmentsList()))
+        .collect(java.util.stream.Collectors.joining(",", "[", "]"));
   }
 }

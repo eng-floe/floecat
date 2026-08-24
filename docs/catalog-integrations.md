@@ -6,8 +6,8 @@ foundation for external-catalog connectivity:
 - A **catalog integration** records an upstream catalog type, URI, display name, non-secret
   connection properties, and typed authentication configuration. Credential material is stored
   separately and is never returned by the API.
-- A **catalog overlay** defines a top-level Floecat catalog backed by an integration and filtered
-  to selected upstream namespaces.
+- A **catalog overlay** maps selected upstream namespaces from an integration into an existing
+  Floecat destination catalog.
 
 ```text
 CatalogIntegration (external catalog identity)
@@ -21,7 +21,8 @@ for external catalog connectivity.
 
 ## Shell workflow
 
-Create the integration record, then define a top-level overlay catalog:
+Create the integration record, then map its selected namespaces into an existing destination
+catalog:
 
 ```text
 integration create lakehouse iceberg-rest https://catalog.example/v1 \
@@ -43,7 +44,7 @@ integrations
 integration list
 integration get <name|id>
 integration create <name> <type> <uri> --auth-type <type> [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
-integration update <name|id> [--display <name>] [--props k=v ...] [--etag <etag>]
+integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
 integration update-auth <name|id> --auth-type <type> [--auth k=v ...] [--cred k=v ...]
 integration delete <name|id>
 
@@ -77,7 +78,8 @@ it.
 ## Lifecycle
 
 - Overlay creation requires an existing integration.
-- Overlay display names are unique within an account and identify the top-level catalog.
+- Overlay display names are unique within an account and identify the mapping into a destination
+  catalog.
 - An integration cannot be deleted while overlays refer to it.
 - Integration deletion supports `--cascade` to delete dependent overlays.
 - Integration and overlay mutations support optimistic `--etag` preconditions.

@@ -7,6 +7,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
@@ -35,6 +36,7 @@ import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
+import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
@@ -125,8 +127,11 @@ class IntegrationCliSupportTest {
   @Test
   void listsAndGetsIntegrationByName() throws Exception {
     try (Harness h = new Harness()) {
-      assertTrue(h.run("integrations", List.of()).contains("lakehouse"));
       assertTrue(h.run("integration", List.of("get", "lakehouse")).contains("lakehouse"));
+      assertEquals("lakehouse", h.integrations.lastGet.getDisplayName());
+      assertEquals(0, h.integrations.listCalls);
+
+      assertTrue(h.run("integrations", List.of()).contains("lakehouse"));
     }
   }
 
@@ -136,11 +141,20 @@ class IntegrationCliSupportTest {
       h.run(
           "integration",
           List.of(
-              "update", INTEGRATION_ID, "--display", "renamed", "--props", "warehouse=reporting"));
+              "update",
+              INTEGRATION_ID,
+              "--display",
+              "renamed",
+              "--uri",
+              "https://replacement.example/v1",
+              "--props",
+              "warehouse=reporting"));
       assertEquals(
-          List.of("display_name", "properties"),
+          List.of("display_name", "catalog_uri", "properties"),
           h.integrations.lastUpdate.getUpdateMask().getPathsList());
       assertEquals("renamed", h.integrations.lastUpdate.getSpec().getDisplayName());
+      assertEquals(
+          "https://replacement.example/v1", h.integrations.lastUpdate.getSpec().getCatalogUri());
       assertEquals(
           "reporting", h.integrations.lastUpdate.getSpec().getPropertiesMap().get("warehouse"));
 
@@ -151,6 +165,32 @@ class IntegrationCliSupportTest {
       h.run("integration", List.of("delete", INTEGRATION_ID, "--cascade"));
       assertEquals(INTEGRATION_ID, h.integrations.lastDelete.getIntegrationId().getId());
       assertTrue(h.integrations.lastDelete.getCascade());
+    }
+  }
+
+  @Test
+  void rejectsDisplayFlagWithoutValue() throws Exception {
+    try (Harness h = new Harness()) {
+      var error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  h.run(
+                      "integration",
+                      List.of("update", INTEGRATION_ID, "--display", "--props", "k=v")));
+      assertEquals("Missing value for --display", error.getMessage());
+    }
+  }
+
+  @Test
+  void rejectsNamespaceFlagWithoutValue() throws Exception {
+    try (Harness h = new Harness()) {
+      var error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  h.run("overlay", List.of("update", OVERLAY_ID, "--include", "--exclude", "tmp")));
+      assertEquals("Missing value for --include", error.getMessage());
     }
   }
 
@@ -202,8 +242,16 @@ class IntegrationCliSupportTest {
   @Test
   void listsAndGetsOverlayByName() throws Exception {
     try (Harness h = new Harness()) {
+      String output = h.run("overlay", List.of("get", "sales"));
+      assertTrue(output.contains("sales"));
+      assertTrue(output.contains("CATALOG_ID"));
+      assertTrue(output.contains(CATALOG_ID));
+      assertTrue(output.contains("[prod.sales]"));
+      assertTrue(output.contains("[tmp]"));
+      assertEquals("sales", h.overlays.lastGet.getDisplayName());
+      assertEquals(0, h.overlays.listCalls);
+
       assertTrue(h.run("overlays", List.of()).contains("sales"));
-      assertTrue(h.run("overlay", List.of("get", "sales")).contains("sales"));
     }
   }
 
@@ -279,14 +327,17 @@ class IntegrationCliSupportTest {
             .setCatalogUri("https://catalog.example/v1")
             .build();
     CreateCatalogIntegrationRequest lastCreate;
+    GetCatalogIntegrationRequest lastGet;
     UpdateCatalogIntegrationRequest lastUpdate;
     UpdateCatalogIntegrationAuthenticationRequest lastAuthUpdate;
     DeleteCatalogIntegrationRequest lastDelete;
+    int listCalls;
 
     @Override
     public void listCatalogIntegrations(
         ListCatalogIntegrationsRequest request,
         StreamObserver<ListCatalogIntegrationsResponse> observer) {
+      listCalls++;
       respond(
           observer,
           ListCatalogIntegrationsResponse.newBuilder()
@@ -298,6 +349,7 @@ class IntegrationCliSupportTest {
     public void getCatalogIntegration(
         GetCatalogIntegrationRequest request,
         StreamObserver<GetCatalogIntegrationResponse> observer) {
+      lastGet = request;
       respond(
           observer, GetCatalogIntegrationResponse.newBuilder().setIntegration(integration).build());
     }
@@ -353,14 +405,20 @@ class IntegrationCliSupportTest {
             .setDisplayName("sales")
             .setIntegrationId(id(INTEGRATION_ID, ResourceKind.RK_CATALOG_INTEGRATION))
             .setCatalogId(id(CATALOG_ID, ResourceKind.RK_CATALOG))
+            .addIncludeNamespaces(
+                NamespacePath.newBuilder().addSegments("prod").addSegments("sales"))
+            .addExcludeNamespaces(NamespacePath.newBuilder().addSegments("tmp"))
             .build();
     CreateCatalogOverlayRequest lastCreate;
+    GetCatalogOverlayRequest lastGet;
     UpdateCatalogOverlayRequest lastUpdate;
     DeleteCatalogOverlayRequest lastDelete;
+    int listCalls;
 
     @Override
     public void listCatalogOverlays(
         ListCatalogOverlaysRequest request, StreamObserver<ListCatalogOverlaysResponse> observer) {
+      listCalls++;
       respond(
           observer,
           ListCatalogOverlaysResponse.newBuilder()
@@ -371,6 +429,7 @@ class IntegrationCliSupportTest {
     @Override
     public void getCatalogOverlay(
         GetCatalogOverlayRequest request, StreamObserver<GetCatalogOverlayResponse> observer) {
+      lastGet = request;
       respond(observer, GetCatalogOverlayResponse.newBuilder().setOverlay(overlay).build());
     }
 

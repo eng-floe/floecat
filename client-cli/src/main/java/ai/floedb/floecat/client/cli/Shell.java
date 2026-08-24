@@ -583,7 +583,7 @@ public class Shell implements Runnable {
          integration get <name|id>
          integration create <name> <iceberg-rest|unity> <uri> --auth-type <type>
              [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
-         integration update <name|id> [--display <name>] [--props k=v ...] [--etag <etag>]
+         integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
          integration update-auth <name|id> --auth-type <type>
              [--auth k=v ...] [--cred k=v ...] [--etag <etag>]
          integration delete <name|id> [--cascade] [--etag <etag>]

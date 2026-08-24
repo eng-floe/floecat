@@ -56,8 +56,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
 - `connectors` / `connector <subcommand>` – Manage connector definitions and reconciliation jobs.
 - `integrations` / `integration <subcommand>` – Manage upstream catalog identity, authentication,
   and write-only credentials.
-- `overlays` / `overlay <subcommand>` – Define a top-level catalog backed by an integration,
-  optionally filtering namespaces.
+- `overlays` / `overlay <subcommand>` – Map namespaces from an integration into an existing
+  destination catalog.
 - `storage-authorities` / `storage-authority <subcommand>` – Manage storage credential authorities
   used by the Iceberg REST gateway to vend temporary object-store credentials.
 
