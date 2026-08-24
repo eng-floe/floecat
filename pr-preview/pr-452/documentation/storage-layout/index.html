@@ -1787,7 +1787,7 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 </code></pre></div>
 <p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
-<div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}:{credential_generation}
+<div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 </code></pre></div>
 <p>The key is derived internally from the persisted integration identity and credential generation; it
 is not present in the resource payload. A new secret is written before publishing the matching
