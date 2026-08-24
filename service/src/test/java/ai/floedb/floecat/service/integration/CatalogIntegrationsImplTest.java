@@ -14,7 +14,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -1154,8 +1153,7 @@ class CatalogIntegrationsImplTest {
     when(service.overlays.countByIntegration("acct", "integration")).thenReturn(0);
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
     when(service.integrations.cascadeDeletionFenceVersion(integrationId)).thenReturn(1L);
-    when(service.integrations.deleteWithPreconditionForCascadeDeletion(
-            integrationId, 7L, 4L, 1L))
+    when(service.integrations.deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L))
         .thenReturn(true);
 
     service
