@@ -480,8 +480,7 @@ class CatalogIntegrationsImplTest {
                                         .setRegion("us-east-1")
                                         .setAwsAssumeRole(
                                             AwsAssumeRoleAuthentication.newBuilder()
-                                                .setRoleArn(
-                                                    "arn:aws:iam::123456789012:role/test")
+                                                .setRoleArn("arn:aws:iam::123456789012:role/test")
                                                 .setExternalId(" ")))
                                 .build()))
                     .await()
