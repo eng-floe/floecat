@@ -38,8 +38,7 @@ public class CatalogIntegrationCredentialStore {
     boolean stored;
     try {
       stored =
-          secretsManager.putIfAbsent(
-              integrationId.getAccountId(), SECRET_TYPE, reference, payload);
+          secretsManager.putIfAbsent(integrationId.getAccountId(), SECRET_TYPE, reference, payload);
     } catch (RuntimeException failure) {
       if (secretsManager.get(integrationId.getAccountId(), SECRET_TYPE, reference).isEmpty()) {
         throw failure;

@@ -77,9 +77,7 @@ public class CatalogIntegrationRepository {
   }
 
   public Optional<ResourceWithMeta<CatalogIntegration>> replaceIdentityWithMeta(
-      CatalogIntegration current,
-      long expectedPointerVersion,
-      CatalogIntegration replacement) {
+      CatalogIntegration current, long expectedPointerVersion, CatalogIntegration replacement) {
     String accountId = current.getResourceId().getAccountId();
     String oldMarker =
         Keys.catalogIntegrationOverlaysMarker(accountId, current.getResourceId().getId());

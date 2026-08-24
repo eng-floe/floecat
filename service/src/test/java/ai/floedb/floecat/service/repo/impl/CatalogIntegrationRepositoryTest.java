@@ -135,9 +135,7 @@ class CatalogIntegrationRepositoryTest {
     assertFalse(repo.deleteWithPreconditionForAccountDeletion(id, version, 1L, 1L));
     assertTrue(
         pointers.compareAndSet(
-            accountFence,
-            0L,
-            PointerReferences.opaqueMarkerPointer(accountFence, "deleting", 1L)));
+            accountFence, 0L, PointerReferences.opaqueMarkerPointer(accountFence, "deleting", 1L)));
 
     assertTrue(repo.deleteWithPreconditionForAccountDeletion(id, version, 1L, 1L));
 
