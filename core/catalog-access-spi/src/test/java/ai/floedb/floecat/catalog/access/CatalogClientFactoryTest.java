@@ -55,13 +55,14 @@ class CatalogClientFactoryTest {
   void reportsMissingProvider() {
     CatalogClientFactory factory = new CatalogClientFactory(List.of());
 
-    IllegalStateException error =
+    CatalogAccessException error =
         assertThrows(
-            IllegalStateException.class,
+            CatalogAccessException.class,
             () ->
                 factory.open(
                     config(CatalogProtocol.UNITY_CATALOG), ResolvedCatalogCredentials.none()));
 
+    assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
     assertEquals("No CatalogClientProvider for protocol=UNITY_CATALOG", error.getMessage());
   }
 

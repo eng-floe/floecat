@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogAuthenticationScheme;
+import ai.floedb.floecat.catalog.access.CatalogClientFactory;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
 import ai.floedb.floecat.integration.rpc.SecretValue;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -160,6 +162,30 @@ class CatalogIntegrationAccessTest {
         assertThrows(CatalogAccessException.class, () -> access.open(integration));
 
     assertEquals(CatalogAccessException.Code.INTERNAL, error.code());
+  }
+
+  @Test
+  void reportsMissingUnityProviderAsUnsupported() {
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(true)
+            .setCredentialGeneration(1L)
+            .build();
+    CatalogIntegration integration =
+        integration(authentication).toBuilder().setType(CatalogIntegrationType.CIT_UNITY).build();
+    when(credentials.resolve(integration))
+        .thenReturn(
+            Optional.of(
+                CatalogIntegrationCredentials.newBuilder()
+                    .setBearerToken(SecretValue.newBuilder().setValue("token"))
+                    .build()));
+    access.clientOpener = new CatalogClientFactory(List.of())::open;
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> access.open(integration));
+
+    assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
   }
 
   private static CatalogIntegration integration(CatalogAuthentication authentication) {

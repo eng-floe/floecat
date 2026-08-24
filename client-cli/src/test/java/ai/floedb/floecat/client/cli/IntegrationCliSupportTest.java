@@ -7,6 +7,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -264,6 +265,16 @@ class IntegrationCliSupportTest {
           List.of(UpstreamObjectKind.UOK_TABLE), h.integrations.lastObjects.getKindsList());
       assertTrue(objects.contains("orders"));
       assertTrue(objects.contains("TABLE"));
+    }
+  }
+
+  @Test
+  void objectsRequiresNamespaceBeforeOptionalFlags() throws Exception {
+    try (Harness h = new Harness()) {
+      String output = h.run("integration", List.of("objects", "lakehouse", "--kinds", "table"));
+
+      assertTrue(output.contains("usage: integration objects"));
+      assertNull(h.integrations.lastObjects);
     }
   }
 

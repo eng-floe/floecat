@@ -1185,10 +1185,13 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   private static io.grpc.StatusRuntimeException catalogAccessStatus(
       String corr, CatalogAccessException failure) {
     return switch (failure.code()) {
-      case INVALID_CONFIGURATION, UNSUPPORTED, CREDENTIAL_EXPIRED, CREDENTIAL_SCOPE_INVALID ->
+      case INVALID_CONFIGURATION,
+          UNAUTHENTICATED,
+          PERMISSION_DENIED,
+          UNSUPPORTED,
+          CREDENTIAL_EXPIRED,
+          CREDENTIAL_SCOPE_INVALID ->
           GrpcErrors.preconditionFailed(corr, null, Map.of());
-      case UNAUTHENTICATED -> GrpcErrors.unauthenticated(corr, null, Map.of());
-      case PERMISSION_DENIED -> GrpcErrors.permissionDenied(corr, null, Map.of());
       case NOT_FOUND -> GrpcErrors.notFound(corr, null, Map.of());
       case UNAVAILABLE -> GrpcErrors.unavailable(corr, null, Map.of());
       case TIMEOUT -> GrpcErrors.timeout(corr, null, Map.of());

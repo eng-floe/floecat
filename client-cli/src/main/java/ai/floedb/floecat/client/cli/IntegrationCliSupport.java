@@ -209,7 +209,7 @@ final class IntegrationCliSupport {
                     row -> out.println(String.join(".", row.getPath().getSegmentsList()))));
       }
       case "objects" -> {
-        if (args.size() < 3) {
+        if (args.size() < 3 || args.get(2).startsWith("--")) {
           out.println("usage: integration objects <name|id> <namespace> [--kinds table,view]");
           return;
         }

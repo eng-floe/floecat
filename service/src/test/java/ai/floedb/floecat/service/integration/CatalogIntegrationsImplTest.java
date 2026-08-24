@@ -15,11 +15,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -1312,6 +1314,38 @@ class CatalogIntegrationsImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.INTERNAL, error.getStatus().getCode());
+  }
+
+  @Test
+  void upstreamAuthenticationFailuresAreIntegrationPreconditions() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var integration = CatalogIntegration.newBuilder().setResourceId(integrationId).build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(
+            Optional.of(new ResourceWithMeta<>(integration, MutationMeta.getDefaultInstance())));
+    for (CatalogAccessException.Code code :
+        List.of(
+            CatalogAccessException.Code.UNAUTHENTICATED,
+            CatalogAccessException.Code.PERMISSION_DENIED)) {
+      doThrow(new CatalogAccessException(code, "Upstream authentication failed"))
+          .when(service.discovery)
+          .listNamespaces(integration, ai.floedb.floecat.catalog.access.NamespacePath.root());
+
+      StatusRuntimeException error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  service
+                      .listUpstreamNamespaces(
+                          ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest
+                              .newBuilder()
+                              .setIntegrationId(integrationId)
+                              .build())
+                      .await()
+                      .indefinitely());
+
+      assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    }
   }
 
   @Test

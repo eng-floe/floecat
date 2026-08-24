@@ -19,6 +19,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheck;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationIssue;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
@@ -30,7 +31,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 /** Read-only discovery and validation against one persisted Catalog Integration. */
@@ -39,16 +47,19 @@ public class CatalogIntegrationDiscovery {
   private static final Logger LOG = Logger.getLogger(CatalogIntegrationDiscovery.class);
   private static final int MAX_VALIDATION_NAMESPACES = 100_000;
   private static final Duration DEFAULT_VALIDATION_TIMEOUT = Duration.ofSeconds(30);
+  private static final Duration DEFAULT_LIST_TIMEOUT = Duration.ofSeconds(30);
 
   @Inject CatalogIntegrationAccess access;
   Clock clock = Clock.systemUTC();
   Duration validationTimeout = DEFAULT_VALIDATION_TIMEOUT;
+  Duration listTimeout = DEFAULT_LIST_TIMEOUT;
   LongSupplier nanoTime = System::nanoTime;
 
   ValidationResult validate(CatalogIntegration integration) {
+    ValidationBudget budget = ValidationBudget.start(validationTimeout, nanoTime);
     CatalogClient client;
     try {
-      client = access.open(integration);
+      client = open(integration, budget);
     } catch (CatalogAccessException failure) {
       if (failure.code() == CatalogAccessException.Code.INTERNAL) {
         throw failure;
@@ -56,13 +67,13 @@ public class CatalogIntegrationDiscovery {
       return clientOpenFailure(failure);
     }
     try {
-      return validate(client);
+      return validate(client, budget);
     } finally {
-      closeAfterValidation(client);
+      closeClient(client);
     }
   }
 
-  private ValidationResult validate(CatalogClient client) {
+  private ValidationResult validate(CatalogClient client, ValidationBudget budget) {
     List<CatalogIntegrationValidationCheck> checks = new ArrayList<>();
     CatalogCapabilities capabilities = client.capabilities();
     if (!capabilities.supports(CatalogCapability.VALIDATE)) {
@@ -79,7 +90,7 @@ public class CatalogIntegrationDiscovery {
       return new ValidationResult(false, checks, capabilities);
     }
     try {
-      client.validate();
+      budget.run(client::validate);
       checks.add(
           passed(
               CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION,
@@ -127,7 +138,7 @@ public class CatalogIntegrationDiscovery {
       return new ValidationResult(false, checks, capabilities);
     }
     try {
-      validationTable = findFirstTable(client, ValidationBudget.start(validationTimeout, nanoTime));
+      validationTable = findFirstTable(client, budget);
     } catch (CatalogAccessException failure) {
       checks.add(
           failed(
@@ -163,7 +174,8 @@ public class CatalogIntegrationDiscovery {
     }
     VendedStorageCredentials vendedCredentials;
     try {
-      Optional<VendedStorageCredentials> vended = client.vendStorageCredentials(table);
+      Optional<VendedStorageCredentials> vended =
+          budget.call(() -> client.vendStorageCredentials(table));
       if (vended.isEmpty()) {
         checks.add(
             failed(
@@ -210,7 +222,7 @@ public class CatalogIntegrationDiscovery {
       return new ValidationResult(false, checks, capabilities);
     }
     try {
-      client.validateStorageAccess(table, vendedCredentials);
+      budget.run(() -> client.validateStorageAccess(table, vendedCredentials));
       checks.add(
           passed(
               CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
@@ -228,28 +240,30 @@ public class CatalogIntegrationDiscovery {
   }
 
   List<NamespacePath> listNamespaces(CatalogIntegration integration, NamespacePath parent) {
-    try (CatalogClient client = access.open(integration)) {
+    ValidationBudget budget = ValidationBudget.start(listTimeout, nanoTime);
+    try (CatalogClient client = open(integration, budget)) {
       require(client.capabilities(), CatalogCapability.LIST_NAMESPACES);
-      return client.listNamespaces(parent).stream().distinct().sorted().toList();
+      return budget.call(() -> client.listNamespaces(parent)).stream().distinct().sorted().toList();
     }
   }
 
   List<DiscoveredObject> listObjects(
       CatalogIntegration integration, NamespacePath namespace, Set<ObjectKind> requestedKinds) {
-    try (CatalogClient client = access.open(integration)) {
+    ValidationBudget budget = ValidationBudget.start(listTimeout, nanoTime);
+    try (CatalogClient client = open(integration, budget)) {
       CatalogCapabilities capabilities = client.capabilities();
       Set<ObjectKind> kinds =
           requestedKinds.isEmpty() ? defaultKinds(capabilities) : EnumSet.copyOf(requestedKinds);
       List<DiscoveredObject> objects = new ArrayList<>();
       if (kinds.contains(ObjectKind.TABLE)) {
         require(capabilities, CatalogCapability.LIST_TABLES);
-        client.listTables(namespace).stream()
+        budget.call(() -> client.listTables(namespace)).stream()
             .map(name -> discovered(name, namespace, ObjectKind.TABLE))
             .forEach(objects::add);
       }
       if (kinds.contains(ObjectKind.VIEW)) {
         require(capabilities, CatalogCapability.LIST_VIEWS);
-        client.listViews(namespace).stream()
+        budget.call(() -> client.listViews(namespace)).stream()
             .map(name -> discovered(name, namespace, ObjectKind.VIEW))
             .forEach(objects::add);
       }
@@ -259,14 +273,12 @@ public class CatalogIntegrationDiscovery {
 
   private static Optional<CatalogObjectName> findFirstTable(
       CatalogClient client, ValidationBudget budget) {
-    budget.check();
     List<CatalogObjectName> rootTables;
     try {
-      rootTables = client.listTables(NamespacePath.root());
+      rootTables = budget.call(() -> client.listTables(NamespacePath.root()));
     } catch (CatalogAccessException failure) {
-      rootTables = rootListingUnsupported(failure) ? List.of() : throwFailure(failure);
+      rootTables = namespaceTableListingSkippable(failure) ? List.of() : throwFailure(failure);
     }
-    budget.check();
     if (!rootTables.isEmpty()) {
       return Optional.of(rootTables.stream().sorted().findFirst().orElseThrow());
     }
@@ -275,8 +287,8 @@ public class CatalogIntegrationDiscovery {
     pending.add(NamespacePath.root());
     while (!pending.isEmpty()) {
       NamespacePath parent = pending.removeFirst();
-      budget.check();
-      for (NamespacePath namespace : client.listNamespaces(parent).stream().sorted().toList()) {
+      List<NamespacePath> children = budget.call(() -> client.listNamespaces(parent));
+      for (NamespacePath namespace : children.stream().sorted().toList()) {
         budget.check();
         if (!seen.add(namespace)) {
           continue;
@@ -286,7 +298,12 @@ public class CatalogIntegrationDiscovery {
               CatalogAccessException.Code.UNAVAILABLE,
               "Catalog namespace inventory exceeds the validation limit");
         }
-        List<CatalogObjectName> tables = client.listTables(namespace);
+        List<CatalogObjectName> tables;
+        try {
+          tables = budget.call(() -> client.listTables(namespace));
+        } catch (CatalogAccessException failure) {
+          tables = namespaceTableListingSkippable(failure) ? List.of() : throwFailure(failure);
+        }
         budget.check();
         if (!tables.isEmpty()) {
           return Optional.of(tables.stream().sorted().findFirst().orElseThrow());
@@ -297,15 +314,19 @@ public class CatalogIntegrationDiscovery {
     return Optional.empty();
   }
 
-  private static boolean rootListingUnsupported(CatalogAccessException failure) {
+  private static boolean namespaceTableListingSkippable(CatalogAccessException failure) {
     return switch (failure.code()) {
-      case INVALID_CONFIGURATION, NOT_FOUND, UNSUPPORTED -> true;
+      case INVALID_CONFIGURATION, NOT_FOUND, PERMISSION_DENIED, UNSUPPORTED -> true;
       default -> false;
     };
   }
 
   private static <T> T throwFailure(RuntimeException failure) {
     throw failure;
+  }
+
+  private CatalogClient open(CatalogIntegration integration, ValidationBudget budget) {
+    return budget.call(() -> access.open(integration), CatalogIntegrationDiscovery::closeClient);
   }
 
   private static Set<ObjectKind> defaultKinds(CatalogCapabilities capabilities) {
@@ -387,13 +408,11 @@ public class CatalogIntegrationDiscovery {
     };
   }
 
-  private static void closeAfterValidation(CatalogClient client) {
+  private static void closeClient(CatalogClient client) {
     try {
       client.close();
     } catch (RuntimeException failure) {
-      LOG.warnf(
-          "Catalog client close failed after validation completed: type=%s",
-          failure.getClass().getName());
+      LOG.warnf("Catalog client close failed: type=%s", failure.getClass().getName());
     }
   }
 
@@ -457,11 +476,125 @@ public class CatalogIntegrationDiscovery {
     }
 
     private void check() {
-      if (nanoTime.getAsLong() - deadlineNanos >= 0L) {
+      remainingNanos();
+    }
+
+    private <T> T call(Supplier<T> operation) {
+      return call(operation, null);
+    }
+
+    private <T> T call(Supplier<T> operation, Consumer<T> abandonedResult) {
+      long remainingNanos = remainingNanos();
+      PropagatedContext context = PropagatedContext.capture();
+      AbandonedResult<T> result = new AbandonedResult<>(context, abandonedResult);
+      FutureTask<T> task =
+          new FutureTask<>(() -> context.supply(() -> result.publish(operation.get())));
+      Thread.ofVirtual().name("catalog-integration-upstream").start(task);
+      try {
+        T value = task.get(remainingNanos, TimeUnit.NANOSECONDS);
+        result.claim();
+        return value;
+      } catch (TimeoutException failure) {
+        result.abandon();
+        task.cancel(true);
+        throw timeout(failure);
+      } catch (InterruptedException failure) {
+        result.abandon();
+        task.cancel(true);
+        Thread.currentThread().interrupt();
+        CancellationException cancelled =
+            new CancellationException("Catalog upstream operation was cancelled");
+        cancelled.initCause(failure);
+        throw cancelled;
+      } catch (ExecutionException failure) {
+        Throwable cause = failure.getCause();
+        if (cause instanceof RuntimeException runtimeFailure) {
+          throw runtimeFailure;
+        }
+        if (cause instanceof Error error) {
+          throw error;
+        }
         throw new CatalogAccessException(
-            CatalogAccessException.Code.TIMEOUT,
-            "Catalog discovery exceeded the validation time limit");
+            CatalogAccessException.Code.INTERNAL, "Catalog provider operation failed", cause);
       }
+    }
+
+    private void run(Runnable operation) {
+      call(
+          () -> {
+            operation.run();
+            return null;
+          });
+    }
+
+    private long remainingNanos() {
+      long remaining = deadlineNanos - nanoTime.getAsLong();
+      if (remaining <= 0L) {
+        throw timeout(null);
+      }
+      return remaining;
+    }
+
+    private static CatalogAccessException timeout(Throwable cause) {
+      return new CatalogAccessException(
+          CatalogAccessException.Code.TIMEOUT,
+          "Catalog upstream operation exceeded the time limit",
+          cause);
+    }
+  }
+
+  private static final class AbandonedResult<T> {
+    private final PropagatedContext context;
+    private final Consumer<T> cleanup;
+    private boolean abandoned;
+    private boolean published;
+    private T value;
+
+    private AbandonedResult(PropagatedContext context, Consumer<T> cleanup) {
+      this.context = context;
+      this.cleanup = cleanup;
+    }
+
+    private T publish(T publishedValue) {
+      synchronized (this) {
+        if (!abandoned) {
+          published = true;
+          value = publishedValue;
+          return publishedValue;
+        }
+      }
+      cleanup(publishedValue);
+      return publishedValue;
+    }
+
+    private synchronized void claim() {
+      published = false;
+      value = null;
+    }
+
+    private void abandon() {
+      T abandonedValue;
+      synchronized (this) {
+        abandoned = true;
+        if (!published) {
+          return;
+        }
+        published = false;
+        abandonedValue = value;
+        value = null;
+      }
+      if (cleanup != null) {
+        Thread.ofVirtual()
+            .name("catalog-integration-cleanup")
+            .start(() -> context.supply(() -> cleanup(abandonedValue)));
+      }
+    }
+
+    private Void cleanup(T abandonedValue) {
+      if (cleanup != null) {
+        cleanup.accept(abandonedValue);
+      }
+      return null;
     }
   }
 

@@ -45,6 +45,10 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
   private static final String VENDED_CREDENTIALS = "vended-credentials";
+  private static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
+  private static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
+  private static final String DEFAULT_REST_CONNECTION_TIMEOUT_MS = "10000";
+  private static final String DEFAULT_REST_SOCKET_TIMEOUT_MS = "30000";
   static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final AwsCredentialKeys CATALOG_AWS_KEYS =
       new AwsCredentialKeys(
@@ -119,6 +123,8 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
 
     properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
+    properties.putIfAbsent(REST_CONNECTION_TIMEOUT_MS, DEFAULT_REST_CONNECTION_TIMEOUT_MS);
+    properties.putIfAbsent(REST_SOCKET_TIMEOUT_MS, DEFAULT_REST_SOCKET_TIMEOUT_MS);
     resolvedCredentials
         .headers()
         .forEach(

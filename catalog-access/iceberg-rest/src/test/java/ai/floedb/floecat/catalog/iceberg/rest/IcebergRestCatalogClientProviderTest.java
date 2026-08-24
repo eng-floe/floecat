@@ -47,6 +47,8 @@ class IcebergRestCatalogClientProviderTest {
     assertEquals("https://catalog.example/v1", properties.get("uri"));
     assertEquals("sales", properties.get("warehouse"));
     assertEquals("vended-credentials", properties.get("header.X-Iceberg-Access-Delegation"));
+    assertEquals("10000", properties.get("rest.client.connection-timeout-ms"));
+    assertEquals("30000", properties.get("rest.client.socket-timeout-ms"));
     assertEquals(
         "vended-credentials",
         RESTUtil.configHeaders(properties).get("X-Iceberg-Access-Delegation"));

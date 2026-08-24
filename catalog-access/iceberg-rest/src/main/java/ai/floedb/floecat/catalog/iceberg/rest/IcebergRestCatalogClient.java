@@ -246,7 +246,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return Optional.empty();
     }
 
-    String tableLocation = normalizeS3Scheme(Optional.ofNullable(table.location()).orElse(""));
+    String tableLocation = Optional.ofNullable(table.location()).orElse("");
     StorageCredential selected = null;
     int selectedPrefixLength = -1;
     for (StorageCredential candidate : credentials) {
@@ -255,7 +255,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
       }
       String prefix = Optional.ofNullable(candidate.prefix()).orElse("");
       String normalizedPrefix = normalizeS3Scheme(prefix);
-      if (!normalizedPrefix.isEmpty() && !tableLocation.startsWith(normalizedPrefix)) {
+      if (!coversLocation(tableLocation, normalizedPrefix)) {
         continue;
       }
       if (selected == null || normalizedPrefix.length() > selectedPrefixLength) {
@@ -267,10 +267,10 @@ final class IcebergRestCatalogClient implements CatalogClient {
       boolean hasOutOfScopeCredential =
           credentials.stream()
               .filter(Objects::nonNull)
-              .filter(candidate -> candidate.config() != null && !candidate.config().isEmpty())
+              .filter(candidate -> hasVendedKeyMaterial(candidate.config()))
               .map(StorageCredential::prefix)
               .filter(Objects::nonNull)
-              .anyMatch(prefix -> !prefix.isEmpty() && !tableLocation.startsWith(prefix));
+              .anyMatch(prefix -> !coversLocation(tableLocation, prefix));
       if (hasOutOfScopeCredential) {
         throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
@@ -309,7 +309,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
                                   .UNSUPPORTED,
                               "Upstream table does not expose a metadata location"));
           String scopePrefix = vendedStorageCredentials.scopePrefix();
-          if (!scopePrefix.isEmpty() && !metadataLocation.startsWith(scopePrefix)) {
+          if (!coversLocation(metadataLocation, scopePrefix)) {
             throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
                 ai.floedb.floecat.catalog.access.CatalogAccessException.Code
                     .CREDENTIAL_SCOPE_INVALID,
@@ -408,6 +408,10 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return "s3" + location.substring(schemeEnd);
     }
     return location;
+  }
+
+  private static boolean coversLocation(String location, String prefix) {
+    return prefix.isEmpty() || normalizeS3Scheme(location).startsWith(normalizeS3Scheme(prefix));
   }
 
   private static boolean isBlank(String value) {
