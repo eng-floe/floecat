@@ -2026,42 +2026,46 @@ public class StatsRepository implements StatsStore {
   public boolean discoverGenerationKeys(
       ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
     java.util.Objects.requireNonNull(continuation, "continuation");
-    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     while (!continuation.pointerScanComplete) {
-      if (System.currentTimeMillis() >= deadlineMs) {
+      if (!discoverGenerationKeysPage(tableId, deadlineMs, continuation)) {
         return false;
-      }
-      StringBuilder next = new StringBuilder();
-      List<Pointer> page =
-          pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
-      boolean pageComplete = true;
-      for (Pointer pointer : page) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          pageComplete = false;
-          break;
-        }
-        Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
-        if (generation != null
-            && pointer
-                .getKey()
-                .equals(
-                    generationLifecyclePointer(
-                        tableId, generation.snapshotId(), generation.generationId()))) {
-          continuation.discover(generation);
-        }
-      }
-      if (!pageComplete) {
-        return false;
-      }
-      continuation.pointerToken = next.toString();
-      if (continuation.pointerToken.isBlank()) {
-        continuation.pointerScanComplete = true;
       }
     }
     if (!continuation.scanComplete) {
       continuation.scanComplete = true;
       continuation.candidates = List.copyOf(continuation.discovered);
       continuation.discovered = null;
+    }
+    return true;
+  }
+
+  /** Processes one pointer page so continuation behavior can be tested without wall-clock races. */
+  boolean discoverGenerationKeysPage(
+      ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
+    if (System.currentTimeMillis() >= deadlineMs) {
+      return false;
+    }
+    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page =
+        pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
+    for (Pointer pointer : page) {
+      if (System.currentTimeMillis() >= deadlineMs) {
+        return false;
+      }
+      Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
+      if (generation != null
+          && pointer
+              .getKey()
+              .equals(
+                  generationLifecyclePointer(
+                      tableId, generation.snapshotId(), generation.generationId()))) {
+        continuation.discover(generation);
+      }
+    }
+    continuation.pointerToken = next.toString();
+    if (continuation.pointerToken.isBlank()) {
+      continuation.pointerScanComplete = true;
     }
     return true;
   }

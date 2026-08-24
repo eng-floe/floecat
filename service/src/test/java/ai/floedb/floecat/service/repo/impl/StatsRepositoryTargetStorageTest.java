@@ -2243,24 +2243,15 @@ class StatsRepositoryTargetStorageTest {
                   key, 0L, PointerReferences.blobPointer(key, "blob-" + i, 1L)))
           .isTrue();
     }
-    long deadline = System.currentTimeMillis() + 20L;
     var observedTokens = new ArrayList<String>();
     PointerStore pointers =
         new RepoTestPointerStores.DelegatingPointerStore(rawPointers) {
-          private boolean delayed;
-
           @Override
           public List<Pointer> listPointersByPrefix(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
             List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
             if (prefix.equals(Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))) {
               observedTokens.add(pageToken);
-              if (!delayed && !pageToken.isBlank()) {
-                delayed = true;
-                while (System.currentTimeMillis() <= deadline) {
-                  Thread.onSpinWait();
-                }
-              }
             }
             return page;
           }
@@ -2268,27 +2259,16 @@ class StatsRepositoryTargetStorageTest {
     StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
     var continuation = new StatsRepository.GenerationGcContinuation();
 
-    StatsRepository.GenerationGcResult first =
-        repository.deleteUnreferencedGenerations(
-            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 10, deadline, continuation);
+    assertThat(repository.discoverGenerationKeysPage(TABLE_ID, Long.MAX_VALUE, continuation))
+        .isTrue();
     String savedToken = continuation.pointerContinuationToken();
-    assertThat(first.pending()).isTrue();
     assertThat(savedToken).isNotBlank();
 
     observedTokens.clear();
-    StatsRepository.GenerationGcResult resumed =
-        repository.deleteUnreferencedGenerations(
-            TABLE_ID,
-            ignored -> false,
-            System.currentTimeMillis(),
-            0L,
-            10,
-            System.currentTimeMillis() + 5_000L,
-            continuation);
+    assertThat(repository.discoverGenerationKeys(TABLE_ID, Long.MAX_VALUE, continuation)).isTrue();
 
     assertThat(observedTokens).isNotEmpty();
     assertThat(observedTokens.getFirst()).isEqualTo(savedToken);
-    assertThat(resumed.pending()).isFalse();
     assertThat(continuation.generations())
         .containsExactly(new Keys.GenerationKey(snapshotId, generationId));
   }
