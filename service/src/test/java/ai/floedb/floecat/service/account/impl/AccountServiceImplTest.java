@@ -153,8 +153,18 @@ class AccountServiceImplTest {
         Namespace.newBuilder().setResourceId(namespaceId).setCatalogId(catalogId).build();
     Table table = Table.newBuilder().setResourceId(tableId).setNamespaceId(namespaceId).build();
     String constraintKey = Keys.snapshotConstraintsPointer("acct", "table", 7L);
+    String tableBlobPrefix = Keys.tableBlobPrefix("acct", "table");
+    String statsBlob = tableBlobPrefix + "target-stats/orphan.pb";
+    String indexSidecar = tableBlobPrefix + "index-sidecars/orphan.parquet";
+    String residualBlob = Keys.accountRootPrefix("acct") + "worker-output/orphan.pb";
+    String otherAccountBlob =
+        Keys.tableBlobPrefix("other-acct", "other-table") + "target-stats/live.pb";
     pointers.compareAndSet(
         constraintKey, 0L, PointerReferences.opaqueMarkerPointer(constraintKey, "constraint", 1L));
+    blobs.put(statsBlob, new byte[] {1}, "application/x-protobuf");
+    blobs.put(indexSidecar, new byte[] {2}, "application/octet-stream");
+    blobs.put(residualBlob, new byte[] {3}, "application/x-protobuf");
+    blobs.put(otherAccountBlob, new byte[] {4}, "application/x-protobuf");
     when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
     when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
     when(service.catalogRepo.listConsistent(eq("acct"), eq(200), anyString(), any()))
@@ -172,6 +182,9 @@ class AccountServiceImplTest {
         .indefinitely();
 
     assertFalse(pointers.get(constraintKey).isPresent());
+    assertTrue(blobs.list(tableBlobPrefix, 100, "").keys().isEmpty());
+    assertTrue(blobs.get(residualBlob) == null);
+    assertTrue(blobs.get(otherAccountBlob) != null);
   }
 
   @Test

@@ -546,8 +546,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       cleanupStorageAuthorities(accountKey, summary);
       cleanupConnectors(accountKey, summary);
       cleanupCatalogs(accountKey, summary);
+      summary.residualAccountBlobsDeleted +=
+          blobStore.deletePrefix(Keys.accountRootPrefix(accountKey));
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s transaction_pointer_deletes=%d transaction_blob_deletes=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d constraint_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s transaction_pointer_deletes=%d transaction_blob_deletes=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d constraint_prefix_deletes=%d table_blob_deletes=%d residual_account_blob_deletes=%d",
           summary.accountId,
           summary.transactionPointersDeleted,
           summary.transactionBlobsDeleted,
@@ -559,7 +561,9 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           summary.tablesDeleted,
           summary.viewsDeleted,
           summary.snapshotPrefixesDeleted,
-          summary.constraintPrefixesDeleted);
+          summary.constraintPrefixesDeleted,
+          summary.tableBlobsDeleted,
+          summary.residualAccountBlobsDeleted);
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
@@ -731,6 +735,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     // only other reaper, TransactionGc.redrivePendingRootResyncs, never runs for a deleted
     // account).
     pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
+    summary.tableBlobsDeleted +=
+        blobStore.deletePrefix(Keys.tableBlobPrefix(tableId.getAccountId(), tableId.getId()));
     summary.snapshotPrefixesDeleted++;
     summary.constraintPrefixesDeleted++;
   }
@@ -760,6 +766,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     private int viewsDeleted;
     private int snapshotPrefixesDeleted;
     private int constraintPrefixesDeleted;
+    private int tableBlobsDeleted;
+    private int residualAccountBlobsDeleted;
 
     private AccountCleanupSummary(String accountId) {
       this.accountId = accountId;

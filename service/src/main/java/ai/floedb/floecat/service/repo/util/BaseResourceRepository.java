@@ -47,6 +47,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
@@ -328,12 +329,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri, long referencedBytes) {
+    return reserveIndexOrIdempotent(
+        key, blobUri, referencedBytes, next -> mutationPointerStore.compareAndSet(key, 0L, next));
+  }
+
+  protected boolean reserveIndexOrIdempotentFenced(
+      String accountId, String key, String blobUri, long referencedBytes) {
+    return reserveIndexOrIdempotent(
+        key,
+        blobUri,
+        referencedBytes,
+        next -> AccountDeletionFence.compareAndSet(mutationPointerStore, accountId, key, 0L, next));
+  }
+
+  private boolean reserveIndexOrIdempotent(
+      String key, String blobUri, long referencedBytes, Predicate<Pointer> reserveAttempt) {
     var reserve =
         referencedBytes >= 0L
             ? PointerReferences.blobPointer(key, blobUri, 1L, referencedBytes)
             : PointerReferences.blobPointer(key, blobUri, 1L);
 
-    if (mutationPointerStore.compareAndSet(key, 0L, reserve)) {
+    if (reserveAttempt.test(reserve)) {
       return true;
     }
 

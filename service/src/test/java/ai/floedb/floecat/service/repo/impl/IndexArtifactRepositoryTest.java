@@ -58,6 +58,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -73,6 +74,43 @@ class IndexArtifactRepositoryTest {
   private static IndexArtifactRepository createRepository(
       PointerStore pointers, BlobStore blobs, ImmutableBlobCache cache) {
     return new IndexArtifactRepository(pointers, blobs, cache, new TableBlobReachabilityGuard());
+  }
+
+  @Test
+  void directArtifactWriteDeletesBlobWhenAccountFenceWinsPublicationRace() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    AtomicBoolean installFence = new AtomicBoolean(true);
+    InMemoryBlobStore blobs =
+        new InMemoryBlobStore() {
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            super.put(uri, bytes, contentType);
+            if (uri.startsWith(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))
+                && installFence.compareAndSet(true, false)) {
+              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
+              pointers.compareAndSet(
+                  fence,
+                  0L,
+                  ai.floedb.floecat.service.repo.model.PointerReferences.opaqueMarkerPointer(
+                      fence, "deleting", 1L));
+            }
+          }
+        };
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+
+    assertThatThrownBy(
+            () -> repository.putIndexArtifact(indexRecord(714L, "s3://bucket/file.parquet")))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(
+            blobs
+                .list(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()), 100, "")
+                .keys())
+        .isEmpty();
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId())))
+        .isZero();
   }
 
   @Test
