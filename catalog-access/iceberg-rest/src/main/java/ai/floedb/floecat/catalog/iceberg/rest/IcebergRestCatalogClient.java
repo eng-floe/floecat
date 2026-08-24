@@ -189,19 +189,21 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return Optional.empty();
     }
 
-    String tableLocation = Optional.ofNullable(table.location()).orElse("");
+    String tableLocation = normalizeS3Scheme(Optional.ofNullable(table.location()).orElse(""));
     StorageCredential selected = null;
+    int selectedPrefixLength = -1;
     for (StorageCredential candidate : credentials) {
-      if (candidate == null || candidate.config() == null || candidate.config().isEmpty()) {
+      if (candidate == null || !hasVendedKeyMaterial(candidate.config())) {
         continue;
       }
       String prefix = Optional.ofNullable(candidate.prefix()).orElse("");
-      if (!prefix.isEmpty() && !tableLocation.startsWith(prefix)) {
+      String normalizedPrefix = normalizeS3Scheme(prefix);
+      if (!normalizedPrefix.isEmpty() && !tableLocation.startsWith(normalizedPrefix)) {
         continue;
       }
-      if (selected == null
-          || prefix.length() > Optional.ofNullable(selected.prefix()).orElse("").length()) {
+      if (selected == null || normalizedPrefix.length() > selectedPrefixLength) {
         selected = candidate;
+        selectedPrefixLength = normalizedPrefix.length();
       }
     }
     if (selected == null) {
@@ -281,6 +283,31 @@ final class IcebergRestCatalogClient implements CatalogClient {
       }
     }
     return Map.copyOf(filtered);
+  }
+
+  private static boolean hasVendedKeyMaterial(Map<String, String> properties) {
+    return properties != null
+        && !properties.isEmpty()
+        && !isBlank(properties.get("s3.access-key-id"))
+        && !isBlank(properties.get("s3.secret-access-key"));
+  }
+
+  private static String normalizeS3Scheme(String location) {
+    int schemeEnd = location.indexOf("://");
+    if (schemeEnd < 0) {
+      return location;
+    }
+    String scheme = location.substring(0, schemeEnd);
+    if ("s3".equalsIgnoreCase(scheme)
+        || "s3a".equalsIgnoreCase(scheme)
+        || "s3n".equalsIgnoreCase(scheme)) {
+      return "s3" + location.substring(schemeEnd);
+    }
+    return location;
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
   static Map<String, String> storageRoutingProperties(Map<String, String> source) {

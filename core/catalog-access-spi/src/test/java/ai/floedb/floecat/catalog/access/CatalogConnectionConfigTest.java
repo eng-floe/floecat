@@ -67,6 +67,14 @@ class CatalogConnectionConfigTest {
     assertFalse(authentication.toString().contains("internal-scope"));
   }
 
+  @Test
+  void acceptsIcebergTokenRefreshSettingWithoutWeakeningTokenDetection() {
+    config(URI.create("https://catalog.example/v1"), Map.of("token-refresh-enabled", "true"));
+
+    assertFalse(NonSecretCatalogConfig.isSecretKey("token-refresh-enabled"));
+    assertTrue(NonSecretCatalogConfig.isSecretKey("token-refresh-secret"));
+  }
+
   private static CatalogConnectionConfig config(URI endpoint, Map<String, String> properties) {
     return new CatalogConnectionConfig(
         CatalogProtocol.ICEBERG_REST, endpoint, properties, CatalogAuthentication.none());

@@ -162,15 +162,14 @@ public final class RefreshingAwsCredentialsRegistry {
     return AwsBasicCredentials.create(resolved.accessKeyId(), resolved.secretAccessKey());
   }
 
-  private static boolean shouldRefresh(
-      AwsCredentialValue current, Duration refreshSkew, Instant now) {
-    if (current == null) {
+  private static boolean shouldRefresh(CredentialState state, Instant now) {
+    if (state == null || state.credentials() == null) {
       return true;
     }
-    if (!current.hasKnownExpiry()) {
-      return false;
+    if (!state.credentials().hasKnownExpiry()) {
+      return !now.isBefore(state.refreshedAt().plus(state.refreshSkew()));
     }
-    return !now.isBefore(current.expiresAt().minus(refreshSkew));
+    return !now.isBefore(state.credentials().expiresAt().minus(state.refreshSkew()));
   }
 
   private static String requireNonBlank(String value, String field) {
@@ -231,10 +230,12 @@ public final class RefreshingAwsCredentialsRegistry {
       this.refresher = refresher;
       this.defaultRefreshSkew = defaultRefreshSkew;
       this.clock = clock;
+      Instant registeredAt = clock.instant();
       this.currentState =
           new CredentialState(
               initialCredentials,
-              computeRefreshSkew(initialCredentials, defaultRefreshSkew, clock.instant()));
+              computeRefreshSkew(initialCredentials, defaultRefreshSkew, registeredAt),
+              registeredAt);
     }
 
     private AwsCredentials resolveCredentials(AwsCredentialScope scope) {
@@ -251,7 +252,7 @@ public final class RefreshingAwsCredentialsRegistry {
         throw terminal;
       }
       Instant now = clock.instant();
-      if (shouldRefresh(snapshot.credentials(), snapshot.refreshSkew(), now)) {
+      if (shouldRefresh(snapshot, now)) {
         synchronized (this) {
           terminal = terminalFailure;
           if (terminal != null) {
@@ -259,15 +260,17 @@ public final class RefreshingAwsCredentialsRegistry {
           }
           snapshot = currentState;
           now = clock.instant();
-          if (shouldRefresh(snapshot.credentials(), snapshot.refreshSkew(), now)) {
+          if (shouldRefresh(snapshot, now)) {
             try {
               AwsCredentialValue refreshed =
                   Objects.requireNonNull(refresher.get(), "refresher returned null");
               toAwsCredentials(refreshed);
+              Instant refreshedAt = clock.instant();
               currentState =
                   new CredentialState(
                       refreshed,
-                      computeRefreshSkew(refreshed, defaultRefreshSkew, clock.instant()));
+                      computeRefreshSkew(refreshed, defaultRefreshSkew, refreshedAt),
+                      refreshedAt);
               LOG.log(
                   Level.INFO,
                   "Refreshed catalog-access AWS credentials; providerRef={0}, scope={1},"
@@ -298,5 +301,6 @@ public final class RefreshingAwsCredentialsRegistry {
     }
   }
 
-  private record CredentialState(AwsCredentialValue credentials, Duration refreshSkew) {}
+  private record CredentialState(
+      AwsCredentialValue credentials, Duration refreshSkew, Instant refreshedAt) {}
 }

@@ -36,7 +36,7 @@ public final class CatalogSigV4AuthManager implements AuthManager {
   private final Aws4Signer signer = Aws4Signer.create();
   private final String name;
   private volatile AuthManager delegate;
-  private Map<String, String> catalogProperties = Map.of();
+  private volatile Map<String, String> catalogProperties = Map.of();
 
   public CatalogSigV4AuthManager(String name) {
     this.name = name;
@@ -53,7 +53,7 @@ public final class CatalogSigV4AuthManager implements AuthManager {
 
   @Override
   public AuthSession catalogSession(RESTClient sharedClient, Map<String, String> properties) {
-    catalogProperties = properties;
+    catalogProperties = Map.copyOf(properties);
     Map<String, String> authProperties = catalogAuthProperties(properties);
     return new RESTSigV4AuthSession(
         signer,

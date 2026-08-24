@@ -88,7 +88,8 @@ try (var catalogRegistration =
 }
 ```
 
-The registry refreshes expiring credentials with adaptive skew, serializes concurrent refresh for a
+The registry refreshes expiring credentials with adaptive skew and refreshes credentials without a
+reported expiry on the configured refresh cadence. It serializes concurrent refresh for a
 registration, retains still-valid credentials after a transient refresh failure, caches terminal
 refresh failures, and stops resolving a registration after it is closed. Logs and object string
 representations use hashed provider references and never include keys or tokens.

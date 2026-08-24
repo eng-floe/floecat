@@ -19,13 +19,22 @@ package ai.floedb.floecat.catalog.iceberg.rest.auth;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Modifier;
 import java.util.Map;
 import org.apache.iceberg.rest.auth.AuthManager;
 import org.apache.iceberg.rest.auth.AuthManagers;
 import org.junit.jupiter.api.Test;
 
 class CatalogSigV4AuthManagerTest {
+  @Test
+  void safelyPublishesCatalogPropertiesToRequestThreads() throws NoSuchFieldException {
+    assertTrue(
+        Modifier.isVolatile(
+            CatalogSigV4AuthManager.class.getDeclaredField("catalogProperties").getModifiers()));
+  }
+
   @Test
   void canBeLoadedByIcebergWithoutConnectorClasses() {
     AuthManager manager =

@@ -162,6 +162,36 @@ class RefreshingAwsCredentialsRegistryTest {
     }
   }
 
+  @Test
+  void periodicallyRefreshesCredentialsWithoutKnownExpiry() {
+    Instant start = Instant.parse("2026-08-05T12:00:00Z");
+    MutableClock clock = new MutableClock(start);
+    AtomicInteger refreshes = new AtomicInteger();
+    try (var registration =
+        RefreshingAwsCredentialsRegistry.register(
+            "unknown-expiry-test",
+            credentials("old", null),
+            () -> credentials("new-" + refreshes.incrementAndGet(), null),
+            Duration.ofMinutes(5),
+            clock)) {
+      var initial =
+          RefreshingAwsCredentialsRegistry.resolve(
+              registration.providerId(), AwsCredentialScope.CATALOG);
+      clock.advance(Duration.ofMinutes(5));
+      var refreshed =
+          RefreshingAwsCredentialsRegistry.resolve(
+              registration.providerId(), AwsCredentialScope.CATALOG);
+      var cached =
+          RefreshingAwsCredentialsRegistry.resolve(
+              registration.providerId(), AwsCredentialScope.CATALOG);
+
+      assertEquals("access-old", initial.accessKeyId());
+      assertEquals("access-new-1", refreshed.accessKeyId());
+      assertEquals("access-new-1", cached.accessKeyId());
+      assertEquals(1, refreshes.get());
+    }
+  }
+
   private static Map<String, String> providerProperties(
       RefreshingAwsCredentialsRegistry.Registration registration, AwsCredentialScope scope) {
     String providerId =

@@ -27,6 +27,7 @@ import static org.mockito.Mockito.withSettings;
 
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import java.time.Instant;
 import java.util.List;
@@ -99,7 +100,7 @@ class IcebergRestCatalogClientTest {
     var loaded = client.loadTable(name);
 
     assertEquals(name, loaded.name());
-    assertEquals("production.sales.orders", loaded.identity().value());
+    assertEquals(ExternalObjectIdentity.pathFallback(name), loaded.identity());
     assertFalse(loaded.identity().stable());
     assertEquals("ICEBERG", loaded.format());
     assertEquals("s3://warehouse/sales/orders", loaded.storageLocation().orElseThrow());
@@ -222,6 +223,60 @@ class IcebergRestCatalogClientTest {
     assertEquals("us-east-1", properties.get("s3.region"));
     assertEquals("true", properties.get("s3.path-style-access"));
     assertEquals("vended-access", properties.get("s3.access-key-id"));
+  }
+
+  @Test
+  void ignoresLongerRoutingOnlyCredentialCandidates() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class);
+    FileIO io =
+        mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+    when(table.io()).thenReturn(io);
+    when(table.location()).thenReturn("s3://warehouse/sales/orders/data");
+    when(((SupportsStorageCredentials) io).credentials())
+        .thenReturn(
+            List.of(
+                StorageCredential.create(
+                    "s3://warehouse/",
+                    Map.of(
+                        "s3.access-key-id", "usable-access",
+                        "s3.secret-access-key", "usable-secret")),
+                StorageCredential.create(
+                    "s3://warehouse/sales/orders/", Map.of("s3.region", "us-west-2"))));
+    when(catalog.loadTable(identifier)).thenReturn(table);
+
+    var vended = client().vendStorageCredentials(name).orElseThrow();
+
+    assertEquals("usable-access", vended.properties().get("s3.access-key-id"));
+    assertEquals("s3://warehouse/", vended.scopePrefix());
+  }
+
+  @Test
+  void matchesS3aLocationsToS3CredentialPrefixes() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class);
+    FileIO io =
+        mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+    when(table.io()).thenReturn(io);
+    when(table.location()).thenReturn("s3a://warehouse/sales/orders/data");
+    when(((SupportsStorageCredentials) io).credentials())
+        .thenReturn(
+            List.of(
+                StorageCredential.create(
+                    "s3://warehouse/sales/orders/",
+                    Map.of(
+                        "s3.access-key-id", "vended-access",
+                        "s3.secret-access-key", "vended-secret"))));
+    when(catalog.loadTable(identifier)).thenReturn(table);
+
+    var vended = client().vendStorageCredentials(name).orElseThrow();
+
+    assertEquals("vended-access", vended.properties().get("s3.access-key-id"));
+    assertEquals("s3://warehouse/sales/orders/", vended.scopePrefix());
   }
 
   @Test

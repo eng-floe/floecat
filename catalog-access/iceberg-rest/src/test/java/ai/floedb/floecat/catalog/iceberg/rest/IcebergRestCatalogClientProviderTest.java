@@ -71,17 +71,43 @@ class IcebergRestCatalogClientProviderTest {
   }
 
   @Test
-  void accessDelegationCannotBeDowngradedByResolvedHeaders() {
-    Map<String, String> properties =
-        IcebergRestCatalogClientProvider.catalogProperties(
-            config(
-                new CatalogAuthentication(CatalogAuthenticationScheme.OAUTH2, Map.of()), Map.of()),
-            new ResolvedCatalogCredentials(
-                Map.of("token", "secret-token"),
-                Map.of("X-Iceberg-Access-Delegation", "remote-signing"),
-                null));
+  void rejectsCallerControlledAccessDelegationHeader() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                IcebergRestCatalogClientProvider.catalogProperties(
+                    config(
+                        new CatalogAuthentication(CatalogAuthenticationScheme.OAUTH2, Map.of()),
+                        Map.of()),
+                    new ResolvedCatalogCredentials(
+                        Map.of("token", "secret-token"),
+                        Map.of("X-Iceberg-Access-Delegation", "remote-signing"),
+                        null)));
 
-    assertEquals("vended-credentials", properties.get("header.X-Iceberg-Access-Delegation"));
+    assertEquals(
+        "X-Iceberg-Access-Delegation is controlled by the Iceberg REST provider",
+        error.getMessage());
+  }
+
+  @Test
+  void rejectsDifferentlyCasedCallerControlledAccessDelegationHeader() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                IcebergRestCatalogClientProvider.catalogProperties(
+                    config(
+                        new CatalogAuthentication(CatalogAuthenticationScheme.OAUTH2, Map.of()),
+                        Map.of()),
+                    new ResolvedCatalogCredentials(
+                        Map.of("token", "secret-token"),
+                        Map.of("x-iceberg-access-delegation", "remote-signing"),
+                        null)));
+
+    assertEquals(
+        "X-Iceberg-Access-Delegation is controlled by the Iceberg REST provider",
+        error.getMessage());
   }
 
   @Test
@@ -194,6 +220,24 @@ class IcebergRestCatalogClientProviderTest {
     assertEquals("storage-secret", properties.get("s3.secret-access-key"));
     assertEquals("org.apache.iceberg.aws.s3.S3FileIO", properties.get("io-impl"));
     assertEquals("us-west-2", properties.get("client.region"));
+  }
+
+  @Test
+  void leavesSigV4ServiceAndRegionUnsetForIcebergDefaults() {
+    Map<String, String> properties =
+        IcebergRestCatalogClientProvider.catalogProperties(
+            config(
+                new CatalogAuthentication(CatalogAuthenticationScheme.AWS_SIGV4, Map.of()),
+                Map.of()),
+            new ResolvedCatalogCredentials(
+                Map.of(
+                    "rest.access-key-id", "catalog-access",
+                    "rest.secret-access-key", "catalog-secret"),
+                Map.of(),
+                null));
+
+    assertFalse(properties.containsKey("rest.signing-name"));
+    assertFalse(properties.containsKey("rest.signing-region"));
   }
 
   @Test

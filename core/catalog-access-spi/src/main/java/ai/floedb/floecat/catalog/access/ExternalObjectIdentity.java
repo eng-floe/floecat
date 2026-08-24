@@ -30,10 +30,18 @@ public record ExternalObjectIdentity(String value, boolean stable) {
   }
 
   public static ExternalObjectIdentity pathFallback(CatalogObjectName name) {
-    return new ExternalObjectIdentity(name.toString(), false);
+    Objects.requireNonNull(name, "name");
+    StringBuilder encoded = new StringBuilder("path:v1:");
+    name.namespace().segments().forEach(segment -> appendSegment(encoded, segment));
+    appendSegment(encoded, name.name());
+    return new ExternalObjectIdentity(encoded.toString(), false);
   }
 
   public static ExternalObjectIdentity stable(String value) {
     return new ExternalObjectIdentity(value, true);
+  }
+
+  private static void appendSegment(StringBuilder encoded, String segment) {
+    encoded.append(segment.length()).append(':').append(segment);
   }
 }

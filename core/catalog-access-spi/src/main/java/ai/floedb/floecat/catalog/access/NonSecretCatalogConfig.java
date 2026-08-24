@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 
 /** Validation and safe rendering for configuration that may be persisted or logged. */
 final class NonSecretCatalogConfig {
+  private static final Set<String> ALLOWED_TOKEN_KEYS = Set.of("token_refresh_enabled");
   private static final Set<String> FORBIDDEN_KEYS =
       Set.of(
           "authorization",
@@ -94,6 +95,9 @@ final class NonSecretCatalogConfig {
   static boolean isSecretKey(String key) {
     String canonical = canonicalKey(key);
     if (canonical.isEmpty()) {
+      return false;
+    }
+    if (ALLOWED_TOKEN_KEYS.contains(canonical)) {
       return false;
     }
     if (FORBIDDEN_KEYS.contains(canonical)

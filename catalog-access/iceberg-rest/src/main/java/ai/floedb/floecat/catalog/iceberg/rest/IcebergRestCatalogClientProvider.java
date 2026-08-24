@@ -41,8 +41,9 @@ import org.apache.iceberg.rest.RESTUtil;
 
 /** Opens Iceberg REST catalogs without any dependency on Connector resources or RPC contracts. */
 public final class IcebergRestCatalogClientProvider implements CatalogClientProvider {
+  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
-      "header.X-Iceberg-Access-Delegation";
+      "header." + ACCESS_DELEGATION_HEADER;
   private static final String VENDED_CREDENTIALS = "vended-credentials";
   private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final AwsCredentialKeys CATALOG_AWS_KEYS =
@@ -113,7 +114,16 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
 
     properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
-    resolvedCredentials.headers().forEach((name, value) -> properties.put("header." + name, value));
+    resolvedCredentials
+        .headers()
+        .forEach(
+            (name, value) -> {
+              if (ACCESS_DELEGATION_HEADER.equalsIgnoreCase(name)) {
+                throw new IllegalArgumentException(
+                    ACCESS_DELEGATION_HEADER + " is controlled by the Iceberg REST provider");
+              }
+              properties.put("header." + name, value);
+            });
     properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
 
     switch (config.authentication().scheme()) {
@@ -170,13 +180,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     storageCredentials.validate(false);
 
     properties.put("rest.auth.type", CatalogSigV4AuthManager.class.getName());
-    properties.putIfAbsent("rest.signing-name", properties.getOrDefault("signing-name", "glue"));
-    properties.putIfAbsent(
-        "rest.signing-region",
-        properties.getOrDefault(
-            "signing-region",
-            properties.getOrDefault(
-                "s3.region", properties.getOrDefault("client.region", "us-east-1"))));
+    copyIfAbsent(properties, "rest.signing-name", "signing-name");
+    copyFirstIfAbsent(
+        properties, "rest.signing-region", "signing-region", "s3.region", "client.region");
 
     if (catalogCredentials.renewable()) {
       properties.put(
@@ -225,6 +231,25 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
 
   private static boolean isBlank(String value) {
     return value == null || value.isBlank();
+  }
+
+  private static void copyIfAbsent(Map<String, String> properties, String target, String source) {
+    if (!properties.containsKey(target) && properties.containsKey(source)) {
+      properties.put(target, properties.get(source));
+    }
+  }
+
+  private static void copyFirstIfAbsent(
+      Map<String, String> properties, String target, String... sources) {
+    if (properties.containsKey(target)) {
+      return;
+    }
+    for (String source : sources) {
+      if (properties.containsKey(source)) {
+        properties.put(target, properties.get(source));
+        return;
+      }
+    }
   }
 
   private static void normalizeAwsRegion(Map<String, String> properties) {
