@@ -54,7 +54,6 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -128,7 +127,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject TransactionIntentRepository intentRepo;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ConnectorRepository connectorRepo;
-  @Inject CatalogRepository catalogRepo;
   @Inject ReconcileJobStore reconcileJobs;
   @Inject NameResolver nameResolver;
   @Inject Authorizer authz;

@@ -49,7 +49,6 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -76,7 +75,6 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   static final int LIST_FETCH_MAX_RECORDS = 1_000;
 
   @Inject SnapshotRepository snapshots;
-  @Inject CatalogRepository catalogRepo;
   @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;

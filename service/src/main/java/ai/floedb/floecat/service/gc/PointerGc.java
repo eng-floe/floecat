@@ -253,7 +253,10 @@ public class PointerGc {
             blobCache,
             p -> {
               String key = p.getKey();
-              return key != null && (key.contains("/by-name/") || key.contains("/by-integration/"));
+              return key != null
+                  && (key.contains("/by-name/")
+                      || key.contains("/by-integration/")
+                      || key.contains("/by-catalog/"));
             },
             nowMs,
             minAgeMs);

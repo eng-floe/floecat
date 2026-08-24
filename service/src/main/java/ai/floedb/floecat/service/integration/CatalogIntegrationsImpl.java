@@ -359,10 +359,12 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
             overlays.countByIntegration(
                 current.value().getResourceId().getAccountId(),
                 current.value().getResourceId().getId());
-        throw GrpcErrors.conflict(
-            corr,
-            CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
-            Map.of("dependent_overlays", Integer.toString(dependents)));
+        if (dependents > 0) {
+          throw GrpcErrors.conflict(
+              corr,
+              CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
+              Map.of("dependent_overlays", Integer.toString(dependents)));
+        }
       }
       var replacement =
           applyAuthentication(
@@ -380,7 +382,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       try {
         var replaced =
             integrations.replaceIdentityWithMeta(
-                current.value(), current.meta().getPointerVersion(), replacement);
+                current.value(), current.meta().getPointerVersion(), replacement, markerVersion);
         if (replaced.isEmpty()) {
           throw new BaseResourceRepository.AbortRetryableException(
               "integration or overlays changed during replacement");
@@ -632,15 +634,17 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
               if (markerVersion > 0L) {
                 int dependents = overlays.countByIntegration(pc.getAccountId(), id.getId());
-                throw GrpcErrors.conflict(
-                    corr,
-                    CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
-                    Map.of("dependent_overlays", Integer.toString(dependents)));
+                if (dependents > 0) {
+                  throw GrpcErrors.conflict(
+                      corr,
+                      CATALOG_INTEGRATION_DEPENDENT_OVERLAYS,
+                      Map.of("dependent_overlays", Integer.toString(dependents)));
+                }
               }
               credentialCleanup.schedule(current.get().value());
               try {
-                if (!integrations.deleteWithPreconditionAndNoOverlayMarker(
-                    id, meta.getPointerVersion())) {
+                if (!integrations.deleteWithPreconditionAndOverlayMarker(
+                    id, meta.getPointerVersion(), markerVersion)) {
                   throw new BaseResourceRepository.AbortRetryableException(
                       "integration or overlays changed during deletion");
                 }

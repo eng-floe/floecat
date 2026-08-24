@@ -676,7 +676,9 @@ class CatalogIntegrationsImplTest {
             Optional.of(
                 new ResourceWithMeta<>(
                     existing, MutationMeta.newBuilder().setPointerVersion(7L).build())));
-    when(service.integrations.replaceIdentityWithMeta(any(), eq(7L), any()))
+    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(existingId)).thenReturn(4L);
+    when(service.overlays.countByIntegration("acct", "existing")).thenReturn(0);
+    when(service.integrations.replaceIdentityWithMeta(any(), eq(7L), any(), eq(4L)))
         .thenAnswer(
             invocation ->
                 Optional.of(
@@ -721,6 +723,7 @@ class CatalogIntegrationsImplTest {
                 new ResourceWithMeta<>(
                     existing, MutationMeta.newBuilder().setPointerVersion(7L).build())));
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(existingId)).thenReturn(4L);
+    when(service.overlays.countByIntegration("acct", "existing")).thenReturn(2);
 
     StatusRuntimeException error =
         assertThrows(
@@ -742,7 +745,8 @@ class CatalogIntegrationsImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
-    verify(service.integrations, never()).replaceIdentityWithMeta(any(), anyLong(), any());
+    verify(service.integrations, never())
+        .replaceIdentityWithMeta(any(), anyLong(), any(), anyLong());
   }
 
   @Test
@@ -1040,7 +1044,7 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
-  void deleteRequiresDependencyMarkerAbsentInSameTransaction() {
+  void deleteConsumesObservedDependencyMarkerInSameTransaction() {
     var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
     var current =
         CatalogIntegration.newBuilder()
@@ -1057,7 +1061,9 @@ class CatalogIntegrationsImplTest {
             Optional.of(
                 new ai.floedb.floecat.service.repo.util.GenericResourceRepository
                     .ResourceWithMeta<>(current, meta)));
-    when(service.integrations.deleteWithPreconditionAndNoOverlayMarker(integrationId, 7L))
+    when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
+    when(service.overlays.countByIntegration("acct", "integration")).thenReturn(0);
+    when(service.integrations.deleteWithPreconditionAndOverlayMarker(integrationId, 7L, 4L))
         .thenReturn(true);
 
     service
@@ -1067,7 +1073,7 @@ class CatalogIntegrationsImplTest {
         .indefinitely();
 
     verify(service.markerStore).catalogIntegrationOverlaysMarkerVersion(integrationId);
-    verify(service.integrations).deleteWithPreconditionAndNoOverlayMarker(integrationId, 7L);
+    verify(service.integrations).deleteWithPreconditionAndOverlayMarker(integrationId, 7L, 4L);
     verify(secretsManager)
         .deleteImmediately(
             "acct",
@@ -1083,6 +1089,7 @@ class CatalogIntegrationsImplTest {
     when(service.integrations.getByIdWithMeta(integrationId))
         .thenReturn(Optional.of(new ResourceWithMeta<>(current, meta)));
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId)).thenReturn(4L);
+    when(service.overlays.countByIntegration("acct", "integration")).thenReturn(2);
 
     StatusRuntimeException error =
         assertThrows(
@@ -1098,7 +1105,7 @@ class CatalogIntegrationsImplTest {
 
     assertEquals(Status.Code.ABORTED, error.getStatus().getCode());
     verify(service.integrations, never())
-        .deleteWithPreconditionAndNoOverlayMarker(any(), anyLong());
+        .deleteWithPreconditionAndOverlayMarker(any(), anyLong(), anyLong());
   }
 
   @Test
@@ -1171,7 +1178,7 @@ class CatalogIntegrationsImplTest {
     verify(service.integrations)
         .deleteWithPreconditionForCascadeDeletion(integrationId, 7L, 4L, 1L);
     verify(service.integrations, never())
-        .deleteWithPreconditionAndNoOverlayMarker(any(), anyLong());
+        .deleteWithPreconditionAndOverlayMarker(any(), anyLong(), anyLong());
   }
 
   private static PrincipalContext principal() {

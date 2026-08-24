@@ -77,7 +77,10 @@ public class CatalogIntegrationRepository {
   }
 
   public Optional<ResourceWithMeta<CatalogIntegration>> replaceIdentityWithMeta(
-      CatalogIntegration current, long expectedPointerVersion, CatalogIntegration replacement) {
+      CatalogIntegration current,
+      long expectedPointerVersion,
+      CatalogIntegration replacement,
+      long expectedOverlayMarkerVersion) {
     String accountId = current.getResourceId().getAccountId();
     String oldMarker =
         Keys.catalogIntegrationOverlaysMarker(accountId, current.getResourceId().getId());
@@ -89,19 +92,21 @@ public class CatalogIntegrationRepository {
         Keys.catalogIntegrationDeletionMarker(accountId, replacement.getResourceId().getId());
     Set<String> requiredAbsent = new java.util.HashSet<>();
     requiredAbsent.add(newMarker);
-    requiredAbsent.add(oldMarker);
     requiredAbsent.add(oldDeletionFence);
     requiredAbsent.add(newDeletionFence);
+    if (expectedOverlayMarkerVersion == 0L) requiredAbsent.add(oldMarker);
     return repo.replaceIdentityWithMeta(
         current,
         expectedPointerVersion,
         replacement,
         new PointerConditions(Map.of(), Set.copyOf(requiredAbsent), Map.of()),
-        Map.of());
+        expectedOverlayMarkerVersion == 0L
+            ? Map.of()
+            : Map.of(oldMarker, expectedOverlayMarkerVersion));
   }
 
-  public boolean deleteWithPreconditionAndNoOverlayMarker(
-      ResourceId integrationId, long expectedPointerVersion) {
+  public boolean deleteWithPreconditionAndOverlayMarker(
+      ResourceId integrationId, long expectedPointerVersion, long expectedMarkerVersion) {
     String marker =
         Keys.catalogIntegrationOverlaysMarker(integrationId.getAccountId(), integrationId.getId());
     String fence =
@@ -109,8 +114,11 @@ public class CatalogIntegrationRepository {
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         key(integrationId),
         expectedPointerVersion,
-        new PointerConditions(Map.of(), Set.of(marker, fence), Map.of()),
-        Map.of());
+        new PointerConditions(
+            Map.of(),
+            expectedMarkerVersion == 0L ? Set.of(marker, fence) : Set.of(fence),
+            Map.of()),
+        expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
   }
 
   public boolean deleteWithPreconditionForAccountDeletion(
