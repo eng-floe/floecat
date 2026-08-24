@@ -105,7 +105,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 Catalog integration secret payloads are stored outside the resource blob through SecretsManager:
 
 ```
-accounts/{account_id}/catalog-integrations/{integration_id}:{credential_generation}
+accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 ```
 
 The key is derived internally from the persisted integration identity and credential generation; it

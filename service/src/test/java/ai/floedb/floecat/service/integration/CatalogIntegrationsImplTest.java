@@ -25,6 +25,8 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
+import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.integration.rpc.BearerAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
@@ -434,6 +436,54 @@ class CatalogIntegrationsImplTest {
                                                     .setRoleArn(
                                                         "arn:aws:iam::123456789012:role/test"))))
                             .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
+  void createRejectsBlankTopLevelAssumeRoleExternalId() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        createRequestWithAuthentication(
+                            CatalogAuthentication.newBuilder()
+                                .setAwsAssumeRole(
+                                    AwsAssumeRoleAuthentication.newBuilder()
+                                        .setRoleArn("arn:aws:iam::123456789012:role/test")
+                                        .setExternalId(" "))
+                                .build()))
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
+  void createRejectsBlankSigV4AssumeRoleExternalId() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        createRequestWithAuthentication(
+                            CatalogAuthentication.newBuilder()
+                                .setAwsSigv4(
+                                    AwsSigV4Authentication.newBuilder()
+                                        .setRegion("us-east-1")
+                                        .setAwsAssumeRole(
+                                            AwsAssumeRoleAuthentication.newBuilder()
+                                                .setRoleArn(
+                                                    "arn:aws:iam::123456789012:role/test")
+                                                .setExternalId(" ")))
+                                .build()))
                     .await()
                     .indefinitely());
 
@@ -1076,6 +1126,18 @@ class CatalogIntegrationsImplTest {
                 .setCatalogUri("https://catalog.example")
                 .setAuthentication(oauthAuthentication()))
         .setCredentials(oauthCredentials())
+        .build();
+  }
+
+  private static CreateCatalogIntegrationRequest createRequestWithAuthentication(
+      CatalogAuthentication authentication) {
+    return CreateCatalogIntegrationRequest.newBuilder()
+        .setSpec(
+            CatalogIntegrationSpec.newBuilder()
+                .setDisplayName("Warehouse")
+                .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+                .setCatalogUri("https://catalog.example")
+                .setAuthentication(authentication))
         .build();
   }
 

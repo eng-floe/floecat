@@ -17,6 +17,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
@@ -731,8 +732,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       }
       case AWS_ASSUME_ROLE -> {
         var config = requested.getAwsAssumeRole();
-        validateAssumeRole(
-            config.getRoleArn(), config.hasRoleSessionName(), config.getRoleSessionName(), corr);
+        validateAssumeRole(config, corr);
         requireCredentialCase(
             credential, CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET, corr);
       }
@@ -756,11 +756,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           }
           case AWS_ASSUME_ROLE -> {
             var assume = config.getAwsAssumeRole();
-            validateAssumeRole(
-                assume.getRoleArn(),
-                assume.hasRoleSessionName(),
-                assume.getRoleSessionName(),
-                corr);
+            validateAssumeRole(assume, corr);
             requireCredentialCase(
                 credential, CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET, corr);
           }
@@ -788,11 +784,13 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
     return new PreparedAuthentication(persisted.build(), credentials);
   }
 
-  private static void validateAssumeRole(
-      String roleArn, boolean hasSessionName, String sessionName, String corr) {
-    requireNonBlank(roleArn, "authentication.role_arn", corr);
-    if (hasSessionName) {
-      requireNonBlank(sessionName, "authentication.role_session_name", corr);
+  private static void validateAssumeRole(AwsAssumeRoleAuthentication config, String corr) {
+    requireNonBlank(config.getRoleArn(), "authentication.role_arn", corr);
+    if (config.hasExternalId()) {
+      requireNonBlank(config.getExternalId(), "authentication.external_id", corr);
+    }
+    if (config.hasRoleSessionName()) {
+      requireNonBlank(config.getRoleSessionName(), "authentication.role_session_name", corr);
     }
   }
 
