@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.integration;
 
+import static ai.floedb.floecat.service.common.BaseServiceImpl.normalizeName;
+
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
@@ -27,7 +29,6 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
@@ -205,9 +207,10 @@ public class CatalogOverlayReconciler {
         if (seen.size() > MAX_NAMESPACES) {
           throw new IllegalStateException("Catalog namespace inventory exceeds " + MAX_NAMESPACES);
         }
-        if (excluded(overlay, path)) continue;
-        if (selected(overlay, path)) {
-          addAncestors(path, materialized);
+        NamespacePath normalizedPath = normalizePath(path);
+        if (excluded(overlay, normalizedPath)) continue;
+        if (selected(overlay, normalizedPath)) {
+          addAncestors(normalizedPath, materialized);
           for (CatalogObjectName name : client.listTables(path).stream().sorted().toList()) {
             CatalogTable table = client.loadTable(name);
             if (!name.equals(table.name())) {
@@ -217,13 +220,20 @@ public class CatalogOverlayReconciler {
                       + " actual="
                       + table.name());
             }
-            discoveredTables.put(name, table);
+            CatalogObjectName localName =
+                new CatalogObjectName(normalizedPath, normalizeName(name.name()));
+            if (discoveredTables.putIfAbsent(localName, table) != null) {
+              throw new IllegalStateException(
+                  "Upstream table names collide after normalization: " + localName);
+            }
           }
           if (listViews) {
             for (CatalogObjectName name : client.listViews(path).stream().sorted().toList()) {
-              if (discoveredTables.containsKey(name)) {
+              CatalogObjectName localName =
+                  new CatalogObjectName(normalizedPath, normalizeName(name.name()));
+              if (discoveredTables.containsKey(localName)) {
                 throw new IllegalStateException(
-                    "Upstream relation name is both table and view: " + name);
+                    "Upstream relation name is both table and view: " + localName);
               }
               CatalogView view = client.loadView(name);
               if (!name.equals(view.name())) {
@@ -233,11 +243,14 @@ public class CatalogOverlayReconciler {
                         + " actual="
                         + view.name());
               }
-              discoveredViews.put(name, view);
+              if (discoveredViews.putIfAbsent(localName, view) != null) {
+                throw new IllegalStateException(
+                    "Upstream view names collide after normalization: " + localName);
+              }
             }
           }
         }
-        if (mayContainSelection(overlay, path)) pending.addLast(path);
+        if (mayContainSelection(overlay, normalizedPath)) pending.addLast(path);
       }
     }
     requireUniqueStableIdentities(
@@ -258,7 +271,9 @@ public class CatalogOverlayReconciler {
     Map<NamespacePath, Namespace> current = new HashMap<>();
     for (ResourceId namespaceId :
         namespaces.listIdsConsistent(catalogId.getAccountId(), catalogId.getId())) {
-      namespaces.getById(namespaceId).ifPresent(value -> current.put(path(value), value));
+      namespaces
+          .getByIdForMutation(namespaceId)
+          .ifPresent(value -> current.put(path(value), value));
     }
     for (NamespacePath path : targetPaths.stream().sorted().toList()) {
       if (current.containsKey(path)) continue;
@@ -474,8 +489,7 @@ public class CatalogOverlayReconciler {
     for (var entry : stale) {
       Namespace namespace = entry.getValue();
       if (!listTables(namespace).isEmpty() || !listViews(namespace).isEmpty()) {
-        throw new IllegalStateException(
-            "Cannot retire non-empty overlay namespace=" + entry.getKey());
+        continue;
       }
       MutationMeta meta = namespaces.metaFor(namespace.getResourceId());
       if (!namespaces.deleteWhilePointersMatch(
@@ -513,7 +527,7 @@ public class CatalogOverlayReconciler {
             .build();
     return Table.newBuilder()
         .setResourceId(id)
-        .setDisplayName(source.name().name())
+        .setDisplayName(normalizeName(source.name().name()))
         .setCatalogId(overlay.getCatalogId())
         .setNamespaceId(namespace.getResourceId())
         .setCreatedAt(current == null ? now() : current.getCreatedAt())
@@ -541,9 +555,9 @@ public class CatalogOverlayReconciler {
             .setResourceId(id)
             .setCatalogId(overlay.getCatalogId())
             .setNamespaceId(namespace.getResourceId())
-            .setDisplayName(source.name().name())
+            .setDisplayName(normalizeName(source.name().name()))
             .setCreatedAt(current == null ? now() : current.getCreatedAt())
-            .addAllCreationSearchPath(source.defaultNamespace().segments())
+            .addAllCreationSearchPath(normalizePath(source.defaultNamespace()).segments())
             .addAllOutputColumns(schema.getColumnsList())
             .putAllProperties(objectProperties(overlay, integration, source.identity()));
     for (var definition : source.definitions()) {
@@ -597,29 +611,19 @@ public class CatalogOverlayReconciler {
       MutationMeta overlayMeta,
       CatalogIntegration integration,
       MutationMeta integrationMeta) {
-    Optional<TableRoot> publishedRoot =
-        rootWriter.commitDefinitionReturningRoot(tableId, definitionMeta);
+    rootWriter.commitDefinition(tableId, definitionMeta);
     try {
       assertFence(overlay, overlayMeta, integration, integrationMeta);
     } catch (BaseResourceRepository.AbortRetryableException lost) {
-      removeStaleRootPublication(tableId, definitionMeta, publishedRoot);
+      removeStaleRootPublication(tableId, definitionMeta);
       throw lost;
     }
   }
 
-  private void removeStaleRootPublication(
-      ResourceId tableId, MutationMeta publishedDefinition, Optional<TableRoot> publishedRoot) {
+  private void removeStaleRootPublication(ResourceId tableId, MutationMeta publishedDefinition) {
     MutationMeta currentDefinition = tables.metaForSafe(tableId);
-    if (sameRevision(publishedDefinition, currentDefinition) || publishedRoot.isEmpty()) return;
-
-    MutationMeta rootMeta = tableRoots.metaForSafeLive(tableId);
-    if (rootMeta.getBlobUri().isBlank()) return;
-    Optional<TableRoot> currentRoot = tableRoots.getByBlobUriLive(rootMeta.getBlobUri());
-    if (currentRoot.equals(publishedRoot)) {
-      // The expected version makes this cleanup harmless if a winning reconciliation has already
-      // advanced the root after our live read.
-      tableRoots.deleteWithPrecondition(tableId, rootMeta.getPointerVersion());
-    }
+    if (sameRevision(publishedDefinition, currentDefinition)) return;
+    rootWriter.replaceDefinitionIfMatches(tableId, publishedDefinition, currentDefinition);
   }
 
   private static boolean sameRevision(MutationMeta first, MutationMeta second) {
@@ -780,6 +784,14 @@ public class CatalogOverlayReconciler {
 
   private static boolean startsWith(List<String> path, List<String> prefix) {
     return path.size() >= prefix.size() && path.subList(0, prefix.size()).equals(prefix);
+  }
+
+  private static NamespacePath normalizePath(NamespacePath path) {
+    return new NamespacePath(normalizeSegments(path.segments()));
+  }
+
+  private static List<String> normalizeSegments(List<String> segments) {
+    return segments.stream().map(BaseServiceImpl::normalizeName).toList();
   }
 
   private com.google.protobuf.Timestamp now() {

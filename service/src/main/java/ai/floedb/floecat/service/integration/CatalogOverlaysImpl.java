@@ -35,6 +35,8 @@ import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -77,6 +79,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlayReconciler reconciler;
+  @Inject CatalogGraphView graphView;
 
   @Override
   public Uni<ListCatalogOverlaysResponse> listCatalogOverlays(ListCatalogOverlaysRequest request) {
@@ -218,6 +221,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   ResourceId integrationId =
                       scopedIntegrationId(pc.getAccountId(), spec.getIntegrationId());
                   ResourceId catalogId = scopedCatalogId(pc.getAccountId(), spec.getCatalogId());
+                  catalogSurfaceWritePolicy().requireWritableCatalog(catalogId, "catalog_id", corr);
                   List<NamespacePath> includes =
                       normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
                   List<NamespacePath> excludes =
@@ -353,13 +357,6 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         throw GrpcErrors.alreadyExists(
             corr, CATALOG_OVERLAY_ALREADY_EXISTS, Map.of("display_name", name));
 
-      if (!overlays.beginDeletion(
-          current.value().getResourceId(), current.meta().getPointerVersion())) {
-        throw new BaseResourceRepository.AbortRetryableException(
-            "overlay changed while replacement fenced its old identity");
-      }
-      reconciler.retireMaterializedResources(current.value());
-
       Map<String, Long> parentVersions = new java.util.HashMap<>(requiredVersions);
       ResourceId oldIntegrationId = current.value().getIntegrationId();
       if (!oldIntegrationId.equals(integrationId)) {
@@ -409,14 +406,23 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               .setCreatedAt(now)
               .setUpdatedAt(now)
               .build();
+      Map<String, Long> replacementParents = Map.copyOf(parentVersions);
+      Set<String> replacementRequiredAbsent = Set.copyOf(requiredAbsent);
+      Map<String, Long> replacementMarkers = Map.copyOf(markerVersions);
+      if (!overlays.beginDeletion(
+          current.value().getResourceId(), current.meta().getPointerVersion())) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "overlay changed while replacement fenced its old identity");
+      }
+      reconciler.retireMaterializedResources(current.value());
       return overlays
           .replaceIdentityAttachedWithMeta(
               current.value(),
               current.meta().getPointerVersion(),
               replacement,
-              Map.copyOf(parentVersions),
-              Set.copyOf(requiredAbsent),
-              Map.copyOf(markerVersions))
+              replacementParents,
+              replacementRequiredAbsent,
+              replacementMarkers)
           .orElseThrow(
               () ->
                   new BaseResourceRepository.AbortRetryableException(
@@ -567,6 +573,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                           () -> GrpcErrors.notFound(corr, null, Map.of("id", overlayId.getId())));
               MutationOps.BaseServiceChecks.enforcePreconditions(
                   corr, current.meta(), request.getPrecondition());
+              catalogSurfaceWritePolicy()
+                  .requireWritableCatalog(current.value().getCatalogId(), "catalog_id", corr);
               var integration =
                   integrations
                       .getByIdWithMeta(current.value().getIntegrationId())
@@ -635,6 +643,10 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   private List<NamespacePath> normalizePaths(List<NamespacePath> paths, String field, String corr) {

@@ -628,7 +628,7 @@ public abstract class BaseServiceImpl {
     return (rid == null) ? "" : rid.getId();
   }
 
-  protected static String normalizeName(String in) {
+  public static String normalizeName(String in) {
     if (in == null) {
       return "";
     }

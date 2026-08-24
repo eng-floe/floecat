@@ -136,6 +136,25 @@ public final class TableRootMutations {
             .build();
   }
 
+  /** Replaces a stale definition publication without disturbing any other root state. */
+  public static TableRootCommitter.RootMutator replaceDefinitionIfMatches(
+      BlobRef expectedDefinitionRef, BlobRef replacementDefinitionRef) {
+    return current -> {
+      if (current.isEmpty()
+          || !current.get().hasDefinitionRef()
+          || !current.get().getDefinitionRef().equals(expectedDefinitionRef)) {
+        return null;
+      }
+      TableRoot.Builder replacement = current.get().toBuilder();
+      if (replacementDefinitionRef == null || replacementDefinitionRef.getUri().isEmpty()) {
+        replacement.clearDefinitionRef();
+      } else {
+        replacement.setDefinitionRef(replacementDefinitionRef);
+      }
+      return replacement.build();
+    };
+  }
+
   /**
    * Sets the stats-generation ref on an existing snapshot's entry — the generation publish, which
    * is also the snapshot's VISIBILITY commit: a non-null ref finalizes the snapshot, so the same

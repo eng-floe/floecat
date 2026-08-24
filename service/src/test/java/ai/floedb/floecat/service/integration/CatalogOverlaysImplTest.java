@@ -32,6 +32,8 @@ import ai.floedb.floecat.integration.rpc.DeleteCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
@@ -42,6 +44,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -70,10 +73,12 @@ class CatalogOverlaysImplTest {
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     service.reconciler = mock(CatalogOverlayReconciler.class);
+    service.graphView = mock(CatalogGraphView.class);
     installBasePrincipal(service, service.principal);
     when(service.principal.get()).thenReturn(principal());
     stubIntegration(integrationId(), 5L);
     stubCatalog(catalogId(), 7L);
+    when(service.graphView.resolve(catalogId())).thenReturn(Optional.of(catalogNode(catalogId())));
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId()))
         .thenReturn(2L);
     when(service.markerStore.catalogOverlaysMarkerVersion(catalogId())).thenReturn(3L);
@@ -218,6 +223,56 @@ class CatalogOverlaysImplTest {
   }
 
   @Test
+  void replacementValidatesTheOldCatalogBeforeInstallingADeletionFence() {
+    var oldOverlayId = id("old-overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var missingOldCatalogId = id("missing-old-catalog", ResourceKind.RK_CATALOG);
+    var current = overlay(oldOverlayId, integrationId(), missingOldCatalogId, "sales");
+    when(service.overlays.getByNameWithMeta("acct", "sales"))
+        .thenReturn(Optional.of(row(current, 9L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setCreateMode(CreateMode.CM_REPLACE)
+                            .setSpec(baseSpec())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INTERNAL, error.getStatus().getCode());
+    verify(service.overlays, never()).beginDeletion(any(), anyLong());
+    verify(service.reconciler, never()).retireMaterializedResources(any());
+  }
+
+  @Test
+  void createRejectsASystemCatalogBeforeMaterializationCanBeScheduled() {
+    ResourceId systemCatalogId =
+        SystemNodeRegistry.systemCatalogContainerId("floedb").toBuilder()
+            .setAccountId("acct")
+            .build();
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogOverlay(
+                        CreateCatalogOverlayRequest.newBuilder()
+                            .setSpec(baseSpec().toBuilder().setCatalogId(systemCatalogId))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+    verify(service.overlays, never())
+        .createAttachedWithMetaAndCompanions(any(), any(), any(), any(), any());
+  }
+
+  @Test
   void reconcileReportsMaterializedMetadataChanges() {
     service.authz = new Authorizer();
     var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
@@ -254,6 +309,38 @@ class CatalogOverlaysImplTest {
     assertEquals(6, response.getViewsCreated());
     assertEquals(7, response.getViewsUpdated());
     assertEquals(8, response.getViewsDeleted());
+  }
+
+  @Test
+  void reconcileRejectsAPreviouslyPersistedSystemCatalogOverlay() {
+    service.authz = new Authorizer();
+    ResourceId systemCatalogId =
+        SystemNodeRegistry.systemCatalogContainerId("floedb").toBuilder()
+            .setAccountId("acct")
+            .build();
+    var overlayId = id("overlay", ResourceKind.RK_CATALOG_OVERLAY);
+    var current = overlay(overlayId, integrationId(), systemCatalogId, "sales");
+    when(service.principal.get())
+        .thenReturn(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setCorrelationId("corr")
+                .addAllPermissions(Set.of("catalog-overlay.reconcile", "catalog-integration.use"))
+                .build());
+    when(service.overlays.getByIdWithMeta(overlayId)).thenReturn(Optional.of(row(current, 7L)));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .reconcileCatalogOverlay(
+                        ReconcileCatalogOverlayRequest.newBuilder().setOverlayId(overlayId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+    verify(service.reconciler, never()).reconcile(any(), any(), any(), any());
   }
 
   @Test
@@ -388,6 +475,18 @@ class CatalogOverlaysImplTest {
                 "catalog-integration.use",
                 "catalog.write"))
         .build();
+  }
+
+  private static CatalogNode catalogNode(ResourceId id) {
+    return new CatalogNode(
+        id,
+        "blob://catalog",
+        "analytics",
+        Map.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Map.of());
   }
 
   private static NamespacePath path(String... segments) {

@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -153,17 +152,24 @@ public class TableRootWriter {
 
   /** Records the table's (possibly new) immutable definition blob on the root. */
   public void commitDefinition(ResourceId tableId, MutationMeta meta) {
-    commitDefinitionReturningRoot(tableId, meta);
-  }
-
-  /** Records the definition and returns the root observed or committed by this invocation. */
-  public java.util.Optional<TableRoot> commitDefinitionReturningRoot(
-      ResourceId tableId, MutationMeta meta) {
     BlobRef definitionRef = BlobRefs.refFrom(meta);
     if (definitionRef == null) {
-      return java.util.Optional.empty();
+      return;
     }
-    return committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
+    committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
+  }
+
+  /** Restores the current table definition only when the root still publishes a stale revision. */
+  public void replaceDefinitionIfMatches(
+      ResourceId tableId, MutationMeta staleDefinition, MutationMeta currentDefinition) {
+    BlobRef staleRef = BlobRefs.refFrom(staleDefinition);
+    if (staleRef == null) {
+      return;
+    }
+    committer.commit(
+        tableId,
+        TableRootMutations.replaceDefinitionIfMatches(
+            staleRef, BlobRefs.refFrom(currentDefinition)));
   }
 
   /**

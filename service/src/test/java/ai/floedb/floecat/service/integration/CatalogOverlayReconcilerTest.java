@@ -22,10 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -40,7 +43,6 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -64,7 +66,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -88,7 +89,7 @@ class CatalogOverlayReconcilerTest {
     var blobs = new InMemoryBlobStore();
     integrations = new CatalogIntegrationRepository(pointers, blobs);
     overlays = new CatalogOverlayRepository(pointers, blobs);
-    namespaces = new NamespaceRepository(pointers, blobs);
+    namespaces = spy(new NamespaceRepository(pointers, blobs));
     tables = new TableRepository(pointers, blobs);
     views = new ViewRepository(pointers, blobs);
 
@@ -334,6 +335,105 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void staleNamespaceContainingANonOverlayRelationIsLeftInPlace() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "table-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    var table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow();
+    MutationMeta tableMeta = tables.metaFor(table.getResourceId());
+    assertTrue(
+        tables.update(table.toBuilder().clearProperties().build(), tableMeta.getPointerVersion()));
+
+    client.children.clear();
+    client.tables.clear();
+    var result = reconcile();
+
+    assertEquals(0, result.namespacesDeleted());
+    assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales")).isPresent());
+    assertTrue(tables.getById(table.getResourceId()).isPresent());
+  }
+
+  @Test
+  void normalizesSelectionAndMaterializedNamesButPreservesUpstreamIdentity() {
+    String rawNamespace = "sales\u00a0\u00a0team";
+    String rawChild = "private\u00a0\u00a0data";
+    String rawTable = "daily\u00a0\u00a0orders";
+    String rawView = "weekly  summary";
+    NamespacePath sales = NamespacePath.of(rawNamespace);
+    NamespacePath excluded = NamespacePath.of(rawNamespace, rawChild);
+    CatalogObjectName tableName = new CatalogObjectName(sales, rawTable);
+    CatalogObjectName viewName = new CatalogObjectName(sales, rawView);
+    MutationMeta overlayMeta = overlays.metaFor(overlay.getResourceId());
+    overlay =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("sales team"))
+            .addExcludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("sales team")
+                    .addSegments("private data"))
+            .build();
+    assertTrue(overlays.update(overlay, overlayMeta.getPointerVersion()));
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of(excluded));
+    client.children.put(excluded, List.of());
+    client.tables.put(tableName, catalogTable(tableName, "table-uuid"));
+    client.tables.put(
+        new CatalogObjectName(excluded, "hidden"),
+        catalogTable(new CatalogObjectName(excluded, "hidden"), "hidden-uuid"));
+    client.views.put(
+        viewName,
+        new CatalogView(
+            viewName,
+            ExternalObjectIdentity.stable("view-uuid"),
+            SCHEMA_JSON,
+            List.of(new CatalogViewDefinition("select 1", "ansi")),
+            sales,
+            Map.of()));
+
+    reconcile();
+
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales team")).orElseThrow();
+    var table =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "daily orders")
+            .orElseThrow();
+    assertEquals(rawNamespace, table.getUpstream().getNamespacePath(0));
+    assertEquals(rawTable, table.getUpstream().getTableDisplayName());
+    assertTrue(
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "weekly summary")
+            .isPresent());
+    assertTrue(
+        namespaces.getByPath("acct", "catalog", List.of("sales team", "private data")).isEmpty());
+  }
+
+  @Test
+  void consistentNamespaceEnumerationUsesMutationReads() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    reconcile();
+    clearInvocations(namespaces);
+    doReturn(Optional.empty()).when(namespaces).getById(any());
+
+    assertEquals(new CatalogOverlayReconciler.Result(0, 0, 0, 0, 0, 0, 0, 0), reconcile());
+
+    verify(namespaces).getByIdForMutation(any());
+    verify(namespaces, never()).getById(any());
+  }
+
+  @Test
   void lostGenerationCannotLeaveAStaleTableRootPublication() {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");
@@ -350,30 +450,22 @@ class CatalogOverlayReconcilerTest {
             Optional.empty(),
             Optional.empty(),
             Map.of()));
-    AtomicReference<TableRoot> publishedRoot = new AtomicReference<>();
     doAnswer(
             invocation -> {
               ResourceId tableId = invocation.getArgument(0);
-              TableRoot root = TableRoot.newBuilder().setTableId(tableId).build();
-              publishedRoot.set(root);
               tables.delete(tableId);
               MutationMeta current = overlays.metaFor(overlay.getResourceId());
               overlays.update(
                   overlay.toBuilder().setDisplayName("changed").build(),
                   current.getPointerVersion());
-              return Optional.of(root);
+              return null;
             })
         .when(reconciler.rootWriter)
-        .commitDefinitionReturningRoot(any(), any());
-    when(reconciler.tableRoots.metaForSafeLive(any()))
-        .thenReturn(
-            MutationMeta.newBuilder().setPointerVersion(1L).setBlobUri("root-blob").build());
-    when(reconciler.tableRoots.getByBlobUriLive("root-blob"))
-        .thenAnswer(invocation -> Optional.of(publishedRoot.get()));
-    when(reconciler.tableRoots.deleteWithPrecondition(any(), eq(1L))).thenReturn(true);
+        .commitDefinition(any(), any());
 
     assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
-    verify(reconciler.tableRoots).deleteWithPrecondition(any(), eq(1L));
+    verify(reconciler.rootWriter).replaceDefinitionIfMatches(any(), any(), any());
+    verify(reconciler.tableRoots, never()).deleteWithPrecondition(any(), anyLong());
   }
 
   private CatalogOverlayReconciler.Result reconcile() {
