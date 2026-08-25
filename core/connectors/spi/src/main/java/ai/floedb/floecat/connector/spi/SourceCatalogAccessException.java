@@ -17,8 +17,8 @@
 package ai.floedb.floecat.connector.spi;
 
 /**
- * A source catalog refused to vend storage credentials for an authentication or authorization
- * reason -- a permanent condition that must be classified <em>terminal</em>, not retried.
+ * A source catalog permanently refused to vend storage credentials -- a condition that must be
+ * classified <em>terminal</em>, not retried.
  *
  * <p>The storage service classifies a vend failure by exception type, not by substring-matching the
  * message: a transient failure whose text merely contains "403" (a gateway page, an IAM-propagation
@@ -36,7 +36,15 @@ public class SourceCatalogAccessException extends RuntimeException {
     /** The caller was not authenticated (e.g. a bad or expired token; HTTP 401). */
     UNAUTHENTICATED,
     /** The caller was authenticated but lacks the privilege to vend (e.g. HTTP 403). */
-    PERMISSION_DENIED
+    PERMISSION_DENIED,
+    /**
+     * The catalog will not vend for this table for a reason that is neither 401 nor 403 and will
+     * not change on retry: Databricks answers the credentials endpoint with HTTP 400 plus an {@code
+     * error_code} when a table has external access disabled, and with HTTP 404 for a table id it no
+     * longer knows. Not an authorization failure, so it maps to a precondition rather than a denial
+     * -- but equally permanent, and equally wrong to retry.
+     */
+    UNSUPPORTED
   }
 
   private final Denial denial;

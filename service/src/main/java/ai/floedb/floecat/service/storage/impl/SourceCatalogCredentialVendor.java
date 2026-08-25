@@ -153,7 +153,12 @@ public class SourceCatalogCredentialVendor {
       // recognisably an authorization refusal stays retryable.
       throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName());
     }
-    if (vended.isEmpty()) {
+    // Empty and absent are the same answer. A connector that hands back a credential object with
+    // no properties has vended nothing, and falling through would reach requireUsableCredentials
+    // and fail the job terminally on a condition the caller can recover from by using a storage
+    // authority. Partial credentials are deliberately *not* screened here -- those do reach the
+    // usability check, which is where "the catalog vended something unusable" belongs.
+    if (vended.isEmpty() || vended.get().isEmpty()) {
       LOG.infof(
           "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
               + " (catalog does not delegate)",
@@ -212,12 +217,34 @@ public class SourceCatalogCredentialVendor {
         .build();
   }
 
+  /**
+   * The prefix to stamp on the vended credential: the catalog's own scope when it narrows the
+   * request, otherwise the location the caller was authorized for.
+   *
+   * <p>The catalog-issued scope is preferred because it is the truth about what the credential
+   * covers -- but only downwards. {@code requestedPrefix} is {@code credentialScope.location()},
+   * the same value {@code isWithinExecutionScope} and {@code resolvePlannerBootstrapLocation} use
+   * to refuse out-of-scope requests, so letting a broader catalog scope replace it would hand back
+   * a credential stamped for more than the caller may read: a table at {@code
+   * s3://warehouse/tpch_10/customer} covered by a catalog credential scoped to {@code
+   * s3://warehouse/tpch} would come back claiming all of {@code s3://warehouse/tpch*}, and the
+   * consumers that key their client cache on this prefix would apply it to sibling prefixes. The
+   * credential itself may well be broader; what travels back is bounded by the authorization.
+   */
   static String responsePrefix(
       FloecatConnector.VendedStorageCredentials vended, String requestedPrefix) {
-    if (vended != null && vended.scopePrefix() != null) {
-      return vended.scopePrefix();
+    String requested = requestedPrefix == null ? "" : requestedPrefix;
+    String scope = vended == null ? null : vended.scopePrefix();
+    if (scope == null) {
+      return requested;
     }
-    return requestedPrefix == null ? "" : requestedPrefix;
+    // Blank request: nothing to bound against, so the catalog's scope is the only answer available
+    // and is narrower than the unbounded alternative. Otherwise containment is decided by the same
+    // path-boundary rule the authority resolver uses -- a plain startsWith would accept
+    // "s3://warehouse/tpch_other" as inside "s3://warehouse/tpch".
+    return requested.isBlank() || StorageAuthorityResolver.matchesLocationPrefix(scope, requested)
+        ? scope
+        : requested;
   }
 
   static Map<String, String> clientSafeRoutingProperties(Map<String, String> props) {
@@ -384,12 +411,25 @@ public class SourceCatalogCredentialVendor {
       // over HTTP): they raise a typed SourceCatalogAccessException rather than an Iceberg
       // exception, carrying whether it was an authentication or authorization failure.
       if (c instanceof SourceCatalogAccessException access) {
-        io.grpc.Status status =
-            switch (access.denial()) {
-              case UNAUTHENTICATED -> io.grpc.Status.UNAUTHENTICATED;
-              case PERMISSION_DENIED -> io.grpc.Status.PERMISSION_DENIED;
-            };
-        return status.withDescription(detail).withCause(cause).asRuntimeException();
+        return switch (access.denial()) {
+          case UNAUTHENTICATED ->
+              io.grpc.Status.UNAUTHENTICATED
+                  .withDescription(detail)
+                  .withCause(cause)
+                  .asRuntimeException();
+          case PERMISSION_DENIED ->
+              io.grpc.Status.PERMISSION_DENIED
+                  .withDescription(detail)
+                  .withCause(cause)
+                  .asRuntimeException();
+          // Terminal, but not a denial, so it must not travel as one: PERMISSION_DENIED here would
+          // report "you may not read this table" for a catalog that simply cannot vend for it. It
+          // goes back as the structured vend-refused reason, which the reconciler matches by reason
+          // rather than by the shared FAILED_PRECONDITION code.
+          case UNSUPPORTED ->
+              ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+                  .sourceCatalogVendRefused(detail);
+        };
       }
     }
     // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager

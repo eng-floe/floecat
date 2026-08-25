@@ -208,10 +208,20 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return pinned;
   }
 
+  /**
+   * Stamps the table's {@code storage_location} onto the connector payload the worker receives.
+   *
+   * <p>Both Delta-family kinds, not just {@code CK_DELTA}: this is the only writer of the property
+   * that {@code ReconcilerService.sourceStorageLocation} and {@code
+   * StorageAuthorityServiceImpl.connectorSourceStorageLocation} read to decide which storage
+   * authority covers a table. Leaving {@code CK_UNITY} out silently skipped the authority lookup --
+   * and with it source-catalog credential vending -- for every Unity Catalog table reconciled
+   * through leased file-group execution.
+   */
   private Connector withTableStorageLocation(Connector connector, Table table) {
     if (connector == null
         || table == null
-        || connector.getKind() != ConnectorKind.CK_DELTA
+        || !isDeltaFamily(connector.getKind())
         || !table.getPropertiesMap().containsKey("storage_location")) {
       return connector;
     }
@@ -220,6 +230,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       return connector;
     }
     return connector.toBuilder().putProperties("storage_location", storageLocation).build();
+  }
+
+  private static boolean isDeltaFamily(ConnectorKind kind) {
+    return kind == ConnectorKind.CK_DELTA || kind == ConnectorKind.CK_UNITY;
   }
 
   private Connector resolvedConnectorPayload(Connector connector, Table table) {

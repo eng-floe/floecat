@@ -14,18 +14,19 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.connector.delta.uc.impl;
+package ai.floedb.floecat.connector.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
-import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
-import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-class DatabricksAccessDelegationTest {
+/**
+ * Covers the two vend gates that live in this module. They ship here, beside every connector that
+ * depends on them, so the rules are exercised by this module's own build rather than only when a
+ * downstream connector module happens to be built.
+ */
+class SourceCatalogVendingTest {
 
   private static ConnectorConfig config(ConnectorConfig.Kind kind, Map<String, String> options) {
     return new ConnectorConfig(kind, "display", "https://example", options, null);
@@ -104,6 +105,28 @@ class DatabricksAccessDelegationTest {
             SourceCatalogVending.declaresVendedCredentials(
                 config(ConnectorConfig.Kind.DELTA, Map.of())))
         .isFalse();
+  }
+
+  @Test
+  void glueDeclaresNothing() {
+    // Glue has no vending channel at all; the dispatcher must answer false rather than fall through
+    // to a Databricks or Iceberg reading of a stray property.
+    assertThat(
+            SourceCatalogVending.declaresVendedCredentials(
+                config(
+                    ConnectorConfig.Kind.GLUE,
+                    Map.of(
+                        DatabricksAccessDelegation.VEND_OPTION,
+                        "true",
+                        IcebergAccessDelegation.HEADER_PROPERTY,
+                        "vended-credentials"))))
+        .isFalse();
+  }
+
+  @Test
+  void aNullConfigDeclaresNothing() {
+    assertThat(SourceCatalogVending.declaresVendedCredentials(null)).isFalse();
+    assertThat(DatabricksAccessDelegation.declaresVendedCredentials(null)).isFalse();
   }
 
   @Test
