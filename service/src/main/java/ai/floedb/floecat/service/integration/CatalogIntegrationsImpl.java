@@ -40,6 +40,7 @@ import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
+import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -59,9 +60,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import org.jboss.logging.Logger;
 
 @GrpcService
 public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogIntegrations {
+  private static final Logger LOG = Logger.getLogger(CatalogIntegrations.class);
   private static final Set<String> MUTABLE_PATHS =
       Set.of("display_name", "catalog_uri", "properties");
 
@@ -76,70 +79,83 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Override
   public Uni<ListCatalogIntegrationsResponse> listCatalogIntegrations(
       ListCatalogIntegrationsRequest request) {
+    var L = LogHelper.start(LOG, "ListCatalogIntegrations");
+
     return mapFailures(
-        run(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
-              var page = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-              var next = new StringBuilder();
-              var rows =
-                  integrations.listWithMeta(
-                      pc.getAccountId(), Math.max(1, page.limit), page.token, next);
-              var response = ListCatalogIntegrationsResponse.newBuilder();
-              rows.forEach(
-                  row ->
-                      response.addEntries(
-                          CatalogIntegrationEntry.newBuilder()
-                              .setIntegration(row.value())
-                              .setMeta(row.meta())));
-              return response
-                  .setPage(
-                      MutationOps.pageOut(next.toString(), integrations.count(pc.getAccountId())))
-                  .build();
-            }),
-        correlationId());
+            run(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
+                  var page = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+                  var next = new StringBuilder();
+                  var rows =
+                      integrations.listWithMeta(
+                          pc.getAccountId(), Math.max(1, page.limit), page.token, next);
+                  var response = ListCatalogIntegrationsResponse.newBuilder();
+                  rows.forEach(
+                      row ->
+                          response.addEntries(
+                              CatalogIntegrationEntry.newBuilder()
+                                  .setIntegration(row.value())
+                                  .setMeta(row.meta())));
+                  return response
+                      .setPage(
+                          MutationOps.pageOut(
+                              next.toString(), integrations.count(pc.getAccountId())))
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<GetCatalogIntegrationResponse> getCatalogIntegration(
       GetCatalogIntegrationRequest request) {
+    var L = LogHelper.start(LOG, "GetCatalogIntegration");
+
     return mapFailures(
-        run(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
-              if (!request.hasIntegrationId() && !request.hasDisplayName())
-                throw GrpcErrors.invalidArgument(
-                    pc.getCorrelationId(), SELECTOR_REQUIRED, Map.of("field", "selector"));
-              var row =
-                  (request.hasIntegrationId()
-                          ? integrations.getByIdWithMeta(
-                              scopedId(pc.getAccountId(), request.getIntegrationId()))
-                          : request.hasDisplayName()
-                              ? integrations.getByNameWithMeta(
-                                  pc.getAccountId(),
-                                  mustNonEmpty(
-                                      request.getDisplayName(),
-                                      "display_name",
-                                      pc.getCorrelationId()))
-                              : throwMissingIntegrationSelector())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  pc.getCorrelationId(),
-                                  CATALOG_INTEGRATION,
-                                  Map.of(
-                                      "id",
-                                      request.hasIntegrationId()
-                                          ? request.getIntegrationId().getId()
-                                          : request.getDisplayName())));
-              return GetCatalogIntegrationResponse.newBuilder()
-                  .setIntegration(row.value())
-                  .setMeta(row.meta())
-                  .build();
-            }),
-        correlationId());
+            run(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
+                  if (!request.hasIntegrationId() && !request.hasDisplayName())
+                    throw GrpcErrors.invalidArgument(
+                        pc.getCorrelationId(), SELECTOR_REQUIRED, Map.of("field", "selector"));
+                  var row =
+                      (request.hasIntegrationId()
+                              ? integrations.getByIdWithMeta(
+                                  scopedId(pc.getAccountId(), request.getIntegrationId()))
+                              : request.hasDisplayName()
+                                  ? integrations.getByNameWithMeta(
+                                      pc.getAccountId(),
+                                      mustNonEmpty(
+                                          request.getDisplayName(),
+                                          "display_name",
+                                          pc.getCorrelationId()))
+                                  : throwMissingIntegrationSelector())
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      pc.getCorrelationId(),
+                                      CATALOG_INTEGRATION,
+                                      Map.of(
+                                          "id",
+                                          request.hasIntegrationId()
+                                              ? request.getIntegrationId().getId()
+                                              : request.getDisplayName())));
+                  return GetCatalogIntegrationResponse.newBuilder()
+                      .setIntegration(row.value())
+                      .setMeta(row.meta())
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private static java.util.Optional<
@@ -152,152 +168,158 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Override
   public Uni<CreateCatalogIntegrationResponse> createCatalogIntegration(
       CreateCatalogIntegrationRequest request) {
-    return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
-              String corr = pc.getCorrelationId();
-              CatalogIntegrationSpec spec = request.getSpec();
-              String name = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
-              var createPolicy =
-                  CatalogCreatePolicy.validate(
-                      request.getCreateMode(),
-                      request.hasIdempotency() ? request.getIdempotency().getKey() : "",
-                      corr);
-              String key = createPolicy.idempotencyKey();
-              CreateMode mode = createPolicy.mode();
-              if (mode == CreateMode.CM_RETURN_EXISTING) {
-                var existing = integrations.getByNameWithMeta(pc.getAccountId(), name);
-                if (existing.isPresent()) {
-                  return CreateCatalogIntegrationResponse.newBuilder()
-                      .setIntegration(existing.get().value())
-                      .setMeta(existing.get().meta())
-                      .build();
-                }
-              }
-              validateType(spec.getType(), corr);
-              String uri = validateCatalogUri(spec.getCatalogUri(), corr);
-              Map<String, String> properties =
-                  validateConnectionProperties(spec.getPropertiesMap(), corr);
-              if (!spec.hasAuthentication()
-                  || spec.getAuthentication().getConfigurationCase()
-                      == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
-                throw GrpcErrors.invalidArgument(
-                    corr, FIELD, Map.of("field", "authentication.configuration"));
-              }
-              PreparedAuthentication preparedAuthentication =
-                  prepareAuthentication(
-                      spec.hasAuthentication()
-                          ? spec.getAuthentication()
-                          : CatalogAuthentication.getDefaultInstance(),
-                      request.hasCredentials()
-                          ? request.getCredentials()
-                          : CatalogIntegrationCredentials.getDefaultInstance(),
-                      1L,
-                      corr);
-              validateAuthenticationType(
-                  spec.getType(), preparedAuthentication.authentication(), corr);
-              byte[] fingerprint =
-                  new Canonicalizer()
-                      .scalar("display_name", name)
-                      .scalar("type", spec.getType())
-                      .scalar("catalog_uri", uri)
-                      .map("properties", properties)
-                      .scalar("authentication", preparedAuthentication.authentication())
-                      .bytes();
-              var now = nowTs();
+    var L = LogHelper.start(LOG, "CreateCatalogIntegration");
 
-              if (key.isEmpty()) {
-                ResourceId integrationId =
-                    randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION);
-                credentialStore.store(
-                    integrationId,
-                    preparedAuthentication.authentication().getCredentialGeneration(),
-                    preparedAuthentication.credentials());
-                try {
-                  var created =
-                      createOrReplace(
-                          integrationId,
-                          name,
-                          spec.getType(),
-                          uri,
-                          properties,
-                          preparedAuthentication.authentication(),
-                          mode,
-                          false,
-                          null,
-                          now,
+    return mapFailures(
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
+                  String corr = pc.getCorrelationId();
+                  CatalogIntegrationSpec spec = request.getSpec();
+                  String name = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
+                  var createPolicy =
+                      CatalogCreatePolicy.validate(
+                          request.getCreateMode(),
+                          request.hasIdempotency() ? request.getIdempotency().getKey() : "",
                           corr);
-                  if (!created.newIdentityPublished()) {
-                    cleanupPrepared(integrationId, preparedAuthentication);
+                  String key = createPolicy.idempotencyKey();
+                  CreateMode mode = createPolicy.mode();
+                  if (mode == CreateMode.CM_RETURN_EXISTING) {
+                    var existing = integrations.getByNameWithMeta(pc.getAccountId(), name);
+                    if (existing.isPresent()) {
+                      return CreateCatalogIntegrationResponse.newBuilder()
+                          .setIntegration(existing.get().value())
+                          .setMeta(existing.get().meta())
+                          .build();
+                    }
                   }
-                  return CreateCatalogIntegrationResponse.newBuilder()
-                      .setIntegration(created.row().value())
-                      .setMeta(created.row().meta())
-                      .build();
-                } catch (RuntimeException retryableFailure) {
-                  cleanupPrepared(integrationId, preparedAuthentication);
-                  throw retryableFailure;
-                }
-              }
-              var result =
-                  runIdempotentCreate(
-                      () ->
-                          MutationOps.createProtoRecoverable(
-                              pc.getAccountId(),
-                              "CreateCatalogIntegration",
-                              key,
-                              () -> fingerprint,
-                              () ->
-                                  randomResourceId(
-                                      pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION),
-                              (reservedId, completion) -> {
-                                var recovered = integrations.getByIdWithMeta(reservedId);
-                                if (recovered.isPresent()) {
-                                  throw new BaseResourceRepository.AbortRetryableException(
-                                      "integration exists before its idempotency receipt committed");
-                                }
-                                credentialStore.store(
-                                    reservedId,
-                                    preparedAuthentication
-                                        .authentication()
-                                        .getCredentialGeneration(),
-                                    preparedAuthentication.credentials());
-                                try {
-                                  var created =
-                                      createOrReplace(
-                                          reservedId,
-                                          name,
-                                          spec.getType(),
-                                          uri,
-                                          properties,
-                                          preparedAuthentication.authentication(),
-                                          CreateMode.CM_ERROR_IF_EXISTS,
-                                          true,
-                                          completion,
-                                          now,
-                                          corr);
-                                  return new IdempotencyGuard.CommittedCreate<>(
-                                      created.row().value(),
-                                      created.row().value().getResourceId(),
-                                      created.row().meta());
-                                } catch (RuntimeException definiteFailure) {
-                                  cleanupPrepared(reservedId, preparedAuthentication);
-                                  throw definiteFailure;
-                                }
-                              },
-                              idempotencyStore,
+                  validateType(spec.getType(), corr);
+                  String uri = validateCatalogUri(spec.getCatalogUri(), corr);
+                  Map<String, String> properties =
+                      validateConnectionProperties(spec.getPropertiesMap(), corr);
+                  if (!spec.hasAuthentication()
+                      || spec.getAuthentication().getConfigurationCase()
+                          == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
+                    throw GrpcErrors.invalidArgument(
+                        corr, FIELD, Map.of("field", "authentication.configuration"));
+                  }
+                  PreparedAuthentication preparedAuthentication =
+                      prepareAuthentication(
+                          spec.hasAuthentication()
+                              ? spec.getAuthentication()
+                              : CatalogAuthentication.getDefaultInstance(),
+                          request.hasCredentials()
+                              ? request.getCredentials()
+                              : CatalogIntegrationCredentials.getDefaultInstance(),
+                          1L,
+                          corr);
+                  validateAuthenticationType(
+                      spec.getType(), preparedAuthentication.authentication(), corr);
+                  byte[] fingerprint =
+                      new Canonicalizer()
+                          .scalar("display_name", name)
+                          .scalar("type", spec.getType())
+                          .scalar("catalog_uri", uri)
+                          .map("properties", properties)
+                          .scalar("authentication", preparedAuthentication.authentication())
+                          .bytes();
+                  var now = nowTs();
+
+                  if (key.isEmpty()) {
+                    ResourceId integrationId =
+                        randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION);
+                    credentialStore.store(
+                        integrationId,
+                        preparedAuthentication.authentication().getCredentialGeneration(),
+                        preparedAuthentication.credentials());
+                    try {
+                      var created =
+                          createOrReplace(
+                              integrationId,
+                              name,
+                              spec.getType(),
+                              uri,
+                              properties,
+                              preparedAuthentication.authentication(),
+                              mode,
+                              false,
+                              null,
                               now,
-                              idempotencyTtlSeconds(),
-                              this::correlationId,
-                              CatalogIntegration::parseFrom));
-              return CreateCatalogIntegrationResponse.newBuilder()
-                  .setIntegration(result.body)
-                  .setMeta(result.meta)
-                  .build();
-            }),
-        correlationId());
+                              corr);
+                      if (!created.newIdentityPublished()) {
+                        cleanupPrepared(integrationId, preparedAuthentication);
+                      }
+                      return CreateCatalogIntegrationResponse.newBuilder()
+                          .setIntegration(created.row().value())
+                          .setMeta(created.row().meta())
+                          .build();
+                    } catch (RuntimeException retryableFailure) {
+                      cleanupPrepared(integrationId, preparedAuthentication);
+                      throw retryableFailure;
+                    }
+                  }
+                  var result =
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProtoRecoverable(
+                                  pc.getAccountId(),
+                                  "CreateCatalogIntegration",
+                                  key,
+                                  () -> fingerprint,
+                                  () ->
+                                      randomResourceId(
+                                          pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION),
+                                  (reservedId, completion) -> {
+                                    var recovered = integrations.getByIdWithMeta(reservedId);
+                                    if (recovered.isPresent()) {
+                                      throw new BaseResourceRepository.AbortRetryableException(
+                                          "integration exists before its idempotency receipt committed");
+                                    }
+                                    credentialStore.store(
+                                        reservedId,
+                                        preparedAuthentication
+                                            .authentication()
+                                            .getCredentialGeneration(),
+                                        preparedAuthentication.credentials());
+                                    try {
+                                      var created =
+                                          createOrReplace(
+                                              reservedId,
+                                              name,
+                                              spec.getType(),
+                                              uri,
+                                              properties,
+                                              preparedAuthentication.authentication(),
+                                              CreateMode.CM_ERROR_IF_EXISTS,
+                                              true,
+                                              completion,
+                                              now,
+                                              corr);
+                                      return new IdempotencyGuard.CommittedCreate<>(
+                                          created.row().value(),
+                                          created.row().value().getResourceId(),
+                                          created.row().meta());
+                                    } catch (RuntimeException definiteFailure) {
+                                      cleanupPrepared(reservedId, preparedAuthentication);
+                                      throw definiteFailure;
+                                    }
+                                  },
+                                  idempotencyStore,
+                                  now,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  CatalogIntegration::parseFrom));
+                  return CreateCatalogIntegrationResponse.newBuilder()
+                      .setIntegration(result.body)
+                      .setMeta(result.meta)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private record CreateOutcome(
@@ -412,192 +434,214 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Override
   public Uni<UpdateCatalogIntegrationResponse> updateCatalogIntegration(
       UpdateCatalogIntegrationRequest request) {
+    var L = LogHelper.start(LOG, "UpdateCatalogIntegration");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
-              String corr = pc.getCorrelationId();
-              ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
-              Set<String> paths =
-                  requiredMask(request.hasUpdateMask() ? request.getUpdateMask() : null, corr);
-              var current =
-                  integrations
-                      .getByIdWithMeta(id)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
-              MutationOps.BaseServiceChecks.enforcePreconditions(
-                  corr, current.meta(), request.getPrecondition());
-              var desiredBuilder = current.value().toBuilder();
-              if (paths.contains("display_name")) {
-                desiredBuilder.setDisplayName(
-                    mustNonEmpty(request.getSpec().getDisplayName(), "display_name", corr));
-              }
-              if (paths.contains("catalog_uri")) {
-                desiredBuilder.setCatalogUri(
-                    validateCatalogUri(request.getSpec().getCatalogUri(), corr));
-              }
-              if (paths.contains("properties")) {
-                desiredBuilder
-                    .clearProperties()
-                    .putAllProperties(
-                        validateConnectionProperties(request.getSpec().getPropertiesMap(), corr));
-              }
-              CatalogIntegration desired = desiredBuilder.setUpdatedAt(nowTs()).build();
-              try {
-                var meta =
-                    integrations
-                        .updateWithMetaUnlessDeleting(desired, current.meta().getPointerVersion())
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.preconditionFailed(
-                                    corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
-                return UpdateCatalogIntegrationResponse.newBuilder()
-                    .setIntegration(desired)
-                    .setMeta(meta)
-                    .build();
-              } catch (BaseResourceRepository.NameConflictException e) {
-                throw GrpcErrors.alreadyExists(
-                    corr,
-                    CATALOG_INTEGRATION_ALREADY_EXISTS,
-                    Map.of("display_name", desired.getDisplayName()));
-              }
-            }),
-        correlationId());
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
+                  String corr = pc.getCorrelationId();
+                  ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
+                  Set<String> paths =
+                      requiredMask(request.hasUpdateMask() ? request.getUpdateMask() : null, corr);
+                  var current =
+                      integrations
+                          .getByIdWithMeta(id)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, current.meta(), request.getPrecondition());
+                  var desiredBuilder = current.value().toBuilder();
+                  if (paths.contains("display_name")) {
+                    desiredBuilder.setDisplayName(
+                        mustNonEmpty(request.getSpec().getDisplayName(), "display_name", corr));
+                  }
+                  if (paths.contains("catalog_uri")) {
+                    desiredBuilder.setCatalogUri(
+                        validateCatalogUri(request.getSpec().getCatalogUri(), corr));
+                  }
+                  if (paths.contains("properties")) {
+                    desiredBuilder
+                        .clearProperties()
+                        .putAllProperties(
+                            validateConnectionProperties(
+                                request.getSpec().getPropertiesMap(), corr));
+                  }
+                  CatalogIntegration desired = desiredBuilder.setUpdatedAt(nowTs()).build();
+                  try {
+                    var meta =
+                        integrations
+                            .updateWithMetaUnlessDeleting(
+                                desired, current.meta().getPointerVersion())
+                            .orElseThrow(
+                                () ->
+                                    GrpcErrors.preconditionFailed(
+                                        corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
+                    return UpdateCatalogIntegrationResponse.newBuilder()
+                        .setIntegration(desired)
+                        .setMeta(meta)
+                        .build();
+                  } catch (BaseResourceRepository.NameConflictException e) {
+                    throw GrpcErrors.alreadyExists(
+                        corr,
+                        CATALOG_INTEGRATION_ALREADY_EXISTS,
+                        Map.of("display_name", desired.getDisplayName()));
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<UpdateCatalogIntegrationAuthenticationResponse> updateCatalogIntegrationAuthentication(
       UpdateCatalogIntegrationAuthenticationRequest request) {
+    var L = LogHelper.start(LOG, "UpdateCatalogIntegrationAuthentication");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
-              String corr = pc.getCorrelationId();
-              ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
-              if (!request.hasAuthentication()
-                  || request.getAuthentication().getConfigurationCase()
-                      == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
-                throw GrpcErrors.invalidArgument(
-                    corr, FIELD, Map.of("field", "authentication.configuration"));
-              }
-              var current =
-                  integrations
-                      .getByIdWithMeta(id)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
-              MutationOps.BaseServiceChecks.enforcePreconditions(
-                  corr, current.meta(), request.getPrecondition());
-              long nextGeneration =
-                  current.value().hasAuthentication()
-                      ? current.value().getAuthentication().getCredentialGeneration() + 1L
-                      : 1L;
-              PreparedAuthentication prepared =
-                  prepareAuthentication(
-                      request.hasAuthentication()
-                          ? request.getAuthentication()
-                          : CatalogAuthentication.getDefaultInstance(),
-                      request.hasCredentials()
-                          ? request.getCredentials()
-                          : CatalogIntegrationCredentials.getDefaultInstance(),
-                      nextGeneration,
-                      corr);
-              validateAuthenticationType(
-                  current.value().getType(), prepared.authentication(), corr);
-              long allocatedGeneration =
-                  credentialStore.storeRotation(
-                      id,
-                      prepared.authentication().getCredentialGeneration(),
-                      prepared.credentials());
-              if (allocatedGeneration != prepared.authentication().getCredentialGeneration()) {
-                prepared =
-                    new PreparedAuthentication(
-                        prepared.authentication().toBuilder()
-                            .setCredentialGeneration(allocatedGeneration)
-                            .build(),
-                        prepared.credentials());
-              }
-              CatalogIntegration desired =
-                  applyAuthentication(current.value().toBuilder(), prepared.authentication())
-                      .setUpdatedAt(nowTs())
-                      .build();
-              credentialCleanup.schedule(current.value());
-              try {
-                var meta =
-                    integrations
-                        .updateWithMetaUnlessDeleting(desired, current.meta().getPointerVersion())
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.preconditionFailed(
-                                    corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
-                credentialCleanup.cleanIfSuperseded(current.value());
-                return UpdateCatalogIntegrationAuthenticationResponse.newBuilder()
-                    .setIntegration(desired)
-                    .setMeta(meta)
-                    .build();
-              } catch (RuntimeException definiteFailure) {
-                credentialCleanup.cancelIfResourceUnchanged(
-                    current.value(), current.meta().getPointerVersion());
-                cleanupPreparedAuthenticationUnlessPublished(id, prepared);
-                throw definiteFailure;
-              }
-            }),
-        correlationId());
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
+                  String corr = pc.getCorrelationId();
+                  ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
+                  if (!request.hasAuthentication()
+                      || request.getAuthentication().getConfigurationCase()
+                          == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
+                    throw GrpcErrors.invalidArgument(
+                        corr, FIELD, Map.of("field", "authentication.configuration"));
+                  }
+                  var current =
+                      integrations
+                          .getByIdWithMeta(id)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr, CATALOG_INTEGRATION, Map.of("id", id.getId())));
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, current.meta(), request.getPrecondition());
+                  long nextGeneration =
+                      current.value().hasAuthentication()
+                          ? current.value().getAuthentication().getCredentialGeneration() + 1L
+                          : 1L;
+                  PreparedAuthentication prepared =
+                      prepareAuthentication(
+                          request.hasAuthentication()
+                              ? request.getAuthentication()
+                              : CatalogAuthentication.getDefaultInstance(),
+                          request.hasCredentials()
+                              ? request.getCredentials()
+                              : CatalogIntegrationCredentials.getDefaultInstance(),
+                          nextGeneration,
+                          corr);
+                  validateAuthenticationType(
+                      current.value().getType(), prepared.authentication(), corr);
+                  long allocatedGeneration =
+                      credentialStore.storeRotation(
+                          id,
+                          prepared.authentication().getCredentialGeneration(),
+                          prepared.credentials());
+                  if (allocatedGeneration != prepared.authentication().getCredentialGeneration()) {
+                    prepared =
+                        new PreparedAuthentication(
+                            prepared.authentication().toBuilder()
+                                .setCredentialGeneration(allocatedGeneration)
+                                .build(),
+                            prepared.credentials());
+                  }
+                  CatalogIntegration desired =
+                      applyAuthentication(current.value().toBuilder(), prepared.authentication())
+                          .setUpdatedAt(nowTs())
+                          .build();
+                  credentialCleanup.schedule(current.value());
+                  try {
+                    var meta =
+                        integrations
+                            .updateWithMetaUnlessDeleting(
+                                desired, current.meta().getPointerVersion())
+                            .orElseThrow(
+                                () ->
+                                    GrpcErrors.preconditionFailed(
+                                        corr, CATALOG_INTEGRATION_CHANGED, Map.of()));
+                    credentialCleanup.cleanIfSuperseded(current.value());
+                    return UpdateCatalogIntegrationAuthenticationResponse.newBuilder()
+                        .setIntegration(desired)
+                        .setMeta(meta)
+                        .build();
+                  } catch (RuntimeException definiteFailure) {
+                    credentialCleanup.cancelIfResourceUnchanged(
+                        current.value(), current.meta().getPointerVersion());
+                    cleanupPreparedAuthenticationUnlessPublished(id, prepared);
+                    throw definiteFailure;
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<DeleteCatalogIntegrationResponse> deleteCatalogIntegration(
       DeleteCatalogIntegrationRequest request) {
+    var L = LogHelper.start(LOG, "DeleteCatalogIntegration");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
-              String corr = pc.getCorrelationId();
-              ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
-              var current = integrations.getByIdWithMeta(id);
-              if (current.isEmpty()) {
-                if (hasMeaningfulPrecondition(request.getPrecondition()))
-                  throw GrpcErrors.notFound(corr, CATALOG_INTEGRATION, Map.of("id", id.getId()));
-                return DeleteCatalogIntegrationResponse.newBuilder()
-                    .setMeta(integrations.metaForSafe(id))
-                    .build();
-              }
-              var meta = current.get().meta();
-              MutationOps.BaseServiceChecks.enforcePreconditions(
-                  corr, meta, request.getPrecondition());
-              if (integrations.cascadeDeletionFenceVersion(id) > 0L)
-                throw GrpcErrors.conflict(
-                    corr,
-                    CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
-                    Map.of("reason", "cascade deletion in progress"));
-              long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
-              if (markerVersion > 0L)
-                throw GrpcErrors.conflict(
-                    corr,
-                    CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
-                    Map.of("reason", "dependent overlays exist"));
-              credentialCleanup.schedule(current.get().value());
-              try {
-                if (!integrations.deleteWithPreconditionAndNoOverlayMarker(
-                    id, meta.getPointerVersion())) {
-                  throw new BaseResourceRepository.AbortRetryableException(
-                      "integration dependencies changed during deletion");
-                }
-              } catch (RuntimeException failure) {
-                credentialCleanup.cancelIfResourceUnchanged(
-                    current.get().value(), meta.getPointerVersion());
-                throw failure;
-              }
-              credentialCleanup.cleanIfSuperseded(current.get().value());
-              return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
-            }),
-        correlationId());
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_WRITE);
+                  String corr = pc.getCorrelationId();
+                  ResourceId id = scopedId(pc.getAccountId(), request.getIntegrationId());
+                  var current = integrations.getByIdWithMeta(id);
+                  if (current.isEmpty()) {
+                    if (hasMeaningfulPrecondition(request.getPrecondition()))
+                      throw GrpcErrors.notFound(
+                          corr, CATALOG_INTEGRATION, Map.of("id", id.getId()));
+                    return DeleteCatalogIntegrationResponse.newBuilder()
+                        .setMeta(integrations.metaForSafe(id))
+                        .build();
+                  }
+                  var meta = current.get().meta();
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+                  if (integrations.cascadeDeletionFenceVersion(id) > 0L)
+                    throw GrpcErrors.conflict(
+                        corr,
+                        CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
+                        Map.of("reason", "cascade deletion in progress"));
+                  long markerVersion = markerStore.catalogIntegrationOverlaysMarkerVersion(id);
+                  if (markerVersion > 0L)
+                    throw GrpcErrors.conflict(
+                        corr,
+                        CATALOG_INTEGRATION_DELETION_IN_PROGRESS,
+                        Map.of("reason", "dependent overlays exist"));
+                  credentialCleanup.schedule(current.get().value());
+                  try {
+                    if (!integrations.deleteWithPreconditionAndNoOverlayMarker(
+                        id, meta.getPointerVersion())) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "integration dependencies changed during deletion");
+                    }
+                  } catch (RuntimeException failure) {
+                    credentialCleanup.cancelIfResourceUnchanged(
+                        current.get().value(), meta.getPointerVersion());
+                    throw failure;
+                  }
+                  credentialCleanup.cleanIfSuperseded(current.get().value());
+                  return DeleteCatalogIntegrationResponse.newBuilder().setMeta(meta).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private static Set<String> requiredMask(FieldMask mask, String corr) {
