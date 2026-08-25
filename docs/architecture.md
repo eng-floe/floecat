@@ -69,6 +69,8 @@ The following modules compose the system (see linked docs for deep dives):
 | Component | Responsibility |
 |-----------|----------------|
 | [`proto/`](proto.md) | All protobuf/gRPC contracts (catalog, query lifecycle, execution scans, connectors, statistics, types). |
+| [`core/catalog-access-spi/`](catalog-access-spi.md) | Connector-independent upstream catalog access contracts. |
+| `catalog-access/iceberg-rest/` | Iceberg REST discovery and metadata provider for the catalog-access SPI. |
 | [`service/`](service.md) | Quarkus runtime, resource repositories, query lifecycle service, GC, security, metrics. |
 | [`client-cli/`](client-cli.md) | Interactive shell for humans; exercises every public RPC. |
 | [`core/connectors/spi/`](connectors-spi.md) | Connector interfaces, stats engines, NDV helpers, auth shims. |
