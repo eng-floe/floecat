@@ -33,9 +33,12 @@ public final class RolePermissions {
       "storage-authority.resolve-internal";
   public static final String RECONCILE_EXECUTOR_CONTROL_INTERNAL =
       "reconcile-executor-control.internal";
+  public static final String CATALOG_WRITE = "catalog.write";
   public static final String CATALOG_INTEGRATION_READ = "catalog-integration.read";
   public static final String CATALOG_INTEGRATION_WRITE = "catalog-integration.write";
   public static final String CATALOG_INTEGRATION_USE = "catalog-integration.use";
+  public static final String CATALOG_OVERLAY_READ = "catalog-overlay.read";
+  public static final String CATALOG_OVERLAY_WRITE = "catalog-overlay.write";
   private static final List<String> READ_PERMS =
       List.of(
           "account.read",
@@ -43,12 +46,13 @@ public final class RolePermissions {
           "namespace.read",
           "table.read",
           "view.read",
-          CATALOG_INTEGRATION_READ);
+          CATALOG_INTEGRATION_READ,
+          CATALOG_OVERLAY_READ);
   private static final List<String> FULL_PERMS =
       List.of(
           "account.read",
           "catalog.read",
-          "catalog.write",
+          CATALOG_WRITE,
           "namespace.read",
           "namespace.write",
           "table.read",
@@ -59,6 +63,8 @@ public final class RolePermissions {
           CATALOG_INTEGRATION_READ,
           CATALOG_INTEGRATION_WRITE,
           CATALOG_INTEGRATION_USE,
+          CATALOG_OVERLAY_READ,
+          CATALOG_OVERLAY_WRITE,
           "system-objects.read",
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
@@ -69,19 +75,21 @@ public final class RolePermissions {
           "account.read",
           "account.write",
           "catalog.read",
-          "catalog.write",
+          CATALOG_WRITE,
           "namespace.read",
           "namespace.write",
           "connector.create",
           CATALOG_INTEGRATION_READ,
           CATALOG_INTEGRATION_WRITE,
-          CATALOG_INTEGRATION_USE);
+          CATALOG_INTEGRATION_USE,
+          CATALOG_OVERLAY_READ,
+          CATALOG_OVERLAY_WRITE);
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> RECONCILE_WORKER_PERMS =
       List.of(
           "account.read",
           "catalog.read",
-          "catalog.write",
+          CATALOG_WRITE,
           "namespace.read",
           "namespace.write",
           "table.read",
@@ -91,6 +99,7 @@ public final class RolePermissions {
           "connector.manage",
           CATALOG_INTEGRATION_READ,
           CATALOG_INTEGRATION_USE,
+          CATALOG_OVERLAY_READ,
           "system-objects.read",
           STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RECONCILE_EXECUTOR_CONTROL_INTERNAL);

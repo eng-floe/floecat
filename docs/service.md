@@ -27,7 +27,7 @@ query lifecycle / scan bundle logic.
 │  ├─ Interceptors (context, localization, metering)                         │
 │  ├─ Security (PrincipalProvider, Authorizer)                               │
 │  ├─ Services (Catalog, Namespace, Table, View, Snapshot, Account,           │
-│  │       Directory, Statistics, Integrations, Connectors, QueryService)      │
+│  │      Directory, Statistics, Integrations, Overlays, Connectors, Query)   │
 │  ├─ QueryService (QueryContextStore, QueryServiceImpl)                     │
 │  ├─ Repositories (CatalogRepository, NamespaceRepository, TableRepository, │
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
@@ -81,8 +81,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions. Account
   deletion installs a durable write fence, then uses strongly consistent enumeration to remove
-  catalog integrations before legacy connectors and local catalog descendants. Retrying a
-  committed account delete resumes cleanup using the deletion record's original mutation metadata.
+  catalog overlays before their integrations, followed by legacy connectors and local catalog
+  descendants. Retrying a committed account delete resumes cleanup using the deletion record's
+  original mutation metadata.
 - **CatalogIntegrationsImpl** – Provides CRUD for external catalog identity records. The contract is
   intentionally independent of legacy Connectors. It persists typed non-secret authentication
   configuration for OAuth client credentials, bearer tokens, AWS assume-role/access-key, and AWS
@@ -100,7 +101,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   while advancing its etag. The API exposes `CM_REPLACE` and
   `CM_RETURN_EXISTING` as create-conflict primitives.
   Replacement publishes a new resource identity and atomically swaps the name pointer before the
-  old identity is removed. Idempotent creates publish the
+  old identity is removed. Integration replacement is rejected while overlays depend on the old
+  identity. Cascading delete uses a durable fence so retries resume dependent-overlay cleanup before
+  removing the integration, dependency marker, and fence together. Idempotent creates publish the
   immutable success receipt in the same pointer transaction as the resource, so a retry never
   rebuilds its response from subsequently mutable state. Creates carrying credentials support
   idempotency. Secret values are excluded from durable request fingerprints and receipts, so the
@@ -108,11 +111,27 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   happen before resource publication; definite publication failures remove the unpublished
   generation, and replaced credentials are deleted only after the resource CAS commits. If the
   publication acknowledgement is uncertain, the new secret is retained so a visible integration can
-  never reference a deleted secret. Durable cleanup records are drained after the generation is
-  provably superseded.
+  never reference a deleted secret. Durable cleanup records are drained by pointer GC once a
+  generation is provably superseded.
   Get accepts either resource ID or
   exact display name. Reads require
-  `catalog-integration.read`; writes require `catalog-integration.write`.
+  `catalog-integration.read`; writes require `catalog-integration.write`, and cascading deletion of
+  dependent overlays also requires `catalog-overlay.write`.
+- **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to an
+  existing Catalog. The Catalog remains independently named, writable, and managed, and multiple
+  overlays may target it. Creating an overlay atomically publishes Integration and Catalog
+  dependency pointers while requiring both parents to remain at their validated versions, and
+  advances both dependency markers in the same transaction. `CM_REPLACE` atomically swaps in a new
+  overlay identity and may bind it to another Integration or Catalog while advancing all affected
+  dependency markers; `CM_RETURN_EXISTING`
+  returns the existing object. Get accepts either
+  resource ID or exact display name. An empty include list
+  selects all namespaces; paths select subtrees, exclusions
+  take precedence, and matching is case-sensitive. The Integration and Catalog bindings are immutable through
+  update; updates only replace the selected include/exclude lists or rename the overlay. Reads require
+  `catalog-overlay.read`; writes require `catalog-overlay.write`, and creation also requires
+  `catalog-integration.use`. Connectivity and
+  reconciliation are deferred.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
   `CaptureNow` maps to reconciler capture modes:

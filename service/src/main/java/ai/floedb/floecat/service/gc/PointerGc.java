@@ -231,6 +231,40 @@ public class PointerGc {
     missingBlobs += integrationsByName.missingBlobs;
     staleSecondaries += integrationsByName.staleSecondaries;
 
+    Result overlaysById =
+        scanPrefix(
+            Keys.catalogOverlayPointerByIdPrefix(accountId),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> true,
+            nowMs,
+            minAgeMs);
+    scanned += overlaysById.scanned;
+    deleted += overlaysById.deleted;
+    missingBlobs += overlaysById.missingBlobs;
+    staleSecondaries += overlaysById.staleSecondaries;
+
+    Result overlaySecondaryPointers =
+        scanPrefix(
+            Keys.catalogOverlayRootPrefix(accountId),
+            pageSize,
+            deadlineMs,
+            blobCache,
+            p -> {
+              String key = p.getKey();
+              return key != null
+                  && (key.contains("/by-name/")
+                      || key.contains("/by-integration/")
+                      || key.contains("/by-catalog/"));
+            },
+            nowMs,
+            minAgeMs);
+    scanned += overlaySecondaryPointers.scanned;
+    deleted += overlaySecondaryPointers.deleted;
+    missingBlobs += overlaySecondaryPointers.missingBlobs;
+    staleSecondaries += overlaySecondaryPointers.staleSecondaries;
+
     Result catalogsByName =
         scanPrefix(
             Keys.catalogPointerByNamePrefix(accountId),
@@ -480,6 +514,10 @@ public class PointerGc {
         && parts.length >= 5
         && "integration".equals(parts[4])) {
       return Keys.catalogIntegrationPointerById(accountId, decode(parts[3]));
+    }
+
+    if ("catalog-overlays".equals(scope) && parts.length >= 5 && "overlay".equals(parts[4])) {
+      return Keys.catalogOverlayPointerById(accountId, decode(parts[3]));
     }
 
     return null;

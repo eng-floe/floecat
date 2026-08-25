@@ -1093,6 +1093,95 @@ public final class Keys {
         encode(tid), encode(iid), encode(sha));
   }
 
+  // ===== Catalog Overlay =====
+
+  public static String catalogOverlayPointerById(String accountId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-id/" + encode(oid);
+  }
+
+  public static String catalogOverlayPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-id/";
+  }
+
+  public static String catalogOverlayRootPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/";
+  }
+
+  public static String catalogOverlayPointerByName(String accountId, String displayName) {
+    String tid = req("account_id", accountId);
+    String name = req("display_name", displayName);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-name/" + encode(name);
+  }
+
+  public static String catalogOverlayPointerByNamePrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-name/";
+  }
+
+  public static String catalogOverlayPointerByIntegration(
+      String accountId, String integrationId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/"
+        + encode(tid)
+        + "/catalog-overlays/by-integration/"
+        + encode(iid)
+        + "/"
+        + encode(oid);
+  }
+
+  public static String catalogOverlayPointerByIntegrationPrefix(
+      String accountId, String integrationId) {
+    String tid = req("account_id", accountId);
+    String iid = req("integration_id", integrationId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-integration/" + encode(iid) + "/";
+  }
+
+  public static String catalogOverlayPointerByCatalog(
+      String accountId, String catalogId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/"
+        + encode(tid)
+        + "/catalog-overlays/by-catalog/"
+        + encode(cid)
+        + "/"
+        + encode(oid);
+  }
+
+  public static String catalogOverlayPointerByCatalogPrefix(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/by-catalog/" + encode(cid) + "/";
+  }
+
+  /** Fixed-key generation marker advanced by every overlay attachment to this catalog. */
+  public static String catalogOverlaysMarker(String accountId, String catalogId) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    return "/accounts/" + encode(tid) + "/catalogs/overlays-marker/" + encode(cid);
+  }
+
+  public static String catalogOverlayDeletionMarker(String accountId, String overlayId) {
+    String tid = req("account_id", accountId);
+    String oid = req("overlay_id", overlayId);
+    return "/accounts/" + encode(tid) + "/catalog-overlays/deleting/" + encode(oid);
+  }
+
+  public static String catalogOverlayBlobUri(String accountId, String overlayId, String sha256) {
+    String tid = req("account_id", accountId);
+    String oid = req("overlay_id", overlayId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/catalog-overlays/%s/overlay/%s.pb", encode(tid), encode(oid), encode(sha));
+  }
+
   // ===== Idempotency =====
 
   public static String idempotencyKey(String accountId, String operation, String key) {
@@ -1927,6 +2016,10 @@ public final class Keys {
       case "catalog-integrations" ->
           seg.length == 6 && "integration".equals(seg[4])
               ? catalogIntegrationPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "catalog-overlays" ->
+          seg.length == 6 && "overlay".equals(seg[4])
+              ? catalogOverlayPointerById(account, percentDecode(seg[3]))
               : null;
       case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
       default -> null;

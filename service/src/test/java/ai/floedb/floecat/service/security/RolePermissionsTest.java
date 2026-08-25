@@ -30,7 +30,8 @@ class RolePermissionsTest {
           "namespace.read",
           "table.read",
           "view.read",
-          RolePermissions.CATALOG_INTEGRATION_READ);
+          RolePermissions.CATALOG_INTEGRATION_READ,
+          RolePermissions.CATALOG_OVERLAY_READ);
   private static final List<String> FULL_PERMS =
       List.of(
           "account.read",
@@ -46,6 +47,8 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_INTEGRATION_READ,
           RolePermissions.CATALOG_INTEGRATION_WRITE,
           RolePermissions.CATALOG_INTEGRATION_USE,
+          RolePermissions.CATALOG_OVERLAY_READ,
+          RolePermissions.CATALOG_OVERLAY_WRITE,
           "system-objects.read",
           "account.delete");
   private static final List<String> INIT_ACCOUNT_PERMS =
@@ -59,7 +62,9 @@ class RolePermissionsTest {
           "connector.create",
           RolePermissions.CATALOG_INTEGRATION_READ,
           RolePermissions.CATALOG_INTEGRATION_WRITE,
-          RolePermissions.CATALOG_INTEGRATION_USE);
+          RolePermissions.CATALOG_INTEGRATION_USE,
+          RolePermissions.CATALOG_OVERLAY_READ,
+          RolePermissions.CATALOG_OVERLAY_WRITE);
   private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
@@ -77,6 +82,7 @@ class RolePermissionsTest {
           "connector.manage",
           RolePermissions.CATALOG_INTEGRATION_READ,
           RolePermissions.CATALOG_INTEGRATION_USE,
+          RolePermissions.CATALOG_OVERLAY_READ,
           "system-objects.read",
           RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);

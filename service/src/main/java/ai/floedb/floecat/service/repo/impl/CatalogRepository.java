@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -30,7 +31,9 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @ApplicationScoped
 public class CatalogRepository {
@@ -77,6 +80,17 @@ public class CatalogRepository {
         expectedPointerVersion);
   }
 
+  public boolean deleteWithPreconditionAndOverlayMarker(
+      ResourceId catalogId, long expectedPointerVersion, long expectedMarkerVersion) {
+    String marker = Keys.catalogOverlaysMarker(catalogId.getAccountId(), catalogId.getId());
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new CatalogKey(catalogId.getAccountId(), catalogId.getId()),
+        expectedPointerVersion,
+        new PointerConditions(
+            Map.of(), expectedMarkerVersion == 0L ? Set.of(marker) : Set.of(), Map.of()),
+        expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
+  }
+
   public Optional<Catalog> getById(ResourceId catalogResourceId) {
     return repo.getByKey(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
@@ -98,6 +112,13 @@ public class CatalogRepository {
 
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
+  }
+
+  /** Body and metadata resolved from the same canonical pointer version. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Catalog>> getByIdWithMeta(
+      ResourceId catalogResourceId) {
+    return repo.getByKeyWithMeta(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
   public MutationMeta metaFor(ResourceId catalogResourceId) {

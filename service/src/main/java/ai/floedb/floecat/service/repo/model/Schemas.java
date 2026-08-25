@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -288,6 +289,33 @@ public final class Schemas {
                         v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
                   })
               .withCasBlobs();
+
+  public static final ResourceSchema<CatalogOverlay, CatalogOverlayKey> CATALOG_OVERLAY =
+      ResourceSchema.<CatalogOverlay, CatalogOverlayKey>of(
+              "catalog-overlay",
+              key -> Keys.catalogOverlayPointerById(key.accountId(), key.overlayId()),
+              key -> Keys.catalogOverlayBlobUri(key.accountId(), key.overlayId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byName",
+                      Keys.catalogOverlayPointerByName(
+                          v.getResourceId().getAccountId(), v.getDisplayName()),
+                      "byIntegration",
+                      Keys.catalogOverlayPointerByIntegration(
+                          v.getResourceId().getAccountId(),
+                          v.getIntegrationId().getId(),
+                          v.getResourceId().getId()),
+                      "byCatalog",
+                      Keys.catalogOverlayPointerByCatalog(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getResourceId().getId())),
+              v -> {
+                var sha = Hashing.sha256Hex(v.toByteArray());
+                return new CatalogOverlayKey(
+                    v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<Transaction, TransactionKey> TRANSACTION =
       ResourceSchema.<Transaction, TransactionKey>of(

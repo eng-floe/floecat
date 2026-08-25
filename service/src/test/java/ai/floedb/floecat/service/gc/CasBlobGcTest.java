@@ -112,19 +112,24 @@ class CasBlobGcTest {
   }
 
   @Test
-  void keepsCurrentIntegrationBlobAndDeletesSupersededBlob() {
+  void keepsCurrentIntegrationAndOverlayBlobsAndDeletesSupersededBlobs() {
     String integrationCurrent =
         Keys.catalogIntegrationBlobUri(ACCOUNT_ID, "integration-1", "sha-current");
     String integrationOld = Keys.catalogIntegrationBlobUri(ACCOUNT_ID, "integration-1", "sha-old");
-    for (String blob : List.of(integrationCurrent, integrationOld)) {
+    String overlayCurrent = Keys.catalogOverlayBlobUri(ACCOUNT_ID, "overlay-1", "sha-current");
+    String overlayOld = Keys.catalogOverlayBlobUri(ACCOUNT_ID, "overlay-1", "sha-old");
+    for (String blob : List.of(integrationCurrent, integrationOld, overlayCurrent, overlayOld)) {
       blobs.put(blob, "data".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
     }
     putPointer(Keys.catalogIntegrationPointerById(ACCOUNT_ID, "integration-1"), integrationCurrent);
+    putPointer(Keys.catalogOverlayPointerById(ACCOUNT_ID, "overlay-1"), overlayCurrent);
 
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(blobs.head(integrationCurrent).isPresent());
     assertFalse(blobs.head(integrationOld).isPresent());
+    assertTrue(blobs.head(overlayCurrent).isPresent());
+    assertFalse(blobs.head(overlayOld).isPresent());
   }
 
   @Test

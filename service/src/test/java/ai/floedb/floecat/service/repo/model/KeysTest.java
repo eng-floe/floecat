@@ -25,6 +25,19 @@ import org.junit.jupiter.api.Test;
 class KeysTest {
 
   @Test
+  void catalogOverlayDependenciesAndFencesUsePathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/catalog-overlays/by-catalog/catalog%2Fid/overlay%2Fid",
+        Keys.catalogOverlayPointerByCatalog("acct id", "catalog/id", "overlay/id"));
+    assertEquals(
+        "/accounts/acct%20id/catalogs/overlays-marker/catalog%2Fid",
+        Keys.catalogOverlaysMarker("acct id", "catalog/id"));
+    assertEquals(
+        "/accounts/acct%20id/catalog-overlays/deleting/overlay%2Fid",
+        Keys.catalogOverlayDeletionMarker("acct id", "overlay/id"));
+  }
+
+  @Test
   void snapshotPointerByIdUsesPathSafeEncoding() {
     assertEquals(
         "/accounts/acct%20id/tables/table%20id/snapshots/by-id/0000000000000000000",
@@ -182,6 +195,9 @@ class KeysTest {
     assertEquals(
         Keys.catalogIntegrationPointerById("a c", "int 1"),
         Keys.ownerPointerKeyForBlob(Keys.catalogIntegrationBlobUri("a c", "int 1", "sha")));
+    assertEquals(
+        Keys.catalogOverlayPointerById("a c", "over 1"),
+        Keys.ownerPointerKeyForBlob(Keys.catalogOverlayBlobUri("a c", "over 1", "sha")));
     assertEquals(
         Keys.tableRootByTable("a c", "tbl 1"),
         Keys.ownerPointerKeyForBlob(Keys.tableRootBlobUri("a c", "tbl 1", "sha")));

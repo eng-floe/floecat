@@ -8,14 +8,14 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 
 | Role name | Purpose | Granted permissions |
 |-----------|---------|---------------------|
-| `default` | Baseline read-only tenant access. Used when no roles are provided in normal (`oidc`) mode. | `account.read`, `catalog.read`, `namespace.read`, `table.read`, `view.read`, `catalog-integration.read` |
-| `administrator` | Full tenant-scoped administration of metadata, catalog integrations, and legacy connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `system-objects.read`, `account.delete` |
-| `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `system-objects.read`, `account.delete` |
+| `default` | Baseline read-only tenant access. Used when no roles are provided in normal (`oidc`) mode. | `account.read`, `catalog.read`, `namespace.read`, `table.read`, `view.read`, `catalog-integration.read`, `catalog-overlay.read` |
+| `administrator` | Full tenant-scoped administration of metadata, catalog integrations, catalog overlays, and legacy connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `catalog-overlay.read`, `catalog-overlay.write`, `system-objects.read`, `account.delete` |
+| `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `catalog-overlay.read`, `catalog-overlay.write`, `system-objects.read`, `account.delete` |
 | `platform-admin` (or configured value of `floecat.auth.platform-admin.role`) | Platform-level account management role from IdP. | `account.read`, `account.write`, `account.delete` |
-| `init-account` | Bootstrap role used to initialize account + initial resources. | `account.read`, `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.create`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use` |
+| `init-account` | Bootstrap role used to initialize account + initial resources. | `account.read`, `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.create`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `catalog-overlay.read`, `catalog-overlay.write` |
 | `delete-account` | Narrow internal role used to trigger account teardown. Floecat performs the implied cleanup internally. | `account.delete` |
 | `system-objects` | Minimal role for SystemObjects/GetSystemObjects access. | `system-objects.read` |
-| `reconcile-worker` | Dedicated machine principal for reconciler background gRPC work. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.use`, `system-objects.read`, `storage-authority.resolve-internal`, `reconcile-executor-control.internal` |
+| `reconcile-worker` | Dedicated machine principal for reconciler background gRPC work. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.use`, `catalog-overlay.read`, `system-objects.read`, `storage-authority.resolve-internal`, `reconcile-executor-control.internal` |
 
 ## Behavior Notes
 
@@ -28,6 +28,10 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 - `init-account` also bypasses strict account existence validation during inbound context building.
 - `account.delete` is the dedicated destructive permission for account teardown. It is intentionally
   separate from broad catalog/table/connector management permissions.
-- `catalog-integration.write` administers integration records. `catalog-integration.use` is a
-  separate capability reserved for binding an integration from dependent resources without
-  granting integration-management authority.
+- `catalog-integration.write` administers integration records, while `catalog-integration.use`
+  permits an integration to be bound to an overlay without granting integration-management
+  authority. Cascading integration deletion additionally requires `catalog-overlay.write` because
+  it deletes the dependent overlay resources.
+- `catalog-overlay.write` administers overlay records. Creating an overlay additionally requires
+  `catalog-integration.use` and `catalog.write`, because it binds an integration to an existing
+  writable target Catalog. Renaming or deleting an overlay does not rename or delete that Catalog.

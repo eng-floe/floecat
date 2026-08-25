@@ -40,7 +40,7 @@ class ProfilingResourceIT {
   URL baseUrl;
 
   @Test
-  void captureLifecycle() {
+  void captureLifecycle() throws InterruptedException {
     String id = createCapture();
 
     given()
@@ -58,6 +58,8 @@ class ProfilingResourceIT {
         .then()
         .statusCode(200)
         .body("id", equalTo(id));
+
+    waitForCompletion(id);
   }
 
   @Test
