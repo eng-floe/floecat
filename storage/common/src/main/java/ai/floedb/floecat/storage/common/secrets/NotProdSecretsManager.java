@@ -37,12 +37,17 @@ public class NotProdSecretsManager implements SecretsManager {
 
   @Override
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
+    if (!putIfAbsent(accountId, secretType, secretId, payload)) {
+      throw new IllegalStateException(
+          "Secret already exists: " + keyFor(accountId, secretType, secretId).sortKey());
+    }
+  }
+
+  @Override
+  public boolean putIfAbsent(String accountId, String secretType, String secretId, byte[] payload) {
     KvStore.Key key = keyFor(accountId, secretType, secretId);
     KvStore.Record record = new KvStore.Record(key, KIND, copy(payload), Map.of(), 1L);
-    boolean ok = kv.putCas(record, 0L).await().indefinitely();
-    if (!ok) {
-      throw new IllegalStateException("Secret already exists: " + key.sortKey());
-    }
+    return kv.putCas(record, 0L).await().indefinitely();
   }
 
   @Override

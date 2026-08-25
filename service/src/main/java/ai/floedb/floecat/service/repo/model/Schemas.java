@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -267,6 +268,26 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs();
+
+  public static final ResourceSchema<CatalogIntegration, CatalogIntegrationKey>
+      CATALOG_INTEGRATION =
+          ResourceSchema.<CatalogIntegration, CatalogIntegrationKey>of(
+                  "catalog-integration",
+                  key -> Keys.catalogIntegrationPointerById(key.accountId(), key.integrationId()),
+                  key ->
+                      Keys.catalogIntegrationBlobUri(
+                          key.accountId(), key.integrationId(), key.sha256()),
+                  v ->
+                      Map.of(
+                          "byName",
+                          Keys.catalogIntegrationPointerByName(
+                              v.getResourceId().getAccountId(), v.getDisplayName())),
+                  v -> {
+                    var sha = Hashing.sha256Hex(v.toByteArray());
+                    return new CatalogIntegrationKey(
+                        v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+                  })
+              .withCasBlobs();
 
   public static final ResourceSchema<Transaction, TransactionKey> TRANSACTION =
       ResourceSchema.<Transaction, TransactionKey>of(

@@ -22,11 +22,22 @@ import java.util.Optional;
 public interface SecretsManager {
   void put(String accountId, String secretType, String secretId, byte[] payload);
 
+  /** Atomically creates a secret without replacing an existing value. */
+  boolean putIfAbsent(String accountId, String secretType, String secretId, byte[] payload);
+
   Optional<byte[]> get(String accountId, String secretType, String secretId);
 
   void update(String accountId, String secretType, String secretId, byte[] payload);
 
   void delete(String accountId, String secretType, String secretId);
+
+  /**
+   * Permanently deletes secret material that is no longer referenced by a published resource.
+   * Implementations with recoverable deletion should bypass that recovery window here.
+   */
+  default void deleteImmediately(String accountId, String secretType, String secretId) {
+    delete(accountId, secretType, secretId);
+  }
 
   static String buildSecretKey(String accountId, String secretType, String secretId) {
     requireNonBlank(accountId, "accountId");

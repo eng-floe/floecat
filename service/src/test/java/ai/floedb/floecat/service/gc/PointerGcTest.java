@@ -17,8 +17,13 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -47,6 +52,9 @@ class PointerGcTest {
     gc = new PointerGc();
     gc.pointerStore = pointers;
     gc.blobStore = blobs;
+    gc.credentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
+    when(gc.credentialCleanup.drain(anyLong(), anyInt()))
+        .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
   }
 
   @AfterEach

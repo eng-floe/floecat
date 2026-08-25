@@ -180,6 +180,9 @@ class KeysTest {
         Keys.connectorPointerById("a c", "con 1"),
         Keys.ownerPointerKeyForBlob(Keys.connectorBlobUri("a c", "con 1", "sha")));
     assertEquals(
+        Keys.catalogIntegrationPointerById("a c", "int 1"),
+        Keys.ownerPointerKeyForBlob(Keys.catalogIntegrationBlobUri("a c", "int 1", "sha")));
+    assertEquals(
         Keys.tableRootByTable("a c", "tbl 1"),
         Keys.ownerPointerKeyForBlob(Keys.tableRootBlobUri("a c", "tbl 1", "sha")));
     assertEquals(

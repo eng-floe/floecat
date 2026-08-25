@@ -12,7 +12,7 @@ Catalog Integration and Catalog Overlay split today's `Connector` into its two i
 
 | Connector concern | Replacement |
 | --- | --- |
-| `uri`, `auth`, `kind` — how Floecat reaches and authenticates to an upstream catalog | `CatalogIntegration` |
+| `uri`, connection properties, `auth`, `kind` — how Floecat reaches and authenticates to an upstream catalog | `CatalogIntegration` |
 | `source` — which upstream namespaces are selected | `CatalogOverlay` |
 | `destination` — where the selection lands in Floecat | `CatalogOverlay`, through a reference to an existing `Catalog` |
 | `policy` — refresh cadence, retention, pause | Overlay demand or a referenced policy, deferred from the initial API |
@@ -86,9 +86,11 @@ with no overlay-specific read path.
 
 ### Catalog integration
 
-`CatalogIntegration` owns the upstream protocol, HTTP(S) endpoint, non-secret authentication
-configuration, and credential lifecycle. Its immutable resource ID is operational identity; its
-display name is mutable metadata and must be unique among integrations in the account.
+`CatalogIntegration` owns the upstream protocol, HTTP(S) endpoint, non-secret provider connection
+properties, authentication configuration, and credential lifecycle. Connection properties carry
+protocol-specific values such as the Iceberg REST warehouse; secret-bearing properties are rejected.
+Its immutable resource ID is operational identity; its display name is mutable metadata and must be
+unique among integrations in the account.
 
 The API initially supports Iceberg REST and Unity integration types. Authentication is required and
 represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS assume role,
@@ -96,12 +98,13 @@ AWS access keys, and AWS SigV4. Unity initially accepts only OAuth client creden
 authentication. The base service validates structural compatibility; endpoint and provider support
 remain the responsibility of the catalog-access adapter and provider.
 
-Integration type is immutable through update. The catalog URI is mutable with an etag precondition;
-publishing a URI update advances the Integration generation so reconciliation and durable work that
-observed the previous endpoint cannot publish afterward. Existing overlays and materialized resource
-identities remain attached to the same Integration. A replacing create is required only to change
-the Integration type, produces a new resource identity, and is rejected while overlays depend on the
-existing Integration because replacement must not silently retarget those overlays.
+Integration type is immutable through update. The catalog URI and connection properties are mutable
+with an etag precondition; publishing either update advances the Integration generation so
+reconciliation and durable work that observed the previous connection configuration cannot publish
+afterward. Existing overlays and materialized resource identities remain attached to the same
+Integration. A replacing create is required only to change the Integration type, produces a new
+resource identity, and is rejected while overlays depend on the existing Integration because
+replacement must not silently retarget those overlays.
 
 Integration type identifies the catalog access protocol; it does not define the format of every
 table in that catalog. As in the existing Connector path, the catalog-access provider determines
