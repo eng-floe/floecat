@@ -218,8 +218,12 @@ public final class UnityDeltaConnector extends DeltaConnector {
       properties.put("s3.access-key-id", aws.accessKeyId());
       properties.put("s3.secret-access-key", aws.secretAccessKey());
       properties.put("s3.session-token", aws.sessionToken());
+      if (!isBlank(aws.accessPoint())) {
+        properties.put("s3.access-point", aws.accessPoint());
+      }
       return Optional.of(
-          new FloecatConnector.VendedStorageCredentials(properties, credentials.expiresAt()));
+          new FloecatConnector.VendedStorageCredentials(
+              properties, credentials.expiresAt(), credentials.storageUrl()));
     } catch (UnityCatalogException e) {
       throw classifyAccessFailure(e);
     }

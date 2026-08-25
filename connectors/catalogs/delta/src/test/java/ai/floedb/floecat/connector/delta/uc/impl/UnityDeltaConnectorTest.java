@@ -169,7 +169,8 @@ class UnityDeltaConnectorTest {
             "table-id", UnityCatalogClient.TableOperation.READ))
         .thenReturn(
             new TemporaryTableCredentials(
-                new TemporaryTableCredentials.AwsCredentials("key", "secret", "token", null),
+                new TemporaryTableCredentials.AwsCredentials(
+                    "key", "secret", "token", "arn:aws:s3:us-east-1:123:accesspoint/orders"),
                 false,
                 expiry,
                 "s3://bucket/orders"));
@@ -180,8 +181,10 @@ class UnityDeltaConnectorTest {
     assertThat(result.orElseThrow().properties())
         .containsEntry("s3.access-key-id", "key")
         .containsEntry("s3.secret-access-key", "secret")
-        .containsEntry("s3.session-token", "token");
+        .containsEntry("s3.session-token", "token")
+        .containsEntry("s3.access-point", "arn:aws:s3:us-east-1:123:accesspoint/orders");
     assertThat(result.orElseThrow().expiresAt()).isEqualTo(expiry);
+    assertThat(result.orElseThrow().scopePrefix()).isEqualTo("s3://bucket/orders");
   }
 
   @Test

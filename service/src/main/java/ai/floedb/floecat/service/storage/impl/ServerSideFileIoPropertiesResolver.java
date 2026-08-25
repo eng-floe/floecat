@@ -36,6 +36,7 @@ public class ServerSideFileIoPropertiesResolver {
           "s3.region",
           "s3.endpoint",
           "s3.path-style-access",
+          "s3.access-point",
           "s3.access-key-id",
           "s3.secret-access-key",
           "s3.session-token");

@@ -1174,10 +1174,19 @@ public interface FloecatConnector extends Closeable {
    * @param expiresAt when the credentials stop working, or null if the catalog did not say. Null is
    *     meaningful — callers that cache must treat it as "do not cache" rather than "never
    *     expires".
+   * @param scopePrefix catalog-issued storage prefix to which the credentials apply, or null when
+   *     the catalog did not provide one. Callers may fall back to the requested table location but
+   *     must prefer this value when producing a scoped credential response.
    */
-  record VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+  record VendedStorageCredentials(
+      Map<String, String> properties, Instant expiresAt, String scopePrefix) {
+    public VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+      this(properties, expiresAt, null);
+    }
+
     public VendedStorageCredentials {
       properties = properties == null ? Map.of() : Map.copyOf(properties);
+      scopePrefix = scopePrefix == null || scopePrefix.isBlank() ? null : scopePrefix.trim();
     }
 
     public boolean isEmpty() {

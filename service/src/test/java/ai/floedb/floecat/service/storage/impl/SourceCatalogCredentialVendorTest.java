@@ -20,9 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.time.Instant;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class SourceCatalogCredentialVendorTest {
@@ -86,5 +89,27 @@ class SourceCatalogCredentialVendorTest {
             "orders");
 
     assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+  }
+
+  @Test
+  void catalogIssuedScopeWinsOverRequestedPrefix() {
+    var vended =
+        new FloecatConnector.VendedStorageCredentials(
+            Map.of("s3.access-key-id", "key"),
+            Instant.parse("2030-01-01T00:00:00Z"),
+            "  s3://catalog-scope/table  ");
+
+    assertThat(SourceCatalogCredentialVendor.responsePrefix(vended, "s3://requested/table"))
+        .isEqualTo("s3://catalog-scope/table");
+  }
+
+  @Test
+  void requestedPrefixIsFallbackForLegacyConnector() {
+    var vended =
+        new FloecatConnector.VendedStorageCredentials(
+            Map.of("s3.access-key-id", "key"), Instant.parse("2030-01-01T00:00:00Z"));
+
+    assertThat(SourceCatalogCredentialVendor.responsePrefix(vended, "s3://requested/table"))
+        .isEqualTo("s3://requested/table");
   }
 }

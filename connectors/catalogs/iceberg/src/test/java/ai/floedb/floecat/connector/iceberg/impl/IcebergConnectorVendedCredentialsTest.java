@@ -66,6 +66,7 @@ class IcebergConnectorVendedCredentialsTest {
                 (proxy, method, args) ->
                     switch (method.getName()) {
                       case "io" -> io;
+                      case "location" -> "s3://warehouse/tpch_10/customer";
                       case "name" -> "fake-table";
                       case "toString" -> "fake-table";
                       case "hashCode" -> System.identityHashCode(proxy);
@@ -194,6 +195,7 @@ class IcebergConnectorVendedCredentialsTest {
     assertEquals("ASIAVENDED", vended.get().properties().get("s3.access-key-id"));
     assertEquals("vended-session", vended.get().properties().get("s3.session-token"));
     assertEquals(Instant.ofEpochMilli(1786000000000L), vended.get().expiresAt());
+    assertEquals("s3://warehouse/tpch", vended.get().scopePrefix());
   }
 
   @Test
@@ -211,6 +213,7 @@ class IcebergConnectorVendedCredentialsTest {
 
     assertTrue(vended.isPresent());
     assertEquals("EXACT", vended.get().properties().get("s3.access-key-id"));
+    assertEquals("s3://warehouse/tpch/region", vended.get().scopePrefix());
   }
 
   @Test
@@ -254,6 +257,7 @@ class IcebergConnectorVendedCredentialsTest {
     assertEquals("vended-secret", vended.get().properties().get("s3.secret-access-key"));
     assertEquals("vended-session", vended.get().properties().get("s3.session-token"));
     assertEquals(Instant.ofEpochMilli(1786000000000L), vended.get().expiresAt());
+    assertEquals("s3://warehouse/tpch_10/customer", vended.get().scopePrefix());
   }
 
   /**

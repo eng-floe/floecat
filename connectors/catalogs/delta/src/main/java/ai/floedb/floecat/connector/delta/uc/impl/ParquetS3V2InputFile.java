@@ -30,8 +30,12 @@ public class ParquetS3V2InputFile implements InputFile {
   private final String key;
 
   ParquetS3V2InputFile(RefreshingAwsClient<S3Client> s3, String s3Uri) {
+    this(s3, s3Uri, null);
+  }
+
+  ParquetS3V2InputFile(RefreshingAwsClient<S3Client> s3, String s3Uri, String bucketOverride) {
     var u = URI.create(s3Uri.startsWith("s3a://") ? "s3://" + s3Uri.substring(6) : s3Uri);
-    this.bucket = u.getHost();
+    this.bucket = bucketOverride == null || bucketOverride.isBlank() ? u.getHost() : bucketOverride;
     this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       this.reader = new S3RangeReader(s3, bucket, key);

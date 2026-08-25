@@ -70,7 +70,7 @@ public class SourceCatalogCredentialVendor {
    * Non-secret S3 routing keys a vended credential carries, safe to expose in client_safe_config.
    */
   private static final List<String> VENDED_ROUTING_KEYS =
-      List.of("s3.region", "s3.endpoint", "s3.path-style-access");
+      List.of("s3.region", "s3.endpoint", "s3.path-style-access", "s3.access-point");
 
   /** Region aliases, matching what {@code StorageAuthorityResolver.putRegionConfig} writes. */
   private static final List<String> REGION_KEYS = List.of("s3.region", "region", "client.region");
@@ -189,7 +189,7 @@ public class SourceCatalogCredentialVendor {
     storageConfig.putAll(routing);
     VendedStorageCredential.Builder credential =
         VendedStorageCredential.newBuilder()
-            .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
+            .setPrefix(responsePrefix(vended.get(), responseLocationPrefix))
             .putAllConfig(Map.copyOf(storageConfig));
     Instant expiresAt = vended.get().expiresAt();
     if (expiresAt != null) {
@@ -208,6 +208,14 @@ public class SourceCatalogCredentialVendor {
         .putAllClientSafeConfig(routing)
         .addStorageCredentials(credential)
         .build();
+  }
+
+  static String responsePrefix(
+      FloecatConnector.VendedStorageCredentials vended, String requestedPrefix) {
+    if (vended != null && vended.scopePrefix() != null) {
+      return vended.scopePrefix();
+    }
+    return requestedPrefix == null ? "" : requestedPrefix;
   }
 
   static Map<String, String> clientSafeRoutingProperties(Map<String, String> props) {

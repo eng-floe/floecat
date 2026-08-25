@@ -1860,7 +1860,8 @@ public abstract class IcebergConnector implements FloecatConnector {
           // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
           "s3.region",
           "s3.endpoint",
-          "s3.path-style-access");
+          "s3.path-style-access",
+          "s3.access-point");
 
   /** Iceberg's key for when vended session credentials stop working. */
   private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
@@ -1899,7 +1900,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(ioProps)));
+    return Optional.of(
+        new VendedStorageCredentials(vended, parseVendedExpiry(ioProps), table.location()));
   }
 
   /**
@@ -1946,7 +1948,10 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(best.config())));
+    String scopePrefix =
+        best.prefix() == null || best.prefix().isBlank() ? table.location() : best.prefix();
+    return Optional.of(
+        new VendedStorageCredentials(vended, parseVendedExpiry(best.config()), scopePrefix));
   }
 
   private static Map<String, String> filterVendedKeys(Map<String, String> source) {

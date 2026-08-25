@@ -41,9 +41,15 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 
 final class S3V2FileSystemClient implements FileIO {
   private final RefreshingAwsClient<S3Client> s3;
+  private final String bucketOverride;
 
   S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
+    this(s3, null);
+  }
+
+  S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3, String bucketOverride) {
     this.s3 = s3;
+    this.bucketOverride = blankToNull(bucketOverride);
   }
 
   @Override
@@ -52,7 +58,7 @@ final class S3V2FileSystemClient implements FileIO {
     if (isMissingCheckpoint(resolved)) {
       return new MissingInputFile(resolved);
     }
-    return new S3InputFile(s3, resolved);
+    return new S3InputFile(s3, resolved, bucketOverride);
   }
 
   @Override
@@ -87,7 +93,7 @@ final class S3V2FileSystemClient implements FileIO {
   @Override
   public FileStatus getFileStatus(String path) throws IOException {
     var u = URI.create(resolvePath(path));
-    var bucket = u.getHost();
+    var bucket = requestBucket(u);
     var key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       var head = s3.call(client -> client.headObject(b -> b.bucket(bucket).key(key)));
@@ -103,7 +109,7 @@ final class S3V2FileSystemClient implements FileIO {
       return false;
     }
     URI u = URI.create(resolvedPath);
-    String bucket = u.getHost();
+    String bucket = requestBucket(u);
     String key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       s3.callUnchecked(client -> client.headObject(b -> b.bucket(bucket).key(key)));
@@ -120,10 +126,11 @@ final class S3V2FileSystemClient implements FileIO {
   public CloseableIterator<FileStatus> listFrom(String filePath) throws IOException {
     final String resolved = resolvePath(filePath);
     final URI u = URI.create(resolved);
-    final String bucket = u.getHost();
-    if (bucket == null || bucket.isEmpty()) {
+    final String logicalBucket = u.getHost();
+    if (logicalBucket == null || logicalBucket.isEmpty()) {
       throw new IOException("Invalid S3 path for listFrom: " + filePath);
     }
+    final String bucket = requestBucket(u);
     final String fullKey = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
 
     final int lastSlash = fullKey.lastIndexOf('/');
@@ -232,7 +239,7 @@ final class S3V2FileSystemClient implements FileIO {
               continue;
             }
 
-            String fullPath = "s3://" + bucket + "/" + key;
+            String fullPath = "s3://" + logicalBucket + "/" + key;
             long size = (o.size() != null) ? o.size() : 0L;
             long mod =
                 (o.lastModified() != null)
@@ -266,6 +273,19 @@ final class S3V2FileSystemClient implements FileIO {
     return Optional.empty();
   }
 
+  private String requestBucket(URI location) {
+    return requestBucket(location, bucketOverride);
+  }
+
+  static String requestBucket(URI location, String bucketOverride) {
+    String override = blankToNull(bucketOverride);
+    return override == null ? location.getHost() : override;
+  }
+
+  static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value.trim();
+  }
+
   static final class S3InputFile implements InputFile {
     private final RefreshingAwsClient<S3Client> s3;
     private final String resolvedPath;
@@ -274,12 +294,12 @@ final class S3V2FileSystemClient implements FileIO {
     private final String key;
     private final S3RangeReader rangeReader;
 
-    S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath) {
+    S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath, String bucketOverride) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
 
       var u = URI.create(resolvedPath);
-      this.bucket = u.getHost();
+      this.bucket = bucketOverride == null ? u.getHost() : bucketOverride;
       this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
 
       try {
