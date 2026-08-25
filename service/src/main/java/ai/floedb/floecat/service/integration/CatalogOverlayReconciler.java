@@ -134,11 +134,7 @@ public class CatalogOverlayReconciler {
   /** Removes every materialized descendant after the overlay deletion fence is installed. */
   public void retireMaterializedResources(CatalogOverlay overlay) {
     ResourceId catalogId = overlay.getCatalogId();
-    List<Namespace> catalogNamespaces = new ArrayList<>();
-    for (ResourceId namespaceId :
-        namespaces.listIdsConsistent(catalogId.getAccountId(), catalogId.getId())) {
-      namespaces.getById(namespaceId).ifPresent(catalogNamespaces::add);
-    }
+    List<Namespace> catalogNamespaces = new ArrayList<>(listNamespaces(catalogId));
     catalogNamespaces.sort(
         Comparator.comparingInt((Namespace namespace) -> path(namespace).segments().size())
             .reversed());
@@ -269,11 +265,8 @@ public class CatalogOverlayReconciler {
       MutableResult result) {
     ResourceId catalogId = overlay.getCatalogId();
     Map<NamespacePath, Namespace> current = new HashMap<>();
-    for (ResourceId namespaceId :
-        namespaces.listIdsConsistent(catalogId.getAccountId(), catalogId.getId())) {
-      namespaces
-          .getByIdForMutation(namespaceId)
-          .ifPresent(value -> current.put(path(value), value));
+    for (Namespace namespace : listNamespaces(catalogId)) {
+      current.put(path(namespace), namespace);
     }
     for (NamespacePath path : targetPaths.stream().sorted().toList()) {
       if (current.containsKey(path)) continue;
@@ -649,6 +642,18 @@ public class CatalogOverlayReconciler {
                 namespace.getResourceId().getAccountId(),
                 namespace.getCatalogId().getId(),
                 namespace.getResourceId().getId(),
+                200,
+                token,
+                next));
+  }
+
+  private List<Namespace> listNamespaces(ResourceId catalogId) {
+    return listAll(
+        (token, next) ->
+            namespaces.listConsistent(
+                catalogId.getAccountId(),
+                catalogId.getId(),
+                List.of(),
                 200,
                 token,
                 next));

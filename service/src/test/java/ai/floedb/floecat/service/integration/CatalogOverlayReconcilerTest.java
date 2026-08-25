@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -43,6 +44,7 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -195,7 +197,7 @@ class CatalogOverlayReconcilerTest {
     assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales", "eu")).isEmpty());
 
     reconciler.retireMaterializedResources(overlay);
-    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+    assertTrue(listLocalNamespaces().isEmpty());
   }
 
   @Test
@@ -307,7 +309,7 @@ class CatalogOverlayReconcilerTest {
         () ->
             reconciler.reconcile(
                 overlay, observed, integration, integrations.metaFor(integration.getResourceId())));
-    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+    assertTrue(listLocalNamespaces().isEmpty());
   }
 
   @Test
@@ -331,7 +333,7 @@ class CatalogOverlayReconcilerTest {
     }
 
     assertThrows(IllegalStateException.class, this::reconcile);
-    assertTrue(namespaces.listIdsConsistent("acct", "catalog").isEmpty());
+    assertTrue(listLocalNamespaces().isEmpty());
   }
 
   @Test
@@ -419,18 +421,17 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
-  void consistentNamespaceEnumerationUsesMutationReads() {
+  void namespaceEnumerationUsesConsistentListing() {
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
     client.children.put(sales, List.of());
     reconcile();
     clearInvocations(namespaces);
-    doReturn(Optional.empty()).when(namespaces).getById(any());
 
     assertEquals(new CatalogOverlayReconciler.Result(0, 0, 0, 0, 0, 0, 0, 0), reconcile());
 
-    verify(namespaces).getByIdForMutation(any());
-    verify(namespaces, never()).getById(any());
+    verify(namespaces)
+        .listConsistent(eq("acct"), eq("catalog"), eq(List.of()), eq(200), eq(""), any());
   }
 
   @Test
@@ -474,6 +475,11 @@ class CatalogOverlayReconcilerTest {
         overlays.metaFor(overlay.getResourceId()),
         integration,
         integrations.metaFor(integration.getResourceId()));
+  }
+
+  private List<Namespace> listLocalNamespaces() {
+    return namespaces.listConsistent(
+        "acct", "catalog", List.of(), 200, "", new StringBuilder());
   }
 
   private static CatalogTable catalogTable(CatalogObjectName name, String stableIdentity) {
