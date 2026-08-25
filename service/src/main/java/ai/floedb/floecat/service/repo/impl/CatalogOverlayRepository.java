@@ -169,14 +169,6 @@ public class CatalogOverlayRepository {
     return repo.delete(key(overlayId));
   }
 
-  public void deleteOrConfirmAbsent(ResourceId overlayId) {
-    repo.deleteOrConfirmAbsent(key(overlayId));
-    String fence = Keys.catalogOverlayDeletionMarker(overlayId.getAccountId(), overlayId.getId());
-    pointerStore
-        .get(fence)
-        .ifPresent(pointer -> pointerStore.compareAndDelete(fence, pointer.getVersion()));
-  }
-
   public Optional<CatalogOverlay> getById(ResourceId overlayId) {
     return repo.getByKey(key(overlayId));
   }
