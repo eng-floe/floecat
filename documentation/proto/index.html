@@ -1924,8 +1924,8 @@ connect only to a control plane with the same affinity. During an upgrade, keep 
 running until its job trees drain while the new deployment writes and executes its own cohort.
 Snapshot plans require one immutable file execution plan for every declared file path, so planner,
 executor, and finalizer implementations within one cohort must implement the same contract.</p>
-<p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>query/</code>, <code>execution/</code>,
-<code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
+<p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>integration/</code>, <code>query/</code>,
+<code>execution/</code>, <code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
 under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
 CLI, and reconciler.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
@@ -1939,6 +1939,11 @@ CLI, and reconciler.</p>
   schemas also cover per-file statistics and index artifact metadata.</li>
 <li><strong><code>connector/connector.proto</code></strong> – Connector management RPCs plus reconciliation job tracking and
   validation routines.</li>
+<li><strong><code>integration/catalog_integration.proto</code></strong> – External catalog identity CRUD,
+  typed catalog authentication configuration, write-only credential payloads, non-secret
+  configured/generation state, and credential rotation. This contract is
+  independent of Connector and deliberately contain no connectivity-validation or reconciliation
+  operations.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
   snapshot pin metadata sent down to the SQL planner.</li>
 <li><strong><code>query/system_objects_registry.proto</code></strong> – <code>GetSystemObjects</code> plus message definitions for builtin functions,
@@ -2021,6 +2026,11 @@ CLI, and reconciler.</p>
 <td></td>
 </tr>
 <tr>
+<td><code>CatalogIntegrations</code></td>
+<td>Integration CRUD.</td>
+<td></td>
+</tr>
+<tr>
 <td><code>QueryService</code></td>
 <td><code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>.</td>
 <td></td>
@@ -2067,8 +2077,9 @@ CLI, and reconciler.</p>
 </tr>
 </tbody>
 </table>
-<p>Each RPC requires a populated <code>account_id</code> within the <code>ResourceId</code>s; the Quarkus service checks this
-before hitting repository storage.</p>
+<p>Resource IDs supplied to integration RPCs must include an <code>account_id</code> matching the
+authenticated principal's account. The service rejects blank or cross-account IDs before hitting
+repository storage.</p>
 <h3 id="planner-lifecycle-execution-scan-schemas">Planner Lifecycle &amp; Execution Scan Schemas<a class="headerlink" href="#planner-lifecycle-execution-scan-schemas" title="Permanent link">&para;</a></h3>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
 - <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion

@@ -1688,17 +1688,17 @@
 <tr>
 <td><code>default</code></td>
 <td>Baseline read-only tenant access. Used when no roles are provided in normal (<code>oidc</code>) mode.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code></td>
 </tr>
 <tr>
 <td><code>administrator</code></td>
-<td>Full tenant-scoped administration of metadata and connectors.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td>Full tenant-scoped administration of metadata, catalog integrations, and legacy connectors.</td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
 </tr>
 <tr>
 <td><code>developer</code></td>
 <td>Development-role equivalent of <code>administrator</code>.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
 </tr>
 <tr>
 <td><code>platform-admin</code> (or configured value of <code>floecat.auth.platform-admin.role</code>)</td>
@@ -1708,7 +1708,7 @@
 <tr>
 <td><code>init-account</code></td>
 <td>Bootstrap role used to initialize account + initial resources.</td>
-<td><code>account.write</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>connector.create</code></td>
+<td><code>account.read</code>, <code>account.write</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>connector.create</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code></td>
 </tr>
 <tr>
 <td><code>delete-account</code></td>
@@ -1723,7 +1723,7 @@
 <tr>
 <td><code>reconcile-worker</code></td>
 <td>Dedicated machine principal for reconciler background gRPC work.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
 </tr>
 </tbody>
 </table>
@@ -1738,6 +1738,9 @@
 <li><code>init-account</code> also bypasses strict account existence validation during inbound context building.</li>
 <li><code>account.delete</code> is the dedicated destructive permission for account teardown. It is intentionally
   separate from broad catalog/table/connector management permissions.</li>
+<li><code>catalog-integration.write</code> administers integration records. <code>catalog-integration.use</code> is a
+  separate capability reserved for binding an integration from dependent resources without
+  granting integration-management authority.</li>
 </ul>
 
 
