@@ -629,7 +629,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed while deletion was fenced");
                   reconciler.retireMaterializedResources(current.get().value());
-                  // Managed descendants retire behind the fence first. The final transaction removes
+                  // Managed descendants retire behind the fence first. The final transaction
+                  // removes
                   // only the overlay, its dependencies, and the fence; the target catalog remains.
                   long fenceVersion = overlays.deletionFenceVersion(id);
                   if (fenceVersion == 0L
