@@ -433,6 +433,10 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
     JsonNode aws = response.path("aws_temp_credentials");
     if (aws.isMissingNode() || aws.isNull()) {
+      if (!hasUnsupportedCredentials(response)) {
+        throw new IllegalStateException(
+            "Unity Catalog returned no storage credentials for " + full);
+      }
       LOG.warnf(
           "Unity Catalog vended non-AWS credentials for %s; only AWS is supported, "
               + "falling back to a storage authority",
@@ -444,11 +448,8 @@ public final class UnityDeltaConnector extends DeltaConnector {
     String secretAccessKey = text(aws, "secret_access_key");
     String sessionToken = text(aws, "session_token");
     if (accessKeyId == null || secretAccessKey == null || sessionToken == null) {
-      // A partial tuple is unusable: the reader needs the whole set, and the reconcile path
-      // additionally needs the session token to register a refresh. Fall back rather than hand out
-      // credentials that fail partway through a read.
-      LOG.warnf("Unity Catalog AWS credentials for %s are incomplete; falling back", full);
-      return Optional.empty();
+      throw new IllegalStateException(
+          "Unity Catalog returned incomplete AWS credentials for " + full);
     }
 
     Map<String, String> props = new LinkedHashMap<>();
@@ -478,8 +479,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
       }
       String tableId = M.readTree(response.body()).path("table_id").asText(null);
       if (tableId == null || tableId.isBlank()) {
-        LOG.warnf("Unity Catalog table %s has no table_id; cannot vend credentials", full);
-        return null;
+        throw new IllegalStateException("Unity Catalog table has no table_id: " + full);
       }
       return tableId;
     } catch (RuntimeException e) {
@@ -534,5 +534,12 @@ public final class UnityDeltaConnector extends DeltaConnector {
   private static String text(JsonNode node, String field) {
     String value = node.path(field).asText(null);
     return (value == null || value.isBlank()) ? null : value;
+  }
+
+  private static boolean hasUnsupportedCredentials(JsonNode response) {
+    return response.hasNonNull("azure_user_delegation_sas")
+        || response.hasNonNull("azure_aad")
+        || response.hasNonNull("gcp_oauth_token")
+        || response.hasNonNull("r2_temp_credentials");
   }
 }

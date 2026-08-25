@@ -623,13 +623,14 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
-  void vendStorageCredentialsFallsBackWhenTableHasNoId() throws Exception {
-    // Without a table_id there is nothing to key the credentials call on; treat as "unavailable".
+  void vendStorageCredentialsFailsWhenTableHasNoId() throws Exception {
     server.createContext(
         "/api/2.1/unity-catalog/tables/",
         exchange -> respond(exchange, 200, "{\"storage_location\":\"s3://bucket/table\"}"));
 
-    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("no table_id");
   }
 
   @Test
@@ -652,7 +653,7 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
-  void vendStorageCredentialsFallsBackOnIncompleteAwsTuple() throws Exception {
+  void vendStorageCredentialsFailsOnIncompleteAwsTuple() throws Exception {
     // A key pair with no session token is unusable for the reconcile path and must not be handed
     // out as if it were complete.
     server.createContext(
@@ -667,7 +668,23 @@ class UnityDeltaConnectorTest {
                 "{\"aws_temp_credentials\":{\"access_key_id\":\"AKIA\","
                     + "\"secret_access_key\":\"secret\"},\"expiration_time\":1893456000000}"));
 
-    assertThat(connector.vendStorageCredentials("mycat.myschema", "orders")).isEmpty();
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("incomplete AWS credentials");
+  }
+
+  @Test
+  void vendStorageCredentialsFailsWhenSuccessfulResponseHasNoCredentials() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> respond(exchange, 200, "{\"table_id\":\"abc-123\"}"));
+    server.createContext(
+        "/api/2.1/unity-catalog/temporary-table-credentials",
+        exchange -> respond(exchange, 200, "{\"expiration_time\":1893456000000}"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("mycat.myschema", "orders"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("returned no storage credentials");
   }
 
   @Test

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.connector.spi.AuthProvider;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -28,37 +29,37 @@ import java.util.Map;
 public final class UcHttp {
   private final String host;
   private final AuthProvider auth;
-  private final Duration readMs;
-  private final Duration connectMs;
+  private final Duration readTimeout;
   private final HttpClient client;
 
   public UcHttp(String host, int connectMs, int readMs, AuthProvider auth) {
     this.host = host;
     this.auth = auth;
-    this.readMs = Duration.ofMillis(readMs);
-    this.connectMs = Duration.ofMillis(connectMs);
-    this.client = HttpClient.newBuilder().connectTimeout(this.connectMs).build();
+    this.readTimeout = Duration.ofMillis(readMs);
+    this.client = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(connectMs)).build();
   }
 
-  public HttpResponse<String> get(String pathAndQuery) throws Exception {
-    var req = HttpRequest.newBuilder().uri(URI.create(host + pathAndQuery)).timeout(readMs);
-    var headers = auth.applyHeaders(Map.of());
-    headers.forEach(req::header);
-
-    return client.send(req.GET().build(), BodyHandlers.ofString());
+  public HttpResponse<String> get(String pathAndQuery) throws IOException, InterruptedException {
+    return send(request(pathAndQuery).GET().build());
   }
 
-  public HttpResponse<String> post(String pathAndQuery, String jsonBody) throws Exception {
-    var req =
-        HttpRequest.newBuilder()
-            .uri(URI.create(host + pathAndQuery))
-            .timeout(readMs)
-            .header("Content-Type", "application/json");
-    // Auth headers last so the bearer token cannot be clobbered by a base header of the same name.
-    var headers = auth.applyHeaders(Map.of());
-    headers.forEach(req::header);
+  public HttpResponse<String> post(String pathAndQuery, String jsonBody)
+      throws IOException, InterruptedException {
+    return send(
+        request(pathAndQuery)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+            .build());
+  }
 
-    return client.send(
-        req.POST(HttpRequest.BodyPublishers.ofString(jsonBody)).build(), BodyHandlers.ofString());
+  private HttpRequest.Builder request(String pathAndQuery) {
+    var request =
+        HttpRequest.newBuilder().uri(URI.create(host + pathAndQuery)).timeout(readTimeout);
+    auth.applyHeaders(Map.of()).forEach(request::header);
+    return request;
+  }
+
+  private HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
+    return client.send(request, BodyHandlers.ofString());
   }
 }

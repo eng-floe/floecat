@@ -32,6 +32,12 @@ public final class UnityConnectorProvider implements ConnectorProvider {
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
     Map<String, String> options = new HashMap<>(cfg.options());
+    DeltaConnectorFactory.DeltaSource source = DeltaConnectorFactory.selectSource(options);
+    if (source != DeltaConnectorFactory.DeltaSource.UNITY) {
+      throw new IllegalArgumentException(
+          "UNITY connectors require delta.source=unity, not "
+              + options.get(DeltaConnectorFactory.DELTA_SOURCE_OPTION));
+    }
     AuthProvider authProvider = DatabricksAuthFactory.from(cfg);
     return DeltaConnectorFactory.create(
         cfg.uri(), options, authProvider, new HashMap<>(cfg.auth().props()));

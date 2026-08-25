@@ -52,6 +52,8 @@ public final class DatabricksAccessDelegation {
    */
   public static final String VEND_OPTION = "databricks.access-delegation";
 
+  private static final String DELTA_SOURCE_OPTION = "delta.source";
+
   private DatabricksAccessDelegation() {}
 
   /**
@@ -64,11 +66,21 @@ public final class DatabricksAccessDelegation {
     if (config == null) {
       return false;
     }
-    if (config.kind() != ConnectorConfig.Kind.DELTA
-        && config.kind() != ConnectorConfig.Kind.UNITY) {
+    if (!usesUnityCatalog(config)) {
       return false;
     }
     return isTruthy(config.options().get(VEND_OPTION));
+  }
+
+  private static boolean usesUnityCatalog(ConnectorConfig config) {
+    if (config.kind() == ConnectorConfig.Kind.UNITY) {
+      return true;
+    }
+    if (config.kind() != ConnectorConfig.Kind.DELTA) {
+      return false;
+    }
+    String source = config.options().get(DELTA_SOURCE_OPTION);
+    return source == null || source.isBlank() || source.trim().equalsIgnoreCase("unity");
   }
 
   private static boolean isTruthy(String value) {

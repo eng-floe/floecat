@@ -49,6 +49,17 @@ class DatabricksAccessDelegationTest {
   }
 
   @Test
+  void nonUnityDeltaSourcesIgnoreTheOptIn() {
+    for (String source : new String[] {"glue", "filesystem"}) {
+      var cfg =
+          config(
+              ConnectorConfig.Kind.DELTA,
+              Map.of("delta.source", source, DatabricksAccessDelegation.VEND_OPTION, "true"));
+      assertThat(DatabricksAccessDelegation.declaresVendedCredentials(cfg)).as(source).isFalse();
+    }
+  }
+
+  @Test
   void absentOrFalsyFlagIsNotDeclared() {
     assertThat(
             DatabricksAccessDelegation.declaresVendedCredentials(
@@ -92,6 +103,22 @@ class DatabricksAccessDelegationTest {
     assertThat(
             SourceCatalogVending.declaresVendedCredentials(
                 config(ConnectorConfig.Kind.DELTA, Map.of())))
+        .isFalse();
+  }
+
+  @Test
+  void neutralDispatcherDoesNotCrossFormatBoundaries() {
+    assertThat(
+            SourceCatalogVending.declaresVendedCredentials(
+                config(
+                    ConnectorConfig.Kind.UNITY,
+                    Map.of(IcebergAccessDelegation.HEADER_PROPERTY, "vended-credentials"))))
+        .isFalse();
+    assertThat(
+            SourceCatalogVending.declaresVendedCredentials(
+                config(
+                    ConnectorConfig.Kind.ICEBERG,
+                    Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"))))
         .isFalse();
   }
 }

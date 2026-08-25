@@ -124,6 +124,11 @@ Important connector properties:
 - `external.namespace`, `external.table-name` – Optional overrides for filesystem connector naming.
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.
 - `databricks.sql.warehouse_id` – Enables SQL statement execution when set.
+- `databricks.access-delegation=vended-credentials` – Explicitly enables table-scoped temporary
+  AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
+  metastore must allow external access and the caller needs `EXTERNAL USE SCHEMA` on the parent
+  schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
+  storage authority.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`

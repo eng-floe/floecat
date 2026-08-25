@@ -37,7 +37,10 @@ public final class SourceCatalogVending {
     if (config == null) {
       return false;
     }
-    return IcebergAccessDelegation.declaresVendedCredentials(config)
-        || DatabricksAccessDelegation.declaresVendedCredentials(config);
+    return switch (config.kind()) {
+      case ICEBERG -> IcebergAccessDelegation.declaresVendedCredentials(config);
+      case DELTA, UNITY -> DatabricksAccessDelegation.declaresVendedCredentials(config);
+      case GLUE -> false;
+    };
   }
 }

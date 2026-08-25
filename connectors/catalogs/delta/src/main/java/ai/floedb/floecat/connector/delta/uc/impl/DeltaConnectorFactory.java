@@ -44,6 +44,8 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 
 final class DeltaConnectorFactory {
+  static final String DELTA_SOURCE_OPTION = "delta.source";
+
   private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
   private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
       CLIENT_CREDENTIALS_PROVIDER + ".";
@@ -186,7 +188,7 @@ final class DeltaConnectorFactory {
     if (options == null) {
       return DeltaSource.UNITY;
     }
-    String source = options.get("delta.source");
+    String source = options.get(DELTA_SOURCE_OPTION);
     if (source != null && !source.isBlank()) {
       String normalized = source.trim().toLowerCase(Locale.ROOT);
       return switch (normalized) {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
@@ -39,5 +40,20 @@ class UnityConnectorProviderTest {
       assertThat(connector).isInstanceOf(UnityDeltaConnector.class);
       assertThat(connector.id()).isEqualTo("delta-unity");
     }
+  }
+
+  @Test
+  void unityKindRejectsAConflictingDeltaSource() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.UNITY,
+            "unity",
+            "https://workspace.example.com",
+            Map.of("delta.source", "glue"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    assertThatThrownBy(() -> new UnityConnectorProvider().create(config))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("UNITY connectors require delta.source=unity");
   }
 }
