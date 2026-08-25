@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -28,6 +29,18 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class KvPointerStoreTest {
+
+  @Test
+  void deleteByPrefixExcludingPreservesEncodedAccountFence() {
+    FailingReadKvStore kv = new FailingReadKvStore(new RuntimeException("unused"));
+    KvPointerStore store = new KvPointerStore(new PointerStoreEntity(kv)) {};
+
+    assertEquals(
+        7, store.deleteByPrefixExcluding("/accounts/acct%2B1/", "/accounts/acct%2B1/deleting"));
+    assertEquals("accounts/acct%2B1", kv.deletedPartitionKey);
+    assertEquals("", kv.deletedSortKeyPrefix);
+    assertEquals("deleting", kv.excludedSortKey);
+  }
 
   @Test
   void getRethrowsNonClosedPoolRuntimeException() {
@@ -59,6 +72,9 @@ class KvPointerStoreTest {
 
   private static final class FailingReadKvStore implements KvStore {
     private final RuntimeException failure;
+    private String deletedPartitionKey;
+    private String deletedSortKeyPrefix;
+    private String excludedSortKey;
 
     private FailingReadKvStore(RuntimeException failure) {
       this.failure = failure;
@@ -104,6 +120,15 @@ class KvPointerStoreTest {
     @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Uni<Integer> deleteByPrefixExcluding(
+        String partitionKey, String sortKeyPrefix, String excludedSortKey) {
+      this.deletedPartitionKey = partitionKey;
+      this.deletedSortKeyPrefix = sortKeyPrefix;
+      this.excludedSortKey = excludedSortKey;
+      return Uni.createFrom().item(7);
     }
 
     @Override

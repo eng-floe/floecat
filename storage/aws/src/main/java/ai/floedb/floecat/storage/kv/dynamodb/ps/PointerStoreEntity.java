@@ -395,6 +395,17 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return kv.deleteByPrefix(prefixKey.partitionKey(), prefixKey.sortKey());
   }
 
+  public Uni<Integer> deleteByPrefixExcluding(String prefix, String excludedKey) {
+    var prefixKey = prefixKey(prefix);
+    var excluded = pointerKey(excludedKey);
+    if (!prefixKey.partitionKey().equals(excluded.partitionKey())
+        || !excluded.sortKey().startsWith(prefixKey.sortKey())) {
+      throw new IllegalArgumentException("excluded pointer is outside prefix");
+    }
+    return kv.deleteByPrefixExcluding(
+        prefixKey.partitionKey(), prefixKey.sortKey(), excluded.sortKey());
+  }
+
   // ---- Helpers (testing)
 
   private String keyOf(Key key) {

@@ -333,6 +333,32 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
+  void prepareDeleteOps_handlesCanonicalPointerWithoutBlobReference() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.CATALOG,
+            Catalog::parseFrom,
+            Catalog::toByteArray,
+            "application/x-protobuf");
+    var value = catalog("catalog-1", "alpha");
+    var key = new CatalogKey("acct", "catalog-1");
+    repo.create(value);
+    String canonicalKey = Keys.catalogPointerById("acct", "catalog-1");
+    assertThat(
+            ptr.compareAndSet(
+                canonicalKey,
+                1L,
+                PointerReferences.opaqueMarkerPointer(canonicalKey, "corrupt", 2L)))
+        .isTrue();
+
+    List<PointerStore.CasOp> ops = repo.prepareDeleteOps(key);
+
+    assertThat(ops).containsExactly(new PointerStore.CasDelete(canonicalKey, 2L));
+  }
+
+  @Test
   void deleteWithPrecondition_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
     var baseRepo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
@@ -407,7 +433,7 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
-  void delete_whenResourceBlobIsCorrupt_removesCanonicalPointer() {
+  void delete_whenResourceBlobIsCorrupt_removesCanonicalAndSecondaryPointers() {
     var repo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
     repo.create(account);
@@ -418,7 +444,7 @@ class GenericResourceRepositoryCreateTest {
     assertThat(repo.delete(account.getResourceId())).isTrue();
 
     assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
-    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isEmpty();
   }
 
   @Test
@@ -453,6 +479,7 @@ class GenericResourceRepositoryCreateTest {
         .isTrue();
 
     assertThat(ptr.get(canonicalKey)).isEmpty();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isEmpty();
     assertThat(ptr.get(companionKey)).isEmpty();
   }
 }

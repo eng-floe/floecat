@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -175,6 +176,28 @@ class NativeReconcileJobIndexStorePointerSetTest {
     assertEquals(canonicalKey, delete.pointerKey());
     assertEquals(7L, delete.expectedVersion());
     assertTrue(delete.requireCleanupLock());
+  }
+
+  @Test
+  void stateIndexReadIgnoresBestEffortOrphanDeleteFailure() {
+    String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
+    String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
+    assertTrue(
+        pointers.compareAndSet(
+            stateKey, 0L, PointerReferences.pointerKeyPointer(stateKey, missingCanonical, 1L)));
+    MemoryReconcileJobIndexBackend failingBackend =
+        new MemoryReconcileJobIndexBackend(pointers) {
+          @Override
+          public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+            throw new RuntimeException("injected orphan cleanup failure");
+          }
+        };
+    NativeReconcileJobIndexStore failingStore = new NativeReconcileJobIndexStore();
+    failingStore.bind(
+        failingBackend, payloadStore(), indexes, 4, (previous, current) -> {}, (a, b, op) -> {});
+
+    assertTrue(failingStore.listStoredJobsInState("JS_QUEUED", 100, "").records().isEmpty());
+    assertTrue(pointers.get(stateKey).isPresent());
   }
 
   @Test
@@ -430,8 +453,8 @@ class NativeReconcileJobIndexStorePointerSetTest {
                         ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
                         new ReconcileJobIndexCleanupManifest(referenceKeys, List.of()))),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
-    for (int offset = 0; offset < seedWrites.size(); offset += 100) {
-      int end = Math.min(seedWrites.size(), offset + 100);
+    for (int offset = 0; offset < seedWrites.size(); offset += 99) {
+      int end = Math.min(seedWrites.size(), offset + 99);
       assertTrue(
           backend.compareAndSetBatch(
               new ReconcileJobIndexStore.JobIndexWriteBatch(

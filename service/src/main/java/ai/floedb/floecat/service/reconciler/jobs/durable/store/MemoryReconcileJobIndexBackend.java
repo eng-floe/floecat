@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
@@ -154,10 +155,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
-    int transactionItems =
-        NativeReconcileJobIndexStore.physicalWriteItemCount(batch)
-            + (extraPointerOps == null ? 0 : extraPointerOps.size());
-    ReconcileJobWriteLimits.requireWithinTransactionLimit(transactionItems);
     if (batch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
@@ -212,7 +209,13 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (extraPointerOps != null) {
       ops.addAll(extraPointerOps);
     }
-    boolean committed = pointerStore.compareAndSetBatch(ops);
+    List<PointerStore.CasOp> fencedOps = AccountDeletionFence.withChecksForAccountWrites(ops);
+    int transactionItems =
+        NativeReconcileJobIndexStore.physicalWriteItemCount(batch)
+            + (extraPointerOps == null ? 0 : extraPointerOps.size())
+            + AccountDeletionFence.checksForAccountWrites(ops).size();
+    ReconcileJobWriteLimits.requireWithinTransactionLimit(transactionItems);
+    boolean committed = pointerStore.compareAndSetBatch(fencedOps);
     if (!committed) {
       return false;
     }

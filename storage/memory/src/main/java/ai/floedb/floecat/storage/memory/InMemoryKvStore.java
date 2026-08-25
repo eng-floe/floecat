@@ -213,6 +213,12 @@ public final class InMemoryKvStore implements KvStore {
 
   @Override
   public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
+    return deleteByPrefixExcluding(partitionKey, sortKeyPrefix, null);
+  }
+
+  @Override
+  public Uni<Integer> deleteByPrefixExcluding(
+      String partitionKey, String sortKeyPrefix, String excludedSortKey) {
     String pk = partitionKey == null ? "" : partitionKey;
     String skPrefix = sortKeyPrefix == null ? "" : sortKeyPrefix;
     int[] deleted = {0};
@@ -220,7 +226,10 @@ public final class InMemoryKvStore implements KvStore {
         .keySet()
         .removeIf(
             key -> {
-              boolean match = pk.equals(key.partitionKey()) && key.sortKey().startsWith(skPrefix);
+              boolean match =
+                  pk.equals(key.partitionKey())
+                      && key.sortKey().startsWith(skPrefix)
+                      && !key.sortKey().equals(excludedSortKey);
               if (match) {
                 deleted[0]++;
               }

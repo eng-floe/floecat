@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.nio.charset.StandardCharsets;
@@ -444,6 +445,25 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   @Override
+  public CanonicalPointerPage listCanonicalPointers(
+      String accountId, int pageSize, String pageToken) {
+    if (blank(accountId)) {
+      return new CanonicalPointerPage(List.of(), "");
+    }
+    var page =
+        jobIndexBackend.listCanonicalEntries(
+            accountId, Math.max(1, pageSize), blankToEmpty(pageToken));
+    List<CanonicalPointerSnapshot> pointers = new ArrayList<>();
+    for (JobIndexEntrySnapshot entry : page.entries()) {
+      if (isCanonicalJobPointerKey(accountId, entry.pointerKey())) {
+        pointers.add(
+            new CanonicalPointerSnapshot(entry.pointerKey(), entry.blobUri(), entry.version()));
+      }
+    }
+    return new CanonicalPointerPage(List.copyOf(pointers), page.nextPageToken());
+  }
+
+  @Override
   public StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken) {
     String effectiveState = blankToEmpty(state);
     if (effectiveState.isBlank()) {
@@ -599,6 +619,42 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return buildJobDeleteBatch(currentSnapshot, ReconcileJobIndexCleanupManifest.EMPTY);
   }
 
+  @Override
+  public JobIndexWriteBatch buildAccountCleanupJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot) {
+    if (currentSnapshot == null || blank(currentSnapshot.canonicalPointerKey())) {
+      return JobIndexWriteBatch.empty();
+    }
+    var canonicalKey =
+        JobIndexBackendSupport.parseCanonicalJobKey(currentSnapshot.canonicalPointerKey());
+    if (canonicalKey == null) {
+      return JobIndexWriteBatch.empty();
+    }
+    String lookupPointerKey =
+        Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment();
+    ReconcileJobIndexCleanupManifest boundedFallback =
+        new ReconcileJobIndexCleanupManifest(List.of(lookupPointerKey), List.of());
+    JobIndexWriteBatch manifested = buildJobDeleteBatch(currentSnapshot, boundedFallback);
+    if (!manifested.writes().isEmpty()) {
+      return manifested;
+    }
+
+    // The account fence prevents new writes. Delete the canonical row and its predictable global
+    // lookup even when corrupt manifest metadata cannot establish the normal cleanup lock. State,
+    // ready and lease-expiry indexes converge through their canonical-absence cleanup paths.
+    List<JobIndexWriteOp> deletes = new ArrayList<>();
+    deletes.add(
+        new JobIndexDelete(
+            currentSnapshot.canonicalPointerKey(),
+            currentSnapshot.version(),
+            "",
+            "",
+            false,
+            false));
+    appendOwnedDelete(deletes, lookupPointerKey, currentSnapshot.canonicalPointerKey(), true);
+    return new JobIndexWriteBatch(List.copyOf(deletes), ReadyQueueMutation.empty());
+  }
+
   private JobIndexWriteBatch buildJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest fallbackManifest) {
     var session = jobIndexBackend.beginJobCleanup(currentSnapshot, fallbackManifest).orElse(null);
@@ -698,7 +754,14 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   @Override
   public int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
-    return physicalWriteItemCount(batch) + (extraPointerOps == null ? 0 : extraPointerOps.size());
+    List<PointerStore.CasOp> fenceSources = new ArrayList<>();
+    fenceSources.addAll(JobIndexWriteBatchSupport.toCasOps(batch));
+    if (extraPointerOps != null) {
+      fenceSources.addAll(extraPointerOps);
+    }
+    return physicalWriteItemCount(batch)
+        + (extraPointerOps == null ? 0 : extraPointerOps.size())
+        + AccountDeletionFence.checksForAccountWrites(fenceSources).size();
   }
 
   @Override
@@ -771,8 +834,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     List<JobIndexWriteOp> finalWrites = new ArrayList<>();
     finalWrites.add(canonicalDelete);
     List<String> readyDeletes = new ArrayList<>();
-    int referenceItems = 0;
-    int referenceCapacity = ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS - 1;
     for (JobIndexWriteOp write : plan.indexBatch().writes()) {
       if (write == canonicalDelete) {
         continue;
@@ -784,27 +845,44 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         finalWrites.add(write);
         continue;
       }
-      int itemCount = physicalWriteItemCount(write);
-      if (referenceItems > 0 && referenceItems + itemCount > referenceCapacity) {
+      List<JobIndexWriteOp> candidateWrites = new ArrayList<>(referenceWrites);
+      candidateWrites.add(write);
+      if ((!referenceWrites.isEmpty() || !readyDeletes.isEmpty())
+          && cleanupReferenceWriteItemCount(canonicalDelete, candidateWrites, readyDeletes)
+              > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
         chunks.add(buildCleanupReferenceChunk(canonicalDelete, referenceWrites, readyDeletes));
         referenceWrites = new ArrayList<>();
         readyDeletes = new ArrayList<>();
-        referenceItems = 0;
       }
       referenceWrites.add(write);
-      referenceItems += itemCount;
+      if (cleanupReferenceWriteItemCount(canonicalDelete, referenceWrites, readyDeletes)
+          > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
+        throw new IllegalStateException(
+            "single cleanup reference exceeds "
+                + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
+                + " write items");
+      }
     }
     for (String readyDelete : plan.indexBatch().readyMutation().deletes()) {
-      if (referenceItems >= referenceCapacity) {
+      List<String> candidateReadyDeletes = new ArrayList<>(readyDeletes);
+      candidateReadyDeletes.add(readyDelete);
+      if ((!referenceWrites.isEmpty() || !readyDeletes.isEmpty())
+          && cleanupReferenceWriteItemCount(canonicalDelete, referenceWrites, candidateReadyDeletes)
+              > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
         chunks.add(buildCleanupReferenceChunk(canonicalDelete, referenceWrites, readyDeletes));
         referenceWrites = new ArrayList<>();
         readyDeletes = new ArrayList<>();
-        referenceItems = 0;
       }
       readyDeletes.add(readyDelete);
-      referenceItems++;
+      if (cleanupReferenceWriteItemCount(canonicalDelete, referenceWrites, readyDeletes)
+          > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
+        throw new IllegalStateException(
+            "single ready cleanup reference exceeds "
+                + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
+                + " write items");
+      }
     }
-    if (referenceItems > 0) {
+    if (!referenceWrites.isEmpty() || !readyDeletes.isEmpty()) {
       chunks.add(buildCleanupReferenceChunk(canonicalDelete, referenceWrites, readyDeletes));
     }
 
@@ -827,17 +905,30 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       JobIndexDelete canonicalDelete,
       List<JobIndexWriteOp> referenceWrites,
       List<String> readyDeletes) {
+    JobWritePlan<T> chunkPlan =
+        new JobWritePlan<>(
+            null, cleanupReferenceBatch(canonicalDelete, referenceWrites, readyDeletes), List.of());
+    return buildJobWriteChunk(List.of(chunkPlan));
+  }
+
+  private int cleanupReferenceWriteItemCount(
+      JobIndexDelete canonicalDelete,
+      List<JobIndexWriteOp> referenceWrites,
+      List<String> readyDeletes) {
+    return writeItemCount(
+        cleanupReferenceBatch(canonicalDelete, referenceWrites, readyDeletes), List.of());
+  }
+
+  private JobIndexWriteBatch cleanupReferenceBatch(
+      JobIndexDelete canonicalDelete,
+      List<JobIndexWriteOp> referenceWrites,
+      List<String> readyDeletes) {
     List<JobIndexWriteOp> writes = new ArrayList<>(referenceWrites.size() + 1);
     writes.add(
         new JobIndexCheck(canonicalDelete.pointerKey(), canonicalDelete.expectedVersion(), true));
     writes.addAll(referenceWrites);
-    JobWritePlan<T> chunkPlan =
-        new JobWritePlan<>(
-            null,
-            new JobIndexWriteBatch(
-                List.copyOf(writes), new ReadyQueueMutation(List.of(), List.copyOf(readyDeletes))),
-            List.of());
-    return buildJobWriteChunk(List.of(chunkPlan));
+    return new JobIndexWriteBatch(
+        List.copyOf(writes), new ReadyQueueMutation(List.of(), List.copyOf(readyDeletes)));
   }
 
   private <T> JobWriteChunk<T> buildJobWriteChunk(List<JobWritePlan<T>> plans) {
@@ -1722,8 +1813,15 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private boolean isCanonicalJobPointerKey(String accountId, String key) {
-    return key != null
-        && key.equals(Keys.reconcileJobPointerById(accountId, jobIdFromCanonicalKey(key)));
+    if (key == null) {
+      return false;
+    }
+    String prefix = Keys.reconcileJobPointerByIdPrefix(accountId);
+    if (!key.startsWith(prefix)) {
+      return false;
+    }
+    String encodedJobId = key.substring(prefix.length());
+    return !encodedJobId.isBlank() && encodedJobId.indexOf('/') < 0;
   }
 
   private long countPages(
@@ -1748,11 +1846,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         return count;
       }
     }
-  }
-
-  private String jobIdFromCanonicalKey(String key) {
-    int slash = key == null ? -1 : key.lastIndexOf('/');
-    return slash < 0 ? "" : key.substring(slash + 1);
   }
 
   private static ListCursor decodeListCursor(String pageToken) {
@@ -1823,11 +1916,30 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     JobIndexEntrySnapshot canonicalPointer =
         jobIndexBackend.loadIndexEntry(indexPointer.blobUri()).orElse(null);
     if (canonicalPointer == null) {
+      deleteOrphanedIndexPointer(indexPointer);
       return Optional.empty();
     }
     return readRecord(
         new CanonicalPointerSnapshot(
             canonicalPointer.pointerKey(), canonicalPointer.blobUri(), canonicalPointer.version()));
+  }
+
+  private void deleteOrphanedIndexPointer(JobIndexEntrySnapshot indexPointer) {
+    // Global time-ordered indexes cannot be swept by account prefix. Their read/maintenance path
+    // must therefore consume a row whose canonical account-scoped job no longer exists.
+    try {
+      jobIndexBackend.compareAndSetBatch(
+          new JobIndexWriteBatch(
+              List.of(
+                  new JobIndexDelete(
+                      indexPointer.pointerKey(), indexPointer.version(), indexPointer.blobUri())),
+              ReadyQueueMutation.empty()));
+    } catch (RuntimeException e) {
+      // Index convergence is best-effort on a read path. A transient cleanup failure must not turn
+      // an otherwise valid empty list result into a failed request.
+      LOG.debugf(
+          e, "Failed to delete orphaned reconcile index pointer key=%s", indexPointer.pointerKey());
+    }
   }
 
   private Optional<StoredReconcileJob> readCurrentRecordFromStateIndexPointer(

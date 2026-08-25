@@ -103,15 +103,20 @@ class DynamoReconcileJobIndexBackendTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(2, items.size());
-    var item = items.getFirst().put().item();
+    assertEquals(3, items.size());
+    var item = items.stream().filter(tx -> tx.put() != null).findFirst().orElseThrow().put().item();
     assertEquals("reconcile-job-lookup", item.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, item.get(ATTR_SORT_KEY).s());
     assertEquals(JobIndexBackendSupport.KIND_LOOKUP, item.get(ATTR_KIND).s());
     assertEquals(LOOKUP_KEY, item.get(JobIndexBackendSupport.ATTR_POINTER_KEY).s());
     assertEquals(CANONICAL_KEY, item.get(JobIndexBackendSupport.ATTR_BLOB_URI).s());
-    assertEquals(
-        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
+    assertTrue(
+        items.stream()
+            .filter(tx -> tx.conditionCheck() != null)
+            .anyMatch(
+                tx ->
+                    "reconcile-job/by-id"
+                        .equals(tx.conditionCheck().key().get(ATTR_PARTITION_KEY).s())));
   }
 
   @Test
@@ -858,7 +863,12 @@ class DynamoReconcileJobIndexBackendTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     assertEquals(1, captor.getValue().transactItems().size());
-    var put = captor.getValue().transactItems().getFirst().put();
+    var put =
+        captor.getValue().transactItems().stream()
+            .filter(tx -> tx.put() != null)
+            .findFirst()
+            .orElseThrow()
+            .put();
     assertNull(put.conditionExpression());
     assertEquals("37", put.item().get(ATTR_VERSION).n());
   }
@@ -955,7 +965,13 @@ class DynamoReconcileJobIndexBackendTest {
     ArgumentCaptor<TransactWriteItemsRequest> txCaptor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(txCaptor.capture());
-    var item = txCaptor.getValue().transactItems().getFirst().put().item();
+    var item =
+        txCaptor.getValue().transactItems().stream()
+            .filter(tx -> tx.put() != null)
+            .findFirst()
+            .orElseThrow()
+            .put()
+            .item();
     assertEquals(
         LOOKUP_KEY,
         item.get(JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS).l().getFirst().s());

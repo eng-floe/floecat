@@ -84,11 +84,6 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
-  public void deleteOrConfirmAbsent(ResourceId namespaceResourceId) {
-    repo.deleteOrConfirmAbsent(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
-  }
-
   public boolean deleteWithPrecondition(
       ResourceId namespaceResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
@@ -101,19 +96,9 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
-  public Optional<Namespace> getByIdForMutation(ResourceId namespaceResourceId) {
-    return repo.getByKeyForMutation(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
-  }
-
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
-  }
-
-  public Optional<Namespace> getByPathForMutation(
-      String accountId, String catalogId, List<String> pathSegments) {
-    return repo.getForMutation(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
   }
 
   public List<Namespace> list(
@@ -162,19 +147,6 @@ public class NamespaceRepository {
     for (Namespace ns : namespaces) {
       ids.add(ns.getResourceId());
     }
-    return ids;
-  }
-
-  public List<ResourceId> listIdsConsistent(String accountId, String catalogId) {
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
-    List<ResourceId> ids = new java.util.ArrayList<>();
-    String token = "";
-    do {
-      var next = new StringBuilder();
-      List<Namespace> namespaces = repo.listByPrefixConsistent(prefix, 200, token, next);
-      for (Namespace ns : namespaces) ids.add(ns.getResourceId());
-      token = next.toString();
-    } while (!token.isBlank());
     return ids;
   }
 

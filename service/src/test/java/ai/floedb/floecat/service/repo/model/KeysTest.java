@@ -68,17 +68,17 @@ class KeysTest {
   }
 
   @Test
-  void reconcileLeaseExpiryKeyPreservesLegacyRawAccountAndJobIds() {
+  void reconcileLeaseExpiryKeyEncodesAccountAndJobIds() {
     assertEquals(
         "/accounts/by-id/reconcile/job-leases/by-expiry/0000000000000000007"
-            + "/accounts/acct+legacy/jobs/job%legacy",
+            + "/accounts/acct%2Blegacy/jobs/job%25legacy",
         Keys.reconcileJobLeaseExpiryPointer(7L, "acct+legacy", "job%legacy"));
   }
 
   @Test
-  void reconcileLeaseKeyPreservesLegacyRawAccountAndJobIds() {
+  void reconcileLeaseKeyEncodesAccountAndJobIds() {
     assertEquals(
-        "/accounts/acct+legacy/reconcile/job-leases/by-id/job%legacy",
+        "/accounts/acct%2Blegacy/reconcile/job-leases/by-id/job%25legacy",
         Keys.reconcileJobLeasePointerById("acct+legacy", "job%legacy"));
   }
 

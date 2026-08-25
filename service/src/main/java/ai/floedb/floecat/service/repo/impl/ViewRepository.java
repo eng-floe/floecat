@@ -75,10 +75,6 @@ public class ViewRepository {
     return repo.delete(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
-  public void deleteOrConfirmAbsent(ResourceId viewResourceId) {
-    repo.deleteOrConfirmAbsent(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
-  }
-
   public boolean deleteWithPrecondition(ResourceId viewResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);

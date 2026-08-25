@@ -65,6 +65,20 @@ public class PointerStoreContractTest {
   }
 
   @Test
+  void deleteByPrefixExcluding_preserves_only_the_exact_excluded_key() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
+    store.compareAndSet(otherKey(1), 0L, pointer(otherKey(1), 1L));
+
+    int deleted = store.deleteByPrefixExcluding(prefix(), key(1));
+
+    assertEquals(1, deleted);
+    assertTrue(store.get(key(1)).isPresent());
+    assertTrue(store.get(key(2)).isEmpty());
+    assertTrue(store.get(otherKey(1)).isPresent());
+  }
+
+  @Test
   void countByPrefix_matches_number_of_keys() {
     store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
     store.compareAndSet(key(2), 0L, pointer(key(2), 1L));

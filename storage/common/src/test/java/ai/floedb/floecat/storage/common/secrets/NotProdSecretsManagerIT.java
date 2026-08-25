@@ -187,6 +187,12 @@ class NotProdSecretsManagerIT {
     }
 
     @Override
+    public Uni<Integer> deleteByPrefixExcluding(
+        String partitionKey, String sortKeyPrefix, String excludedSortKey) {
+      throw new UnsupportedOperationException("deleteByPrefixExcluding not supported");
+    }
+
+    @Override
     public Uni<Void> reset() {
       records.clear();
       return Uni.createFrom().voidItem();

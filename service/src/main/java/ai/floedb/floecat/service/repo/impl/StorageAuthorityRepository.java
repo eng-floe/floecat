@@ -60,11 +60,6 @@ public class StorageAuthorityRepository {
     return repo.delete(new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()));
   }
 
-  public void deleteOrConfirmAbsent(ResourceId authorityId) {
-    repo.deleteOrConfirmAbsent(
-        new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()));
-  }
-
   public boolean deleteWithPrecondition(ResourceId authorityId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new StorageAuthorityKey(authorityId.getAccountId(), authorityId.getId()),

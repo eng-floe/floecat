@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -258,7 +259,8 @@ public class ReconcileCancellationMaintenanceService {
                 pointer.toBuilder().setVersion(pointer.getVersion() + 1L),
                 cancellationCleanupPayload(nextRequest))
             .build();
-    pointerStore.compareAndSet(pointer.getKey(), pointer.getVersion(), next);
+    AccountDeletionFence.compareAndSet(
+        pointerStore, request.accountId(), pointer.getKey(), pointer.getVersion(), next);
   }
 
   private void logMaintenanceSummary(long startedAtMs, CancellationStats stats) {

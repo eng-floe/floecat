@@ -61,11 +61,6 @@ public class ConnectorRepository {
         new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 
-  public void deleteOrConfirmAbsent(ResourceId connectorResourceId) {
-    repo.deleteOrConfirmAbsent(
-        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
-  }
-
   public boolean deleteWithPrecondition(
       ResourceId connectorResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(

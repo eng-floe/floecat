@@ -169,6 +169,22 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
+  public synchronized int deleteByPrefixExcluding(String prefix, String excludedKey) {
+    final String pfx = (prefix == null) ? "" : prefix;
+    List<String> keys = new ArrayList<>();
+    for (String key : map.tailMap(pfx, true).keySet()) {
+      if (!key.startsWith(pfx)) {
+        break;
+      }
+      if (!key.equals(excludedKey)) {
+        keys.add(key);
+      }
+    }
+    keys.forEach(map::remove);
+    return keys.size();
+  }
+
+  @Override
   public synchronized boolean compareAndDelete(String key, long expectedVersion) {
     final boolean[] deleted = {false};
     map.compute(

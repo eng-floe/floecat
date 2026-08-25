@@ -478,6 +478,14 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   @Override
+  public boolean deleteAccountJobLease(String accountId, String jobId) {
+    synchronized (state) {
+      StoredJobLease current = state.leasesByJob.get(jobStateKey(accountId, jobId));
+      return current == null || clearLeaseIfEpochMatches(accountId, jobId, current.epoch);
+    }
+  }
+
+  @Override
   public boolean tryAcquireLaneLease(
       StoredReconcileJob record, String canonicalPointerKey, long nowMs) {
     if (record == null

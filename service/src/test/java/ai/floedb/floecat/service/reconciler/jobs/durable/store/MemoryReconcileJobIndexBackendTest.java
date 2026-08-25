@@ -32,6 +32,46 @@ import org.junit.jupiter.api.Test;
 class MemoryReconcileJobIndexBackendTest {
 
   @Test
+  void accountDeletionFenceRejectsUpsertsButAllowsCleanupDeletes() {
+    String accountId = "acct-1";
+    String canonicalKey = Keys.reconcileJobPointerById(accountId, "job-1");
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend backend = new MemoryReconcileJobIndexBackend(pointers);
+    var create =
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.of(
+                new ReconcileJobIndexStore.JobIndexUpsert(
+                    canonicalKey,
+                    0L,
+                    "inline:reconcile-job:e30",
+                    PointerReferenceKind.PRK_INLINE_JSON,
+                    new ReconcileJobIndexCleanupManifest(
+                        List.of(Keys.reconcileJobLookupPointerById("job-1")), List.of()))),
+            ReconcileJobIndexStore.ReadyQueueMutation.empty());
+    assertTrue(backend.compareAndSetBatch(create));
+    String fence = Keys.accountDeletionMarker(accountId);
+    assertTrue(
+        pointers.compareAndSet(
+            fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L)));
+
+    assertFalse(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        Keys.reconcileJobPointerById(accountId, "job-2"),
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(new ReconcileJobIndexStore.JobIndexDelete(canonicalKey, 1L)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+  }
+
+  @Test
   void clearInMemoryStateDropsCleanupMetadataAndMigrationState() {
     String canonicalKey = Keys.reconcileJobPointerById("acct", "job");
     String lookupKey = Keys.reconcileJobLookupPointerById("job");

@@ -179,6 +179,10 @@ public interface KvStore {
    */
   Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix);
 
+  /** Deletes a prefix while continuously preserving one exact sort key. */
+  Uni<Integer> deleteByPrefixExcluding(
+      String partitionKey, String sortKeyPrefix, String excludedSortKey);
+
   /**
    * Remove all records in store. <br>
    * NB: for testing purposes only.

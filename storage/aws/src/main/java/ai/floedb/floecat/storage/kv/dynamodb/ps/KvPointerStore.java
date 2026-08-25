@@ -111,6 +111,12 @@ public abstract class KvPointerStore implements PointerStore {
   }
 
   @Override
+  public int deleteByPrefixExcluding(String prefix, String excludedKey) {
+    return await(
+        () -> pointers.deleteByPrefixExcluding(prefix, excludedKey).await().indefinitely());
+  }
+
+  @Override
   public int countByPrefix(String prefix) {
     return countByPrefix(prefix, false);
   }

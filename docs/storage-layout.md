@@ -75,6 +75,7 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/by-id/{account_id}
 /accounts/by-name/{account_name}
 /accounts/{account_id}
+/accounts/{account_id}/deleting
 /accounts/{account_id}/catalogs/by-id/{catalog_id}
 /accounts/{account_id}/catalogs/by-name/{catalog_name}
 /accounts/{account_id}/storage-authorities/by-id/{authority_id}
