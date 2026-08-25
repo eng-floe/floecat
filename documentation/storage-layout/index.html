@@ -1724,6 +1724,7 @@ entries first.</p>
 /accounts/{account_id}/views/{view_id}/view/{sha}.pb
 /accounts/{account_id}/connectors/{connector_id}/connector/{sha}.pb
 /accounts/{account_id}/catalog-integrations/{integration_id}/integration/{sha}.pb
+/accounts/{account_id}/catalog-overlays/{overlay_id}/overlay/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/transaction/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/intent/{sha}.pb
 /accounts/{account_id}/transactions/{tx_id}/objects/{sha}.bin
@@ -1780,21 +1781,30 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/catalog-integrations/by-name/{integration_name}
 /accounts/{account_id}/catalog-integrations/overlays-marker/{integration_id}
 /accounts/{account_id}/catalog-integrations/deleting/{integration_id}
+/accounts/{account_id}/catalog-overlays/by-id/{overlay_id}
+/accounts/{account_id}/catalog-overlays/by-name/{overlay_name}
+/accounts/{account_id}/catalog-overlays/by-integration/{integration_id}/{overlay_id}
+/accounts/{account_id}/catalog-overlays/by-catalog/{catalog_id}/{overlay_id}
+/accounts/{account_id}/catalog-overlays/deleting/{overlay_id}
+/accounts/{account_id}/catalogs/overlays-marker/{catalog_id}
 /accounts/{account_id}/deleting
-/catalog-integration-credential-cleanup/{account_id}/{integration_id}/{generation}
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 </code></pre></div>
+<p>An overlay references an existing Catalog. Its <code>by-integration</code> and <code>by-catalog</code> dependency
+pointers are written and removed atomically with the overlay resource. Fixed generation markers on
+both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
+while an overlay is retired. Catalog and overlay names and lifecycles remain independent.</p>
 <p>Catalog integration secret payloads are stored outside the resource blob through SecretsManager:</p>
 <div class="highlight"><pre><span></span><code>accounts/{account_id}/catalog-integrations/{integration_id}.credentials.{credential_generation}
 </code></pre></div>
 <p>The key is derived internally from the persisted integration identity and credential generation; it
 is not present in the resource payload. A new secret is written before publishing the matching
 generation; an old secret is deleted only after the resource mutation commits. Definite failures
-delete an unpublished generation. Durable cleanup records retain other candidates until pointer GC
-can prove that their generation is no longer referenced.</p>
+delete an unpublished generation. Durable cleanup records cover acknowledgement-uncertain failures
+and are drained once the generation is provably superseded.</p>
 <p>Transaction and idempotency pointers:</p>
 <div class="highlight"><pre><span></span><code>/accounts/{account_id}/transactions/by-id/{tx_id}
 /accounts/{account_id}/transactions/by-target/{encoded_target_pointer_key}

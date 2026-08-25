@@ -1744,6 +1744,7 @@
 Views, Snapshots, statistics, and query-lifecycle artifacts.</p>
 <div class="highlight"><pre><span></span><code>Account
  ├── CatalogIntegration (external catalog identity)
+ │    └── CatalogOverlay (upstream namespace selection)
  └── Catalog (locally managed catalog)
       └── Namespace (hierarchical path)
            ├── Table (Iceberg/Delta metadata, upstream reference)
@@ -1778,12 +1779,18 @@ manifest entry without its <code>stats_generation_ref</code> is not yet query-vi
 to the newest finalized snapshot at or before it instead, so logical metadata can move current
 without exposing an unfinalized scan.</p>
 <p>The gRPC service (Quarkus) enforces tenancy, authorization, idempotency, and transactional CRUD for
-catalog integrations. Catalog integrations include typed, non-secret authentication
+catalog integrations and overlays. Catalog integrations include typed, non-secret authentication
 configuration plus write-only credential create/rotation primitives; secret payloads are stored
 separately and never returned. A typed credential-store resolver derives the internal secret key
 from integration identity and credential generation for follow-on clients. The resources remain operationally inert: this API does not perform
 connectivity validation, adapter selection, or reconciliation. Legacy connectors remain unchanged
-and are not part of the new contract.</p>
+and are not part of either new contract.</p>
+<p>An overlay references one existing Catalog. Multiple overlays may target the same Catalog, which
+remains directly writable and retains its independent name and lifecycle. Overlay creation is
+conditioned on the current Integration and Catalog pointer versions and atomically publishes both
+dependency indexes while advancing fixed dependency markers. Integration and Catalog deletion
+check the strongly consistent indexes and matching markers, closing concurrent create/delete races.
+Account deletion removes overlays before integrations and catalogs.</p>
 <h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
 <p>The following modules compose the system (see linked docs for deep dives):</p>
 <table>
