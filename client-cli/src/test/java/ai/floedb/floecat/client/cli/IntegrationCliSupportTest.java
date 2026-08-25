@@ -7,6 +7,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +17,9 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationEntry;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheck;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationsGrpc;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.integration.rpc.CatalogOverlayEntry;
@@ -36,6 +40,10 @@ import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
+import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesResponse;
+import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsResponse;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationResponse;
@@ -43,6 +51,11 @@ import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
+import ai.floedb.floecat.integration.rpc.UpstreamNamespace;
+import ai.floedb.floecat.integration.rpc.UpstreamObject;
+import ai.floedb.floecat.integration.rpc.UpstreamObjectKind;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationRequest;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -219,6 +232,53 @@ class IntegrationCliSupportTest {
   }
 
   @Test
+  void validatesIntegrationByName() throws Exception {
+    try (Harness h = new Harness()) {
+      String output = h.run("integration", List.of("validate", "lakehouse"));
+
+      assertEquals(INTEGRATION_ID, h.integrations.lastValidate.getIntegrationId().getId());
+      assertTrue(output.contains("valid: true"));
+      assertTrue(output.contains("CATALOG_CONNECTION"));
+      assertTrue(output.contains("PASSED"));
+    }
+  }
+
+  @Test
+  void discoversUpstreamNamespacesAndObjects() throws Exception {
+    try (Harness h = new Harness()) {
+      String namespaces =
+          h.run("integration", List.of("namespaces", "lakehouse", "--parent", "production"));
+      String objects =
+          h.run(
+              "integration",
+              List.of("objects", "lakehouse", "production.sales", "--kinds", "table"));
+
+      assertEquals(INTEGRATION_ID, h.integrations.lastNamespaces.getIntegrationId().getId());
+      assertEquals(
+          List.of("production"), h.integrations.lastNamespaces.getParent().getSegmentsList());
+      assertTrue(namespaces.contains("production.sales"));
+      assertEquals(INTEGRATION_ID, h.integrations.lastObjects.getIntegrationId().getId());
+      assertEquals(
+          List.of("production", "sales"),
+          h.integrations.lastObjects.getNamespace().getSegmentsList());
+      assertEquals(
+          List.of(UpstreamObjectKind.UOK_TABLE), h.integrations.lastObjects.getKindsList());
+      assertTrue(objects.contains("orders"));
+      assertTrue(objects.contains("TABLE"));
+    }
+  }
+
+  @Test
+  void objectsRequiresNamespaceBeforeOptionalFlags() throws Exception {
+    try (Harness h = new Harness()) {
+      String output = h.run("integration", List.of("objects", "lakehouse", "--kinds", "table"));
+
+      assertTrue(output.contains("usage: integration objects"));
+      assertNull(h.integrations.lastObjects);
+    }
+  }
+
+  @Test
   void createsOverlayForIntegration() throws Exception {
     try (Harness h = new Harness()) {
       h.run(
@@ -332,6 +392,9 @@ class IntegrationCliSupportTest {
     UpdateCatalogIntegrationAuthenticationRequest lastAuthUpdate;
     DeleteCatalogIntegrationRequest lastDelete;
     int listCalls;
+    ValidateCatalogIntegrationRequest lastValidate;
+    ListUpstreamNamespacesRequest lastNamespaces;
+    ListUpstreamObjectsRequest lastObjects;
 
     @Override
     public void listCatalogIntegrations(
@@ -395,6 +458,55 @@ class IntegrationCliSupportTest {
         StreamObserver<DeleteCatalogIntegrationResponse> observer) {
       lastDelete = request;
       respond(observer, DeleteCatalogIntegrationResponse.getDefaultInstance());
+    }
+
+    @Override
+    public void validateCatalogIntegration(
+        ValidateCatalogIntegrationRequest request,
+        StreamObserver<ValidateCatalogIntegrationResponse> observer) {
+      lastValidate = request;
+      respond(
+          observer,
+          ValidateCatalogIntegrationResponse.newBuilder()
+              .setValid(true)
+              .addChecks(
+                  CatalogIntegrationValidationCheck.newBuilder()
+                      .setType(CatalogIntegrationValidationCheckType.CIVCT_CATALOG_CONNECTION)
+                      .setStatus(CatalogIntegrationValidationStatus.CIVS_PASSED)
+                      .setSummary("The catalog endpoint is reachable."))
+              .build());
+    }
+
+    @Override
+    public void listUpstreamNamespaces(
+        ListUpstreamNamespacesRequest request,
+        StreamObserver<ListUpstreamNamespacesResponse> observer) {
+      lastNamespaces = request;
+      respond(
+          observer,
+          ListUpstreamNamespacesResponse.newBuilder()
+              .addNamespaces(
+                  UpstreamNamespace.newBuilder()
+                      .setPath(
+                          NamespacePath.newBuilder()
+                              .addSegments("production")
+                              .addSegments("sales")))
+              .build());
+    }
+
+    @Override
+    public void listUpstreamObjects(
+        ListUpstreamObjectsRequest request, StreamObserver<ListUpstreamObjectsResponse> observer) {
+      lastObjects = request;
+      respond(
+          observer,
+          ListUpstreamObjectsResponse.newBuilder()
+              .addObjects(
+                  UpstreamObject.newBuilder()
+                      .setNamespace(request.getNamespace())
+                      .setName("orders")
+                      .setKind(UpstreamObjectKind.UOK_TABLE))
+              .build());
     }
   }
 

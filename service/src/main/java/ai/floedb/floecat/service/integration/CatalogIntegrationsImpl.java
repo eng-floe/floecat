@@ -15,12 +15,15 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SELECTOR_REQUIRED;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.UPDATE_MASK_REQUIRED;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
+import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationCapability;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationEntry;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationSpec;
@@ -34,10 +37,20 @@ import ai.floedb.floecat.integration.rpc.GetCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.GetCatalogIntegrationResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsResponse;
+import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesResponse;
+import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsResponse;
+import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationResponse;
+import ai.floedb.floecat.integration.rpc.UpstreamNamespace;
+import ai.floedb.floecat.integration.rpc.UpstreamObject;
+import ai.floedb.floecat.integration.rpc.UpstreamObjectKind;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationRequest;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -59,7 +72,10 @@ import jakarta.inject.Inject;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -78,6 +94,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogIntegrationCredentialStore credentialStore;
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
+  @Inject CatalogIntegrationDiscovery discovery;
 
   @Override
   public Uni<ListCatalogIntegrationsResponse> listCatalogIntegrations(
@@ -159,6 +176,142 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<ValidateCatalogIntegrationResponse> validateCatalogIntegration(
+      ValidateCatalogIntegrationRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var pc = principal.get();
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+              var row =
+                  requireIntegration(
+                      pc.getAccountId(), request.getIntegrationId(), pc.getCorrelationId());
+              var result = discovery.validate(row.value());
+              var response =
+                  ValidateCatalogIntegrationResponse.newBuilder()
+                      .setValid(result.valid())
+                      .addAllChecks(result.checks())
+                      .setIntegrationMeta(row.meta())
+                      .setValidatedAt(nowTs());
+              result.capabilities().supported().stream()
+                  .map(CatalogIntegrationsImpl::toRpcCapability)
+                  .filter(capability -> capability != CatalogIntegrationCapability.CIC_UNSPECIFIED)
+                  .sorted()
+                  .forEach(response::addCapabilities);
+              return response.build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<ListUpstreamNamespacesResponse> listUpstreamNamespaces(
+      ListUpstreamNamespacesRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var pc = principal.get();
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+              var row =
+                  requireIntegration(
+                      pc.getAccountId(), request.getIntegrationId(), pc.getCorrelationId());
+              ai.floedb.floecat.catalog.access.NamespacePath parent =
+                  toAccessPath(
+                      request.hasParent() ? request.getParent() : null,
+                      "parent",
+                      pc.getCorrelationId());
+              List<ai.floedb.floecat.catalog.access.NamespacePath> namespaces;
+              try {
+                namespaces = discovery.listNamespaces(row.value(), parent);
+              } catch (CatalogAccessException failure) {
+                throw catalogAccessStatus(pc.getCorrelationId(), failure);
+              }
+              String context =
+                  pageContext(
+                      "namespaces",
+                      row.value(),
+                      row.meta().getPointerVersion(),
+                      request.hasParent()
+                          ? request.getParent()
+                          : NamespacePath.getDefaultInstance(),
+                      "");
+              var page =
+                  CatalogDiscoveryPages.page(
+                      namespaces,
+                      request.hasPage() ? request.getPage() : null,
+                      context,
+                      pc.getCorrelationId());
+              var response =
+                  ListUpstreamNamespacesResponse.newBuilder()
+                      .setIntegrationMeta(row.meta())
+                      .setPage(MutationOps.pageOut(page.nextToken(), page.totalSize()));
+              page.values().stream()
+                  .map(path -> UpstreamNamespace.newBuilder().setPath(toRpcPath(path)).build())
+                  .forEach(response::addNamespaces);
+              return response.build();
+            }),
+        correlationId());
+  }
+
+  @Override
+  public Uni<ListUpstreamObjectsResponse> listUpstreamObjects(ListUpstreamObjectsRequest request) {
+    return mapFailures(
+        run(
+            () -> {
+              var pc = principal.get();
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_READ);
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+              var row =
+                  requireIntegration(
+                      pc.getAccountId(), request.getIntegrationId(), pc.getCorrelationId());
+              ai.floedb.floecat.catalog.access.NamespacePath namespace =
+                  toAccessPath(
+                      request.hasNamespace() ? request.getNamespace() : null,
+                      "namespace",
+                      pc.getCorrelationId());
+              Set<CatalogIntegrationDiscovery.ObjectKind> kinds =
+                  toObjectKinds(request.getKindsList(), pc.getCorrelationId());
+              List<CatalogIntegrationDiscovery.DiscoveredObject> objects;
+              try {
+                objects = discovery.listObjects(row.value(), namespace, kinds);
+              } catch (CatalogAccessException failure) {
+                throw catalogAccessStatus(pc.getCorrelationId(), failure);
+              }
+              String kindContext =
+                  kinds.stream()
+                      .map(Enum::name)
+                      .sorted()
+                      .reduce((left, right) -> left + "," + right)
+                      .orElse("ALL");
+              String context =
+                  pageContext(
+                      "objects",
+                      row.value(),
+                      row.meta().getPointerVersion(),
+                      request.hasNamespace()
+                          ? request.getNamespace()
+                          : NamespacePath.getDefaultInstance(),
+                      kindContext);
+              var page =
+                  CatalogDiscoveryPages.page(
+                      objects,
+                      request.hasPage() ? request.getPage() : null,
+                      context,
+                      pc.getCorrelationId());
+              var response =
+                  ListUpstreamObjectsResponse.newBuilder()
+                      .setIntegrationMeta(row.meta())
+                      .setPage(MutationOps.pageOut(page.nextToken(), page.totalSize()));
+              page.values().stream()
+                  .map(CatalogIntegrationsImpl::toRpcObject)
+                  .forEach(response::addObjects);
+              return response.build();
+            }),
+        correlationId());
   }
 
   private static java.util.Optional<
@@ -939,6 +1092,111 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       return builder.clearAuthentication();
     }
     return builder.setAuthentication(authentication);
+  }
+
+  private ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta<
+          CatalogIntegration>
+      requireIntegration(String accountId, ResourceId requestedId, String corr) {
+    ResourceId id = scopedId(accountId, requestedId);
+    return integrations
+        .getByIdWithMeta(id)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, null, Map.of("id", id.getId())));
+  }
+
+  private static ai.floedb.floecat.catalog.access.NamespacePath toAccessPath(
+      NamespacePath path, String field, String corr) {
+    if (path == null) {
+      return ai.floedb.floecat.catalog.access.NamespacePath.root();
+    }
+    for (String segment : path.getSegmentsList()) {
+      if (segment == null || segment.isBlank() || !segment.equals(segment.trim())) {
+        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", field + ".segments"));
+      }
+    }
+    return new ai.floedb.floecat.catalog.access.NamespacePath(path.getSegmentsList());
+  }
+
+  private static NamespacePath toRpcPath(ai.floedb.floecat.catalog.access.NamespacePath path) {
+    return NamespacePath.newBuilder().addAllSegments(path.segments()).build();
+  }
+
+  private static Set<CatalogIntegrationDiscovery.ObjectKind> toObjectKinds(
+      List<UpstreamObjectKind> requested, String corr) {
+    EnumSet<CatalogIntegrationDiscovery.ObjectKind> kinds =
+        EnumSet.noneOf(CatalogIntegrationDiscovery.ObjectKind.class);
+    for (UpstreamObjectKind kind : requested) {
+      switch (kind) {
+        case UOK_TABLE -> kinds.add(CatalogIntegrationDiscovery.ObjectKind.TABLE);
+        case UOK_VIEW -> kinds.add(CatalogIntegrationDiscovery.ObjectKind.VIEW);
+        case UOK_UNSPECIFIED, UNRECOGNIZED ->
+            throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kinds"));
+      }
+    }
+    return kinds;
+  }
+
+  private static UpstreamObject toRpcObject(
+      CatalogIntegrationDiscovery.DiscoveredObject discovered) {
+    return UpstreamObject.newBuilder()
+        .setNamespace(toRpcPath(discovered.name().namespace()))
+        .setName(discovered.name().name())
+        .setKind(
+            switch (discovered.kind()) {
+              case TABLE -> UpstreamObjectKind.UOK_TABLE;
+              case VIEW -> UpstreamObjectKind.UOK_VIEW;
+            })
+        .build();
+  }
+
+  private static CatalogIntegrationCapability toRpcCapability(CatalogCapability capability) {
+    return switch (capability) {
+      case VALIDATE -> CatalogIntegrationCapability.CIC_VALIDATE;
+      case LIST_NAMESPACES -> CatalogIntegrationCapability.CIC_LIST_NAMESPACES;
+      case LIST_TABLES -> CatalogIntegrationCapability.CIC_LIST_TABLES;
+      case LIST_VIEWS -> CatalogIntegrationCapability.CIC_LIST_VIEWS;
+      case VEND_STORAGE_CREDENTIALS -> CatalogIntegrationCapability.CIC_VEND_STORAGE_CREDENTIALS;
+      case VALIDATE_STORAGE_ACCESS -> CatalogIntegrationCapability.CIC_VALIDATE_STORAGE_ACCESS;
+      case STABLE_OBJECT_IDS -> CatalogIntegrationCapability.CIC_STABLE_OBJECT_IDS;
+      case LOAD_TABLE, LOAD_VIEW -> CatalogIntegrationCapability.CIC_UNSPECIFIED;
+    };
+  }
+
+  private static String pageContext(
+      String operation,
+      CatalogIntegration integration,
+      long pointerVersion,
+      NamespacePath path,
+      String filter) {
+    return operation
+        + "\n"
+        + integration.getResourceId().getAccountId()
+        + "\n"
+        + integration.getResourceId().getId()
+        + "\n"
+        + pointerVersion
+        + "\n"
+        + integration.getAuthentication().getCredentialGeneration()
+        + "\n"
+        + Base64.getUrlEncoder().withoutPadding().encodeToString(path.toByteArray())
+        + "\n"
+        + filter;
+  }
+
+  private static io.grpc.StatusRuntimeException catalogAccessStatus(
+      String corr, CatalogAccessException failure) {
+    return switch (failure.code()) {
+      case INVALID_CONFIGURATION,
+          UNAUTHENTICATED,
+          PERMISSION_DENIED,
+          UNSUPPORTED,
+          CREDENTIAL_EXPIRED,
+          CREDENTIAL_SCOPE_INVALID ->
+          GrpcErrors.preconditionFailed(corr, null, Map.of());
+      case NOT_FOUND -> GrpcErrors.notFound(corr, null, Map.of());
+      case UNAVAILABLE -> GrpcErrors.unavailable(corr, null, Map.of());
+      case TIMEOUT -> GrpcErrors.timeout(corr, null, Map.of());
+      case INTERNAL -> GrpcErrors.internal(corr, null, Map.of());
+    };
   }
 
   private ResourceId scopedId(String accountId, ResourceId id) {

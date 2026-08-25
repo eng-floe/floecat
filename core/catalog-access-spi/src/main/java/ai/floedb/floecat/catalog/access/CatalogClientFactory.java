@@ -53,7 +53,9 @@ public final class CatalogClientFactory {
     Objects.requireNonNull(resolvedCredentials, "resolvedCredentials");
     CatalogClientProvider provider = providers.get(config.protocol());
     if (provider == null) {
-      throw new IllegalStateException("No CatalogClientProvider for protocol=" + config.protocol());
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.UNSUPPORTED,
+          "No CatalogClientProvider for protocol=" + config.protocol());
     }
     return provider.open(config, resolvedCredentials);
   }

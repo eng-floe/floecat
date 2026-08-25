@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Table;
@@ -42,6 +44,7 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
+import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.view.SQLViewRepresentation;
@@ -69,6 +72,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
           CatalogCapability.LIST_VIEWS,
           CatalogCapability.LOAD_VIEW,
           CatalogCapability.VEND_STORAGE_CREDENTIALS,
+          CatalogCapability.VALIDATE_STORAGE_ACCESS,
           CatalogCapability.STABLE_OBJECT_IDS);
 
   private final Catalog catalog;
@@ -76,6 +80,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
   private final ViewCatalog viewCatalog;
   private final Runnable closeHook;
   private final Map<String, String> storageRoutingProperties;
+  private final Function<VendedStorageCredentials, FileIO> validationFileIoFactory;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   IcebergRestCatalogClient(
@@ -92,12 +97,39 @@ final class IcebergRestCatalogClient implements CatalogClient {
       ViewCatalog viewCatalog,
       Runnable closeHook,
       Map<String, String> storageRoutingProperties) {
+    this(
+        catalog,
+        namespaceCatalog,
+        viewCatalog,
+        closeHook,
+        storageRoutingProperties,
+        IcebergRestCatalogClient::validationFileIo);
+  }
+
+  IcebergRestCatalogClient(
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
+      Runnable closeHook,
+      Function<VendedStorageCredentials, FileIO> validationFileIoFactory) {
+    this(catalog, namespaceCatalog, viewCatalog, closeHook, Map.of(), validationFileIoFactory);
+  }
+
+  IcebergRestCatalogClient(
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
+      Runnable closeHook,
+      Map<String, String> storageRoutingProperties,
+      Function<VendedStorageCredentials, FileIO> validationFileIoFactory) {
     this.catalog = Objects.requireNonNull(catalog, "catalog");
     this.namespaceCatalog = Objects.requireNonNull(namespaceCatalog, "namespaceCatalog");
     this.viewCatalog = Objects.requireNonNull(viewCatalog, "viewCatalog");
     this.closeHook = Objects.requireNonNull(closeHook, "closeHook");
     this.storageRoutingProperties =
         Map.copyOf(Objects.requireNonNull(storageRoutingProperties, "storageRoutingProperties"));
+    this.validationFileIoFactory =
+        Objects.requireNonNull(validationFileIoFactory, "validationFileIoFactory");
   }
 
   @Override
@@ -107,79 +139,104 @@ final class IcebergRestCatalogClient implements CatalogClient {
 
   @Override
   public void validate() {
-    namespaceCatalog.listNamespaces(Namespace.empty());
+    IcebergRestCatalogErrors.run(
+        "connection validation", () -> namespaceCatalog.listNamespaces(Namespace.empty()));
   }
 
   @Override
   public List<NamespacePath> listNamespaces(NamespacePath parent) {
     Objects.requireNonNull(parent, "parent");
-    return namespaceCatalog.listNamespaces(toIcebergNamespace(parent)).stream()
-        .map(IcebergRestCatalogClient::fromIcebergNamespace)
-        .sorted()
-        .toList();
+    return IcebergRestCatalogErrors.call(
+        "namespace listing",
+        () ->
+            namespaceCatalog.listNamespaces(toIcebergNamespace(parent)).stream()
+                .map(IcebergRestCatalogClient::fromIcebergNamespace)
+                .sorted()
+                .toList());
   }
 
   @Override
   public List<CatalogObjectName> listTables(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
-    return catalog.listTables(toIcebergNamespace(namespace)).stream()
-        .map(IcebergRestCatalogClient::fromTableIdentifier)
-        .sorted()
-        .toList();
+    return IcebergRestCatalogErrors.call(
+        "table listing",
+        () ->
+            catalog.listTables(toIcebergNamespace(namespace)).stream()
+                .map(IcebergRestCatalogClient::fromTableIdentifier)
+                .sorted()
+                .toList());
   }
 
   @Override
   public CatalogTable loadTable(CatalogObjectName name) {
     Objects.requireNonNull(name, "name");
-    Table table = catalog.loadTable(toTableIdentifier(name));
-    TableMetadata metadata = tableMetadata(table);
-    return new CatalogTable(
-        name,
-        externalIdentity(name, metadata),
-        "ICEBERG",
-        metadataLocation(metadata),
-        Optional.ofNullable(table.location()).filter(location -> !location.isBlank()),
-        table.properties());
+    return IcebergRestCatalogErrors.call(
+        "table loading",
+        () -> {
+          Table table = catalog.loadTable(toTableIdentifier(name));
+          TableMetadata metadata = tableMetadata(table);
+          return new CatalogTable(
+              name,
+              externalIdentity(name, metadata),
+              "ICEBERG",
+              metadataLocation(metadata),
+              Optional.ofNullable(table.location()).filter(location -> !location.isBlank()),
+              table.properties());
+        });
   }
 
   @Override
   public List<CatalogObjectName> listViews(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
-    return viewCatalog.listViews(toIcebergNamespace(namespace)).stream()
-        .map(IcebergRestCatalogClient::fromTableIdentifier)
-        .sorted()
-        .toList();
+    return IcebergRestCatalogErrors.call(
+        "view listing",
+        () ->
+            viewCatalog.listViews(toIcebergNamespace(namespace)).stream()
+                .map(IcebergRestCatalogClient::fromTableIdentifier)
+                .sorted()
+                .toList());
   }
 
   @Override
   public CatalogView loadView(CatalogObjectName name) {
     Objects.requireNonNull(name, "name");
-    View view = viewCatalog.loadView(toTableIdentifier(name));
-    ViewVersion currentVersion = Objects.requireNonNull(view.currentVersion(), "currentVersion");
-    Namespace defaultNamespace = currentVersion.defaultNamespace();
-    List<CatalogViewDefinition> definitions =
-        currentVersion.representations().stream()
-            .filter(SQLViewRepresentation.class::isInstance)
-            .map(SQLViewRepresentation.class::cast)
-            .map(
-                representation ->
-                    new CatalogViewDefinition(representation.sql(), representation.dialect()))
-            .toList();
-    return new CatalogView(
-        name,
-        Optional.ofNullable(view.uuid())
-            .map(Object::toString)
-            .map(ExternalObjectIdentity::stable)
-            .orElseGet(() -> ExternalObjectIdentity.pathFallback(name)),
-        SchemaParser.toJson(view.schema()),
-        definitions,
-        defaultNamespace == null ? name.namespace() : fromIcebergNamespace(defaultNamespace),
-        view.properties());
+    return IcebergRestCatalogErrors.call(
+        "view loading",
+        () -> {
+          View view = viewCatalog.loadView(toTableIdentifier(name));
+          ViewVersion currentVersion =
+              Objects.requireNonNull(view.currentVersion(), "currentVersion");
+          Namespace defaultNamespace = currentVersion.defaultNamespace();
+          List<CatalogViewDefinition> definitions =
+              currentVersion.representations().stream()
+                  .filter(SQLViewRepresentation.class::isInstance)
+                  .map(SQLViewRepresentation.class::cast)
+                  .map(
+                      representation ->
+                          new CatalogViewDefinition(representation.sql(), representation.dialect()))
+                  .toList();
+          return new CatalogView(
+              name,
+              Optional.ofNullable(view.uuid())
+                  .map(Object::toString)
+                  .map(ExternalObjectIdentity::stable)
+                  .orElseGet(() -> ExternalObjectIdentity.pathFallback(name)),
+              SchemaParser.toJson(view.schema()),
+              definitions,
+              defaultNamespace == null ? name.namespace() : fromIcebergNamespace(defaultNamespace),
+              view.properties());
+        });
   }
 
   @Override
   public Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName name) {
     Objects.requireNonNull(name, "name");
+    return IcebergRestCatalogErrors.call(
+        "storage credential vending", () -> vendStorageCredentialsUnchecked(name));
+  }
+
+  private Optional<VendedStorageCredentials> vendStorageCredentialsUnchecked(
+      CatalogObjectName name) {
     Table table = catalog.loadTable(toTableIdentifier(name));
     if (!(table.io() instanceof SupportsStorageCredentials credentialSource)) {
       return Optional.empty();
@@ -189,7 +246,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return Optional.empty();
     }
 
-    String tableLocation = normalizeS3Scheme(Optional.ofNullable(table.location()).orElse(""));
+    String tableLocation = Optional.ofNullable(table.location()).orElse("");
     StorageCredential selected = null;
     int selectedPrefixLength = -1;
     for (StorageCredential candidate : credentials) {
@@ -198,7 +255,7 @@ final class IcebergRestCatalogClient implements CatalogClient {
       }
       String prefix = Optional.ofNullable(candidate.prefix()).orElse("");
       String normalizedPrefix = normalizeS3Scheme(prefix);
-      if (!normalizedPrefix.isEmpty() && !tableLocation.startsWith(normalizedPrefix)) {
+      if (!coversLocation(tableLocation, normalizedPrefix)) {
         continue;
       }
       if (selected == null || normalizedPrefix.length() > selectedPrefixLength) {
@@ -207,6 +264,18 @@ final class IcebergRestCatalogClient implements CatalogClient {
       }
     }
     if (selected == null) {
+      boolean hasOutOfScopeCredential =
+          credentials.stream()
+              .filter(Objects::nonNull)
+              .filter(candidate -> hasVendedKeyMaterial(candidate.config()))
+              .map(StorageCredential::prefix)
+              .filter(Objects::nonNull)
+              .anyMatch(prefix -> !coversLocation(tableLocation, prefix));
+      if (hasOutOfScopeCredential) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
+            "Vended storage credentials do not cover the upstream table location");
+      }
       return Optional.empty();
     }
 
@@ -220,6 +289,41 @@ final class IcebergRestCatalogClient implements CatalogClient {
             Map.copyOf(vended),
             Optional.ofNullable(selected.prefix()).orElse(""),
             Optional.ofNullable(parseVendedExpiry(selected.config()))));
+  }
+
+  @Override
+  public void validateStorageAccess(
+      CatalogObjectName name, VendedStorageCredentials vendedStorageCredentials) {
+    Objects.requireNonNull(name, "name");
+    Objects.requireNonNull(vendedStorageCredentials, "vendedStorageCredentials");
+    IcebergRestCatalogErrors.run(
+        "storage access validation",
+        () -> {
+          Table table = catalog.loadTable(toTableIdentifier(name));
+          String metadataLocation =
+              metadataLocation(tableMetadata(table))
+                  .orElseThrow(
+                      () ->
+                          new ai.floedb.floecat.catalog.access.CatalogAccessException(
+                              ai.floedb.floecat.catalog.access.CatalogAccessException.Code
+                                  .UNSUPPORTED,
+                              "Upstream table does not expose a metadata location"));
+          String scopePrefix = vendedStorageCredentials.scopePrefix();
+          if (!coversLocation(metadataLocation, scopePrefix)) {
+            throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+                ai.floedb.floecat.catalog.access.CatalogAccessException.Code
+                    .CREDENTIAL_SCOPE_INVALID,
+                "Vended storage credentials do not cover the table metadata location");
+          }
+          try (FileIO validationIo = validationFileIoFactory.apply(vendedStorageCredentials)) {
+            validationIo.newInputFile(metadataLocation).getLength();
+          }
+        });
+  }
+
+  private static FileIO validationFileIo(VendedStorageCredentials credentials) {
+    return CatalogUtil.loadFileIO(
+        IcebergRestCatalogClientProvider.DEFAULT_S3_FILE_IO, credentials.properties(), null);
   }
 
   @Override
@@ -304,6 +408,10 @@ final class IcebergRestCatalogClient implements CatalogClient {
       return "s3" + location.substring(schemeEnd);
     }
     return location;
+  }
+
+  private static boolean coversLocation(String location, String prefix) {
+    return prefix.isEmpty() || normalizeS3Scheme(location).startsWith(normalizeS3Scheme(prefix));
   }
 
   private static boolean isBlank(String value) {

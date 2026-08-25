@@ -15,9 +15,30 @@ CatalogIntegration (external catalog identity)
  └── CatalogOverlay "finance"
 ```
 
-These resources do not yet validate connectivity, refresh metadata, reconcile or capture tables,
-or affect query paths. The legacy `Connector` API and Shell commands remain the operational path
-for external catalog connectivity.
+Catalog Integration RPCs validate connectivity and browse upstream metadata using the current
+write-only credential generation. Discovery is read-only: it does not reconcile or capture tables
+and does not affect query paths.
+
+## Validation and discovery workflow
+
+After creating an Integration, clients call `ValidateCatalogIntegration` with its resource ID. The
+response reports catalog connection, catalog authentication, namespace/table discovery, credential
+vending, and storage access as separate checks. Credential issues distinguish vending failure,
+expiry, and invalid scope. `valid` is true only when all five checks pass; an empty catalog cannot
+prove credential vending and therefore does not report full validation success.
+
+The response capability set covers operations relevant to public Integration validation and
+discovery. Internal table and view loading capabilities belong to reconciliation and are not
+reported by this RPC.
+
+`ListUpstreamNamespaces` lists direct children of an optional parent path. Omitting the parent lists
+the upstream root. `ListUpstreamObjects` lists lightweight table and view names within one upstream
+namespace; callers may filter by object kind. Both operations are paginated, case-preserving, and
+return the Integration mutation metadata used for the call. Returned namespace paths can be copied
+directly into an Overlay's `include_namespaces` or `exclude_namespaces` selection.
+
+These operations require `catalog-integration.read` and `catalog-integration.use`. They use the
+catalog-access SPI directly and never call or fall back to the legacy Connector path.
 
 ## Shell workflow
 
@@ -31,6 +52,9 @@ integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --cred client_secret=secret \
   --props warehouse=analytics
 overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
+integration validate lakehouse
+integration namespaces lakehouse
+integration objects lakehouse prod.sales --kinds table,view
 ```
 
 The overlay command accepts either a resource ID or display name for the integration.
@@ -46,6 +70,9 @@ integration get <name|id>
 integration create <name> <type> <uri> --auth-type <type> [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
 integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
 integration update-auth <name|id> --auth-type <type> [--auth k=v ...] [--cred k=v ...]
+integration validate <name|id>
+integration namespaces <name|id> [--parent <namespace>]
+integration objects <name|id> <namespace> [--kinds table,view]
 integration delete <name|id>
 
 overlays [--integration <name|id>]

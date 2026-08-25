@@ -45,7 +45,11 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
   private static final String VENDED_CREDENTIALS = "vended-credentials";
-  private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
+  private static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
+  private static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
+  private static final String DEFAULT_REST_CONNECTION_TIMEOUT_MS = "10000";
+  private static final String DEFAULT_REST_SOCKET_TIMEOUT_MS = "30000";
+  static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final AwsCredentialKeys CATALOG_AWS_KEYS =
       new AwsCredentialKeys(
           RefreshingAwsCredentialsRegistry.CATALOG_PROVIDER_ID,
@@ -81,7 +85,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     }
 
     Map<String, String> properties = catalogProperties(config, resolvedCredentials);
-    RESTSessionCatalog sessionCatalog = createSessionCatalog(properties);
+    RESTSessionCatalog sessionCatalog =
+        IcebergRestCatalogErrors.call(
+            "client initialization", () -> createSessionCatalog(properties));
     try {
       SessionCatalog.SessionContext context = SessionCatalog.SessionContext.createEmpty();
       Catalog catalog = sessionCatalog.asCatalog(context);
@@ -97,6 +103,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
           IcebergRestCatalogClient.storageRoutingProperties(properties));
     } catch (RuntimeException | Error e) {
       closeCatalog(sessionCatalog);
+      if (e instanceof RuntimeException runtimeException) {
+        throw IcebergRestCatalogErrors.translate("client initialization", runtimeException);
+      }
       throw e;
     }
   }
@@ -114,6 +123,8 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
 
     properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
+    properties.putIfAbsent(REST_CONNECTION_TIMEOUT_MS, DEFAULT_REST_CONNECTION_TIMEOUT_MS);
+    properties.putIfAbsent(REST_SOCKET_TIMEOUT_MS, DEFAULT_REST_SOCKET_TIMEOUT_MS);
     resolvedCredentials
         .headers()
         .forEach(

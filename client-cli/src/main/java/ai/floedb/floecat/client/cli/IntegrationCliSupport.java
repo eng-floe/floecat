@@ -35,12 +35,17 @@ import ai.floedb.floecat.integration.rpc.GetCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.GetCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogIntegrationsRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest;
+import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
 import ai.floedb.floecat.integration.rpc.SecretValue;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.UpstreamObjectKind;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationRequest;
+import ai.floedb.floecat.integration.rpc.ValidateCatalogIntegrationResponse;
 import com.google.protobuf.FieldMask;
 import java.io.PrintStream;
 import java.util.ArrayList;
@@ -50,7 +55,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 
-/** Small CRUD surface for catalog integrations and their catalog overlays. */
+/** Configuration and operational commands for catalog integrations and their catalog overlays. */
 final class IntegrationCliSupport {
   private static final int DEFAULT_PAGE_SIZE = 100;
 
@@ -80,7 +85,9 @@ final class IntegrationCliSupport {
       CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations,
       Supplier<String> accountId) {
     if (args.isEmpty()) {
-      out.println("usage: integration <list|get|create|update|update-auth|delete> ...");
+      out.println(
+          "usage: integration"
+              + " <list|get|create|update|update-auth|validate|namespaces|objects|delete> ...");
       return;
     }
     switch (args.getFirst()) {
@@ -166,6 +173,65 @@ final class IntegrationCliSupport {
                     .updateCatalogIntegrationAuthentication(request.build())
                     .getIntegration()),
             out);
+      }
+      case "validate" -> {
+        if (args.size() < 2) {
+          out.println("usage: integration validate <name|id>");
+          return;
+        }
+        var response =
+            integrations.validateCatalogIntegration(
+                ValidateCatalogIntegrationRequest.newBuilder()
+                    .setIntegrationId(resolveIntegration(args.get(1), integrations, accountId))
+                    .build());
+        printValidation(response, out);
+      }
+      case "namespaces" -> {
+        if (args.size() < 2) {
+          out.println("usage: integration namespaces <name|id> [--parent <namespace>]");
+          return;
+        }
+        var request =
+            ListUpstreamNamespacesRequest.newBuilder()
+                .setIntegrationId(resolveIntegration(args.get(1), integrations, accountId));
+        if (args.contains("--parent")) {
+          request.setParent(
+              namespacePath(CliArgs.parseStringFlag(args, "--parent", ""), "--parent"));
+        }
+        out.println("NAMESPACE");
+        CliArgs.forEachPage(
+            DEFAULT_PAGE_SIZE,
+            page -> integrations.listUpstreamNamespaces(request.setPage(page).build()),
+            response -> response.getNamespacesList(),
+            response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
+            rows ->
+                rows.forEach(
+                    row -> out.println(String.join(".", row.getPath().getSegmentsList()))));
+      }
+      case "objects" -> {
+        if (args.size() < 3 || args.get(2).startsWith("--")) {
+          out.println("usage: integration objects <name|id> <namespace> [--kinds table,view]");
+          return;
+        }
+        var request =
+            ListUpstreamObjectsRequest.newBuilder()
+                .setIntegrationId(resolveIntegration(args.get(1), integrations, accountId))
+                .setNamespace(namespacePath(args.get(2), "namespace"))
+                .addAllKinds(upstreamObjectKinds(args));
+        out.printf("%-32s  %-32s  %s%n", "NAMESPACE", "NAME", "KIND");
+        CliArgs.forEachPage(
+            DEFAULT_PAGE_SIZE,
+            page -> integrations.listUpstreamObjects(request.setPage(page).build()),
+            response -> response.getObjectsList(),
+            response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
+            rows ->
+                rows.forEach(
+                    row ->
+                        out.printf(
+                            "%-32s  %-32s  %s%n",
+                            String.join(".", row.getNamespace().getSegmentsList()),
+                            row.getName(),
+                            row.getKind().name().replaceFirst("^UOK_", ""))));
       }
       case "delete" -> {
         if (args.size() < 2) {
@@ -442,6 +508,26 @@ final class IntegrationCliSupport {
         .toList();
   }
 
+  private static NamespacePath namespacePath(String value, String label) {
+    String path = Quotes.unquote(value);
+    if (path.isBlank()) throw new IllegalArgumentException(label + " must not be blank");
+    return NamespacePath.newBuilder().addAllSegments(FQNameParserUtil.segments(path)).build();
+  }
+
+  private static List<UpstreamObjectKind> upstreamObjectKinds(List<String> args) {
+    String value = Quotes.unquote(CliArgs.parseStringFlag(args, "--kinds", ""));
+    if (value.isBlank()) return List.of();
+    return CliUtils.csvList(value).stream()
+        .map(
+            kind ->
+                switch (kind.toLowerCase(Locale.ROOT)) {
+                  case "table" -> UpstreamObjectKind.UOK_TABLE;
+                  case "view" -> UpstreamObjectKind.UOK_VIEW;
+                  default -> throw new IllegalArgumentException("Unsupported object kind: " + kind);
+                })
+        .toList();
+  }
+
   private static void listIntegrations(
       PrintStream out, CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations) {
     printIntegrationHeader(out);
@@ -571,6 +657,25 @@ final class IntegrationCliSupport {
   private static void printIntegrations(List<CatalogIntegration> rows, PrintStream out) {
     printIntegrationHeader(out);
     printIntegrationRows(rows, out);
+  }
+
+  private static void printValidation(
+      ValidateCatalogIntegrationResponse response, PrintStream out) {
+    out.printf("valid: %s%n", response.getValid());
+    out.printf(
+        "capabilities: %s%n",
+        response.getCapabilitiesList().stream()
+            .map(value -> value.name().replaceFirst("^CIC_", ""))
+            .toList());
+    out.printf("%-24s  %-8s  %-32s  %s%n", "CHECK", "STATUS", "ISSUE", "SUMMARY");
+    for (var check : response.getChecksList()) {
+      out.printf(
+          "%-24s  %-8s  %-32s  %s%n",
+          check.getType().name().replaceFirst("^CIVCT_", ""),
+          check.getStatus().name().replaceFirst("^CIVS_", ""),
+          check.getIssue().name().replaceFirst("^CIVI_", ""),
+          check.getSummary());
+    }
   }
 
   private static void printIntegrationHeader(PrintStream out) {

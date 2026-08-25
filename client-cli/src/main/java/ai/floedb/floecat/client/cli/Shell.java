@@ -586,6 +586,9 @@ public class Shell implements Runnable {
          integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
          integration update-auth <name|id> --auth-type <type>
              [--auth k=v ...] [--cred k=v ...] [--etag <etag>]
+         integration validate <name|id>
+         integration namespaces <name|id> [--parent <namespace>]
+         integration objects <name|id> <namespace> [--kinds table,view]
          integration delete <name|id> [--cascade] [--etag <etag>]
          overlays [--integration <name|id>]
          overlay get <name|id>

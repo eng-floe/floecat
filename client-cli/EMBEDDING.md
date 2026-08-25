@@ -113,7 +113,7 @@ expected: `catalog create "my catalog"` becomes three tokens.
 | `table` / `tables` | `tables <ns>`, `table get <fq>`, `resolve <fq>`, `describe <fq>` |
 | `view` / `views` | `views <ns>`, `view get <fq>` |
 | `connector` / `connectors` | `connectors`, `connector create ...`, `connector trigger <id>` |
-| `integration` / `integrations` | `integrations`, `integration create <name> <type> <uri> --auth-type <type>` |
+| `integration` / `integrations` | `integrations`, `integration create <name> <type> <uri> --auth-type <type>`, `integration validate <name>`, `integration namespaces <name>`, `integration objects <name> <namespace>` |
 | `overlay` / `overlays` | `overlays`, `overlay create <name> <integration> <catalog>` |
 | `snapshot` / `snapshots` | `snapshots <table>`, `snapshot get <table> --snapshot <id>` |
 | `stats` / `analyze` | `stats table <fq>`, `stats columns <fq>`, `analyze <fq>` |

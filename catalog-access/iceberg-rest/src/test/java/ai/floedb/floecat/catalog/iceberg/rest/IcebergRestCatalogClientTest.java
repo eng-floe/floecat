@@ -18,6 +18,9 @@ package ai.floedb.floecat.catalog.iceberg.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -25,13 +28,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.HasTableOperations;
@@ -44,7 +51,9 @@ import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
+import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.StorageCredential;
 import org.apache.iceberg.io.SupportsStorageCredentials;
 import org.apache.iceberg.types.Types;
@@ -280,6 +289,24 @@ class IcebergRestCatalogClientTest {
   }
 
   @Test
+  void routingOnlyCredentialOutsideTableScopeIsNotReportedAsInvalidCredentials() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    Table table = mock(Table.class);
+    FileIO io =
+        mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+    when(table.io()).thenReturn(io);
+    when(table.location()).thenReturn("s3a://warehouse/sales/orders/data");
+    when(((SupportsStorageCredentials) io).credentials())
+        .thenReturn(
+            List.of(StorageCredential.create("s3://different/", Map.of("s3.region", "us-east-1"))));
+    when(catalog.loadTable(TableIdentifier.of(Namespace.of("production", "sales"), "orders")))
+        .thenReturn(table);
+
+    assertTrue(client().vendStorageCredentials(name).isEmpty());
+  }
+
+  @Test
   void doesNotTreatOrdinaryFileIoPropertiesAsProtocolVendedCredentials() {
     CatalogObjectName name =
         new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
@@ -329,6 +356,162 @@ class IcebergRestCatalogClientTest {
     client.validate();
 
     verify(namespaces, times(1)).listNamespaces(Namespace.empty());
+  }
+
+  @Test
+  void validatesStorageWithANonMutatingMetadataFileRead() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class, withSettings().extraInterfaces(HasTableOperations.class));
+    TableOperations operations = mock(TableOperations.class);
+    TableMetadata metadata = mock(TableMetadata.class);
+    FileIO io = mock(FileIO.class);
+    InputFile input = mock(InputFile.class);
+    when(((HasTableOperations) table).operations()).thenReturn(operations);
+    when(operations.current()).thenReturn(metadata);
+    when(metadata.metadataFileLocation()).thenReturn("s3://warehouse/metadata/v2.json");
+    when(io.newInputFile("s3://warehouse/metadata/v2.json")).thenReturn(input);
+    when(input.getLength()).thenReturn(42L);
+    when(catalog.loadTable(identifier)).thenReturn(table);
+
+    var vended =
+        new VendedStorageCredentials(
+            Map.of(
+                "s3.access-key-id", "vended-access",
+                "s3.secret-access-key", "vended-secret"),
+            "s3://warehouse/",
+            Optional.empty());
+    var client = new IcebergRestCatalogClient(catalog, namespaces, views, () -> {}, ignored -> io);
+
+    client.validateStorageAccess(name, vended);
+
+    verify(input).getLength();
+    verify(io).close();
+    assertTrue(client.capabilities().supports(CatalogCapability.VALIDATE_STORAGE_ACCESS));
+  }
+
+  @Test
+  void validatesS3aMetadataWithS3CredentialScope() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    TableIdentifier identifier = TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+    Table table = mock(Table.class, withSettings().extraInterfaces(HasTableOperations.class));
+    TableOperations operations = mock(TableOperations.class);
+    TableMetadata metadata = mock(TableMetadata.class);
+    FileIO io = mock(FileIO.class);
+    InputFile input = mock(InputFile.class);
+    when(((HasTableOperations) table).operations()).thenReturn(operations);
+    when(operations.current()).thenReturn(metadata);
+    when(metadata.metadataFileLocation()).thenReturn("s3a://warehouse/metadata/v2.json");
+    when(io.newInputFile("s3a://warehouse/metadata/v2.json")).thenReturn(input);
+    when(input.getLength()).thenReturn(42L);
+    when(catalog.loadTable(identifier)).thenReturn(table);
+    var vended =
+        new VendedStorageCredentials(
+            Map.of(
+                "s3.access-key-id", "vended-access",
+                "s3.secret-access-key", "vended-secret"),
+            "s3://warehouse/",
+            Optional.empty());
+    var client = new IcebergRestCatalogClient(catalog, namespaces, views, () -> {}, ignored -> io);
+
+    client.validateStorageAccess(name, vended);
+
+    verify(input).getLength();
+    verify(io).close();
+  }
+
+  @Test
+  void rejectsVendedCredentialsOutsideTheMetadataLocationScope() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    Table table = mock(Table.class, withSettings().extraInterfaces(HasTableOperations.class));
+    TableOperations operations = mock(TableOperations.class);
+    TableMetadata metadata = mock(TableMetadata.class);
+    when(((HasTableOperations) table).operations()).thenReturn(operations);
+    when(operations.current()).thenReturn(metadata);
+    when(metadata.metadataFileLocation()).thenReturn("s3://warehouse/metadata/v2.json");
+    when(catalog.loadTable(TableIdentifier.of(Namespace.of("production", "sales"), "orders")))
+        .thenReturn(table);
+    var vended =
+        new VendedStorageCredentials(
+            Map.of(
+                "s3.access-key-id", "vended-access",
+                "s3.secret-access-key", "vended-secret"),
+            "s3://other-bucket/",
+            Optional.empty());
+    var client =
+        new IcebergRestCatalogClient(
+            catalog, namespaces, views, () -> {}, ignored -> mock(FileIO.class));
+
+    CatalogAccessException error =
+        assertThrows(
+            CatalogAccessException.class, () -> client.validateStorageAccess(name, vended));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID, error.code());
+  }
+
+  @Test
+  void reportsProtocolCredentialsThatDoNotCoverTheTableLocation() {
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    Table table = mock(Table.class);
+    FileIO io =
+        mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+    when(table.io()).thenReturn(io);
+    when(table.location()).thenReturn("s3://warehouse/sales/orders");
+    when(((SupportsStorageCredentials) io).credentials())
+        .thenReturn(
+            List.of(
+                StorageCredential.create(
+                    "s3://different/",
+                    Map.of(
+                        "s3.access-key-id", "vended-access",
+                        "s3.secret-access-key", "vended-secret"))));
+    when(catalog.loadTable(TableIdentifier.of(Namespace.of("production", "sales"), "orders")))
+        .thenReturn(table);
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().vendStorageCredentials(name));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID, error.code());
+  }
+
+  @Test
+  void translatesProviderAuthenticationFailuresWithoutLeakingTheirMessage() {
+    when(namespaces.listNamespaces(Namespace.empty()))
+        .thenThrow(new org.apache.iceberg.exceptions.NotAuthorizedException("secret-token"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().validate());
+
+    assertEquals(CatalogAccessException.Code.UNAUTHENTICATED, error.code());
+    assertFalse(error.getMessage().contains("secret-token"));
+  }
+
+  @Test
+  void translatesInvalidRootNamespaceForDiscoveryFallback() {
+    when(catalog.listTables(Namespace.empty()))
+        .thenThrow(new NoSuchNamespaceException("Invalid namespace: secret-detail"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().listTables(NamespacePath.root()));
+
+    assertEquals(CatalogAccessException.Code.NOT_FOUND, error.code());
+    assertFalse(error.getMessage().contains("secret-detail"));
+  }
+
+  @Test
+  void translatingFailureTerminatesForIndirectCauseCycles() {
+    RuntimeException first = new RuntimeException("first");
+    RuntimeException second = new RuntimeException("second");
+    first.initCause(second);
+    second.initCause(first);
+
+    assertTimeoutPreemptively(
+        Duration.ofSeconds(1),
+        () -> assertSame(first, IcebergRestCatalogErrors.translate("test", first)));
   }
 
   @Test

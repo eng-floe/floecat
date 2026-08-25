@@ -1,0 +1,397 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ */
+
+package ai.floedb.floecat.service.integration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
+import ai.floedb.floecat.catalog.access.CatalogCapabilities;
+import ai.floedb.floecat.catalog.access.CatalogCapability;
+import ai.floedb.floecat.catalog.access.CatalogClient;
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationIssue;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.jboss.logging.MDC;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class CatalogIntegrationDiscoveryTest {
+  private CatalogIntegrationDiscovery discovery;
+  private CatalogIntegrationAccess access;
+  private CatalogClient client;
+  private final CatalogIntegration integration = CatalogIntegration.getDefaultInstance();
+
+  @BeforeEach
+  void setUp() {
+    discovery = new CatalogIntegrationDiscovery();
+    access = mock(CatalogIntegrationAccess.class);
+    client = mock(CatalogClient.class);
+    discovery.access = access;
+    when(access.open(integration)).thenReturn(client);
+  }
+
+  @Test
+  void validationPassesOnlyAfterCatalogVendingAndStorageChecks() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    assertEquals(5, result.checks().size());
+    assertTrue(
+        result.checks().stream()
+            .allMatch(
+                check -> check.getStatus() == CatalogIntegrationValidationStatus.CIVS_PASSED));
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void validationDoesNotClaimSuccessWhenCatalogVendsNoCredentials() {
+    CatalogObjectName orders =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+    when(client.capabilities())
+        .thenReturn(
+            CatalogCapabilities.of(
+                CatalogCapability.VALIDATE,
+                CatalogCapability.LIST_NAMESPACES,
+                CatalogCapability.LIST_TABLES,
+                CatalogCapability.VEND_STORAGE_CREDENTIALS,
+                CatalogCapability.VALIDATE_STORAGE_ACCESS));
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of(orders));
+    when(client.vendStorageCredentials(orders)).thenReturn(Optional.empty());
+
+    var result = discovery.validate(integration);
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_FAILED, result.checks().get(3).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_NOT_RUN, result.checks().get(4).getStatus());
+    verify(client, never()).validateStorageAccess(any(), any());
+  }
+
+  @Test
+  void closeFailureDoesNotRewriteCompletedValidationChecks() {
+    setUpSuccessfulValidation(
+        new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty()));
+    doThrow(new IllegalStateException("close failed")).when(client).close();
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    assertEquals(5, result.checks().size());
+  }
+
+  @Test
+  void providerCallsRetainPropagatedContext() {
+    setUpSuccessfulValidation(
+        new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty()));
+    MDC.put("catalog-test-correlation", "corr-123");
+    doAnswer(
+            invocation -> {
+              assertEquals("corr-123", MDC.get("catalog-test-correlation"));
+              return null;
+            })
+        .when(client)
+        .validate();
+
+    try {
+      assertTrue(discovery.validate(integration).valid());
+    } finally {
+      MDC.remove("catalog-test-correlation");
+    }
+  }
+
+  @Test
+  void strictProviderRootTableRejectionFallsThroughToNamespaceWalk() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    when(client.listTables(NamespacePath.root()))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.INVALID_CONFIGURATION,
+                "Root is not a table namespace"));
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void rootTablePermissionFailureFallsThroughToNamespaceWalk() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    when(client.listTables(NamespacePath.root()))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.PERMISSION_DENIED, "Root tables are not visible"));
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void namespaceTablePermissionFailureDoesNotAbortValidationWalk() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    NamespacePath restricted = NamespacePath.of("production", "restricted");
+    NamespacePath sales = orders.namespace();
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(restricted, sales));
+    when(client.listTables(restricted))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.PERMISSION_DENIED, "Namespace tables are not visible"));
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    verify(client).listTables(restricted);
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void validationWalkStopsAtItsWallClockBudget() {
+    discovery.validationTimeout = Duration.ofSeconds(1);
+    AtomicInteger clockReads = new AtomicInteger();
+    discovery.nanoTime =
+        () -> clockReads.incrementAndGet() < 4 ? 0L : Duration.ofSeconds(1).toNanos();
+    when(client.capabilities()).thenReturn(validationCapabilities());
+
+    var result = discovery.validate(integration);
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_DISCOVERY_FAILED, result.checks().get(2).getIssue());
+    verify(client, never()).listTables(any());
+  }
+
+  @Test
+  void validationDeadlineInterruptsHungProviderCall() {
+    discovery.validationTimeout = Duration.ofMillis(50);
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    doAnswer(
+            invocation -> {
+              new CountDownLatch(1).await();
+              return null;
+            })
+        .when(client)
+        .validate();
+
+    var result =
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> discovery.validate(integration));
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
+        result.checks().getFirst().getIssue());
+  }
+
+  @Test
+  void clientReturnedAfterOpenTimeoutIsClosed() throws InterruptedException {
+    discovery.validationTimeout = Duration.ofMillis(50);
+    CountDownLatch closed = new CountDownLatch(1);
+    doAnswer(
+            invocation -> {
+              try {
+                new CountDownLatch(1).await();
+              } catch (InterruptedException ignored) {
+                // Simulate an HTTP layer that consumes interruption before returning its client.
+              }
+              return client;
+            })
+        .when(access)
+        .open(integration);
+    doAnswer(
+            invocation -> {
+              closed.countDown();
+              return null;
+            })
+        .when(client)
+        .close();
+
+    var result =
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> discovery.validate(integration));
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CONNECTION_FAILED,
+        result.checks().getFirst().getIssue());
+    assertTrue(closed.await(2, TimeUnit.SECONDS));
+  }
+
+  @Test
+  void listDeadlineInterruptsHungProviderCall() {
+    discovery.listTimeout = Duration.ofMillis(50);
+    NamespacePath parent = NamespacePath.of("production");
+    when(client.capabilities())
+        .thenReturn(CatalogCapabilities.of(CatalogCapability.LIST_NAMESPACES));
+    when(client.listNamespaces(parent))
+        .thenAnswer(
+            invocation -> {
+              new CountDownLatch(1).await();
+              return List.of();
+            });
+
+    CatalogAccessException error =
+        assertTimeoutPreemptively(
+            Duration.ofSeconds(2),
+            () ->
+                assertThrows(
+                    CatalogAccessException.class,
+                    () -> discovery.listNamespaces(integration, parent)));
+
+    assertEquals(CatalogAccessException.Code.TIMEOUT, error.code());
+    verify(client).close();
+  }
+
+  @Test
+  void authenticationFailureIsSeparateFromConnectionFailure() {
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    doThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.UNAUTHENTICATED, "Authentication rejected"))
+        .when(client)
+        .validate();
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_PASSED, result.checks().get(0).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationCheckType.CIVCT_CATALOG_AUTHENTICATION,
+        result.checks().get(1).getType());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_AUTHENTICATION_FAILED,
+        result.checks().get(1).getIssue());
+  }
+
+  @Test
+  void expiredVendedCredentialsAreReportedSeparately() {
+    discovery.clock = Clock.fixed(Instant.parse("2026-08-14T12:00:00Z"), ZoneOffset.UTC);
+    CatalogObjectName orders =
+        setUpSuccessfulValidation(
+            new VendedStorageCredentials(
+                Map.of("key", "value"), "", Optional.of(Instant.parse("2026-08-14T11:59:59Z"))));
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_EXPIRED,
+        result.checks().get(3).getIssue());
+    verify(client, never()).validateStorageAccess(any(), any());
+  }
+
+  @Test
+  void invalidCredentialScopeIsReportedSeparately() {
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    CatalogObjectName orders = setUpSuccessfulValidation(vended);
+    when(client.vendStorageCredentials(orders))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
+                "Credential scope does not cover the table"));
+
+    var result = discovery.validate(integration);
+
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_SCOPE_INVALID,
+        result.checks().get(3).getIssue());
+    verify(client, never()).validateStorageAccess(any(), any());
+  }
+
+  @Test
+  void listsCasePreservingNamespacesAndLightweightObjectsWithoutLoadingThem() {
+    NamespacePath parent = NamespacePath.of("Production");
+    NamespacePath finance = NamespacePath.of("Production", "Finance");
+    NamespacePath sales = NamespacePath.of("Production", "Sales");
+    when(client.capabilities())
+        .thenReturn(
+            CatalogCapabilities.of(
+                CatalogCapability.LIST_NAMESPACES,
+                CatalogCapability.LIST_TABLES,
+                CatalogCapability.LIST_VIEWS));
+    when(client.listNamespaces(parent)).thenReturn(List.of(sales, finance, sales));
+    when(client.listTables(sales)).thenReturn(List.of(new CatalogObjectName(sales, "orders")));
+    when(client.listViews(sales))
+        .thenReturn(List.of(new CatalogObjectName(sales, "monthly_sales")));
+
+    assertEquals(List.of(finance, sales), discovery.listNamespaces(integration, parent));
+    var objects = discovery.listObjects(integration, sales, Set.of());
+    assertEquals(
+        List.of("monthly_sales", "orders"),
+        objects.stream().map(value -> value.name().name()).toList());
+    verify(client, never()).loadTable(org.mockito.ArgumentMatchers.any());
+    verify(client, never()).loadView(org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void explicitUnsupportedViewListingFailsInsteadOfFallingBack() {
+    when(client.capabilities()).thenReturn(CatalogCapabilities.of(CatalogCapability.LIST_TABLES));
+
+    CatalogAccessException error =
+        assertThrows(
+            CatalogAccessException.class,
+            () ->
+                discovery.listObjects(
+                    integration,
+                    NamespacePath.of("sales"),
+                    Set.of(CatalogIntegrationDiscovery.ObjectKind.VIEW)));
+
+    assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
+  }
+
+  private CatalogObjectName setUpSuccessfulValidation(VendedStorageCredentials vended) {
+    NamespacePath sales = NamespacePath.of("production", "sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(sales));
+    when(client.listTables(sales)).thenReturn(List.of(orders));
+    when(client.vendStorageCredentials(orders)).thenReturn(Optional.of(vended));
+    return orders;
+  }
+
+  private static CatalogCapabilities validationCapabilities() {
+    return CatalogCapabilities.of(
+        CatalogCapability.VALIDATE,
+        CatalogCapability.LIST_NAMESPACES,
+        CatalogCapability.LIST_TABLES,
+        CatalogCapability.VEND_STORAGE_CREDENTIALS,
+        CatalogCapability.VALIDATE_STORAGE_ACCESS);
+  }
+}
