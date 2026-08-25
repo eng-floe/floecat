@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/secrets-manager/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/catalog-integrations/">
       
       
-        <link rel="prev" href="../storage-memory/">
+        <link rel="prev" href="../catalog-integration-design/">
       
       
-        <link rel="next" href="../external-authentication/">
+        <link rel="next" href="../metadata-graph/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Secrets Manager - Floecat Documentation</title>
+        <title>Catalog Integrations and Overlays - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#secrets-manager-integration" class="md-skip">
+        <a href="#catalog-integrations-and-overlays" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Secrets Manager
+              Catalog Integrations and Overlays
             
           </span>
         </div>
@@ -644,8 +644,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -656,13 +658,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -678,7 +678,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -712,10 +712,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../catalog-integrations/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -726,6 +748,44 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#shell-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Shell workflow
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lifecycle
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1214,8 +1274,6 @@
       
   
   
-    
-  
   
   
     
@@ -1228,11 +1286,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
           <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
@@ -1248,7 +1308,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             Storage and Security
@@ -1351,32 +1411,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Secrets Manager
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
         
   
   
@@ -1387,95 +1425,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
-    <span class="md-ellipsis">
-      Overview
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#required-iam-permissions-base" class="md-nav__link">
-    <span class="md-ellipsis">
-      Required IAM permissions (base)
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start-aws-cli-validation" class="md-nav__link">
-    <span class="md-ellipsis">
-      Quick start (AWS CLI validation)
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#optional-hardening-per-account-abac-with-role-assumption" class="md-nav__link">
-    <span class="md-ellipsis">
-      Optional hardening: per-account ABAC with role assumption
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Optional hardening: per-account ABAC with role assumption">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#role-trust-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role trust policy
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#role-permissions-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role permissions policy
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1705,71 +1654,20 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
+  <a href="#shell-workflow" class="md-nav__link">
     <span class="md-ellipsis">
-      Overview
+      Shell workflow
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
-      Configuration
+      Lifecycle
     </span>
   </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#required-iam-permissions-base" class="md-nav__link">
-    <span class="md-ellipsis">
-      Required IAM permissions (base)
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start-aws-cli-validation" class="md-nav__link">
-    <span class="md-ellipsis">
-      Quick start (AWS CLI validation)
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#optional-hardening-per-account-abac-with-role-assumption" class="md-nav__link">
-    <span class="md-ellipsis">
-      Optional hardening: per-account ABAC with role assumption
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Optional hardening: per-account ABAC with role assumption">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#role-trust-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role trust policy
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#role-permissions-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role permissions policy
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1789,7 +1687,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/main/docs/secrets-manager.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/main/docs/catalog-integrations.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1797,160 +1695,108 @@
   
 
 
-<h1 id="secrets-manager-integration">Secrets Manager integration<a class="headerlink" href="#secrets-manager-integration" title="Permanent link">&para;</a></h1>
-<p>This document describes how Floecat uses AWS Secrets Manager, the required IAM permissions, and optional hardening with per-account role assumption.</p>
-<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p>Floecat stores secret payloads in AWS Secrets Manager using a key format:</p>
-<p><code>accounts/&lt;accountId&gt;/&lt;secretType&gt;/&lt;secretId&gt;</code></p>
-<p>Each secret is tagged with:</p>
+<h1 id="catalog-integrations-and-overlays">Catalog Integrations and Overlays<a class="headerlink" href="#catalog-integrations-and-overlays" title="Permanent link">&para;</a></h1>
+<p>Catalog integrations and overlays establish the resource, authentication, and SQL naming
+foundation for external-catalog connectivity:</p>
 <ul>
-<li><code>AccountId</code> = the account id passed by Floecat</li>
+<li>A <strong>catalog integration</strong> records an upstream catalog type, URI, display name, non-secret
+  connection properties, and typed authentication configuration. Credential material is stored
+  separately and is never returned by the API.</li>
+<li>A <strong>catalog overlay</strong> maps selected upstream namespaces from an integration into an existing
+  Floecat destination catalog.</li>
 </ul>
-<p>These tags support ABAC-style policies.</p>
-<p>Connector AuthCredentials, catalog-integration credentials, and storage-authority source
-credentials are written to Secrets Manager and removed from the corresponding persisted resource
-records. Catalog integrations persist only typed non-secret authentication configuration,
-configured state, and a credential generation. Their internal secret key is derived from the
-integration ID and generation and is not part of the protobuf resource. Connector responses mask sensitive auth fields, and storage-authority
-resolution only returns client-safe config plus any temporary credentials minted for a specific
-table/location match.</p>
-<p>Catalog-integration credential replacement uses publish-before-retire ordering: the new secret is
-written with the atomic <code>putIfAbsent</code> primitive before the resource CAS, and the old secret is
-removed only after that CAS commits. Competing rotations allocate distinct immutable generations. A
-definite publication failure removes the unpublished generation. An acknowledgement-uncertain
-publication may leave an unreferenced generation because the service deliberately does not risk
-deleting a secret that a committed resource may reference. Durable cleanup records are drained by
-pointer GC once the generation is provably superseded.</p>
-<p>Connector secrets are never used for Iceberg REST client credential vending. Storage-authority
-secrets are the only credential source used for client credential vending.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>Optional role assumption:</p>
-<ul>
-<li><code>floecat.secrets.aws.role-arn</code> (optional)</li>
-</ul>
-<p>If set, Floecat assumes this role per account operation and tags the STS session with <code>AccountId=&lt;accountId&gt;</code>. If unset, Floecat uses its default AWS credentials for all operations.</p>
-<p>Set via system property:</p>
-<div class="highlight"><pre><span></span><code>-Dfloecat.secrets.aws.role-arn<span class="o">=</span>arn:aws:iam::123456789012:role/floecat-secrets
+<div class="highlight"><pre><span></span><code>CatalogIntegration (external catalog identity)
+ ├── CatalogOverlay &quot;sales&quot;
+ └── CatalogOverlay &quot;finance&quot;
 </code></pre></div>
-<p>Or via environment variable:</p>
-<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">FLOECAT_SECRETS_AWS_ROLE_ARN</span><span class="o">=</span>arn:aws:iam::123456789012:role/floecat-secrets
+<p>These resources do not yet validate connectivity, refresh metadata, reconcile or capture tables,
+or affect query paths. The legacy <code>Connector</code> API and Shell commands remain the operational path
+for external catalog connectivity.</p>
+<h2 id="shell-workflow">Shell workflow<a class="headerlink" href="#shell-workflow" title="Permanent link">&para;</a></h2>
+<p>Create the integration record, then map its selected namespaces into an existing destination
+catalog:</p>
+<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
+  --auth-type oauth-client-credentials \
+  --auth client_id=floecat token_uri=https://identity.example/token \
+  --cred client_secret=secret \
+  --props warehouse=analytics
+overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.reference
 </code></pre></div>
-<h2 id="required-iam-permissions-base">Required IAM permissions (base)<a class="headerlink" href="#required-iam-permissions-base" title="Permanent link">&para;</a></h2>
-<p>The IAM identity Floecat runs under must be allowed to call Secrets Manager APIs. A minimal base policy looks like:</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;Version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;Statement&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SecretsManagerBase&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:CreateSecret&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:GetSecretValue&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:PutSecretValue&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:DeleteSecret&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:TagResource&quot;</span>
-<span class="w">      </span><span class="p">],</span>
-<span class="w">      </span><span class="nt">&quot;Resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="w">  </span><span class="p">]</span>
-<span class="p">}</span>
-</code></pre></div>
-<h2 id="quick-start-aws-cli-validation">Quick start (AWS CLI validation)<a class="headerlink" href="#quick-start-aws-cli-validation" title="Permanent link">&para;</a></h2>
-<p>Primary setup is granting the Floecat workload permissions to call Secrets Manager (see the IAM
-policy above). The commands here are a quick validation of access and the expected key format.</p>
-<p>Set the identifiers and create a sample payload:</p>
-<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">ACCOUNT_ID</span><span class="o">=</span>acct-123
-<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_TYPE</span><span class="o">=</span>connectors<span class="w">   </span><span class="c1"># or storage-authorities</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_ID</span><span class="o">=</span>conn-001<span class="w">       </span><span class="c1"># or a storage authority id such as sa-001</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">SECRET_NAME</span><span class="o">=</span><span class="s2">&quot;accounts/</span><span class="si">${</span><span class="nv">ACCOUNT_ID</span><span class="si">}</span><span class="s2">/</span><span class="si">${</span><span class="nv">SECRET_TYPE</span><span class="si">}</span><span class="s2">/</span><span class="si">${</span><span class="nv">SECRET_ID</span><span class="si">}</span><span class="s2">&quot;</span>
+<p>The overlay command accepts either a resource ID or display name for the integration.
+Namespace filters are comma-separated paths supplied with <code>--include</code> and <code>--exclude</code>. Omitting both
+selects the whole upstream namespace tree.</p>
+<p>The available commands are:</p>
+<div class="highlight"><pre><span></span><code>integrations
+integration list
+integration get &lt;name|id&gt;
+integration create &lt;name&gt; &lt;type&gt; &lt;uri&gt; --auth-type &lt;type&gt; [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
+integration update &lt;name|id&gt; [--display &lt;name&gt;] [--uri &lt;uri&gt;] [--props k=v ...] [--etag &lt;etag&gt;]
+integration update-auth &lt;name|id&gt; --auth-type &lt;type&gt; [--auth k=v ...] [--cred k=v ...]
+integration delete &lt;name|id&gt;
 
-<span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;example-secret-payload&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>payload.bin
+overlays [--integration &lt;name|id&gt;]
+overlay list [--integration &lt;name|id&gt;]
+overlay get &lt;name|id&gt;
+overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt; [options]
+overlay update &lt;name|id&gt; [options]
+overlay delete &lt;name|id&gt;
 </code></pre></div>
-<p>Create a secret (binary payload):</p>
-<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>secretsmanager<span class="w"> </span>create-secret<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--name<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SECRET_NAME</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--secret-binary<span class="w"> </span>fileb://payload.bin<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--tags<span class="w"> </span><span class="nv">Key</span><span class="o">=</span>AccountId,Value<span class="o">=</span><span class="s2">&quot;</span><span class="nv">$ACCOUNT_ID</span><span class="s2">&quot;</span>
-</code></pre></div>
-<p>Update the secret:</p>
-<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>secretsmanager<span class="w"> </span>put-secret-value<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--secret-id<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SECRET_NAME</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--secret-binary<span class="w"> </span>fileb://payload.bin
-</code></pre></div>
-<p>Read the secret:</p>
-<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>secretsmanager<span class="w"> </span>get-secret-value<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--secret-id<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SECRET_NAME</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--query<span class="w"> </span><span class="s1">&#39;SecretBinary&#39;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>text<span class="w"> </span><span class="p">|</span><span class="w"> </span>base64<span class="w"> </span>--decode
-</code></pre></div>
-<p>Delete the secret:</p>
-<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>secretsmanager<span class="w"> </span>delete-secret<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--secret-id<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$SECRET_NAME</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--recovery-window-in-days<span class="w"> </span><span class="m">7</span>
-</code></pre></div>
-<h2 id="optional-hardening-per-account-abac-with-role-assumption">Optional hardening: per-account ABAC with role assumption<a class="headerlink" href="#optional-hardening-per-account-abac-with-role-assumption" title="Permanent link">&para;</a></h2>
-<p>When <code>floecat.secrets.aws.role-arn</code> is set, Floecat will assume that role and attach an STS session tag <code>AccountId=&lt;accountId&gt;</code> for each operation. This allows you to enforce that secrets can only be accessed when the caller's <code>AccountId</code> tag matches the secret's <code>AccountId</code> tag.</p>
-<h3 id="role-trust-policy">Role trust policy<a class="headerlink" href="#role-trust-policy" title="Permanent link">&para;</a></h3>
-<p>The role referenced by <code>floecat.secrets.aws.role-arn</code> must trust the Floecat base identity and allow session tagging:</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;Version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;Statement&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AllowAssumeRole&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Principal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;AWS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;arn:aws:iam::123456789012:role/floecat-base&quot;</span>
-<span class="w">      </span><span class="p">},</span>
-<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sts:AssumeRole&quot;</span>
-<span class="w">    </span><span class="p">},</span>
-<span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AllowSessionTags&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Principal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;AWS&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;arn:aws:iam::123456789012:role/floecat-base&quot;</span>
-<span class="w">      </span><span class="p">},</span>
-<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sts:TagSession&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Condition&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;StringLike&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">          </span><span class="nt">&quot;aws:RequestTag/AccountId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span>
-<span class="w">        </span><span class="p">},</span>
-<span class="w">        </span><span class="nt">&quot;ForAllValues:StringEquals&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">          </span><span class="nt">&quot;aws:TagKeys&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;AccountId&quot;</span><span class="p">]</span>
-<span class="w">        </span><span class="p">}</span>
-<span class="w">      </span><span class="p">}</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="w">  </span><span class="p">]</span>
-<span class="p">}</span>
-</code></pre></div>
-<p>This follows the AWS STS session-tagging model: <code>sts:TagSession</code> is a permissions action in the
-trust policy, and tag constraints are expressed with condition keys such as <code>aws:RequestTag/...</code>
-and <code>aws:TagKeys</code>.</p>
-<h3 id="role-permissions-policy">Role permissions policy<a class="headerlink" href="#role-permissions-policy" title="Permanent link">&para;</a></h3>
-<p>Attach a policy that enforces tag alignment:</p>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;Version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;Statement&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">    </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">&quot;Sid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SecretsByAccountTag&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Effect&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Allow&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Action&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:CreateSecret&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:GetSecretValue&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:PutSecretValue&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:DeleteSecret&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="s2">&quot;secretsmanager:TagResource&quot;</span>
-<span class="w">      </span><span class="p">],</span>
-<span class="w">      </span><span class="nt">&quot;Resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;*&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;Condition&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="nt">&quot;StringEquals&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">          </span><span class="nt">&quot;secretsmanager:ResourceTag/AccountId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;${aws:PrincipalTag/AccountId}&quot;</span>
-<span class="w">        </span><span class="p">}</span>
-<span class="w">      </span><span class="p">}</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="w">  </span><span class="p">]</span>
-<span class="p">}</span>
-</code></pre></div>
-<p>This prevents any caller from reading or writing secrets unless the secret is tagged with the same <code>AccountId</code> value as the session.</p>
+<p>Authentication types and their properties are:</p>
+<table>
+<thead>
+<tr>
+<th><code>--auth-type</code></th>
+<th><code>--auth</code> properties</th>
+<th><code>--cred</code> properties</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>oauth-client-credentials</code></td>
+<td><code>client_id</code>; optional <code>token_uri</code>, <code>scopes</code> CSV</td>
+<td><code>client_secret</code></td>
+</tr>
+<tr>
+<td><code>bearer</code></td>
+<td>none</td>
+<td><code>token</code></td>
+</tr>
+<tr>
+<td><code>aws-assume-role</code></td>
+<td><code>role_arn</code>; optional <code>external_id</code>, <code>role_session_name</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>aws-access-key</code></td>
+<td><code>access_key_id</code></td>
+<td><code>secret_access_key</code>; optional <code>session_token</code></td>
+</tr>
+<tr>
+<td><code>aws-sigv4</code></td>
+<td><code>region</code>, <code>credential_source</code>; optional <code>signing_name</code>, plus source fields</td>
+<td>source-dependent</td>
+</tr>
+</tbody>
+</table>
+<p>For SigV4, <code>credential_source</code> is <code>default</code>, <code>assume-role</code>, or <code>access-key</code>. Assume-role uses the
+role properties above. Access-key uses the access-key properties above. The CLI rejects unknown
+properties instead of silently dropping them.</p>
+<p><code>--props</code> supplies non-secret provider connection properties. For Iceberg REST catalogs such as
+Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
+the base URI. Updating properties replaces the complete map; passing <code>--props</code> with no values clears
+it.</p>
+<h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Overlay creation requires an existing integration.</li>
+<li>Overlay display names are unique within an account and identify the mapping into a destination
+  catalog.</li>
+<li>An integration cannot be deleted while overlays refer to it.</li>
+<li>Integration deletion supports <code>--cascade</code> to delete dependent overlays.</li>
+<li>Integration and overlay mutations support optimistic <code>--etag</code> preconditions.</li>
+<li>Authentication replacement uses the dedicated <code>integration update-auth</code> command so credential
+  values remain write-only.</li>
+</ul>
+<p>The protobuf contracts are in <code>core/proto/src/main/proto/floecat/integration/</code>.</p>
 
 
 

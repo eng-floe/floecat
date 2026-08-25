@@ -838,6 +838,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1802,7 +1825,8 @@
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p><code>client-cli/</code> packages a Picocli-based interactive shell backed by the same gRPC stubs used by the
 service. It is the quickest way for developers and operators to explore catalogs, namespaces, tables,
-connectors, storage authorities, and query-lifecycle workflows without writing bespoke clients.</p>
+catalog integrations, overlays, legacy connectors, storage authorities, and query-lifecycle
+workflows without writing bespoke clients.</p>
 <p>The CLI runs as a Quarkus application, depends on generated RPC stubs, and includes helpers for
 fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argument parsing for column lists
 (<code>CsvListParserUtil</code>).</p>
@@ -1848,6 +1872,10 @@ fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argume
   while <code>query fetch-scan &lt;query_id&gt; &lt;table_id&gt;</code> requests the connector-provided <code>ScanFile</code> lists for
   an individual table.</li>
 <li><code>connectors</code> / <code>connector &lt;subcommand&gt;</code> – Manage connector definitions and reconciliation jobs.</li>
+<li><code>integrations</code> / <code>integration &lt;subcommand&gt;</code> – Manage upstream catalog identity, authentication,
+  and write-only credentials.</li>
+<li><code>overlays</code> / <code>overlay &lt;subcommand&gt;</code> – Map namespaces from an integration into an existing
+  destination catalog.</li>
 <li><code>storage-authorities</code> / <code>storage-authority &lt;subcommand&gt;</code> – Manage storage credential authorities
   used by the Iceberg REST gateway to vend temporary object-store credentials.</li>
 </ul>
@@ -1878,6 +1906,14 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 </code></pre></div>
 <p>Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via <code>connector job &lt;id&gt;</code>.</p>
+<p>Integration and overlay records currently provide CRUD configuration and credential lifecycle
+only. They do not connect to the upstream catalog, reconcile metadata, or affect query execution.
+To exercise the resource model from the Shell, create an integration and overlay:</p>
+<div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
+  --auth-type bearer --cred token=secret --props warehouse=analytics
+overlay create sales-overlay lakehouse local-catalog --include prod.sales
+</code></pre></div>
+<p>Legacy connector commands remain the operational path for external catalog connectivity.</p>
 <p><code>connector jobs</code> shows a parent-job summary table by default. Use
 <code>connector jobs --child &lt;parent-job-id&gt;</code> to render the descendant job tree rooted at that job.
 Both commands support <code>--json</code> for machine-readable output, while <code>connector job &lt;id&gt;</code> remains a

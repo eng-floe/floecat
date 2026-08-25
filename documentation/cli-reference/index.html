@@ -725,6 +725,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1675,6 +1698,25 @@ query renew &lt;query_id&gt; [--ttl &lt;seconds&gt;]
 query end &lt;query_id&gt; [--commit|--abort]
 query get &lt;query_id&gt;
 query fetch-scan &lt;query_id&gt; &lt;table_id&gt;
+
+integrations
+integration list
+integration get &lt;name|id&gt;
+integration create &lt;name&gt; &lt;iceberg-rest|unity&gt; &lt;uri&gt; --auth-type &lt;type&gt;
+  [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
+integration update &lt;name|id&gt; [--display &lt;name&gt;] [--uri &lt;uri&gt;] [--props k=v ...] [--etag &lt;etag&gt;]
+integration update-auth &lt;name|id&gt; --auth-type &lt;type&gt;
+  [--auth k=v ...] [--cred k=v ...] [--etag &lt;etag&gt;]
+integration delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
+
+overlays [--integration &lt;name|id&gt;]
+overlay list [--integration &lt;name|id&gt;]
+overlay get &lt;name|id&gt;
+overlay create &lt;name&gt; &lt;integration-name|id&gt; &lt;catalog-name|id&gt;
+    [--include ns[,ns...]] [--exclude ns[,ns...]]
+overlay update &lt;name|id&gt; [--display &lt;name&gt;]
+    [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag &lt;etag&gt;]
+overlay delete &lt;name|id&gt; [--etag &lt;etag&gt;]
 
 connectors
 connector list [--kind &lt;KIND&gt;]
