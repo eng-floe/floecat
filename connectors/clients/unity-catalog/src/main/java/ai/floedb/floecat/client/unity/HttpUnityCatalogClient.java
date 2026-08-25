@@ -149,14 +149,19 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
               ? path
               : path + (path.contains("?") ? "&" : "?") + "page_token=" + encode(pageToken);
       JsonNode page = get(pagePath);
-      JsonNode items = page.path(arrayField);
-      if (!items.isArray()) {
-        throw invalidResponse("Expected array field '" + arrayField + "' from " + pagePath, null);
+      if (!page.isObject()) {
+        throw invalidResponse("Expected object response from " + pagePath, null);
       }
-      for (JsonNode item : items) {
-        T mapped = mapper.apply(item);
-        if (mapped != null) {
-          result.add(mapped);
+      JsonNode items = page.get(arrayField);
+      if (items != null && !items.isNull()) {
+        if (!items.isArray()) {
+          throw invalidResponse("Expected array field '" + arrayField + "' from " + pagePath, null);
+        }
+        for (JsonNode item : items) {
+          T mapped = mapper.apply(item);
+          if (mapped != null) {
+            result.add(mapped);
+          }
         }
       }
       pageToken = text(page, "next_page_token");

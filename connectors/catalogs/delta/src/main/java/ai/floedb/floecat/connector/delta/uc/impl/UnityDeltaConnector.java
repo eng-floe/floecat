@@ -197,30 +197,23 @@ public final class UnityDeltaConnector extends DeltaConnector {
               tableId, UnityCatalogClient.TableOperation.READ);
       TemporaryTableCredentials.AwsCredentials aws = credentials.awsCredentials();
       if (aws == null) {
-        if (!credentials.hasUnsupportedCredentials()) {
-          throw new IllegalStateException(
-              "Unity Catalog returned no storage credentials for " + fullName);
+        if (credentials.hasUnsupportedCredentials()) {
+          LOG.warnf(
+              "Unity Catalog vended non-AWS credentials for %s; only AWS is supported, "
+                  + "falling back to a storage authority",
+              fullName);
+          return Optional.empty();
         }
-        LOG.warnf(
-            "Unity Catalog vended non-AWS credentials for %s; only AWS is supported, "
-                + "falling back to a storage authority",
-            fullName);
-        return Optional.empty();
-      }
-      if (isBlank(aws.accessKeyId())
-          || isBlank(aws.secretAccessKey())
-          || isBlank(aws.sessionToken())) {
-        throw new IllegalStateException(
-            "Unity Catalog returned incomplete AWS credentials for " + fullName);
+        return Optional.of(
+            new FloecatConnector.VendedStorageCredentials(
+                Map.of(), credentials.expiresAt(), credentials.storageUrl()));
       }
 
       Map<String, String> properties = new LinkedHashMap<>();
-      properties.put("s3.access-key-id", aws.accessKeyId());
-      properties.put("s3.secret-access-key", aws.secretAccessKey());
-      properties.put("s3.session-token", aws.sessionToken());
-      if (!isBlank(aws.accessPoint())) {
-        properties.put("s3.access-point", aws.accessPoint());
-      }
+      putIfNonBlank(properties, "s3.access-key-id", aws.accessKeyId());
+      putIfNonBlank(properties, "s3.secret-access-key", aws.secretAccessKey());
+      putIfNonBlank(properties, "s3.session-token", aws.sessionToken());
+      putIfNonBlank(properties, "s3.access-point", aws.accessPoint());
       return Optional.of(
           new FloecatConnector.VendedStorageCredentials(
               properties, credentials.expiresAt(), credentials.storageUrl()));
@@ -301,6 +294,12 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   private static void putIfPresent(Map<String, String> values, String key, String value) {
     if (value != null) {
+      values.put(key, value);
+    }
+  }
+
+  private static void putIfNonBlank(Map<String, String> values, String key, String value) {
+    if (!isBlank(value)) {
       values.put(key, value);
     }
   }

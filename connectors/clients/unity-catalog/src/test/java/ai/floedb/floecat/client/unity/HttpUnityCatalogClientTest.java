@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,6 +78,44 @@ class HttpUnityCatalogClientTest {
         .isEqualTo("page_token=next%2Fpage%20%2B");
     assertThat(secondRequest.get().getRequestHeaders().getFirst("Authorization"))
         .isEqualTo("Bearer catalog-token");
+  }
+
+  @Test
+  void listSchemasTreatsAnOmittedCollectionAsEmpty() {
+    server.createContext(
+        "/api/2.1/unity-catalog/schemas", exchange -> respond(exchange, 200, "{}"));
+
+    assertThat(client.listSchemas("empty_catalog")).isEmpty();
+  }
+
+  @Test
+  void listCatalogsContinuesAfterAnEmptyPageWithANextToken() {
+    var requests = new AtomicInteger();
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          if (requests.getAndIncrement() == 0) {
+            respond(exchange, 200, "{\"next_page_token\":\"next\"}");
+          } else {
+            respond(exchange, 200, "{\"catalogs\":null}");
+          }
+        });
+
+    assertThat(client.listCatalogs()).isEmpty();
+    assertThat(requests).hasValue(2);
+  }
+
+  @Test
+  void listCatalogsRejectsAPresentNonArrayCollection() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs", exchange -> respond(exchange, 200, "{\"catalogs\":{}}"));
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure ->
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE));
   }
 
   @Test

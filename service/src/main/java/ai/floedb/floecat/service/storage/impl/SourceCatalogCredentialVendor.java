@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -88,6 +89,7 @@ public class SourceCatalogCredentialVendor {
 
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
+  Function<ConnectorConfig, FloecatConnector> connectorFactory = ConnectorFactory::create;
 
   @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   String defaultRegion;
@@ -140,7 +142,7 @@ public class SourceCatalogCredentialVendor {
 
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
     Optional<FloecatConnector.VendedStorageCredentials> vended;
-    try (FloecatConnector source = ConnectorFactory.create(resolvedConfig)) {
+    try (FloecatConnector source = connectorFactory.apply(resolvedConfig)) {
       vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
     } catch (StatusRuntimeException e) {
       throw e;
@@ -151,7 +153,7 @@ public class SourceCatalogCredentialVendor {
       // recognisably an authorization refusal stays retryable.
       throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName());
     }
-    if (vended.isEmpty() || vended.get().isEmpty()) {
+    if (vended.isEmpty()) {
       LOG.infof(
           "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
               + " (catalog does not delegate)",

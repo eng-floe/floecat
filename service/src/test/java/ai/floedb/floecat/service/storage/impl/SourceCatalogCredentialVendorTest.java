@@ -17,15 +17,27 @@
 package ai.floedb.floecat.service.storage.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class SourceCatalogCredentialVendorTest {
@@ -111,5 +123,66 @@ class SourceCatalogCredentialVendorTest {
 
     assertThat(SourceCatalogCredentialVendor.responsePrefix(vended, "s3://requested/table"))
         .isEqualTo("s3://requested/table");
+  }
+
+  @Test
+  void incompleteConnectorTupleIsAServiceLevelTerminalFailure() {
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("catalog-1")
+            .build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .putProperties("iceberg.source", "rest")
+            .putProperties("header.X-Iceberg-Access-Delegation", "vended-credentials")
+            .build();
+    ConnectorRepository connectorRepo = mock(ConnectorRepository.class);
+    when(connectorRepo.getById(connectorId)).thenReturn(Optional.of(connector));
+
+    FloecatConnector source = mock(FloecatConnector.class);
+    when(source.vendStorageCredentials("cat.schema", "orders"))
+        .thenReturn(
+            Optional.of(
+                new FloecatConnector.VendedStorageCredentials(
+                    Map.of("s3.access-key-id", "key", "s3.secret-access-key", "secret"),
+                    Instant.parse("2030-01-01T00:00:00Z"),
+                    "s3://warehouse/orders")));
+
+    SourceCatalogCredentialVendor vendor = new SourceCatalogCredentialVendor();
+    vendor.connectorRepo = connectorRepo;
+    vendor.connectorFactory = ignored -> source;
+    vendor.defaultRegion = "us-east-1";
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("table-1"))
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setConnectorId(connectorId)
+                    .addAllNamespacePath(List.of("cat", "schema"))
+                    .setTableDisplayName("orders"))
+            .build();
+
+    assertThatThrownBy(
+            () ->
+                vendor.vendForTable(
+                    table,
+                    "s3://warehouse/orders/data.parquet",
+                    SourceCatalogCredentialVendor.CredentialUse.RECONCILE))
+        .isInstanceOfSatisfying(
+            StatusRuntimeException.class,
+            failure -> {
+              assertThat(failure.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+              assertThat(SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(failure))
+                  .isTrue();
+            });
   }
 }

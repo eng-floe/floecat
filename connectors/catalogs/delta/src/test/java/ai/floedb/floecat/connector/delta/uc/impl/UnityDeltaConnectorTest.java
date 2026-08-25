@@ -200,7 +200,7 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
-  void vendStorageCredentialsRejectsIncompleteAwsTuple() {
+  void vendStorageCredentialsPreservesIncompleteAwsTupleForServiceValidation() {
     when(catalog.getTable("cat.schema.orders"))
         .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
     when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
@@ -211,9 +211,13 @@ class UnityDeltaConnectorTest {
                 null,
                 null));
 
-    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("incomplete AWS credentials");
+    var result = connector.vendStorageCredentials("cat.schema", "orders");
+
+    assertThat(result).isPresent();
+    assertThat(result.orElseThrow().properties())
+        .containsEntry("s3.access-key-id", "key")
+        .containsEntry("s3.secret-access-key", "secret")
+        .doesNotContainKey("s3.session-token");
   }
 
   @Test
