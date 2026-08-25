@@ -28,6 +28,8 @@ import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationsGrpc;
+import ai.floedb.floecat.integration.rpc.CatalogOverlaysGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
@@ -78,6 +80,8 @@ public final class CliCommandExecutor {
   private final TableServiceGrpc.TableServiceBlockingStub tables;
   private final ViewServiceGrpc.ViewServiceBlockingStub viewService;
   private final ConnectorsGrpc.ConnectorsBlockingStub connectors;
+  private final CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations;
+  private final CatalogOverlaysGrpc.CatalogOverlaysBlockingStub overlays;
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
   private final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
@@ -101,6 +105,8 @@ public final class CliCommandExecutor {
     this.tables = builder.tables;
     this.viewService = builder.viewService;
     this.connectors = builder.connectors;
+    this.integrations = builder.integrations;
+    this.overlays = builder.overlays;
     this.reconcileControl = builder.reconcileControl;
     this.snapshots = builder.snapshots;
     this.statistics = builder.statistics;
@@ -145,6 +151,8 @@ public final class CliCommandExecutor {
         .tables(TableServiceGrpc.newBlockingStub(channel))
         .viewService(ViewServiceGrpc.newBlockingStub(channel))
         .connectors(ConnectorsGrpc.newBlockingStub(channel))
+        .integrations(CatalogIntegrationsGrpc.newBlockingStub(channel))
+        .overlays(CatalogOverlaysGrpc.newBlockingStub(channel))
         .reconcileControl(ReconcileControlGrpc.newBlockingStub(channel))
         .snapshots(SnapshotServiceGrpc.newBlockingStub(channel))
         .statistics(TableStatisticsServiceGrpc.newBlockingStub(channel))
@@ -174,6 +182,8 @@ public final class CliCommandExecutor {
     private TableServiceGrpc.TableServiceBlockingStub tables;
     private ViewServiceGrpc.ViewServiceBlockingStub viewService;
     private ConnectorsGrpc.ConnectorsBlockingStub connectors;
+    private CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations;
+    private CatalogOverlaysGrpc.CatalogOverlaysBlockingStub overlays;
     private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
     private SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
     private TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
@@ -227,6 +237,17 @@ public final class CliCommandExecutor {
 
     public Builder connectors(ConnectorsGrpc.ConnectorsBlockingStub connectors) {
       this.connectors = connectors;
+      return this;
+    }
+
+    public Builder integrations(
+        CatalogIntegrationsGrpc.CatalogIntegrationsBlockingStub integrations) {
+      this.integrations = integrations;
+      return this;
+    }
+
+    public Builder overlays(CatalogOverlaysGrpc.CatalogOverlaysBlockingStub overlays) {
+      this.overlays = overlays;
       return this;
     }
 
@@ -319,6 +340,8 @@ public final class CliCommandExecutor {
       Objects.requireNonNull(tables, "tables");
       Objects.requireNonNull(viewService, "viewService");
       Objects.requireNonNull(connectors, "connectors");
+      Objects.requireNonNull(integrations, "integrations");
+      Objects.requireNonNull(overlays, "overlays");
       Objects.requireNonNull(reconcileControl, "reconcileControl");
       Objects.requireNonNull(snapshots, "snapshots");
       Objects.requireNonNull(statistics, "statistics");
@@ -394,6 +417,9 @@ public final class CliCommandExecutor {
               snapshots,
               directory,
               getAccountId);
+      case "integrations", "integration", "overlays", "overlay" ->
+          IntegrationCliSupport.handle(
+              command, CliArgs.tail(tokens), out, integrations, overlays, directory, getAccountId);
       case "snapshots", "snapshot" ->
           SnapshotCliSupport.handle(
               command,

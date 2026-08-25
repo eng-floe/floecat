@@ -81,6 +81,25 @@ query end <query_id> [--commit|--abort]
 query get <query_id>
 query fetch-scan <query_id> <table_id>
 
+integrations
+integration list
+integration get <name|id>
+integration create <name> <iceberg-rest|unity> <uri> --auth-type <type>
+  [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
+integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
+integration update-auth <name|id> --auth-type <type>
+  [--auth k=v ...] [--cred k=v ...] [--etag <etag>]
+integration delete <name|id> [--cascade] [--etag <etag>]
+
+overlays [--integration <name|id>]
+overlay list [--integration <name|id>]
+overlay get <name|id>
+overlay create <name> <integration-name|id> <catalog-name|id>
+    [--include ns[,ns...]] [--exclude ns[,ns...]]
+overlay update <name|id> [--display <name>]
+    [--include ns[,ns...]] [--exclude ns[,ns...]] [--etag <etag>]
+overlay delete <name|id> [--etag <etag>]
+
 connectors
 connector list [--kind <KIND>]
 connector get <display_name|id>
