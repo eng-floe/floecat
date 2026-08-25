@@ -450,9 +450,13 @@ public class DeltaManifestMaterializer {
   protected DeltaEngineContext newDeltaEngineContext(
       SourceTableAccess sourceAccess, String tableRoot) {
     if (tableRoot != null && tableRoot.toLowerCase(Locale.ROOT).startsWith("s3://")) {
-      RefreshingAwsClient<S3Client> s3 =
-          buildS3Client(sourceAccess == null ? Map.of() : sourceAccess.fileIoProperties());
-      return new DeltaEngineContext(DefaultEngine.create(new S3FileSystemClient(s3)), s3);
+      Map<String, String> fileIoProperties =
+          sourceAccess == null ? Map.of() : sourceAccess.fileIoProperties();
+      RefreshingAwsClient<S3Client> s3 = buildS3Client(fileIoProperties);
+      return new DeltaEngineContext(
+          DefaultEngine.create(
+              new S3FileSystemClient(s3, resolveOption(fileIoProperties, "s3.access-point", null))),
+          s3);
     }
     FileIO sourceFileIo = sourceAccess == null ? null : sourceAccess.sourceFileIo();
     if (sourceFileIo == null) {
@@ -1032,6 +1036,11 @@ public class DeltaManifestMaterializer {
         Boolean.parseBoolean(resolveOption(sourceProps, "s3.path-style-access", "false"));
     Supplier<AwsCredentialsProvider> credentials = () -> resolveCredentials(sourceProps);
     String endpoint = resolveOption(sourceProps, "s3.endpoint", null);
+    // Unity Catalog vends an access point ARN alongside the session tuple for buckets behind a
+    // firewall or an access-point policy, and those credentials only authorize requests addressed
+    // to the access point. Cross-region ARNs are then legal, which is what useArnRegionEnabled
+    // permits -- mirroring how DeltaConnectorFactory builds the same client on the reconcile side.
+    String accessPoint = resolveOption(sourceProps, "s3.access-point", null);
     return RefreshingAwsClient.withResourceFactory(
         () -> {
           AwsCredentialsProvider provider = credentials.get();
@@ -1039,7 +1048,10 @@ public class DeltaManifestMaterializer {
               S3Client.builder()
                   .region(region)
                   .serviceConfiguration(
-                      S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+                      S3Configuration.builder()
+                          .pathStyleAccessEnabled(pathStyle)
+                          .useArnRegionEnabled(accessPoint != null)
+                          .build())
                   .credentialsProvider(provider);
           try {
             if (endpoint != null && !endpoint.isBlank()) {
@@ -1066,6 +1078,10 @@ public class DeltaManifestMaterializer {
       return StaticCredentialsProvider.create(creds);
     }
     return DefaultCredentialsProvider.builder().build();
+  }
+
+  private static String blankToNull(String value) {
+    return value == null || value.isBlank() ? null : value.trim();
   }
 
   private String resolveOption(Map<String, String> props, String key, String defaultValue) {
@@ -1335,9 +1351,26 @@ public class DeltaManifestMaterializer {
   private static final class S3FileSystemClient
       implements io.delta.kernel.defaults.engine.fileio.FileIO {
     private final RefreshingAwsClient<S3Client> s3;
+    private final String bucketOverride;
 
-    private S3FileSystemClient(RefreshingAwsClient<S3Client> s3) {
+    /**
+     * @param bucketOverride the S3 access point ARN to address instead of the bucket named in each
+     *     URI, or null/blank to address the bucket directly. Credentials vended with an access
+     *     point are only valid for requests that target it, so addressing the raw bucket returns
+     *     403 for every read.
+     */
+    private S3FileSystemClient(RefreshingAwsClient<S3Client> s3, String bucketOverride) {
       this.s3 = s3;
+      this.bucketOverride = blankToNull(bucketOverride);
+    }
+
+    /**
+     * The bucket name to put on a request: the access point when one was vended, otherwise the URI
+     * host. Paths handed back to Delta Kernel keep the logical host, which is what the Delta log
+     * records.
+     */
+    private String requestBucket(URI location) {
+      return bucketOverride == null ? location.getHost() : bucketOverride;
     }
 
     @Override
@@ -1347,7 +1380,7 @@ public class DeltaManifestMaterializer {
       if (isMissingCheckpoint(resolved)) {
         return new MissingInputFile(resolved);
       }
-      return new S3InputFile(s3, resolved);
+      return new S3InputFile(s3, resolved, bucketOverride);
     }
 
     @Override
@@ -1382,7 +1415,7 @@ public class DeltaManifestMaterializer {
     @Override
     public FileStatus getFileStatus(String path) throws IOException {
       URI uri = URI.create(resolvePath(path));
-      String bucket = uri.getHost();
+      String bucket = requestBucket(uri);
       String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       try {
         HeadObjectResponse head =
@@ -1402,10 +1435,11 @@ public class DeltaManifestMaterializer {
     public CloseableIterator<FileStatus> listFrom(String filePath) throws IOException {
       String resolved = resolvePath(filePath);
       URI uri = URI.create(resolved);
-      String bucket = uri.getHost();
-      if (bucket == null || bucket.isEmpty()) {
+      String logicalBucket = uri.getHost();
+      if (logicalBucket == null || logicalBucket.isEmpty()) {
         throw new IOException("Invalid S3 path for listFrom: " + filePath);
       }
+      String bucket = requestBucket(uri);
       String fullKey = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       int lastSlash = fullKey.lastIndexOf('/');
       String dirPrefix = lastSlash < 0 ? "" : fullKey.substring(0, lastSlash + 1);
@@ -1483,7 +1517,7 @@ public class DeltaManifestMaterializer {
               }
               bufferedNext =
                   FileStatus.of(
-                      "s3://" + bucket + "/" + key,
+                      "s3://" + logicalBucket + "/" + key,
                       object.size() == null ? 0L : object.size(),
                       object.lastModified() == null
                           ? Instant.now().toEpochMilli()
@@ -1528,7 +1562,7 @@ public class DeltaManifestMaterializer {
         return false;
       }
       URI uri = URI.create(resolvedPath);
-      String bucket = uri.getHost();
+      String bucket = requestBucket(uri);
       String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       try {
         s3.callUnchecked(
@@ -1552,11 +1586,13 @@ public class DeltaManifestMaterializer {
     private final String key;
     private final long length;
 
-    private S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath) {
+    private S3InputFile(
+        RefreshingAwsClient<S3Client> s3, String resolvedPath, String bucketOverride) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
       URI uri = URI.create(resolvedPath);
-      this.bucket = uri.getHost();
+      String accessPoint = blankToNull(bucketOverride);
+      this.bucket = accessPoint == null ? uri.getHost() : accessPoint;
       this.key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       try {
         this.length = new S3RangeReader(s3, bucket, key).length();
