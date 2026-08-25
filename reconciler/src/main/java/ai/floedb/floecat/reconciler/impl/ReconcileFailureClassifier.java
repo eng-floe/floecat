@@ -50,8 +50,11 @@ final class ReconcileFailureClassifier {
         }
         // Matched by structured reason, not by status code: FAILED_PRECONDITION is shared with
         // lease-precondition failures, which are retryable by design. A catalog that vends an
-        // incomplete session tuple or no expiry will keep doing so, so retrying only loops.
-        if (SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(sre)) {
+        // incomplete session tuple or no expiry will keep doing so, and one that refuses to vend
+        // for this table at all (external access disabled, unknown table id) will keep refusing --
+        // so retrying either only loops.
+        if (SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(sre)
+            || SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(sre)) {
           return terminalInternal(sre.getMessage(), sre);
         }
       }
