@@ -26,7 +26,6 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -478,8 +477,7 @@ class CatalogOverlayReconcilerTest {
   }
 
   private List<Namespace> listLocalNamespaces() {
-    return namespaces.listConsistent(
-        "acct", "catalog", List.of(), 200, "", new StringBuilder());
+    return namespaces.listConsistent("acct", "catalog", List.of(), 200, "", new StringBuilder());
   }
 
   private static CatalogTable catalogTable(CatalogObjectName name, String stableIdentity) {

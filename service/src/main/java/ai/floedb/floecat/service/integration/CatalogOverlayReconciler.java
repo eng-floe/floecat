@@ -651,12 +651,7 @@ public class CatalogOverlayReconciler {
     return listAll(
         (token, next) ->
             namespaces.listConsistent(
-                catalogId.getAccountId(),
-                catalogId.getId(),
-                List.of(),
-                200,
-                token,
-                next));
+                catalogId.getAccountId(), catalogId.getId(), List.of(), 200, token, next));
   }
 
   private List<View> listViews(Namespace namespace) {

@@ -162,9 +162,7 @@ public class CatalogOverlayRepository {
         replacement,
         new PointerConditions(
             requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions),
-        deletionFenceVersion == 0L
-            ? Map.of()
-            : Map.of(deletionFence, deletionFenceVersion));
+        deletionFenceVersion == 0L ? Map.of() : Map.of(deletionFence, deletionFenceVersion));
   }
 
   public boolean deleteWithPrecondition(ResourceId overlayId, long expectedPointerVersion) {
