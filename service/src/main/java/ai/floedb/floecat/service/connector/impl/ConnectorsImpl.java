@@ -394,7 +394,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     ensureNoStoredCredentials(storedAuth);
                     var connector = builder.setAuth(storedAuth).build();
                     try {
-                      connectorRepo.create(connector);
+                      createConnectorWithCredentialCompensation(
+                          connector, storedCredentials, accountId, secretId);
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       if (storedCredentials) {
                         credentialResolver.delete(accountId, secretId);
@@ -428,7 +429,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     ensureNoStoredCredentials(storedAuth);
                                     var connector = builder.setAuth(storedAuth).build();
                                     try {
-                                      connectorRepo.create(connector);
+                                      createConnectorWithCredentialCompensation(
+                                          connector, storedCredentials, accountId, secretId);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
                                       if (storedCredentials) {
                                         credentialResolver.delete(accountId, secretId);
@@ -780,6 +782,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       credentialResolver.store(accountId, secretId, priorCredentials.get());
     } else {
       credentialResolver.delete(accountId, secretId);
+    }
+  }
+
+  void createConnectorWithCredentialCompensation(
+      Connector connector, boolean storedCredentials, String accountId, String secretId) {
+    try {
+      connectorRepo.create(connector);
+    } catch (BaseResourceRepository.AccountDeletionInProgressException deleting) {
+      if (storedCredentials) {
+        credentialResolver.delete(accountId, secretId);
+      }
+      throw deleting;
     }
   }
 

@@ -22,6 +22,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.function.LongConsumer;
 
 /**
@@ -62,20 +63,36 @@ public class RootResyncQueue {
    */
   public void enqueue(ResourceId tableId) {
     String key = Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId());
+    String fenceKey = Keys.accountDeletionMarker(tableId.getAccountId());
     RuntimeException lastFailure = null;
     for (int attempt = 0; attempt < ENQUEUE_ATTEMPTS; attempt++) {
       try {
-        if (pointerStore.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "", 1L))) {
+        if (pointerStore.get(fenceKey).isPresent()) {
+          return;
+        }
+        if (pointerStore.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasCheckAbsent(fenceKey),
+                new PointerStore.CasUpsert(key, 0L, PointerReferences.blobPointer(key, "", 1L))))) {
+          return;
+        }
+        if (pointerStore.get(fenceKey).isPresent()) {
           return;
         }
         var existing = pointerStore.get(key).orElse(null);
         if (existing == null) {
           continue; // deleted between the failed create and the read: re-create
         }
-        if (pointerStore.compareAndSet(
-            key,
-            existing.getVersion(),
-            PointerReferences.blobPointer(key, "", existing.getVersion() + 1))) {
+        if (pointerStore.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasCheckAbsent(fenceKey),
+                new PointerStore.CasUpsert(
+                    key,
+                    existing.getVersion(),
+                    PointerReferences.blobPointer(key, "", existing.getVersion() + 1))))) {
+          return;
+        }
+        if (pointerStore.get(fenceKey).isPresent()) {
           return;
         }
         // Lost the touch to another enqueue or a delete: retry from the top.

@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -52,9 +53,11 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -67,7 +70,8 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
-  private static final int MAX_POINTER_BATCH_SIZE = 100;
+  // Leave one DynamoDB transaction slot for the account-deletion fence check.
+  private static final int MAX_POINTER_BATCH_SIZE = 99;
   private static final String GENERATION_WRITING = "WRITING";
   private static final String GENERATION_PUBLISHING = "PUBLISHING";
   private static final String GENERATION_PUBLISHED = "PUBLISHED";
@@ -335,8 +339,12 @@ public class StatsRepository implements StatsStore {
         throw new IllegalStateException(
             "prepared file-group marker conflicts with the accepted result: " + fileGroupJobId);
       }
-      if (pointerStore.compareAndSet(
-          pointerKey, 0L, PointerReferences.opaqueMarkerPointer(pointerKey, marker, 1L))) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore,
+          tableId.getAccountId(),
+          pointerKey,
+          0L,
+          PointerReferences.opaqueMarkerPointer(pointerKey, marker, 1L))) {
         return;
       }
     }
@@ -408,6 +416,7 @@ public class StatsRepository implements StatsStore {
       }
       PrewrittenStatsWrite write =
           new PrewrittenStatsWrite(
+              tableId.getAccountId(),
               targetPointerKey(tableId, snapshotId, generationId, value.targetStorageId()),
               value.blobUri(),
               value.blobBytes());
@@ -546,7 +555,8 @@ public class StatsRepository implements StatsStore {
       for (Pointer source : sourcePointers) {
         String destinationKey =
             destinationPrefix + source.getKey().substring(sourcePrefix.length());
-        rebaseInheritedStatsPointer(destinationKey, source, capturedBlobPrefix);
+        rebaseInheritedStatsPointer(
+            tableId.getAccountId(), destinationKey, source, capturedBlobPrefix);
       }
       pageToken = next.toString();
     } while (!pageToken.isBlank());
@@ -554,7 +564,7 @@ public class StatsRepository implements StatsStore {
   }
 
   private void rebaseInheritedStatsPointer(
-      String destinationKey, Pointer source, String capturedBlobPrefix) {
+      String accountId, String destinationKey, Pointer source, String capturedBlobPrefix) {
     for (int attempt = 0; attempt < 4; attempt++) {
       Pointer destination = pointerStore.get(destinationKey).orElse(null);
       if (destination != null && destination.getBlobUri().startsWith(capturedBlobPrefix)) {
@@ -574,7 +584,8 @@ public class StatsRepository implements StatsStore {
       Pointer inherited =
           PointerReferences.blobPointer(
               destinationKey, source.getBlobUri(), expectedVersion + 1L, referencedBytes);
-      if (pointerStore.compareAndSet(destinationKey, expectedVersion, inherited)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, accountId, destinationKey, expectedVersion, inherited)) {
         return;
       }
     }
@@ -618,6 +629,7 @@ public class StatsRepository implements StatsStore {
       }
       writes.add(
           new PrewrittenStatsWrite(
+              tableId.getAccountId(),
               pointerPrefix + Hashing.sha256Hex(object.blobUri()),
               object.blobUri(),
               object.blobBytes()));
@@ -1412,7 +1424,7 @@ public class StatsRepository implements StatsStore {
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     markGenerationPublishing(tableId, snapshotId, generationId);
     StringValue manifest = StringValue.of(generationId);
-    targetStatsStorage.putManifestBlob(manifestBlobUri, manifest);
+    targetStatsStorage.putManifestBlob(tableId.getAccountId(), manifestBlobUri, manifest);
     if (blobCache != null) {
       // Write-through the DECODED form readGenerationId caches: the first scan/planner read after
       // this publish pays neither a cold fetch nor a parse (URI is per-generation, immutable).
@@ -1425,9 +1437,15 @@ public class StatsRepository implements StatsStore {
     long expectedVersion = current.map(ActiveSnapshotStats::manifestVersion).orElse(0L);
     Pointer next =
         PointerReferences.blobPointer(manifestPointer, manifestBlobUri, expectedVersion + 1L);
-    if (!pointerStore.compareAndSet(manifestPointer, expectedVersion, next)) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "active target stats generation update conflicted for snapshot " + snapshotId);
+    try {
+      if (!AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), manifestPointer, expectedVersion, next)) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "active target stats generation update conflicted for snapshot " + snapshotId);
+      }
+    } catch (BaseResourceRepository.AccountDeletionInProgressException deleting) {
+      deleteQuietly(() -> blobStore.delete(manifestBlobUri));
+      throw deleting;
     }
   }
 
@@ -1462,7 +1480,8 @@ public class StatsRepository implements StatsStore {
     Pointer next =
         PointerReferences.blobPointer(manifestPointer, manifestBlobUri, expectedVersion + 1L);
     if (publicationFence == null) {
-      return pointerStore.compareAndSet(manifestPointer, expectedVersion, next);
+      return AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), manifestPointer, expectedVersion, next);
     }
     List<PointerStore.CasOp> publication =
         new ArrayList<>(publicationFence.pointerUpdates().size() + 1);
@@ -1474,7 +1493,8 @@ public class StatsRepository implements StatsStore {
                     new PointerStore.CasUpsert(
                         update.pointerKey(), update.expectedVersion(), update.next()))
         .forEach(publication::add);
-    return pointerStore.compareAndSetBatch(publication);
+    return AccountDeletionFence.compareAndSetBatch(
+        pointerStore, tableId.getAccountId(), publication);
   }
 
   private static StatsStore.StatsGenerationPredecessor predecessorOf(
@@ -1560,7 +1580,8 @@ public class StatsRepository implements StatsStore {
             "prewritten target stats publication intent is missing for generation " + generationId);
       }
       Pointer next = PointerReferences.opaqueMarkerPointer(pointerKey, intent, 1L);
-      if (pointerStore.compareAndSet(pointerKey, 0L, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), pointerKey, 0L, next)) {
         return;
       }
     }
@@ -1605,7 +1626,8 @@ public class StatsRepository implements StatsStore {
       }
       Pointer next =
           PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_WRITING, 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, 0L, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, 0L, next)) {
         if (pointerStore.get(deletedFencePointer).isPresent()) {
           pointerStore.compareAndDelete(lifecyclePointer, next.getVersion());
           throw new BaseResourceRepository.AbortRetryableException(
@@ -1637,7 +1659,8 @@ public class StatsRepository implements StatsStore {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(
               lifecyclePointer, GENERATION_PUBLISHING, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, expectedVersion, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, expectedVersion, next)) {
         return;
       }
     }
@@ -1664,7 +1687,8 @@ public class StatsRepository implements StatsStore {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(
               lifecyclePointer, GENERATION_PUBLISHED, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, expectedVersion, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, expectedVersion, next)) {
         return;
       }
     }
@@ -1694,7 +1718,8 @@ public class StatsRepository implements StatsStore {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(
               lifecyclePointer, GENERATION_DELETING, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, expectedVersion, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, expectedVersion, next)) {
         return GenerationDeleteClaim.CLAIMED;
       }
     }
@@ -1770,22 +1795,30 @@ public class StatsRepository implements StatsStore {
     String manifestBlobUri =
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
-    targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
+    targetStatsStorage.putManifestBlob(
+        tableId.getAccountId(), manifestBlobUri, StringValue.of(generationId));
     Pointer created = PointerReferences.blobPointer(manifestPointer, manifestBlobUri, 1L);
     String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
     Pointer published =
         PointerReferences.opaqueMarkerPointer(lifecyclePointer, GENERATION_PUBLISHED, 1L);
-    if (pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasUpsert(manifestPointer, 0L, created),
-            new PointerStore.CasUpsert(lifecyclePointer, 0L, published)))) {
-      return new ActiveSnapshotStats(
+    try {
+      if (AccountDeletionFence.compareAndSetBatch(
+          pointerStore,
           tableId.getAccountId(),
-          tableId.getId(),
-          generationId,
-          manifestPointer,
-          1L,
-          manifestBlobUri);
+          List.of(
+              new PointerStore.CasUpsert(manifestPointer, 0L, created),
+              new PointerStore.CasUpsert(lifecyclePointer, 0L, published)))) {
+        return new ActiveSnapshotStats(
+            tableId.getAccountId(),
+            tableId.getId(),
+            generationId,
+            manifestPointer,
+            1L,
+            manifestBlobUri);
+      }
+    } catch (BaseResourceRepository.AccountDeletionInProgressException deleting) {
+      deleteQuietly(() -> blobStore.delete(manifestBlobUri));
+      throw deleting;
     }
     deleteQuietly(() -> blobStore.delete(manifestBlobUri));
     ActiveSnapshotStats resolved =
@@ -1993,42 +2026,46 @@ public class StatsRepository implements StatsStore {
   public boolean discoverGenerationKeys(
       ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
     java.util.Objects.requireNonNull(continuation, "continuation");
-    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     while (!continuation.pointerScanComplete) {
-      if (System.currentTimeMillis() >= deadlineMs) {
+      if (!discoverGenerationKeysPage(tableId, deadlineMs, continuation)) {
         return false;
-      }
-      StringBuilder next = new StringBuilder();
-      List<Pointer> page =
-          pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
-      boolean pageComplete = true;
-      for (Pointer pointer : page) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          pageComplete = false;
-          break;
-        }
-        Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
-        if (generation != null
-            && pointer
-                .getKey()
-                .equals(
-                    generationLifecyclePointer(
-                        tableId, generation.snapshotId(), generation.generationId()))) {
-          continuation.discover(generation);
-        }
-      }
-      if (!pageComplete) {
-        return false;
-      }
-      continuation.pointerToken = next.toString();
-      if (continuation.pointerToken.isBlank()) {
-        continuation.pointerScanComplete = true;
       }
     }
     if (!continuation.scanComplete) {
       continuation.scanComplete = true;
       continuation.candidates = List.copyOf(continuation.discovered);
       continuation.discovered = null;
+    }
+    return true;
+  }
+
+  /** Processes one pointer page so continuation behavior can be tested without wall-clock races. */
+  boolean discoverGenerationKeysPage(
+      ResourceId tableId, long deadlineMs, GenerationGcContinuation continuation) {
+    if (System.currentTimeMillis() >= deadlineMs) {
+      return false;
+    }
+    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page =
+        pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
+    for (Pointer pointer : page) {
+      if (System.currentTimeMillis() >= deadlineMs) {
+        return false;
+      }
+      Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
+      if (generation != null
+          && pointer
+              .getKey()
+              .equals(
+                  generationLifecyclePointer(
+                      tableId, generation.snapshotId(), generation.generationId()))) {
+        continuation.discover(generation);
+      }
+    }
+    continuation.pointerToken = next.toString();
+    if (continuation.pointerToken.isBlank()) {
+      continuation.pointerScanComplete = true;
     }
     return true;
   }
@@ -2439,7 +2476,8 @@ public class StatsRepository implements StatsStore {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(
               lifecyclePointer, GENERATION_DELETING, current.getVersion() + 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, current.getVersion(), next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, current.getVersion(), next)) {
         return true;
       }
     }
@@ -2462,7 +2500,8 @@ public class StatsRepository implements StatsStore {
       Pointer restored =
           PointerReferences.opaqueMarkerPointer(
               lifecyclePointer, GENERATION_PUBLISHED, current.getVersion() + 1L);
-      if (pointerStore.compareAndSet(lifecyclePointer, current.getVersion(), restored)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, tableId.getAccountId(), lifecyclePointer, current.getVersion(), restored)) {
         return;
       }
     }
@@ -2496,7 +2535,8 @@ public class StatsRepository implements StatsStore {
               .build();
       Pointer existingFence = pointerStore.get(deletedFencePointer).orElse(null);
       if (existingFence == null
-          && !pointerStore.compareAndSet(deletedFencePointer, 0L, deletedFence)) {
+          && !AccountDeletionFence.compareAndSet(
+              pointerStore, tableId.getAccountId(), deletedFencePointer, 0L, deletedFence)) {
         continue;
       }
       if (pointerStore.compareAndDelete(lifecyclePointer, current.getVersion())
@@ -2677,7 +2717,8 @@ public class StatsRepository implements StatsStore {
 
   private record TargetStatsWrite(String pointerKey, String blobUri, TargetStatsRecord value) {}
 
-  private record PrewrittenStatsWrite(String pointerKey, String blobUri, long blobBytes) {
+  private record PrewrittenStatsWrite(
+      String accountId, String pointerKey, String blobUri, long blobBytes) {
     private boolean sameReference(PrewrittenStatsWrite other) {
       return other != null && blobBytes == other.blobBytes && blobUri.equals(other.blobUri);
     }
@@ -2765,8 +2806,14 @@ public class StatsRepository implements StatsStore {
     }
 
     private void create(String pointerKey, String blobUri, TargetStatsRecord value) {
+      String accountId = value.getTableId().getAccountId();
       putBlob(blobUri, value);
-      reserveAllOrRollback(value.getSerializedSize(), pointerKey, blobUri);
+      try {
+        reserveIndexOrIdempotentFenced(accountId, pointerKey, blobUri, value.getSerializedSize());
+      } catch (AccountDeletionInProgressException deleting) {
+        deleteBlobQuietly(blobUri);
+        throw deleting;
+      }
     }
 
     private void createBatch(List<TargetStatsWrite> writes) {
@@ -2781,10 +2828,21 @@ public class StatsRepository implements StatsStore {
         }
       }
       List<TargetStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
-      for (TargetStatsWrite write : pending) {
-        putBlob(write.blobUri(), write.value());
+      String accountId = targetStatsAccountId(pending);
+      AccountDeletionFence.requireAbsent(mutationPointerStore, accountId);
+      Set<String> blobsCreatedByCall = new LinkedHashSet<>();
+      try {
+        for (TargetStatsWrite write : pending) {
+          if (blobStore.head(write.blobUri()).isEmpty()) {
+            blobsCreatedByCall.add(write.blobUri());
+          }
+          putBlob(write.blobUri(), write.value());
+        }
+        forEachPointerBatch(pending, this::reserveBatchOrClassify);
+      } catch (AccountDeletionInProgressException deleting) {
+        blobsCreatedByCall.forEach(this::deleteBlobQuietly);
+        throw deleting;
       }
-      forEachPointerBatch(pending, this::reserveBatchOrClassify);
     }
 
     private void overwriteBatch(List<TargetStatsWrite> writes) {
@@ -2795,7 +2853,9 @@ public class StatsRepository implements StatsStore {
       for (TargetStatsWrite write : writes) {
         uniqueWrites.put(write.pointerKey(), write);
       }
-      for (TargetStatsWrite write : uniqueWrites.values()) {
+      List<TargetStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
+      AccountDeletionFence.requireAbsent(mutationPointerStore, targetStatsAccountId(pending));
+      for (TargetStatsWrite write : pending) {
         overwrite(write.pointerKey(), write.blobUri(), write.value());
       }
     }
@@ -2809,17 +2869,19 @@ public class StatsRepository implements StatsStore {
         uniqueWrites.put(write.pointerKey(), write);
       }
       List<PrewrittenStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
-      forEachPointerBatch(pending, this::overwriteReferencesChunk);
+      String accountId = prewrittenStatsAccountId(pending);
+      forEachPointerBatch(pending, batch -> overwriteReferencesChunk(accountId, batch));
     }
 
     private void createExactReferencesBatch(List<PrewrittenStatsWrite> writes) {
       if (writes == null || writes.isEmpty()) {
         return;
       }
-      forEachPointerBatch(writes, this::createExactReferencesChunk);
+      String accountId = prewrittenStatsAccountId(writes);
+      forEachPointerBatch(writes, batch -> createExactReferencesChunk(accountId, batch));
     }
 
-    private void createExactReferencesChunk(List<PrewrittenStatsWrite> writes) {
+    private void createExactReferencesChunk(String accountId, List<PrewrittenStatsWrite> writes) {
       List<PrewrittenStatsWrite> remaining = new ArrayList<>(writes);
       for (int attempt = 0; attempt < CAS_MAX; attempt++) {
         List<PointerStore.CasOp> creates = new ArrayList<>();
@@ -2833,7 +2895,8 @@ public class StatsRepository implements StatsStore {
           missing.add(write);
           creates.add(prewrittenStatsUpsert(write, 0L));
         }
-        if (creates.isEmpty() || mutationPointerStore.compareAndSetBatch(creates)) {
+        if (creates.isEmpty()
+            || AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, creates)) {
           return;
         }
         remaining = missing;
@@ -2864,13 +2927,13 @@ public class StatsRepository implements StatsStore {
       }
     }
 
-    private void overwriteReferencesChunk(List<PrewrittenStatsWrite> writes) {
+    private void overwriteReferencesChunk(String accountId, List<PrewrittenStatsWrite> writes) {
       List<PrewrittenStatsWrite> remaining = new ArrayList<>(writes);
       List<PointerStore.CasOp> initial = new ArrayList<>(remaining.size());
       for (PrewrittenStatsWrite write : remaining) {
         initial.add(prewrittenStatsUpsert(write, 0L));
       }
-      if (mutationPointerStore.compareAndSetBatch(initial)) {
+      if (AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, initial)) {
         return;
       }
       for (int attempt = 1; attempt < CAS_MAX; attempt++) {
@@ -2885,7 +2948,8 @@ public class StatsRepository implements StatsStore {
           nextRemaining.add(write);
           ops.add(prewrittenStatsUpsert(write, expectedVersion));
         }
-        if (ops.isEmpty() || mutationPointerStore.compareAndSetBatch(ops)) {
+        if (ops.isEmpty()
+            || AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops)) {
           return;
         }
         remaining = nextRemaining;
@@ -2906,19 +2970,32 @@ public class StatsRepository implements StatsStore {
     }
 
     private void overwrite(String pointerKey, String blobUri, TargetStatsRecord value) {
+      String accountId = value.getTableId().getAccountId();
+      boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
-      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
-        Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
-        long expectedVersion = existing == null ? 0L : existing.getVersion();
-        if (existing != null && blobUri.equals(existing.getBlobUri())) {
-          return;
+      try {
+        for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+          Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
+          long expectedVersion = existing == null ? 0L : existing.getVersion();
+          if (existing != null && blobUri.equals(existing.getBlobUri())) {
+            return;
+          }
+          Pointer next =
+              PointerReferences.blobPointer(
+                  pointerKey,
+                  blobUri,
+                  Math.max(1L, expectedVersion + 1L),
+                  value.getSerializedSize());
+          if (AccountDeletionFence.compareAndSet(
+              mutationPointerStore, accountId, pointerKey, expectedVersion, next)) {
+            return;
+          }
         }
-        Pointer next =
-            PointerReferences.blobPointer(
-                pointerKey, blobUri, Math.max(1L, expectedVersion + 1L), value.getSerializedSize());
-        if (mutationPointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
-          return;
+      } catch (AccountDeletionInProgressException deleting) {
+        if (!blobExistedBefore) {
+          deleteBlobQuietly(blobUri);
         }
+        throw deleting;
       }
       throw new AbortRetryableException("overwrite conflict: " + pointerKey);
     }
@@ -2931,15 +3008,24 @@ public class StatsRepository implements StatsStore {
       if (mutationPointerStore.get(pointerKey).isPresent()) {
         return false;
       }
+      String accountId = value.getTableId().getAccountId();
       boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
       Pointer reserve =
           PointerReferences.blobPointer(pointerKey, blobUri, 1L, value.getSerializedSize());
-      if (!mutationPointerStore.compareAndSet(pointerKey, 0L, reserve)) {
-        cleanupCreateIfAbsentBlobOnCasMiss(pointerKey, blobUri, blobExistedBefore);
-        return false;
+      try {
+        if (!AccountDeletionFence.compareAndSet(
+            mutationPointerStore, accountId, pointerKey, 0L, reserve)) {
+          cleanupCreateIfAbsentBlobOnCasMiss(pointerKey, blobUri, blobExistedBefore);
+          return false;
+        }
+        return true;
+      } catch (AccountDeletionInProgressException deleting) {
+        if (!blobExistedBefore) {
+          deleteBlobQuietly(blobUri);
+        }
+        throw deleting;
       }
-      return true;
     }
 
     private List<TargetStatsRecord> createBatchIfAbsent(List<TargetStatsWrite> writes) {
@@ -2954,51 +3040,62 @@ public class StatsRepository implements StatsStore {
         }
       }
       List<TargetStatsWrite> remaining = new ArrayList<>(uniqueWrites.values());
+      String accountId = targetStatsAccountId(remaining);
+      AccountDeletionFence.requireAbsent(mutationPointerStore, accountId);
       List<TargetStatsRecord> created = new ArrayList<>(remaining.size());
-      while (!remaining.isEmpty()) {
-        List<TargetStatsWrite> absent = new ArrayList<>(remaining.size());
-        for (TargetStatsWrite write : remaining) {
-          if (mutationPointerStore.get(write.pointerKey()).isEmpty()) {
-            absent.add(write);
+      Set<String> blobsCreatedByCall = new LinkedHashSet<>();
+      try {
+        while (!remaining.isEmpty()) {
+          List<TargetStatsWrite> absent = new ArrayList<>(remaining.size());
+          for (TargetStatsWrite write : remaining) {
+            if (mutationPointerStore.get(write.pointerKey()).isEmpty()) {
+              absent.add(write);
+            }
           }
-        }
-        if (absent.isEmpty()) {
-          break;
-        }
-        boolean[] blobExistedBefore = new boolean[absent.size()];
-        for (int i = 0; i < absent.size(); i++) {
-          TargetStatsWrite write = absent.get(i);
-          blobExistedBefore[i] = blobStore.head(write.blobUri()).isPresent();
-          putBlob(write.blobUri(), write.value());
-        }
-        List<TargetStatsWrite> nextRemaining = new ArrayList<>();
-        for (int from = 0; from < absent.size(); from += MAX_POINTER_BATCH_SIZE) {
-          List<TargetStatsWrite> batch =
-              absent.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, absent.size()));
-          if (reserveIfAbsentBatch(batch)) {
-            batch.forEach(write -> created.add(write.value()));
-            continue;
+          if (absent.isEmpty()) {
+            break;
           }
-          for (int offset = 0; offset < batch.size(); offset++) {
-            TargetStatsWrite write = batch.get(offset);
-            Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
-            if (pointer == null) {
-              nextRemaining.add(write);
+          boolean[] blobExistedBefore = new boolean[absent.size()];
+          for (int i = 0; i < absent.size(); i++) {
+            TargetStatsWrite write = absent.get(i);
+            blobExistedBefore[i] = blobStore.head(write.blobUri()).isPresent();
+            putBlob(write.blobUri(), write.value());
+            if (!blobExistedBefore[i]) {
+              blobsCreatedByCall.add(write.blobUri());
+            }
+          }
+          List<TargetStatsWrite> nextRemaining = new ArrayList<>();
+          for (int from = 0; from < absent.size(); from += MAX_POINTER_BATCH_SIZE) {
+            List<TargetStatsWrite> batch =
+                absent.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, absent.size()));
+            if (reserveIfAbsentBatch(batch)) {
+              batch.forEach(write -> created.add(write.value()));
               continue;
             }
-            int originalIndex = from + offset;
-            if (!blobExistedBefore[originalIndex]
-                && !write.blobUri().equals(pointer.getBlobUri())) {
-              cleanupCreateIfAbsentBlobOnCasMiss(
-                  write.pointerKey(), write.blobUri(), blobExistedBefore[originalIndex]);
+            for (int offset = 0; offset < batch.size(); offset++) {
+              TargetStatsWrite write = batch.get(offset);
+              Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
+              if (pointer == null) {
+                nextRemaining.add(write);
+                continue;
+              }
+              int originalIndex = from + offset;
+              if (!blobExistedBefore[originalIndex]
+                  && !write.blobUri().equals(pointer.getBlobUri())) {
+                cleanupCreateIfAbsentBlobOnCasMiss(
+                    write.pointerKey(), write.blobUri(), blobExistedBefore[originalIndex]);
+              }
             }
           }
+          if (nextRemaining.size() == absent.size()) {
+            throw new AbortRetryableException(
+                "create conflict, no pointer present: " + absent.get(0).pointerKey());
+          }
+          remaining = nextRemaining;
         }
-        if (nextRemaining.size() == absent.size()) {
-          throw new AbortRetryableException(
-              "create conflict, no pointer present: " + absent.get(0).pointerKey());
-        }
-        remaining = nextRemaining;
+      } catch (AccountDeletionInProgressException deleting) {
+        blobsCreatedByCall.forEach(this::deleteBlobQuietly);
+        throw deleting;
       }
       return List.copyOf(created);
     }
@@ -3009,8 +3106,12 @@ public class StatsRepository implements StatsStore {
       }
     }
 
-    private void putManifestBlob(String blobUri, StringValue manifest) {
+    private void putManifestBlob(String accountId, String blobUri, StringValue manifest) {
       putBlobStrictBytes(blobUri, manifest.toByteArray());
+      if (mutationPointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
+        deleteBlobQuietly(blobUri);
+        throw new AccountDeletionInProgressException(accountId);
+      }
     }
 
     private MutationMeta metaForPointer(String pointerKey, String blobUri, Timestamp nowTs) {
@@ -3018,6 +3119,7 @@ public class StatsRepository implements StatsStore {
     }
 
     private void reserveBatchOrClassify(List<TargetStatsWrite> writes) {
+      String accountId = targetStatsAccountId(writes);
       List<TargetStatsWrite> remaining = new ArrayList<>(writes);
       while (!remaining.isEmpty()) {
         List<PointerStore.CasOp> ops = new ArrayList<>(remaining.size());
@@ -3029,7 +3131,7 @@ public class StatsRepository implements StatsStore {
                   PointerReferences.blobPointer(
                       write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
         }
-        if (mutationPointerStore.compareAndSetBatch(ops)) {
+        if (AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops)) {
           return;
         }
         List<TargetStatsWrite> nextRemaining = new ArrayList<>();
@@ -3053,6 +3155,7 @@ public class StatsRepository implements StatsStore {
     }
 
     private boolean reserveIfAbsentBatch(List<TargetStatsWrite> writes) {
+      String accountId = targetStatsAccountId(writes);
       List<PointerStore.CasOp> ops = new ArrayList<>(writes.size());
       for (TargetStatsWrite write : writes) {
         ops.add(
@@ -3062,7 +3165,32 @@ public class StatsRepository implements StatsStore {
                 PointerReferences.blobPointer(
                     write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
       }
-      return mutationPointerStore.compareAndSetBatch(ops);
+      return AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops);
+    }
+
+    private static String targetStatsAccountId(List<TargetStatsWrite> writes) {
+      String accountId = writes.getFirst().value().getTableId().getAccountId();
+      if (writes.stream()
+          .anyMatch(write -> !accountId.equals(write.value().getTableId().getAccountId()))) {
+        throw new IllegalArgumentException("target stats batch cannot cross accounts");
+      }
+      return accountId;
+    }
+
+    private static String prewrittenStatsAccountId(List<PrewrittenStatsWrite> writes) {
+      String accountId = writes.getFirst().accountId();
+      if (writes.stream().anyMatch(write -> !accountId.equals(write.accountId()))) {
+        throw new IllegalArgumentException("prewritten target stats batch cannot cross accounts");
+      }
+      return accountId;
+    }
+
+    private void deleteBlobQuietly(String blobUri) {
+      try {
+        blobStore.delete(blobUri);
+      } catch (RuntimeException ignored) {
+        // Best effort: the durable account fence still prevents publishing the blob.
+      }
     }
 
     private void cleanupCreateIfAbsentBlobOnCasMiss(

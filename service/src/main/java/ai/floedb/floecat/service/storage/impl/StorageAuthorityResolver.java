@@ -56,7 +56,7 @@ import software.amazon.awssdk.services.sts.model.Credentials;
 
 @ApplicationScoped
 public class StorageAuthorityResolver {
-  static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
+  public static final String STORAGE_AUTHORITY_SECRET_TYPE = "storage-authorities";
   private static final Logger LOG = Logger.getLogger(StorageAuthorityResolver.class.getName());
   private static final Duration ASSUME_ROLE_CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
   private static final int ASSUME_ROLE_MAX_ATTEMPTS = 3;

@@ -15,6 +15,7 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -76,7 +77,7 @@ final class GenerationArtifactMap {
       }
       throw new IllegalStateException("generation artifact map already differs: " + key);
     }
-    if (!pointerStore.compareAndSet(key, 0L, next)) {
+    if (!AccountDeletionFence.compareAndSet(pointerStore, tableId.getAccountId(), key, 0L, next)) {
       existing = pointerStore.get(key).orElse(null);
       if (existing == null
           || !existing.getBlobUri().equals(captureManifestUri)

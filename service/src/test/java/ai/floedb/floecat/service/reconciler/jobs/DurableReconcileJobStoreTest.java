@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -238,6 +239,216 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void cleanupAccountDeletesCanonicalGlobalIndexesAndLeaseExpiry() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertEquals(jobId, store.leaseNext().orElseThrow().jobId);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    String leaseKey = Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId);
+    ReconcileLeaseStore.LeaseExpiryEntry expiry =
+        store.leaseStore.scanExpiredLeasePointersPage(Long.MAX_VALUE, 100, "").entries().stream()
+            .filter(entry -> canonicalKey.equals(entry.canonicalPointerKey()))
+            .findFirst()
+            .orElseThrow();
+    String deletionFence = Keys.accountDeletionMarker(ACCOUNT_ID);
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            deletionFence,
+            0L,
+            PointerReferences.opaqueMarkerPointer(deletionFence, "deleting", 1L)));
+
+    assertEquals(1, store.cleanupAccount(ACCOUNT_ID));
+
+    assertTrue(store.pointerStore.get(canonicalKey).isEmpty());
+    assertTrue(store.pointerStore.get(lookupKey).isEmpty());
+    assertTrue(store.pointerStore.get(leaseKey).isEmpty());
+    assertTrue(store.pointerStore.get(expiry.leaseExpiryPointerKey()).isEmpty());
+    assertTrue(store.pointerStore.get(deletionFence).isPresent());
+  }
+
+  @Test
+  void cleanupAccountConsumesFilteredPagesAndEncodedJobIds() {
+    for (int i = 0; i < 200; i++) {
+      String malformedKey = Keys.reconcileJobPointerByIdPrefix(ACCOUNT_ID) + "aa-invalid/" + i;
+      assertTrue(
+          store.pointerStore.compareAndSet(
+              malformedKey, 0L, PointerReferences.inlineJsonPointer(malformedKey, "{}", 1L)));
+    }
+    String jobId = "zz+encoded/job";
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    String lookupKey = Keys.reconcileJobLookupPointerById(jobId);
+    ReconcileJobIndexCleanupManifest manifest =
+        new ReconcileJobIndexCleanupManifest(List.of(lookupKey), List.of());
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        manifest),
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        lookupKey, 0L, canonicalKey, PointerReferenceKind.PRK_POINTER_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    assertEquals(1, store.cleanupAccount(ACCOUNT_ID));
+
+    assertTrue(store.pointerStore.get(canonicalKey).isEmpty());
+    assertTrue(store.pointerStore.get(lookupKey).isEmpty());
+  }
+
+  @Test
+  void cleanupAccountDeletesJobsWithoutUsableManifestsAndCancellationMarkerConverges() {
+    String emptyJobId = "empty-manifest";
+    String emptyCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, emptyJobId);
+    String emptyLookupKey = Keys.reconcileJobLookupPointerById(emptyJobId);
+    String invalidJobId = "invalid-manifest";
+    String invalidCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, invalidJobId);
+    String invalidLookupKey = Keys.reconcileJobLookupPointerById(invalidJobId);
+    ReconcileJobIndexCleanupManifest invalidManifest =
+        new ReconcileJobIndexCleanupManifest(List.of("/invalid/cleanup/reference"), List.of());
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        emptyCanonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        ReconcileJobIndexCleanupManifest.EMPTY),
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        emptyLookupKey,
+                        0L,
+                        emptyCanonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY),
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        invalidCanonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        invalidManifest),
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        invalidLookupKey,
+                        0L,
+                        invalidCanonicalKey,
+                        PointerReferenceKind.PRK_POINTER_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    String cancellationMarkerKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, emptyJobId);
+    String cancellationPayload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                ACCOUNT_ID, emptyJobId, "", false, false, false));
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            cancellationMarkerKey,
+            0L,
+            PointerReferences.opaqueMarkerPointer(cancellationMarkerKey, cancellationPayload, 1L)));
+    String deletionFence = Keys.accountDeletionMarker(ACCOUNT_ID);
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            deletionFence,
+            0L,
+            PointerReferences.opaqueMarkerPointer(deletionFence, "deleting", 1L)));
+
+    assertEquals(2, store.cleanupAccount(ACCOUNT_ID));
+
+    assertTrue(store.pointerStore.get(emptyCanonicalKey).isEmpty());
+    assertTrue(store.pointerStore.get(emptyLookupKey).isEmpty());
+    assertTrue(store.pointerStore.get(invalidCanonicalKey).isEmpty());
+    assertTrue(store.pointerStore.get(invalidLookupKey).isEmpty());
+    assertTrue(store.pointerStore.get(cancellationMarkerKey).isPresent());
+
+    runCancellationMaintenance();
+
+    assertTrue(store.pointerStore.get(cancellationMarkerKey).isEmpty());
+  }
+
+  @Test
+  void deletionFenceRejectsNewReconcileJobsAndLeases() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String fence = Keys.accountDeletionMarker(ACCOUNT_ID);
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L)));
+
+    assertTrue(store.leaseNext().isEmpty());
+    assertTrue(
+        store.pointerStore.get(Keys.reconcileJobLeasePointerById(ACCOUNT_ID, jobId)).isEmpty());
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            store.enqueue(
+                ACCOUNT_ID,
+                "another-connector",
+                false,
+                CaptureMode.METADATA_AND_CAPTURE,
+                ReconcileScope.empty()));
+  }
+
+  @Test
+  void expiredLeaseIndexConvergesWhenCanonicalJobIsGone() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertEquals(jobId, store.leaseNext().orElseThrow().jobId);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    ReconcileLeaseStore.LeaseExpiryEntry expiry =
+        store.leaseStore.scanExpiredLeasePointersPage(Long.MAX_VALUE, 100, "").entries().stream()
+            .filter(entry -> canonicalKey.equals(entry.canonicalPointerKey()))
+            .findFirst()
+            .orElseThrow();
+    var canonical = store.jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        canonical.pointerKey(), canonical.version())),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    store.leaseStore.reclaimExpiredLease(expiry, Long.MAX_VALUE);
+
+    assertTrue(store.leaseBackend.loadLeaseExpiry(expiry.leaseExpiryPointerKey()).isEmpty());
+  }
+
+  @Test
+  void stateIndexConvergesWhenCanonicalJobIsGone() {
+    String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
+    String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        stateKey, 0L, missingCanonical, PointerReferenceKind.PRK_POINTER_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    assertTrue(store.jobIndexStore.listStoredJobsInState("JS_QUEUED", 100, "").records().isEmpty());
+
+    assertTrue(store.jobIndexBackend.loadIndexEntry(stateKey).isEmpty());
   }
 
   @Test
@@ -7804,6 +8015,12 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return delegate.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
     public int deleteByPrefix(String prefix) {
       return delegate.deleteByPrefix(prefix);
     }
@@ -7811,6 +8028,11 @@ class DurableReconcileJobStoreTest {
     @Override
     public int countByPrefix(String prefix) {
       return delegate.countByPrefix(prefix);
+    }
+
+    @Override
+    public int countByPrefixConsistent(String prefix) {
+      return delegate.countByPrefixConsistent(prefix);
     }
 
     @Override

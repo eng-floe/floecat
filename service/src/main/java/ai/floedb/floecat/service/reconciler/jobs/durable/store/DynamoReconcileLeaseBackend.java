@@ -21,6 +21,8 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -168,6 +170,10 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       return true;
     }
     List<TransactWriteItem> tx = new ArrayList<>();
+    for (PointerStore.CasCheckAbsent fence :
+        accountFenceChecks(jobIndexBatch, leaseBatch, pointerTouches)) {
+      tx.add(DynamoReconcileJobIndexBackend.buildGenericPointerCheckAbsent(table, fence.key()));
+    }
     if (jobIndexBatch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp write : jobIndexBatch.writes()) {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
@@ -299,6 +305,49 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           (System.nanoTime() - startedNanos) / 1_000_000.0);
       return false;
     }
+  }
+
+  private List<PointerStore.CasCheckAbsent> accountFenceChecks(
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch,
+      LeaseWriteBatch leaseBatch,
+      List<PointerStore.UnconditionalUpsert> pointerTouches) {
+    List<PointerStore.CasOp> sources = new ArrayList<>();
+    sources.addAll(JobIndexWriteBatchSupport.toCasOps(jobIndexBatch));
+    if (leaseBatch != null) {
+      for (LeaseWriteOp write : leaseBatch.writes()) {
+        if (write instanceof LeaseRecordUpsert upsert) {
+          String key = LeaseBackendSupport.leasePointerKey(upsert.accountId(), upsert.jobId());
+          sources.add(
+              new PointerStore.CasUpsert(
+                  key,
+                  upsert.expectedVersion(),
+                  PointerReferences.inlineJsonPointer(
+                      key, upsert.encodedLease(), upsert.expectedVersion() + 1L)));
+        } else if (write instanceof LeaseExpiryUpsert upsert) {
+          sources.add(
+              new PointerStore.CasUpsert(
+                  upsert.leaseExpiryKey(),
+                  upsert.expectedVersion(),
+                  PointerReferences.pointerKeyPointer(
+                      upsert.leaseExpiryKey(),
+                      upsert.canonicalPointerKey(),
+                      upsert.expectedVersion() + 1L)));
+        } else if (write instanceof LeaseOwnerUpsert upsert) {
+          sources.add(
+              new PointerStore.CasUpsert(
+                  upsert.ownerKey(),
+                  upsert.expectedVersion(),
+                  PointerReferences.pointerKeyPointer(
+                      upsert.ownerKey(),
+                      upsert.canonicalPointerKey(),
+                      upsert.expectedVersion() + 1L)));
+        }
+      }
+    }
+    if (pointerTouches != null) {
+      sources.addAll(pointerTouches);
+    }
+    return AccountDeletionFence.checksForAccountWrites(sources);
   }
 
   private String leaseRecordKey(String accountId, String jobId) {

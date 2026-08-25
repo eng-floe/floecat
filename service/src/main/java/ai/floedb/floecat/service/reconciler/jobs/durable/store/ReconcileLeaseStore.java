@@ -121,6 +121,9 @@ public interface ReconcileLeaseStore {
 
   boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch);
 
+  /** Deletes a job lease and its attributable expiry row during whole-account teardown. */
+  boolean deleteAccountJobLease(String accountId, String jobId);
+
   boolean tryAcquireLaneLease(StoredReconcileJob record, String canonicalPointerKey, long nowMs);
 
   void clearLaneLeaseIfOwned(StoredReconcileJob record, String expectedReference);

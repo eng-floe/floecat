@@ -172,8 +172,24 @@ class NotProdSecretsManagerIT {
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      throw new UnsupportedOperationException("queryByPartitionKeyPrefix not supported");
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       throw new UnsupportedOperationException("deleteByPrefix not supported");
+    }
+
+    @Override
+    public Uni<Integer> deleteByPrefixExcluding(
+        String partitionKey, String sortKeyPrefix, String excludedSortKey) {
+      throw new UnsupportedOperationException("deleteByPrefixExcluding not supported");
     }
 
     @Override

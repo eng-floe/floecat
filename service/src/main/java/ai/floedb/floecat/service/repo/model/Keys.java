@@ -157,6 +157,20 @@ public final class Keys {
     return "/accounts/by-name/";
   }
 
+  /** Durable fence that prevents new account-scoped writes once deletion begins. */
+  public static String accountDeletionMarker(String accountId) {
+    return accountDeletionMarkerForEncodedSegment(encode(req("account_id", accountId)));
+  }
+
+  /** Builds the deletion fence when the account segment was extracted from an existing key. */
+  public static String accountDeletionMarkerForEncodedSegment(String encodedAccountSegment) {
+    String segment = req("encoded_account_segment", encodedAccountSegment);
+    if (segment.indexOf('/') >= 0) {
+      throw new IllegalArgumentException("encoded_account_segment must be one path segment");
+    }
+    return accountRootPrefix() + segment + "/deleting";
+  }
+
   public static String accountBlobUri(String accountId, String sha256) {
     String tid = req("account_id", accountId);
     String sha = req("sha256", sha256);
@@ -164,6 +178,11 @@ public final class Keys {
   }
 
   // ===== Transactions =====
+
+  public static String transactionPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/transactions/";
+  }
 
   public static String transactionPointerById(String accountId, String txId) {
     String tid = req("account_id", accountId);
@@ -1329,12 +1348,12 @@ public final class Keys {
   public static String reconcileJobLeasePointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return reconcileJobLeasePointerByIdPrefix(tid) + jid;
+    return reconcileJobLeasePointerByIdPrefix(tid) + encode(jid);
   }
 
   public static String reconcileJobLeasePointerByIdPrefix(String accountId) {
     String tid = req("account_id", accountId);
-    return accountRootPrefix() + tid + "/reconcile/job-leases/by-id/";
+    return accountRootPrefix(tid) + "reconcile/job-leases/by-id/";
   }
 
   public static String reconcileJobLeaseExpiryPointerPrefix() {
@@ -1352,7 +1371,7 @@ public final class Keys {
   public static String reconcileJobLeaseExpiryPointerSuffix(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return "/accounts/" + tid + "/jobs/" + jid;
+    return "/accounts/" + encode(tid) + "/jobs/" + encode(jid);
   }
 
   public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {

@@ -464,11 +464,17 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   @Override
   public Uni<Page> queryByPartitionKeyPrefix(
       String pk, String skPrefix, int limit, Optional<String> pageToken) {
+    return queryByPartitionKeyPrefix(pk, skPrefix, limit, pageToken, false);
+  }
+
+  @Override
+  public Uni<Page> queryByPartitionKeyPrefix(
+      String pk, String skPrefix, int limit, Optional<String> pageToken, boolean consistentRead) {
     if (pk == null || pk.isBlank()) {
       throw new IllegalArgumentException("partition key must be provided for query");
     }
 
-    var qb = QueryRequest.builder().tableName(table).limit(limit);
+    var qb = QueryRequest.builder().tableName(table).limit(limit).consistentRead(consistentRead);
 
     if (skPrefix == null || skPrefix.isEmpty()) {
       qb.expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
@@ -496,6 +502,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   @Override
   public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
+    return deleteByPrefixExcluding(partitionKey, sortKeyPrefix, null);
+  }
+
+  @Override
+  public Uni<Integer> deleteByPrefixExcluding(
+      String partitionKey, String sortKeyPrefix, String excludedSortKey) {
     Objects.requireNonNull(partitionKey, "Partition must be provided for delete by prefix");
     final var totalDeleted = new AtomicInteger(0);
     final var lekRef = new AtomicReference<Map<String, AttributeValue>>(null);
@@ -541,6 +553,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               // build delete requests for this page
               var deletes = new ArrayList<WriteRequest>(resp.items().size());
               for (var item : resp.items()) {
+                if (item.get(ATTR_SORT_KEY).s().equals(excludedSortKey)) {
+                  continue;
+                }
                 var key =
                     Map.of(
                         ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),

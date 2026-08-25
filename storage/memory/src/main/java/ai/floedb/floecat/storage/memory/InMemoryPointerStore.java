@@ -112,6 +112,12 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
+  public synchronized List<Pointer> listPointersByPrefixConsistent(
+      String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+    return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+  }
+
+  @Override
   public String pageTokenAfterKey(String key) {
     // This store's page tokens are raw pointer keys ("resume after this key"), so the key itself
     // is the token. Resuming after a since-deleted key fails the same way an ordinary end-of-page
@@ -130,6 +136,11 @@ public class InMemoryPointerStore implements PointerStore {
       n++;
     }
     return n;
+  }
+
+  @Override
+  public synchronized int countByPrefixConsistent(String prefix) {
+    return countByPrefix(prefix);
   }
 
   @Override
@@ -152,6 +163,22 @@ public class InMemoryPointerStore implements PointerStore {
         break;
       }
       keys.add(key);
+    }
+    keys.forEach(map::remove);
+    return keys.size();
+  }
+
+  @Override
+  public synchronized int deleteByPrefixExcluding(String prefix, String excludedKey) {
+    final String pfx = (prefix == null) ? "" : prefix;
+    List<String> keys = new ArrayList<>();
+    for (String key : map.tailMap(pfx, true).keySet()) {
+      if (!key.startsWith(pfx)) {
+        break;
+      }
+      if (!key.equals(excludedKey)) {
+        keys.add(key);
+      }
     }
     keys.forEach(map::remove);
     return keys.size();

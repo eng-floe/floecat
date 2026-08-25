@@ -152,6 +152,8 @@ public class TableRootCommitter {
         lastGone = gone;
         won = false;
         desired = null;
+      } catch (BaseResourceRepository.AccountDeletionInProgressException deleting) {
+        throw deleting;
       } catch (BaseResourceRepository.RepoException terminal) {
         throw new CommitFailedException(
             "table root commit failed for table " + tableId.getId(), terminal);

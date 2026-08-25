@@ -58,10 +58,11 @@ class TableRootCommitterTest {
 
   private TableRootRepository roots;
   private TableRootCommitter committer;
+  private InMemoryPointerStore pointers;
 
   @BeforeEach
   void setUp() {
-    var pointers = new InMemoryPointerStore();
+    pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     roots = new TableRootRepository(pointers, blobs);
     committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
@@ -89,6 +90,24 @@ class TableRootCommitterTest {
     assertTrue(committed.hasCommittedAt());
     assertEquals("s3://tbl/def-1.pb", committed.getDefinitionRef().getUri());
     assertEquals(committed, roots.get(TABLE).orElseThrow());
+  }
+
+  @Test
+  void accountDeletionFenceIsNotWrappedAsCommitFailure() {
+    String fence = ai.floedb.floecat.service.repo.model.Keys.accountDeletionMarker("acct");
+    pointers.compareAndSet(
+        fence,
+        0L,
+        ai.floedb.floecat.service.repo.model.PointerReferences.opaqueMarkerPointer(
+            fence, "acct", 1L));
+
+    assertThrows(
+        BaseResourceRepository.AccountDeletionInProgressException.class,
+        () ->
+            committer.commit(
+                TABLE,
+                current ->
+                    TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def.pb")).build()));
   }
 
   @Test

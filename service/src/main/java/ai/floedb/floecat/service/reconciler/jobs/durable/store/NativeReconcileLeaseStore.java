@@ -829,6 +829,43 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     return false;
   }
 
+  @Override
+  public boolean deleteAccountJobLease(String accountId, String jobId) {
+    if (blank(accountId) || blank(jobId)) {
+      return true;
+    }
+    for (int attempt = 0; attempt < casMax; attempt++) {
+      var leaseSnapshot = leaseBackend.loadLease(accountId, jobId).orElse(null);
+      if (leaseSnapshot == null) {
+        return true;
+      }
+      List<ReconcileLeaseBackend.LeaseWriteOp> writes = new ArrayList<>();
+      writes.add(
+          new ReconcileLeaseBackend.LeaseRecordDelete(accountId, jobId, leaseSnapshot.version()));
+      leaseStateCodec
+          .decode(leaseSnapshot.encodedLease())
+          .map(lease -> leaseExpiryPointerKey(lease.expiresAtMs, accountId, jobId))
+          .filter(key -> !key.isBlank())
+          .map(leaseBackend::loadLeaseExpiry)
+          .flatMap(value -> value)
+          .filter(
+              expiry ->
+                  Keys.reconcileJobStateRowById(accountId, jobId)
+                      .equals(expiry.canonicalPointerKey()))
+          .ifPresent(
+              expiry ->
+                  writes.add(
+                      new ReconcileLeaseBackend.LeaseExpiryDelete(
+                          expiry.leaseExpiryKey(), expiry.version())));
+      if (leaseBackend.compareAndSetBatch(
+          ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+          new ReconcileLeaseBackend.LeaseWriteBatch(List.copyOf(writes)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public boolean tryAcquireLaneLease(
       StoredReconcileJob record, String canonicalPointerKey, long now) {
     if (record == null
@@ -989,6 +1026,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     String canonicalKey = leaseExpiryEntry.canonicalPointerKey();
     var canonicalRecordOpt = jobIndexStore.readCanonicalRecordByKey(canonicalKey);
     if (canonicalRecordOpt.isEmpty()) {
+      deleteStaleLeaseExpiry(leaseExpiryEntry);
       return;
     }
     var canonicalRecord = canonicalRecordOpt.get();
@@ -1005,6 +1043,20 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       return;
     }
     reclaimRunningOrCancellingJob(canonicalKey, canonicalRecord, lease, nowMs);
+  }
+
+  private void deleteStaleLeaseExpiry(LeaseExpiryEntry entry) {
+    var current = leaseBackend.loadLeaseExpiry(entry.leaseExpiryPointerKey()).orElse(null);
+    if (current == null
+        || !Objects.equals(entry.canonicalPointerKey(), current.canonicalPointerKey())) {
+      return;
+    }
+    leaseBackend.compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+        new ReconcileLeaseBackend.LeaseWriteBatch(
+            List.of(
+                new ReconcileLeaseBackend.LeaseExpiryDelete(
+                    current.leaseExpiryKey(), current.version()))));
   }
 
   private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {

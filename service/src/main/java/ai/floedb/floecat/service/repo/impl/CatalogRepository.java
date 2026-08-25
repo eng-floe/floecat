@@ -90,6 +90,12 @@ public class CatalogRepository {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  public List<Catalog> listConsistent(
+      String accountId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefixConsistent(
+        Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
+  }
+
   public int count(String accountId) {
     return repo.countByPrefix(Keys.catalogPointerByNamePrefix(accountId));
   }

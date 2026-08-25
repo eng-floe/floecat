@@ -88,6 +88,12 @@ public class ConnectorRepository {
         Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  public List<Connector> listConsistent(
+      String accountId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefixConsistent(
+        Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
+  }
+
   public int count(String accountId) {
     return repo.countByPrefix(Keys.connectorPointerByNamePrefix(accountId));
   }

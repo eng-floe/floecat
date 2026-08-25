@@ -22,6 +22,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
@@ -86,7 +87,8 @@ public class ReconcileJobProjectionStore {
         return;
       }
       Pointer next = PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, projection.accountId(), key, expectedVersion, next)) {
         return;
       }
     }

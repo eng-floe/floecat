@@ -31,6 +31,7 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -58,7 +59,8 @@ import java.util.concurrent.Semaphore;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
-  private static final int MAX_POINTER_BATCH_SIZE = 100;
+  // Leave one DynamoDB transaction slot for the account-deletion fence check.
+  private static final int MAX_POINTER_BATCH_SIZE = 99;
   private static final int MAX_PARALLEL_SIDECAR_CHECKS = 50;
   private static final String DIRECT_GENERATION = Keys.INDEX_ARTIFACT_DIRECT_GENERATION;
   private static final String LIST_TOKEN_PREFIX = "v1.";
@@ -142,13 +144,20 @@ public class IndexArtifactRepository {
               targetStorageId,
               blobSha256);
       blobStore.put(blobUri, bytes, "application/x-protobuf");
-      registerWrites(
-          List.of(
-              new PrewrittenIndexWrite(
-                  generationPointer(tableId, value.getSnapshotId(), generationId, targetStorageId),
-                  targetStorageId,
-                  blobUri,
-                  bytes.length)));
+      try {
+        registerWrites(
+            tableId,
+            List.of(
+                new PrewrittenIndexWrite(
+                    generationPointer(
+                        tableId, value.getSnapshotId(), generationId, targetStorageId),
+                    targetStorageId,
+                    blobUri,
+                    bytes.length)));
+      } catch (BaseResourceRepository.AccountDeletionInProgressException deleting) {
+        deleteBlobQuietly(blobUri);
+        throw deleting;
+      }
       Optional<String> after = activeGeneration(tableId, value.getSnapshotId());
       if (before.equals(after) && after.isPresent()) {
         return;
@@ -260,7 +269,7 @@ public class IndexArtifactRepository {
       }
     }
     refreshPrewrittenSharedSidecars(tableId, snapshotId, unique.values());
-    registerWrites(new ArrayList<>(unique.values()));
+    registerWrites(tableId, new ArrayList<>(unique.values()));
   }
 
   public ActivationFence activateGeneration(
@@ -293,7 +302,7 @@ public class IndexArtifactRepository {
                           new PointerStore.CasUpsert(
                               update.pointerKey(), update.expectedVersion(), update.next()))
               .toList();
-      if (!pointerStore.compareAndSetBatch(updates)) {
+      if (!AccountDeletionFence.compareAndSetBatch(pointerStore, tableId.getAccountId(), updates)) {
         throw new BaseResourceRepository.AbortRetryableException(
             "index artifact generation activation conflicted for snapshot " + snapshotId);
       }
@@ -528,8 +537,12 @@ public class IndexArtifactRepository {
     String pointerKey =
         Keys.snapshotIndexArtifactActiveGenerationPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
-    return pointerStore.compareAndSet(
-        pointerKey, 0L, PointerReferences.opaqueMarkerPointer(pointerKey, DIRECT_GENERATION, 1L));
+    return AccountDeletionFence.compareAndSet(
+        pointerStore,
+        tableId.getAccountId(),
+        pointerKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(pointerKey, DIRECT_GENERATION, 1L));
   }
 
   private void deleteDirectGenerationPointers(ResourceId tableId, long snapshotId) {
@@ -683,9 +696,10 @@ public class IndexArtifactRepository {
         .build();
   }
 
-  private void registerWrites(List<PrewrittenIndexWrite> writes) {
+  private void registerWrites(ResourceId tableId, List<PrewrittenIndexWrite> writes) {
     for (int from = 0; from < writes.size(); from += MAX_POINTER_BATCH_SIZE) {
-      registerChunk(writes.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, writes.size())));
+      registerChunk(
+          tableId, writes.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, writes.size())));
     }
   }
 
@@ -839,7 +853,7 @@ public class IndexArtifactRepository {
     }
   }
 
-  private void registerChunk(List<PrewrittenIndexWrite> writes) {
+  private void registerChunk(ResourceId tableId, List<PrewrittenIndexWrite> writes) {
     List<PrewrittenIndexWrite> remaining = new ArrayList<>(writes);
     List<PointerStore.CasOp> initial = new ArrayList<>(remaining.size());
     for (PrewrittenIndexWrite write : remaining) {
@@ -850,7 +864,7 @@ public class IndexArtifactRepository {
               PointerReferences.blobPointer(
                   write.pointerKey(), write.blobUri(), 1L, write.blobBytes())));
     }
-    if (pointerStore.compareAndSetBatch(initial)) {
+    if (AccountDeletionFence.compareAndSetBatch(pointerStore, tableId.getAccountId(), initial)) {
       return;
     }
     for (int attempt = 1; attempt < 4; attempt++) {
@@ -870,7 +884,8 @@ public class IndexArtifactRepository {
                 PointerReferences.blobPointer(
                     write.pointerKey(), write.blobUri(), expectedVersion + 1L, write.blobBytes())));
       }
-      if (ops.isEmpty() || pointerStore.compareAndSetBatch(ops)) {
+      if (ops.isEmpty()
+          || AccountDeletionFence.compareAndSetBatch(pointerStore, tableId.getAccountId(), ops)) {
         return;
       }
       remaining = nextRemaining;
@@ -878,6 +893,14 @@ public class IndexArtifactRepository {
     throw new BaseResourceRepository.AbortRetryableException(
         "index artifact reference update conflicted repeatedly for "
             + remaining.getFirst().pointerKey());
+  }
+
+  private void deleteBlobQuietly(String blobUri) {
+    try {
+      blobStore.delete(blobUri);
+    } catch (RuntimeException ignored) {
+      // Best effort: the durable account fence still prevents publishing the blob.
+    }
   }
 
   private Optional<String> activeGeneration(ResourceId tableId, long snapshotId) {

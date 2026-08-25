@@ -35,6 +35,8 @@ public interface ReconcileJobIndexStore {
 
   record StoredJobPage(List<StoredReconcileJob> records, String nextPageToken) {}
 
+  record CanonicalPointerPage(List<CanonicalPointerSnapshot> pointers, String nextPageToken) {}
+
   record IndexBackfillResult(boolean updated, boolean retryable) {
     public static IndexBackfillResult unchanged() {
       return new IndexBackfillResult(false, false);
@@ -220,6 +222,8 @@ public interface ReconcileJobIndexStore {
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
+  CanonicalPointerPage listCanonicalPointers(String accountId, int pageSize, String pageToken);
+
   StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken);
 
   StoredJobPage listStoredJobsPendingStatsCleanup(int pageSize, String pageToken);
@@ -241,6 +245,16 @@ public interface ReconcileJobIndexStore {
       StoredReconcileJob current);
 
   JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
+
+  /**
+   * Builds a bounded delete for account teardown. Implementations may omit undiscoverable global
+   * references, which must converge through their orphan-removal paths after the canonical row is
+   * gone.
+   */
+  default JobIndexWriteBatch buildAccountCleanupJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot) {
+    return buildJobDeleteBatch(currentSnapshot);
+  }
 
   IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey);
 

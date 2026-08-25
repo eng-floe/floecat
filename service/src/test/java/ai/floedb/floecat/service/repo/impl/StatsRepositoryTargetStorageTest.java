@@ -76,6 +76,48 @@ class StatsRepositoryTargetStorageTest {
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
 
   @Test
+  void targetStatsWriteDeletesBlobWhenAccountFenceWinsPublicationRace() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore storedBlobs = new InMemoryBlobStore();
+    long snapshotId = 98L;
+    StatsRepository seed = new StatsRepository(pointers, storedBlobs);
+    seed.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath("s3://bucket/seed.parquet").build()));
+    AtomicBoolean installFence = new AtomicBoolean(true);
+    AtomicReference<String> racedBlob = new AtomicReference<>();
+    BlobStore racingBlobs =
+        new DelegatingBlobStore(storedBlobs) {
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            super.put(uri, bytes, contentType);
+            if (uri.startsWith(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))
+                && installFence.compareAndSet(true, false)) {
+              racedBlob.set(uri);
+              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
+              pointers.compareAndSet(
+                  fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L));
+            }
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointers, racingBlobs);
+    TargetStatsRecord raced =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath("s3://bucket/raced.parquet").build());
+
+    assertThatThrownBy(() -> repository.putTargetStats(raced))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(racedBlob).doesNotHaveNullValue();
+    assertThat(storedBlobs.head(racedBlob.get())).isEmpty();
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, raced.getTarget())).isEmpty();
+  }
+
+  @Test
   void bundledPrewrittenStatsResolveAllTargetsWithOneBlobRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     AtomicInteger bundleGets = new AtomicInteger();
@@ -669,7 +711,7 @@ class StatsRepositoryTargetStorageTest {
             new StatsStore.PrewrittenStatsObject(
                 secondObjectUri, objectBytes.length, new byte[32])));
 
-    assertThat(batchCalls).hasValue(1);
+    assertThat(batchCalls).hasValue(2);
     String generationPointerPrefix =
         Keys.snapshotTargetStatsGenerationPointerPrefix(
             TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
@@ -1318,6 +1360,59 @@ class StatsRepositoryTargetStorageTest {
         .contains(existing);
     assertThat(repository.getTargetStats(TABLE_ID, snapshotId, missing.getTarget()))
         .contains(missing);
+  }
+
+  @Test
+  void putTargetStatsBatchIfAbsentPreservesPreexistingBlobWhenAccountFenceWins() throws Exception {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore storedBlobs = new InMemoryBlobStore();
+    long snapshotId = 9195L;
+    StatsRepository seed = new StatsRepository(pointers, storedBlobs);
+    seed.putTargetStats(
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath("s3://bucket/seed.parquet").build()));
+    String activeManifestUri = seed.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String generationId = StringValue.parseFrom(storedBlobs.get(activeManifestUri)).getValue();
+    TargetStatsRecord preexisting =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            8L,
+            ScalarStats.newBuilder().setDisplayName("c8").setRowCount(13L).build(),
+            null);
+    seed.putTargetStatsIfAbsent(preexisting);
+    String preexistingPointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            StatsTargetIdentity.storageId(preexisting.getTarget()));
+    String preexistingBlob = pointers.get(preexistingPointer).orElseThrow().getBlobUri();
+    pointers.delete(preexistingPointer);
+    AtomicBoolean installFence = new AtomicBoolean(true);
+    BlobStore racingBlobs =
+        new DelegatingBlobStore(storedBlobs) {
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            super.put(uri, bytes, contentType);
+            if (preexistingBlob.equals(uri) && installFence.compareAndSet(true, false)) {
+              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
+              pointers.compareAndSet(
+                  fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L));
+            }
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointers, racingBlobs);
+
+    assertThatThrownBy(
+            () ->
+                repository.putTargetStatsBatchIfAbsent(TABLE_ID, snapshotId, List.of(preexisting)))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(storedBlobs.head(preexistingBlob)).isPresent();
   }
 
   @Test
@@ -2148,24 +2243,15 @@ class StatsRepositoryTargetStorageTest {
                   key, 0L, PointerReferences.blobPointer(key, "blob-" + i, 1L)))
           .isTrue();
     }
-    long deadline = System.currentTimeMillis() + 20L;
     var observedTokens = new ArrayList<String>();
     PointerStore pointers =
         new RepoTestPointerStores.DelegatingPointerStore(rawPointers) {
-          private boolean delayed;
-
           @Override
           public List<Pointer> listPointersByPrefix(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
             List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
             if (prefix.equals(Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))) {
               observedTokens.add(pageToken);
-              if (!delayed && !pageToken.isBlank()) {
-                delayed = true;
-                while (System.currentTimeMillis() <= deadline) {
-                  Thread.onSpinWait();
-                }
-              }
             }
             return page;
           }
@@ -2173,27 +2259,16 @@ class StatsRepositoryTargetStorageTest {
     StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
     var continuation = new StatsRepository.GenerationGcContinuation();
 
-    StatsRepository.GenerationGcResult first =
-        repository.deleteUnreferencedGenerations(
-            TABLE_ID, ignored -> false, System.currentTimeMillis(), 0L, 10, deadline, continuation);
+    assertThat(repository.discoverGenerationKeysPage(TABLE_ID, Long.MAX_VALUE, continuation))
+        .isTrue();
     String savedToken = continuation.pointerContinuationToken();
-    assertThat(first.pending()).isTrue();
     assertThat(savedToken).isNotBlank();
 
     observedTokens.clear();
-    StatsRepository.GenerationGcResult resumed =
-        repository.deleteUnreferencedGenerations(
-            TABLE_ID,
-            ignored -> false,
-            System.currentTimeMillis(),
-            0L,
-            10,
-            System.currentTimeMillis() + 5_000L,
-            continuation);
+    assertThat(repository.discoverGenerationKeys(TABLE_ID, Long.MAX_VALUE, continuation)).isTrue();
 
     assertThat(observedTokens).isNotEmpty();
     assertThat(observedTokens.getFirst()).isEqualTo(savedToken);
-    assertThat(resumed.pending()).isFalse();
     assertThat(continuation.generations())
         .containsExactly(new Keys.GenerationKey(snapshotId, generationId));
   }
@@ -2600,7 +2675,7 @@ class StatsRepositoryTargetStorageTest {
     repository.registerPrewrittenStatsReferencesInGeneration(
         TABLE_ID, snapshotId, generationId, references);
 
-    assertThat(batchCalls).hasValue(3);
+    assertThat(batchCalls).hasValue(4);
     assertThat(batchReads).hasValue(0);
     // Lifecycle and deletion-fence checks are point reads; no secondary indexes are maintained.
     assertThat(individualReads).hasValue(3);
@@ -2773,11 +2848,17 @@ class StatsRepositoryTargetStorageTest {
     var pointerStore =
         new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
           @Override
-          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-            if (manifestPointer.equals(key) && failActivation.compareAndSet(true, false)) {
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            boolean activatesManifest =
+                ops.stream()
+                    .anyMatch(
+                        op ->
+                            op instanceof PointerStore.CasUpsert upsert
+                                && manifestPointer.equals(upsert.key()));
+            if (activatesManifest && failActivation.compareAndSet(true, false)) {
               throw new StorageAbortRetryableException("injected activation failure");
             }
-            return super.compareAndSet(key, expectedVersion, next);
+            return super.compareAndSetBatch(ops);
           }
         };
     StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
@@ -2814,11 +2895,17 @@ class StatsRepositoryTargetStorageTest {
     var pointerStore =
         new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
           @Override
-          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-            if (manifestPointer.equals(key) && failActivation.compareAndSet(true, false)) {
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            boolean activatesManifest =
+                ops.stream()
+                    .anyMatch(
+                        op ->
+                            op instanceof PointerStore.CasUpsert upsert
+                                && manifestPointer.equals(upsert.key()));
+            if (activatesManifest && failActivation.compareAndSet(true, false)) {
               throw new StorageAbortRetryableException("injected activation failure");
             }
-            return super.compareAndSet(key, expectedVersion, next);
+            return super.compareAndSetBatch(ops);
           }
         };
     StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());

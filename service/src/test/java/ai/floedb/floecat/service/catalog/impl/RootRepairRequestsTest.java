@@ -20,11 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -88,11 +89,11 @@ class RootRepairRequestsTest {
     var pointers =
         new InMemoryPointerStore() {
           @Override
-          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
             if (failures.getAndDecrement() > 0) {
               throw new IllegalStateException("pointer store down");
             }
-            return super.compareAndSet(key, expectedVersion, next);
+            return super.compareAndSetBatch(ops);
           }
         };
     var repairs = new RootRepairRequests(new RootResyncQueue(pointers, backoffMs -> {}), () -> 0L);

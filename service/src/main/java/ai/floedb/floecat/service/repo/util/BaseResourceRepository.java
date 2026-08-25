@@ -47,6 +47,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
@@ -103,6 +104,20 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   public static class PreconditionFailedException extends RepoException {
     public PreconditionFailedException(String msg) {
       super(msg);
+    }
+  }
+
+  /** A resource mutation was rejected because its owning account is being deleted. */
+  public static class AccountDeletionInProgressException extends RepoException {
+    private final String accountId;
+
+    public AccountDeletionInProgressException(String accountId) {
+      super("account deletion in progress: " + accountId);
+      this.accountId = accountId;
+    }
+
+    public String accountId() {
+      return accountId;
     }
   }
 
@@ -314,12 +329,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   private boolean reserveIndexOrIdempotent(String key, String blobUri, long referencedBytes) {
+    return reserveIndexOrIdempotent(
+        key, blobUri, referencedBytes, next -> mutationPointerStore.compareAndSet(key, 0L, next));
+  }
+
+  protected boolean reserveIndexOrIdempotentFenced(
+      String accountId, String key, String blobUri, long referencedBytes) {
+    return reserveIndexOrIdempotent(
+        key,
+        blobUri,
+        referencedBytes,
+        next -> AccountDeletionFence.compareAndSet(mutationPointerStore, accountId, key, 0L, next));
+  }
+
+  private boolean reserveIndexOrIdempotent(
+      String key, String blobUri, long referencedBytes, Predicate<Pointer> reserveAttempt) {
     var reserve =
         referencedBytes >= 0L
             ? PointerReferences.blobPointer(key, blobUri, 1L, referencedBytes)
             : PointerReferences.blobPointer(key, blobUri, 1L);
 
-    if (mutationPointerStore.compareAndSet(key, 0L, reserve)) {
+    if (reserveAttempt.test(reserve)) {
       return true;
     }
 
@@ -502,12 +532,27 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .toList();
   }
 
+  public List<T> listByPrefixConsistent(
+      String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, true).stream()
+        .map(KeyedValue::value)
+        .toList();
+  }
+
   protected List<KeyedValue<T>> listByPrefixWithKeys(
       String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, false);
+  }
+
+  private List<KeyedValue<T>> listByPrefixWithKeys(
+      String prefix, int limit, String token, StringBuilder nextOut, boolean consistentRead) {
     return observeRepository(
-        "list_by_prefix",
+        consistentRead ? "list_by_prefix_consistent" : "list_by_prefix",
         () -> {
-          var rows = pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
+          var rows =
+              consistentRead
+                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           var ordinaryUris = new ArrayList<String>(rows.size());
           var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
           for (var row : rows) {
@@ -586,6 +631,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   @Override
   public int countByPrefix(String prefix) {
     return observeRepository("count_by_prefix", () -> pointerReads.count(prefix));
+  }
+
+  public int countByPrefixConsistent(String prefix) {
+    return observeRepository(
+        "count_by_prefix_consistent", () -> pointerReads.countConsistent(prefix));
   }
 
   protected static String sha256B64(byte[] data) {

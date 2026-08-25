@@ -17,6 +17,7 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,6 +124,9 @@ public interface PointerStore {
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+  List<Pointer> listPointersByPrefixConsistent(
+      String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
+
   /**
    * Returns a page token that resumes a {@link #listPointersByPrefix} scan immediately after the
    * given pointer key, as if a previous page had ended exactly at that key. This lets callers that
@@ -138,7 +142,36 @@ public interface PointerStore {
 
   int deleteByPrefix(String prefix);
 
+  /**
+   * Deletes every pointer under {@code prefix} except the exact {@code excludedKey}.
+   *
+   * <p>The exclusion is continuous: implementations must never delete and recreate the excluded
+   * key. Account teardown uses this to sweep an account partition while preserving its durable
+   * deletion fence.
+   */
+  default int deleteByPrefixExcluding(String prefix, String excludedKey) {
+    int deleted = 0;
+    String token = "";
+    var seenTokens = new HashSet<String>();
+    do {
+      var next = new StringBuilder();
+      List<Pointer> page = listPointersByPrefixConsistent(prefix, 500, token, next);
+      for (Pointer pointer : page) {
+        if (!pointer.getKey().equals(excludedKey) && delete(pointer.getKey())) {
+          deleted++;
+        }
+      }
+      token = next.toString();
+      if (!token.isBlank() && !seenTokens.add(token)) {
+        throw new IllegalStateException("stagnant pointer scan token: " + token);
+      }
+    } while (!token.isBlank());
+    return deleted;
+  }
+
   int countByPrefix(String prefix);
+
+  int countByPrefixConsistent(String prefix);
 
   boolean isEmpty();
 

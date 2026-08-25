@@ -608,7 +608,23 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      return queryByPartitionKeyPrefix(partitionKey, sortKeyPrefix, limit, pageToken);
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
+      return deleteByPrefixExcluding(partitionKey, sortKeyPrefix, null);
+    }
+
+    @Override
+    public Uni<Integer> deleteByPrefixExcluding(
+        String partitionKey, String sortKeyPrefix, String excludedSortKey) {
       int before = records.size();
       records
           .entrySet()
@@ -617,7 +633,8 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
                   Objects.equals(e.getKey().partitionKey(), partitionKey)
                       && (sortKeyPrefix == null
                           || sortKeyPrefix.isEmpty()
-                          || e.getKey().sortKey().startsWith(sortKeyPrefix)));
+                          || e.getKey().sortKey().startsWith(sortKeyPrefix))
+                      && !Objects.equals(e.getKey().sortKey(), excludedSortKey));
       return Uni.createFrom().item(before - records.size());
     }
 

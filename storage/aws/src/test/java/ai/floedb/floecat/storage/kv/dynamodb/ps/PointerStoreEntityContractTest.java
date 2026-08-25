@@ -497,6 +497,26 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     assertTrue(pointers.get(accountKey).await().indefinitely().isEmpty());
   }
 
+  @Test
+  void deleteByPrefixExcluding_preserves_account_deletion_fence() {
+    String prefix = "/accounts/account%2Fencoded/";
+    String fence = prefix + "deleting";
+    String catalog = prefix + "catalogs/by-id/catalog-1";
+    String reconcile = prefix + "reconcile/jobs/by-id/job-1";
+    String otherAccount = "/accounts/other/catalogs/by-id/catalog-2";
+    for (String key : List.of(fence, catalog, reconcile, otherAccount)) {
+      Pointer pointer = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/value").build();
+      assertTrue(pointers.compareAndSet(key, 0L, pointer).await().indefinitely());
+    }
+
+    assertEquals(2, pointers.deleteByPrefixExcluding(prefix, fence).await().indefinitely());
+
+    assertTrue(pointers.get(fence).await().indefinitely().isPresent());
+    assertTrue(pointers.get(catalog).await().indefinitely().isEmpty());
+    assertTrue(pointers.get(reconcile).await().indefinitely().isEmpty());
+    assertTrue(pointers.get(otherAccount).await().indefinitely().isPresent());
+  }
+
   private static final class ConcurrentUpdateKvStore implements KvStore {
     private final KvStore delegate;
     private final KvStore.Key keyToUpdate;
@@ -555,8 +575,25 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     }
 
     @Override
+    public Uni<Page> queryByPartitionKeyPrefix(
+        String partitionKey,
+        String sortKeyPrefix,
+        int limit,
+        Optional<String> pageToken,
+        boolean consistentRead) {
+      return delegate.queryByPartitionKeyPrefix(
+          partitionKey, sortKeyPrefix, limit, pageToken, consistentRead);
+    }
+
+    @Override
     public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
       return delegate.deleteByPrefix(partitionKey, sortKeyPrefix);
+    }
+
+    @Override
+    public Uni<Integer> deleteByPrefixExcluding(
+        String partitionKey, String sortKeyPrefix, String excludedSortKey) {
+      return delegate.deleteByPrefixExcluding(partitionKey, sortKeyPrefix, excludedSortKey);
     }
 
     @Override

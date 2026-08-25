@@ -79,6 +79,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
@@ -100,6 +102,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -377,6 +380,64 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         maxAttempts,
         this::backoffMs);
     return leaseStore;
+  }
+
+  /**
+   * Removes every durable reconcile job and attributable lease row owned by an account.
+   *
+   * <p>This enumerates canonical index entries without decoding job payloads, so corrupt inline job
+   * state cannot prevent account teardown. Each canonical cleanup uses its stored manifest to
+   * remove global lookup, state and ready-queue rows before the account subtree is swept.
+   */
+  public int cleanupAccount(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
+      return 0;
+    }
+    int deleted = 0;
+    String pageToken = "";
+    var seenTokens = new HashSet<String>();
+    while (true) {
+      var page = jobIndexStore().listCanonicalPointers(accountId, 200, pageToken);
+      for (CanonicalPointerSnapshot snapshot : page.pointers()) {
+        String jobId = Keys.extractLastSegment(snapshot.canonicalPointerKey());
+        if (jobId == null || jobId.isBlank()) {
+          LOG.warnf(
+              "Skipping malformed canonical reconcile pointer during account cleanup accountId=%s key=%s",
+              accountId, snapshot.canonicalPointerKey());
+          continue;
+        }
+        if (!leaseManager().deleteAccountJobLease(accountId, jobId)) {
+          throw new BaseResourceRepository.AbortRetryableException(
+              "reconcile lease changed during account cleanup: " + jobId);
+        }
+        var deleteBatch = jobIndexStore().buildAccountCleanupJobDeleteBatch(snapshot);
+        if (deleteBatch.writes().isEmpty()) {
+          throw new BaseResourceRepository.AbortRetryableException(
+              "reconcile cleanup manifest unavailable: " + jobId);
+        }
+        var plan = new ReconcileJobIndexStore.JobWritePlan<>(jobId, deleteBatch, List.of());
+        List<ReconcileJobIndexStore.JobWriteChunk<String>> chunks =
+            jobIndexStore().writeItemCount(deleteBatch, List.of())
+                    > jobIndexStore().maxWriteItemsPerBatch()
+                ? jobIndexStore().chunkOversizedJobDeletePlan(plan)
+                : jobIndexStore().chunkJobWritePlans(List.of(plan));
+        for (var chunk : chunks) {
+          if (!jobIndexStore()
+              .compareAndSetBatchWithPointerOps(chunk.indexBatch(), chunk.extraPointerOps())) {
+            throw new BaseResourceRepository.AbortRetryableException(
+                "reconcile job changed during account cleanup: " + jobId);
+          }
+        }
+        deleted++;
+      }
+      pageToken = page.nextPageToken();
+      if (pageToken == null || pageToken.isBlank()) {
+        return deleted;
+      }
+      if (!seenTokens.add(pageToken)) {
+        throw new IllegalStateException("stagnant canonical reconcile cleanup token: " + pageToken);
+      }
+    }
   }
 
   private ReconcileReadyQueueStore readyQueue() {
@@ -743,7 +804,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Pointer created =
             PointerReferences.inlineJsonPointer(
                 claimKey, snapshotCoverageClaimReference(followerJobId), 1L);
-        if (pointerStore.compareAndSet(claimKey, 0L, created)) {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, spec.accountId, claimKey, 0L, created)) {
           return;
         }
         continue;
@@ -753,7 +815,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Pointer replacement =
             PointerReferences.inlineJsonPointer(
                 claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
-        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, spec.accountId, claimKey, current.getVersion(), replacement)) {
           completeSnapshotCoverageClaimReplacement(
               spec.accountId, claimKey, followerJobId, ownerJobId);
           return;
@@ -772,7 +835,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Pointer replacement =
             PointerReferences.inlineJsonPointer(
                 claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
-        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, spec.accountId, claimKey, current.getVersion(), replacement)) {
           // A missing or terminal owner has no pending coverage for its successor to inherit.
           completeSnapshotCoverageClaimReplacement(spec.accountId, claimKey, followerJobId, "");
           return;
@@ -785,7 +849,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Pointer replacement =
             PointerReferences.inlineJsonPointer(
                 claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
-        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, spec.accountId, claimKey, current.getVersion(), replacement)) {
           completeSnapshotCoverageClaimReplacement(
               spec.accountId, claimKey, followerJobId, owner.record);
           return;
@@ -3276,7 +3341,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             PointerReferences.asOpaqueMarkerPointer(
                     current.toBuilder().setVersion(current.getVersion() + 1L), payload)
                 .build();
-        if (pointerStore.compareAndSet(key, current.getVersion(), next)) {
+        if (AccountDeletionFence.compareAndSet(
+            pointerStore, effectiveAccountId, key, current.getVersion(), next)) {
           return true;
         }
         continue;
@@ -3288,7 +3354,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               : PointerReferences.asOpaqueMarkerPointer(
                       current.toBuilder().setVersion(current.getVersion() + 1L), payload)
                   .build();
-      if (pointerStore.compareAndSet(key, expectedVersion, next)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, effectiveAccountId, key, expectedVersion, next)) {
         return true;
       }
     }
@@ -4205,7 +4272,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
       PointerStore.UnconditionalUpsert upsert =
           projectionRefreshMarkerTouch(effectiveAccountId, effectiveParentJobId, dirtyAtMs);
-      if (upsert != null && pointerStore.compareAndSetBatch(List.of(upsert))) {
+      if (upsert != null
+          && AccountDeletionFence.compareAndSetBatch(
+              pointerStore, effectiveAccountId, List.of(upsert))) {
         projectionMaintenance().signalWork();
         return;
       }
@@ -4466,7 +4535,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String blobUri = encodeInlineFinalizedSnapshotEvent(next);
       Pointer pointer =
           PointerReferences.inlineJsonPointer(identityKey, blobUri, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(identityKey, expectedVersion, pointer)) {
+      if (AccountDeletionFence.compareAndSet(
+          pointerStore, event.accountId, identityKey, expectedVersion, pointer)) {
         return;
       }
     }
@@ -4623,7 +4693,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     String accountId = blankToEmpty(record.accountId);
     String parentJobId = blankToEmpty(record.parentJobId);
-    java.util.HashSet<String> visited = new java.util.HashSet<>();
+    HashSet<String> visited = new HashSet<>();
     while (!accountId.isBlank() && !parentJobId.isBlank() && visited.add(parentJobId)) {
       StoredEnvelope parent = loadByAnyAccount(parentJobId).orElse(null);
       if (parent == null || parent.record == null || !accountId.equals(parent.record.accountId)) {

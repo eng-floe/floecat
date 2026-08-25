@@ -22,6 +22,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -1482,6 +1483,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private boolean compareAndSetDynamo(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<TransactWriteItem> tx = new ArrayList<>();
+    List<PointerStore.CasOp> fenceSources = new ArrayList<>();
+    fenceSources.addAll(JobIndexWriteBatchSupport.toCasOps(batch));
+    fenceSources.addAll(extraPointerOps);
+    for (PointerStore.CasCheckAbsent fence :
+        AccountDeletionFence.checksForAccountWrites(fenceSources)) {
+      tx.add(buildGenericPointerCheckAbsent(fence.key()));
+    }
     if (batch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp op : batch.writes()) {
         if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
@@ -2315,11 +2323,20 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private TransactWriteItem buildGenericPointerCheckAbsent(String pointerKey) {
+    return buildGenericPointerCheckAbsent(table, pointerKey);
+  }
+
+  static TransactWriteItem buildGenericPointerCheckAbsent(String table, String pointerKey) {
     GenericPointerKey key = genericPointerKey(pointerKey);
-    return buildCheckAbsent(key.partitionKey(), key.sortKey());
+    return buildCheckAbsent(table, key.partitionKey(), key.sortKey());
   }
 
   private TransactWriteItem buildCheckAbsent(String partitionKey, String sortKey) {
+    return buildCheckAbsent(table, partitionKey, sortKey);
+  }
+
+  private static TransactWriteItem buildCheckAbsent(
+      String table, String partitionKey, String sortKey) {
     return TransactWriteItem.builder()
         .conditionCheck(
             software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()

@@ -154,6 +154,13 @@ public interface KvStore {
   Uni<Page> queryByPartitionKeyPrefix(
       String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken);
 
+  Uni<Page> queryByPartitionKeyPrefix(
+      String partitionKey,
+      String sortKeyPrefix,
+      int limit,
+      Optional<String> pageToken,
+      boolean consistentRead);
+
   /**
    * Returns a page token that resumes a {@link #queryByPartitionKeyPrefix} scan immediately after
    * the given key, in this store's native token encoding. The default throws; stores that serve
@@ -171,6 +178,10 @@ public interface KvStore {
    * @return count of items removed
    */
   Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix);
+
+  /** Deletes a prefix while continuously preserving one exact sort key. */
+  Uni<Integer> deleteByPrefixExcluding(
+      String partitionKey, String sortKeyPrefix, String excludedSortKey);
 
   /**
    * Remove all records in store. <br>

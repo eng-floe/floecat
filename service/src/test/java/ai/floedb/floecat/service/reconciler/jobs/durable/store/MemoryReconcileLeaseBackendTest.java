@@ -34,13 +34,13 @@ class MemoryReconcileLeaseBackendTest {
   private static final String CANONICAL_KEY = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
 
   @Test
-  void leaseRecordKeyPreservesAndParsesLegacyRawSegments() {
+  void leaseRecordKeyEncodesOpaqueSegments() {
     String pointerKey = LeaseBackendSupport.leasePointerKey("acct+legacy", "job%legacy");
 
-    assertEquals("/accounts/acct+legacy/reconcile/job-leases/by-id/job%legacy", pointerKey);
+    assertEquals("/accounts/acct%2Blegacy/reconcile/job-leases/by-id/job%25legacy", pointerKey);
     var parsed = LeaseBackendSupport.parseLeasePointerKey(pointerKey);
-    assertEquals("acct+legacy", parsed.accountSegment());
-    assertEquals("job%legacy", parsed.jobSegment());
+    assertEquals("acct%2Blegacy", parsed.accountSegment());
+    assertEquals("job%25legacy", parsed.jobSegment());
   }
 
   @Test

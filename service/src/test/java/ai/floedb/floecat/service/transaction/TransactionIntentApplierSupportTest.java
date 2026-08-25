@@ -129,6 +129,83 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
+  void applyTransactionRejectsIntentWhenAccountDeletionIsAlreadyFenced() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String targetKey = "/accounts/acct/custom/key-1";
+    String markerKey = Keys.accountDeletionMarker("acct");
+    pointers.compareAndSet(
+        markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L));
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey(targetKey)
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("ACCOUNT_DELETION_IN_PROGRESS", outcome.errorCode());
+    assertTrue(pointers.get(targetKey).isEmpty());
+  }
+
+  @Test
+  void applyTransactionAtomicallyChecksFenceInsidePointerBatch() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    String accountId = "acct";
+    String txId = "tx-1";
+    String targetKey = "/accounts/acct/custom/key-1";
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+    String markerKey = Keys.accountDeletionMarker(accountId);
+    pointers.beforeBatch(
+        () ->
+            pointers.compareAndSet(
+                markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(2))
+            .build();
+
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("ACCOUNT_DELETION_IN_PROGRESS", outcome.errorCode());
+    assertTrue(pointers.get(targetKey).isEmpty());
+    assertTrue(intentRepo.getByTarget(accountId, targetKey).isPresent());
+    assertEquals(
+        TransactionState.TS_APPLYING, txRepo.getById(accountId, txId).orElseThrow().getState());
+  }
+
+  @Test
   void applyTransactionRejectsTableIntentTargetMismatch() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();

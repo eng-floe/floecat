@@ -27,6 +27,7 @@ import ai.floedb.floecat.storage.aws.AwsClients;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Deque;
@@ -41,10 +42,39 @@ import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.DescribeSecretResponse;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
+import software.amazon.awssdk.services.secretsmanager.model.InvalidRequestException;
 import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerTest {
+
+  @Test
+  void deleteTreatsAlreadyScheduledSecretAsDeleted() {
+    InvalidRequestException scheduled =
+        InvalidRequestException.builder().message("secret is scheduled for deletion").build();
+    ClientHandle secretsClient = ClientHandle.secretsDeleteFailure(scheduled, true);
+    ClientHandle stsClient = ClientHandle.sts();
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            new FakeAwsClients(), secretsClient.secretsClient, stsClient.stsClient);
+
+    manager.delete("acct", "connectors", "secret");
+  }
+
+  @Test
+  void deleteRethrowsInvalidRequestWhenSecretIsNotScheduled() {
+    InvalidRequestException invalid =
+        InvalidRequestException.builder().message("secret is managed by another service").build();
+    ClientHandle secretsClient = ClientHandle.secretsDeleteFailure(invalid, false);
+    ClientHandle stsClient = ClientHandle.sts();
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            new FakeAwsClients(), secretsClient.secretsClient, stsClient.stsClient);
+
+    assertThrows(
+        InvalidRequestException.class, () -> manager.delete("acct", "connectors", "secret"));
+  }
 
   @Test
   void get_refreshes_direct_secrets_client_after_closed_pool() {
@@ -442,8 +472,10 @@ class ProdSecretsManagerTest {
 
   private static final class ClientHandle implements InvocationHandler {
     private final RuntimeException failure;
+    private final RuntimeException deleteFailure;
     private final Runnable beforeFailure;
     private final String secretString;
+    private final boolean scheduledForDeletion;
     private boolean closed;
     private int closeCount;
     private ClientHandle boundStsClient;
@@ -451,10 +483,17 @@ class ProdSecretsManagerTest {
     private final SecretsManagerClient secretsClient;
     private final StsClient stsClient;
 
-    private ClientHandle(RuntimeException failure, Runnable beforeFailure, String secretString) {
+    private ClientHandle(
+        RuntimeException failure,
+        RuntimeException deleteFailure,
+        Runnable beforeFailure,
+        String secretString,
+        boolean scheduledForDeletion) {
       this.failure = failure;
+      this.deleteFailure = deleteFailure;
       this.beforeFailure = beforeFailure;
       this.secretString = secretString;
+      this.scheduledForDeletion = scheduledForDeletion;
       this.secretsClient =
           (SecretsManagerClient)
               Proxy.newProxyInstance(
@@ -472,15 +511,20 @@ class ProdSecretsManagerTest {
     }
 
     static ClientHandle secretsFailure(RuntimeException failure, Runnable beforeFailure) {
-      return new ClientHandle(failure, beforeFailure, null);
+      return new ClientHandle(failure, null, beforeFailure, null, false);
     }
 
     static ClientHandle secretsValue(String secretString) {
-      return new ClientHandle(null, null, secretString);
+      return new ClientHandle(null, null, null, secretString, false);
+    }
+
+    static ClientHandle secretsDeleteFailure(
+        RuntimeException deleteFailure, boolean scheduledForDeletion) {
+      return new ClientHandle(null, deleteFailure, null, null, scheduledForDeletion);
     }
 
     static ClientHandle sts() {
-      return new ClientHandle(null, null, null);
+      return new ClientHandle(null, null, null, null, false);
     }
 
     @Override
@@ -494,6 +538,19 @@ class ProdSecretsManagerTest {
             throw failure;
           }
           yield GetSecretValueResponse.builder().secretString(secretString).build();
+        }
+        case "deleteSecret" -> {
+          if (deleteFailure != null) {
+            throw deleteFailure;
+          }
+          yield null;
+        }
+        case "describeSecret" -> {
+          DescribeSecretResponse.Builder response = DescribeSecretResponse.builder();
+          if (scheduledForDeletion) {
+            response.deletedDate(Instant.now());
+          }
+          yield response.build();
         }
         case "close" -> {
           closed = true;

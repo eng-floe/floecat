@@ -597,7 +597,46 @@ class ReconcileMaintenanceServicesTest {
 
     @Override
     public boolean compareAndSetBatch(List<CasOp> ops) {
-      throw new UnsupportedOperationException();
+      synchronized (pointers) {
+        var keys = new java.util.HashSet<String>();
+        for (CasOp op : ops) {
+          if (!keys.add(op.key())) {
+            throw new IllegalArgumentException("duplicate pointer key in batch: " + op.key());
+          }
+          Pointer current = pointers.get(op.key());
+          if (op instanceof CasUpsert upsert) {
+            long currentVersion = current == null ? 0L : current.getVersion();
+            if (currentVersion != upsert.expectedVersion()) {
+              return false;
+            }
+          } else if (op instanceof CasDelete delete) {
+            if (current == null || current.getVersion() != delete.expectedVersion()) {
+              return false;
+            }
+          } else if (op instanceof CasCheck check) {
+            if (current == null || current.getVersion() != check.expectedVersion()) {
+              return false;
+            }
+          } else if (op instanceof CasCheckAbsent && current != null) {
+            return false;
+          }
+        }
+        for (CasOp op : ops) {
+          if (op instanceof CasUpsert upsert) {
+            pointers.put(
+                upsert.key(),
+                upsert.next().toBuilder()
+                    .setKey(upsert.key())
+                    .setVersion(upsert.expectedVersion() + 1L)
+                    .build());
+          } else if (op instanceof UnconditionalUpsert upsert) {
+            pointers.put(upsert.key(), upsert.next().toBuilder().setKey(upsert.key()).build());
+          } else if (op instanceof CasDelete delete) {
+            pointers.remove(delete.key());
+          }
+        }
+        return true;
+      }
     }
 
     @Override
@@ -629,6 +668,12 @@ class ReconcileMaintenanceServicesTest {
     }
 
     @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    @Override
     public String pageTokenAfterKey(String key) {
       return key;
     }
@@ -650,6 +695,11 @@ class ReconcileMaintenanceServicesTest {
         }
       }
       return count;
+    }
+
+    @Override
+    public int countByPrefixConsistent(String prefix) {
+      return countByPrefix(prefix);
     }
 
     @Override
@@ -748,6 +798,11 @@ class ReconcileMaintenanceServicesTest {
     @Override
     public boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch) {
       return false;
+    }
+
+    @Override
+    public boolean deleteAccountJobLease(String accountId, String jobId) {
+      return true;
     }
 
     @Override

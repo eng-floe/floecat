@@ -66,12 +66,17 @@ class DynamoReconcileLeaseBackendUnitTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(2, items.size());
-    var item = items.getFirst().put().item();
+    assertEquals(3, items.size());
+    var item = items.stream().filter(tx -> tx.put() != null).findFirst().orElseThrow().put().item();
     assertEquals("reconcile-job-lookup", item.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, item.get(ATTR_SORT_KEY).s());
-    assertEquals(
-        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
+    assertTrue(
+        items.stream()
+            .filter(tx -> tx.conditionCheck() != null)
+            .anyMatch(
+                tx ->
+                    "reconcile-job/by-id"
+                        .equals(tx.conditionCheck().key().get(ATTR_PARTITION_KEY).s())));
   }
 
   @Test
@@ -158,7 +163,12 @@ class DynamoReconcileLeaseBackendUnitTest {
     ArgumentCaptor<TransactWriteItemsRequest> captor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
-    var update = captor.getValue().transactItems().getFirst().update();
+    var update =
+        captor.getValue().transactItems().stream()
+            .filter(tx -> tx.update() != null)
+            .findFirst()
+            .orElseThrow()
+            .update();
     assertEquals(LOOKUP_KEY, update.expressionAttributeValues().get(":idx").l().getFirst().s());
     assertEquals(projectionKey, update.expressionAttributeValues().get(":ptr").l().getFirst().s());
     assertTrue(update.expressionAttributeValues().get(":true").bool());

@@ -80,6 +80,12 @@ public class StorageAuthorityRepository {
         Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  public List<StorageAuthority> listConsistent(
+      String accountId, int limit, String pageToken, StringBuilder nextOut) {
+    return repo.listByPrefixConsistent(
+        Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
+  }
+
   public int count(String accountId) {
     return repo.countByPrefix(Keys.storageAuthorityPointerByNamePrefix(accountId));
   }

@@ -31,8 +31,8 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
-import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -44,53 +44,50 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
-import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
-import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
-import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.BiFunction;
 import org.jboss.logging.Logger;
 
 @GrpcService
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
-  @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
-  @Inject TableRepository tableRepo;
   @Inject TableRootRepository tableRootRepo;
-  @Inject ConnectorRepository connectorRepo;
-  @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
-  @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject BlobStore blobStore;
   @Inject DefaultCredentialResolver credentialResolver;
+  @Inject SecretsManager secretsManager;
+  @Inject Instance<DurableReconcileJobStore> durableReconcileJobStore;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
+  private static final int POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT = 10;
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
   private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
@@ -405,36 +402,63 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
+                  var deletionMeta = accountDeletionMeta(accountId.getId());
                   MutationMeta meta;
                   try {
                     meta = accountRepo.metaFor(accountId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
-                    var safe = accountRepo.metaForSafe(accountId);
+                    var safe = deletionMeta.orElseGet(() -> accountRepo.metaForSafe(accountId));
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && safe.getPointerVersion() == 0L) {
+                    if (callerCares && deletionMeta.isEmpty()) {
                       throw GrpcErrors.notFound(corr, ACCOUNT, Map.of("id", accountId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
+                    if (deletionMeta.isEmpty()) {
+                      // Idempotent delete of an id that never existed must not create a permanent
+                      // tombstone. Every delete committed by this protocol leaves a durable fence,
+                      // so an absent account without one has no cleanup to resume.
+                      return DeleteAccountResponse.newBuilder().setMeta(safe).build();
+                    }
+                    // A prior delete may have committed before descendant cleanup failed.
+                    cleanupAccountResources(accountId);
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  var out =
-                      MutationOps.deleteWithPreconditions(
-                          () -> meta,
-                          request.getPrecondition(),
-                          expected -> accountRepo.deleteWithPrecondition(accountId, expected),
-                          () -> accountRepo.metaForSafe(accountId),
-                          corr,
-                          "account",
-                          Map.of("id", accountId.getId()));
-
-                  if (out.getPointerVersion() == meta.getPointerVersion()
-                      && out.getEtag().equals(meta.getEtag())) {
-                    cleanupAccountResources(accountId);
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+                  MutationMeta fencedMeta = ensureAccountDeletionFence(accountId.getId(), meta);
+                  if (!accountRepo.deleteWithPrecondition(
+                      accountId, fencedMeta.getPointerVersion())) {
+                    var current = accountRepo.metaForSafe(accountId);
+                    if (current.getPointerVersion() == 0L) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "account deletion raced another delete");
+                    }
+                    if (current.getPointerVersion() == fencedMeta.getPointerVersion()) {
+                      // DynamoDB may report TransactionConflict before the competing deletion
+                      // commits. Keep the shared fence while this version can still be deleted by
+                      // an in-flight attempt; clearing it would reopen descendant creates.
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "account deletion transaction conflicted");
+                    }
+                    // The account moved before the fence became effective. Preserve continuous
+                    // exclusion while rebinding the fence to the new version; deleting and
+                    // recreating the marker would introduce an ABA window for concurrent deleters.
+                    try {
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          corr, current, request.getPrecondition());
+                    } catch (RuntimeException failedPrecondition) {
+                      // This invocation cannot continue. Release only the stale fence it observed.
+                      clearAccountDeletionFence(accountId.getId(), fencedMeta);
+                      throw failedPrecondition;
+                    }
+                    advanceAccountDeletionFence(accountId.getId(), fencedMeta, current);
+                    throw new BaseResourceRepository.AbortRetryableException(
+                        "account changed while deletion fence was installed");
                   }
-
-                  return DeleteAccountResponse.newBuilder().setMeta(out).build();
+                  cleanupAccountResources(accountId);
+                  return DeleteAccountResponse.newBuilder().setMeta(fencedMeta).build();
                 }),
             correlationId())
         .onFailure()
@@ -443,132 +467,193 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::ok);
   }
 
+  private java.util.Optional<MutationMeta> accountDeletionMeta(String accountId) {
+    return pointerStore.get(Keys.accountDeletionMarker(accountId)).map(this::decodeDeletionMeta);
+  }
+
+  private MutationMeta ensureAccountDeletionFence(String accountId, MutationMeta meta) {
+    String key = Keys.accountDeletionMarker(accountId);
+    var existing = pointerStore.get(key);
+    if (existing.isPresent()) return decodeDeletionMeta(existing.get());
+    String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
+    Pointer marker = PointerReferences.opaqueMarkerPointer(key, payload, 1L);
+    if (pointerStore.compareAndSet(key, 0L, marker)) return meta;
+    return pointerStore
+        .get(key)
+        .map(this::decodeDeletionMeta)
+        .orElseThrow(
+            () ->
+                new BaseResourceRepository.AbortRetryableException(
+                    "account deletion fence not visible"));
+  }
+
+  private MutationMeta decodeDeletionMeta(Pointer marker) {
+    try {
+      return MutationMeta.parseFrom(Base64.getDecoder().decode(marker.getBlobUri()));
+    } catch (Exception e) {
+      throw new BaseResourceRepository.CorruptionException(
+          "invalid account deletion fence: " + marker.getKey(), e);
+    }
+  }
+
+  private void advanceAccountDeletionFence(
+      String accountId, MutationMeta expectedMeta, MutationMeta nextMeta) {
+    String key = Keys.accountDeletionMarker(accountId);
+    Pointer marker =
+        pointerStore
+            .get(key)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.AbortRetryableException(
+                        "account deletion fence disappeared"));
+    if (!decodeDeletionMeta(marker).equals(expectedMeta)) {
+      throw new BaseResourceRepository.AbortRetryableException("account deletion fence changed");
+    }
+    String payload = Base64.getEncoder().encodeToString(nextMeta.toByteArray());
+    Pointer next = PointerReferences.opaqueMarkerPointer(key, payload, marker.getVersion() + 1L);
+    if (!pointerStore.compareAndSet(key, marker.getVersion(), next)) {
+      throw new BaseResourceRepository.AbortRetryableException("account deletion fence changed");
+    }
+  }
+
+  private void clearAccountDeletionFence(String accountId, MutationMeta expectedMeta) {
+    String key = Keys.accountDeletionMarker(accountId);
+    pointerStore
+        .get(key)
+        .filter(marker -> decodeDeletionMeta(marker).equals(expectedMeta))
+        .ifPresent(marker -> pointerStore.compareAndDelete(key, marker.getVersion()));
+  }
+
   private void cleanupAccountResources(ResourceId accountId) {
     var accountKey = accountId.getId();
     var summary = new AccountCleanupSummary(accountKey);
     CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
     try {
-      cleanupConnectors(accountKey, summary);
-      cleanupCatalogs(accountKey, summary);
+      List<ResourceId> storageAuthorities =
+          listCanonicalResourceIds(
+              Keys.storageAuthorityPointerByIdPrefix(accountKey),
+              accountKey,
+              ResourceKind.RK_STORAGE_AUTHORITY);
+      List<ResourceId> connectors =
+          listCanonicalResourceIds(
+              Keys.connectorPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CONNECTOR);
+      List<ResourceId> catalogs =
+          listCanonicalResourceIds(
+              Keys.catalogPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_CATALOG);
+      List<ResourceId> namespaces =
+          listCanonicalResourceIds(
+              Keys.namespacePointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_NAMESPACE);
+      List<ResourceId> tables =
+          listCanonicalResourceIds(
+              Keys.tablePointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_TABLE);
+      List<ResourceId> views =
+          listCanonicalResourceIds(
+              Keys.viewPointerByIdPrefix(accountKey), accountKey, ResourceKind.RK_VIEW);
+
+      cleanupStorageAuthorityCredentials(accountKey, storageAuthorities, summary);
+      cleanupConnectorCredentials(accountKey, connectors, summary);
+      summary.catalogsDeleted = catalogs.size();
+      summary.namespacesDeleted = namespaces.size();
+      summary.tablesDeleted = tables.size();
+      summary.viewsDeleted = views.size();
+
+      if (durableReconcileJobStore.isResolvable()) {
+        summary.reconcileJobsDeleted = durableReconcileJobStore.get().cleanupAccount(accountKey);
+      } else {
+        CLEANUP_LOG.warnf("account_delete_reconcile_cleanup_unavailable account_id=%s", accountKey);
+      }
+
+      String accountPrefix = Keys.accountRootPrefix(accountKey);
+      String deletionFence = Keys.accountDeletionMarker(accountKey);
+      summary.accountPointersDeleted +=
+          pointerStore.deleteByPrefixExcluding(accountPrefix, deletionFence);
+      assertAccountPointerSweepComplete(accountPrefix, deletionFence);
+      // The durable root pointers are gone; purge their read-your-writes cache entries as well.
+      for (ResourceId tableId : tables) {
+        tableRootRepo.purgeRoot(tableId);
+      }
+      invalidateAll(storageAuthorities);
+      invalidateAll(connectors);
+      invalidateAll(catalogs);
+      invalidateAll(namespaces);
+      invalidateAll(tables);
+      invalidateAll(views);
+      summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
       CLEANUP_LOG.infof(
-          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
           summary.accountId,
+          summary.accountPointersDeleted,
+          summary.storageAuthoritiesDeleted,
           summary.connectorsDeleted,
           summary.credentialsDeleted,
           summary.catalogsDeleted,
           summary.namespacesDeleted,
           summary.tablesDeleted,
           summary.viewsDeleted,
-          summary.snapshotPrefixesDeleted);
+          summary.reconcileJobsDeleted,
+          summary.residualAccountBlobsDeleted);
     } catch (RuntimeException e) {
       CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
       throw e;
     }
   }
 
-  private void cleanupConnectors(String accountId, AccountCleanupSummary summary) {
-    for (var connector :
-        listAllPages((token, next) -> connectorRepo.list(accountId, 200, token, next))) {
-      var connectorId = connector.getResourceId();
+  private void cleanupStorageAuthorityCredentials(
+      String accountId, List<ResourceId> authorities, AccountCleanupSummary summary) {
+    for (ResourceId authorityId : authorities) {
+      CLEANUP_LOG.infof(
+          "account_delete_cleanup_storage_authority account_id=%s authority_id=%s",
+          accountId, authorityId.getId());
+      secretsManager.delete(
+          accountId, StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
+      summary.storageAuthoritiesDeleted++;
+      summary.credentialsDeleted++;
+    }
+  }
+
+  private void cleanupConnectorCredentials(
+      String accountId, List<ResourceId> connectors, AccountCleanupSummary summary) {
+    for (ResourceId connectorId : connectors) {
       CLEANUP_LOG.infof(
           "account_delete_cleanup_connector account_id=%s connector_id=%s",
           accountId, connectorId.getId());
-      connectorRepo.delete(connectorId);
       credentialResolver.delete(accountId, connectorId.getId());
       summary.connectorsDeleted++;
       summary.credentialsDeleted++;
     }
   }
 
-  private void cleanupCatalogs(String accountId, AccountCleanupSummary summary) {
-    for (var catalog :
-        listAllPages((token, next) -> catalogRepo.list(accountId, 200, token, next))) {
-      cleanupCatalog(catalog, summary);
-    }
-  }
-
-  private void cleanupCatalog(Catalog catalog, AccountCleanupSummary summary) {
-    var catalogId = catalog.getResourceId();
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
-        catalogId.getAccountId(), catalogId.getId());
-    var namespaces =
-        new ArrayList<>(namespaceRepo.listIds(catalogId.getAccountId(), catalogId.getId()));
-    namespaces.sort(Comparator.comparingInt(this::namespaceDepth).reversed());
-    for (var namespaceId : namespaces) {
-      cleanupNamespace(namespaceId, summary);
-    }
-    catalogRepo.delete(catalogId);
-    metadataGraph.invalidate(catalogId);
-    summary.catalogsDeleted++;
-  }
-
-  private void cleanupNamespace(ResourceId namespaceId, AccountCleanupSummary summary) {
-    var namespace = namespaceRepo.getById(namespaceId).orElse(null);
-    if (namespace == null) {
-      metadataGraph.invalidate(namespaceId);
-      return;
-    }
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_namespace account_id=%s namespace_id=%s catalog_id=%s",
-        namespaceId.getAccountId(), namespaceId.getId(), namespace.getCatalogId().getId());
-    cleanupViews(namespace, summary);
-    cleanupTables(namespace, summary);
-    namespaceRepo.delete(namespaceId);
-    metadataGraph.invalidate(namespaceId);
-    markerStore.bumpCatalogMarker(namespace.getCatalogId());
-    bumpParentNamespaceMarkers(namespace);
-    summary.namespacesDeleted++;
-  }
-
-  private void cleanupTables(
-      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
-    for (var table :
-        listAllPages(
-            (token, next) ->
-                tableRepo.list(
-                    namespace.getResourceId().getAccountId(),
-                    namespace.getCatalogId().getId(),
-                    namespace.getResourceId().getId(),
-                    200,
-                    token,
-                    next))) {
-      cleanupTable(table, summary);
-    }
-  }
-
-  private void cleanupViews(
-      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
-    for (var view :
-        listAllPages(
-            (token, next) ->
-                viewRepo.list(
-                    namespace.getResourceId().getAccountId(),
-                    namespace.getCatalogId().getId(),
-                    namespace.getResourceId().getId(),
-                    200,
-                    token,
-                    next))) {
-      var viewId = view.getResourceId();
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_view account_id=%s namespace_id=%s view_id=%s",
-          viewId.getAccountId(), namespace.getResourceId().getId(), viewId.getId());
-      viewRepo.delete(viewId);
-      metadataGraph.invalidate(viewId);
-      summary.viewsDeleted++;
-    }
-  }
-
-  private <T> List<T> listAllPages(BiFunction<String, StringBuilder, List<T>> pageLoader) {
-    var items = new ArrayList<T>();
+  private List<ResourceId> listCanonicalResourceIds(
+      String prefix, String accountId, ResourceKind kind) {
+    var ids = new ArrayList<ResourceId>();
     var seenTokens = new HashSet<String>();
     String token = "";
     while (true) {
       var next = new StringBuilder();
-      items.addAll(pageLoader.apply(token, next));
+      for (Pointer pointer :
+          pointerStore.listPointersByPrefixConsistent(prefix, 200, token, next)) {
+        String id;
+        try {
+          id = Keys.extractLastSegment(pointer.getKey());
+        } catch (RuntimeException malformedKey) {
+          CLEANUP_LOG.warnf(
+              malformedKey,
+              "account_delete_cleanup_skipping_malformed_canonical_pointer account_id=%s pointer_key=%s",
+              accountId,
+              pointer.getKey());
+          continue;
+        }
+        if (id == null || id.isBlank()) {
+          CLEANUP_LOG.warnf(
+              "account_delete_cleanup_skipping_malformed_canonical_pointer account_id=%s pointer_key=%s",
+              accountId, pointer.getKey());
+          continue;
+        }
+        ids.add(ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build());
+      }
       token = next.toString();
       if (token.isBlank()) {
-        return items;
+        return List.copyOf(ids);
       }
       if (!seenTokens.add(token)) {
         throw new IllegalStateException("stagnant page token during account cleanup: " + token);
@@ -576,66 +661,57 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     }
   }
 
-  private void cleanupTable(
-      ai.floedb.floecat.catalog.rpc.Table table, AccountCleanupSummary summary) {
-    var tableId = table.getResourceId();
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_table account_id=%s namespace_id=%s table_id=%s",
-        tableId.getAccountId(), table.getNamespaceId().getId(), tableId.getId());
-    tableRepo.delete(tableId);
-    metadataGraph.invalidate(tableId);
-    markerStore.bumpNamespaceMarker(table.getNamespaceId());
-    purgeSnapshotsAndStats(tableId, summary);
-    summary.tablesDeleted++;
+  private void invalidateAll(List<ResourceId> resourceIds) {
+    resourceIds.forEach(metadataGraph::invalidate);
   }
 
-  private void purgeSnapshotsAndStats(ResourceId tableId, AccountCleanupSummary summary) {
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
-        tableId.getAccountId(), tableId.getId());
-    pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
-    // Through the repository, not a bare pointer-store delete: the root-pointer cache must drop
-    // its entry with the pointer (same-process read-your-writes).
-    tableRootRepo.purgeRoot(tableId);
-    // The root-resync re-drive marker lives under /accounts/{a}/root-resyncs/by-table/, outside the
-    // per-table /tables/{t}/ subtree the prefixes above cover. Delete it here so a failed
-    // post-commit
-    // resync on a transaction-only table does not survive account deletion as a durable orphan (its
-    // only other reaper, TransactionGc.redrivePendingRootResyncs, never runs for a deleted
-    // account).
-    pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
-    summary.snapshotPrefixesDeleted++;
-  }
-
-  private void bumpParentNamespaceMarkers(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
-    var catalogId = namespace.getCatalogId();
-    var parents = namespace.getParentsList();
-    for (int i = 0; i < parents.size(); i++) {
-      var parentPath = parents.subList(0, i + 1);
-      namespaceRepo
-          .getByPath(catalogId.getAccountId(), catalogId.getId(), parentPath)
-          .map(ai.floedb.floecat.catalog.rpc.Namespace::getResourceId)
-          .ifPresent(markerStore::bumpNamespaceMarker);
+  void assertAccountPointerSweepComplete(String accountPrefix, String deletionFence) {
+    Pointer remainingFence = pointerStore.get(deletionFence).orElse(null);
+    int remaining = pointerStore.countByPrefixConsistent(accountPrefix);
+    if (remainingFence == null || remaining != 1) {
+      int unexpectedCount = remaining - (remainingFence == null ? 0 : 1);
+      var next = new StringBuilder();
+      List<String> unexpectedKeys =
+          pointerStore
+              .listPointersByPrefixConsistent(
+                  accountPrefix, POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT + 1, "", next)
+              .stream()
+              .map(Pointer::getKey)
+              .filter(key -> !key.equals(deletionFence))
+              .limit(POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT)
+              .toList();
+      throw new BaseResourceRepository.AbortRetryableException(
+          "account pointer sweep left "
+              + remaining
+              + " rows under "
+              + accountPrefix
+              + "; deletion_fence_present="
+              + (remainingFence != null)
+              + " unexpected_pointer_count="
+              + unexpectedCount
+              + " unexpected_pointer_keys="
+              + unexpectedKeys
+              + " unexpected_pointer_keys_truncated="
+              + (unexpectedCount > unexpectedKeys.size()));
     }
   }
 
   private static final class AccountCleanupSummary {
     private final String accountId;
+    private int accountPointersDeleted;
+    private int storageAuthoritiesDeleted;
     private int connectorsDeleted;
     private int credentialsDeleted;
     private int catalogsDeleted;
     private int namespacesDeleted;
     private int tablesDeleted;
     private int viewsDeleted;
-    private int snapshotPrefixesDeleted;
+    private int reconcileJobsDeleted;
+    private int residualAccountBlobsDeleted;
 
     private AccountCleanupSummary(String accountId) {
       this.accountId = accountId;
     }
-  }
-
-  private int namespaceDepth(ResourceId namespaceId) {
-    return namespaceRepo.getById(namespaceId).map(ns -> ns.getParentsCount()).orElse(0);
   }
 
   private Account applyAccountSpecPatch(
