@@ -420,11 +420,18 @@ class DurableReconcileJobStoreTest {
             .filter(entry -> canonicalKey.equals(entry.canonicalPointerKey()))
             .findFirst()
             .orElseThrow();
-    assertTrue(store.pointerStore.delete(canonicalKey));
+    var canonical = store.jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        canonical.pointerKey(), canonical.version())),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
     store.leaseStore.reclaimExpiredLease(expiry, Long.MAX_VALUE);
 
-    assertTrue(store.pointerStore.get(expiry.leaseExpiryPointerKey()).isEmpty());
+    assertTrue(store.leaseBackend.loadLeaseExpiry(expiry.leaseExpiryPointerKey()).isEmpty());
   }
 
   @Test
@@ -432,12 +439,16 @@ class DurableReconcileJobStoreTest {
     String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
     String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
     assertTrue(
-        store.pointerStore.compareAndSet(
-            stateKey, 0L, PointerReferences.pointerKeyPointer(stateKey, missingCanonical, 1L)));
+        store.jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        stateKey, 0L, missingCanonical, PointerReferenceKind.PRK_POINTER_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
     assertTrue(store.jobIndexStore.listStoredJobsInState("JS_QUEUED", 100, "").records().isEmpty());
 
-    assertTrue(store.pointerStore.get(stateKey).isEmpty());
+    assertTrue(store.jobIndexBackend.loadIndexEntry(stateKey).isEmpty());
   }
 
   @Test
