@@ -87,6 +87,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
+  private static final int POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT = 10;
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
   private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
@@ -664,12 +665,34 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     resourceIds.forEach(metadataGraph::invalidate);
   }
 
-  private void assertAccountPointerSweepComplete(String accountPrefix, String deletionFence) {
+  void assertAccountPointerSweepComplete(String accountPrefix, String deletionFence) {
     Pointer remainingFence = pointerStore.get(deletionFence).orElse(null);
     int remaining = pointerStore.countByPrefixConsistent(accountPrefix);
     if (remainingFence == null || remaining != 1) {
+      int unexpectedCount = remaining - (remainingFence == null ? 0 : 1);
+      var next = new StringBuilder();
+      List<String> unexpectedKeys =
+          pointerStore
+              .listPointersByPrefixConsistent(
+                  accountPrefix, POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT + 1, "", next)
+              .stream()
+              .map(Pointer::getKey)
+              .filter(key -> !key.equals(deletionFence))
+              .limit(POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT)
+              .toList();
       throw new BaseResourceRepository.AbortRetryableException(
-          "account pointer sweep left " + remaining + " rows under " + accountPrefix);
+          "account pointer sweep left "
+              + remaining
+              + " rows under "
+              + accountPrefix
+              + "; deletion_fence_present="
+              + (remainingFence != null)
+              + " unexpected_pointer_count="
+              + unexpectedCount
+              + " unexpected_pointer_keys="
+              + unexpectedKeys
+              + " unexpected_pointer_keys_truncated="
+              + (unexpectedCount > unexpectedKeys.size()));
     }
   }
 

@@ -241,6 +241,32 @@ class AccountServiceImplTest {
   }
 
   @Test
+  void incompletePointerSweepReportsBoundedUnexpectedKeys() {
+    String accountPrefix = Keys.accountRootPrefix("acct");
+    String deletionFence = Keys.accountDeletionMarker("acct");
+    putPointer(deletionFence, "deletion-fence");
+    for (char suffix = 'a'; suffix <= 'l'; suffix++) {
+      putPointer(accountPrefix + "residual-" + suffix, "residual-" + suffix);
+    }
+
+    BaseResourceRepository.AbortRetryableException failure =
+        assertThrows(
+            BaseResourceRepository.AbortRetryableException.class,
+            () -> service.assertAccountPointerSweepComplete(accountPrefix, deletionFence));
+
+    String message = failure.getMessage();
+    assertTrue(message.contains("account pointer sweep left 13 rows under " + accountPrefix));
+    assertTrue(message.contains("deletion_fence_present=true"));
+    assertTrue(message.contains("unexpected_pointer_count=12"));
+    for (char suffix = 'a'; suffix <= 'j'; suffix++) {
+      assertTrue(message.contains(accountPrefix + "residual-" + suffix));
+    }
+    assertFalse(message.contains(accountPrefix + "residual-k"));
+    assertFalse(message.contains(accountPrefix + "residual-l"));
+    assertTrue(message.contains("unexpected_pointer_keys_truncated=true"));
+  }
+
+  @Test
   void deletingUnknownAccountDoesNotInstallFenceOrRunCleanup() {
     MutationMeta missing = MutationMeta.newBuilder().setPointerVersion(0L).build();
     when(service.accountRepo.metaFor(accountId))
