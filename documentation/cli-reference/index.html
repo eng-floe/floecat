@@ -1730,6 +1730,9 @@ integration create &lt;name&gt; &lt;iceberg-rest|unity&gt; &lt;uri&gt; --auth-ty
 integration update &lt;name|id&gt; [--display &lt;name&gt;] [--uri &lt;uri&gt;] [--props k=v ...] [--etag &lt;etag&gt;]
 integration update-auth &lt;name|id&gt; --auth-type &lt;type&gt;
   [--auth k=v ...] [--cred k=v ...] [--etag &lt;etag&gt;]
+integration validate &lt;name|id&gt;
+integration namespaces &lt;name|id&gt; [--parent &lt;namespace&gt;]
+integration objects &lt;name|id&gt; &lt;namespace&gt; [--kinds table,view]
 integration delete &lt;name|id&gt; [--cascade] [--etag &lt;etag&gt;]
 
 overlays [--integration &lt;name|id&gt;]
