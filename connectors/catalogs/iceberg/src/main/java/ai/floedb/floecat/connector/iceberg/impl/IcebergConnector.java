@@ -1860,8 +1860,11 @@ public abstract class IcebergConnector implements FloecatConnector {
           // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
           "s3.region",
           "s3.endpoint",
-          "s3.path-style-access",
-          "s3.access-point");
+          // Deliberately no "s3.access-point": Iceberg has no such property. S3FileIOProperties
+          // keys access points per bucket as "s3.access-points.<bucket>", so a literal lookup can
+          // never match and listing it would read as coverage that does not exist. Unity Catalog
+          // is the only source that vends an access point today, through the Delta connector.
+          "s3.path-style-access");
 
   /** Iceberg's key for when vended session credentials stop working. */
   private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
