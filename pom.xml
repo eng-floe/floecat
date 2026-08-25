@@ -113,6 +113,7 @@
       
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
+      <module>connectors/clients/unity-catalog</module>
       <module>connectors/catalogs/delta</module>
 
       <!-- Storage -->

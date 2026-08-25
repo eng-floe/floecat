@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.client.unity.HttpUnityCatalogClient;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import java.net.URI;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -125,14 +127,15 @@ final class DeltaConnectorFactory {
         String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
         int connectMs = Integer.parseInt(effectiveOptions.getOrDefault("http.connect.ms", "10000"));
         int readMs = Integer.parseInt(effectiveOptions.getOrDefault("http.read.ms", "60000"));
-        String warehouse = effectiveOptions.getOrDefault("databricks.sql.warehouse_id", "");
-        var uc = new UcHttp(host, connectMs, readMs, authProvider);
-        var sql =
-            warehouse.isBlank() ? null : new SqlStmtClient(host, authProvider, warehouse, readMs);
+        var uc =
+            new HttpUnityCatalogClient(
+                URI.create(host),
+                Duration.ofMillis(connectMs),
+                Duration.ofMillis(readMs),
+                () -> authProvider.applyHeaders(Map.of()));
         yield new UnityDeltaConnector(
             "delta-unity",
             uc,
-            sql,
             engineContext.engine(),
             engineContext.parquetInput(),
             ndvEnabled,

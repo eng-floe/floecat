@@ -33,7 +33,7 @@ class UnityConnectorProviderTest {
             ConnectorConfig.Kind.UNITY,
             "unity",
             "https://workspace.example.com",
-            Map.of("databricks.sql.warehouse_id", "warehouse-1"),
+            Map.of(),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     try (var connector = ConnectorFactory.create(config)) {
