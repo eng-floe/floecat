@@ -36,6 +36,7 @@ import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
+import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -58,9 +59,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.jboss.logging.Logger;
 
 @GrpcService
 public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverlays {
+  private static final Logger LOG = Logger.getLogger(CatalogOverlays.class);
   private static final Set<String> MUTABLE_PATHS =
       Set.of("display_name", "include_namespaces", "exclude_namespaces");
 
@@ -74,87 +77,99 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
 
   @Override
   public Uni<ListCatalogOverlaysResponse> listCatalogOverlays(ListCatalogOverlaysRequest request) {
+    var L = LogHelper.start(LOG, "ListCatalogOverlays");
+
     return mapFailures(
-        run(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_READ);
-              var page = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-              var next = new StringBuilder();
-              List<
-                      ai.floedb.floecat.service.repo.util.GenericResourceRepository
-                              .ResourceWithMeta<
-                          CatalogOverlay>>
-                  rows;
-              int total;
-              if (request.hasIntegrationId()) {
-                ResourceId integrationId =
-                    scopedIntegrationId(pc.getAccountId(), request.getIntegrationId());
-                rows =
-                    overlays.listByIntegrationWithMeta(
-                        pc.getAccountId(),
-                        integrationId.getId(),
-                        Math.max(1, page.limit),
-                        page.token,
-                        next);
-                total = overlays.countByIntegration(pc.getAccountId(), integrationId.getId());
-              } else {
-                rows =
-                    overlays.listWithMeta(
-                        pc.getAccountId(), Math.max(1, page.limit), page.token, next);
-                total = overlays.count(pc.getAccountId());
-              }
-              var response = ListCatalogOverlaysResponse.newBuilder();
-              rows.forEach(
-                  row ->
-                      response.addEntries(
-                          CatalogOverlayEntry.newBuilder()
-                              .setOverlay(row.value())
-                              .setMeta(row.meta())));
-              return response.setPage(MutationOps.pageOut(next.toString(), total)).build();
-            }),
-        correlationId());
+            run(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_READ);
+                  var page = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
+                  var next = new StringBuilder();
+                  List<
+                          ai.floedb.floecat.service.repo.util.GenericResourceRepository
+                                  .ResourceWithMeta<
+                              CatalogOverlay>>
+                      rows;
+                  int total;
+                  if (request.hasIntegrationId()) {
+                    ResourceId integrationId =
+                        scopedIntegrationId(pc.getAccountId(), request.getIntegrationId());
+                    rows =
+                        overlays.listByIntegrationWithMeta(
+                            pc.getAccountId(),
+                            integrationId.getId(),
+                            Math.max(1, page.limit),
+                            page.token,
+                            next);
+                    total = overlays.countByIntegration(pc.getAccountId(), integrationId.getId());
+                  } else {
+                    rows =
+                        overlays.listWithMeta(
+                            pc.getAccountId(), Math.max(1, page.limit), page.token, next);
+                    total = overlays.count(pc.getAccountId());
+                  }
+                  var response = ListCatalogOverlaysResponse.newBuilder();
+                  rows.forEach(
+                      row ->
+                          response.addEntries(
+                              CatalogOverlayEntry.newBuilder()
+                                  .setOverlay(row.value())
+                                  .setMeta(row.meta())));
+                  return response.setPage(MutationOps.pageOut(next.toString(), total)).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<GetCatalogOverlayResponse> getCatalogOverlay(GetCatalogOverlayRequest request) {
+    var L = LogHelper.start(LOG, "GetCatalogOverlay");
+
     return mapFailures(
-        run(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_READ);
-              if (!request.hasOverlayId() && !request.hasDisplayName())
-                throw GrpcErrors.invalidArgument(
-                    pc.getCorrelationId(), SELECTOR_REQUIRED, Map.of("field", "selector"));
-              var row =
-                  (request.hasOverlayId()
-                          ? overlays.getByIdWithMeta(
-                              scopedOverlayId(pc.getAccountId(), request.getOverlayId()))
-                          : request.hasDisplayName()
-                              ? overlays.getByNameWithMeta(
-                                  pc.getAccountId(),
-                                  normalizeName(
-                                      mustNonEmpty(
-                                          request.getDisplayName(),
-                                          "display_name",
-                                          pc.getCorrelationId())))
-                              : throwMissingOverlaySelector())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  pc.getCorrelationId(),
-                                  CATALOG_OVERLAY,
-                                  Map.of(
-                                      "id",
-                                      request.hasOverlayId()
-                                          ? request.getOverlayId().getId()
-                                          : request.getDisplayName())));
-              return GetCatalogOverlayResponse.newBuilder()
-                  .setOverlay(row.value())
-                  .setMeta(row.meta())
-                  .build();
-            }),
-        correlationId());
+            run(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_READ);
+                  if (!request.hasOverlayId() && !request.hasDisplayName())
+                    throw GrpcErrors.invalidArgument(
+                        pc.getCorrelationId(), SELECTOR_REQUIRED, Map.of("field", "selector"));
+                  var row =
+                      (request.hasOverlayId()
+                              ? overlays.getByIdWithMeta(
+                                  scopedOverlayId(pc.getAccountId(), request.getOverlayId()))
+                              : request.hasDisplayName()
+                                  ? overlays.getByNameWithMeta(
+                                      pc.getAccountId(),
+                                      normalizeName(
+                                          mustNonEmpty(
+                                              request.getDisplayName(),
+                                              "display_name",
+                                              pc.getCorrelationId())))
+                                  : throwMissingOverlaySelector())
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      pc.getCorrelationId(),
+                                      CATALOG_OVERLAY,
+                                      Map.of(
+                                          "id",
+                                          request.hasOverlayId()
+                                              ? request.getOverlayId().getId()
+                                              : request.getDisplayName())));
+                  return GetCatalogOverlayResponse.newBuilder()
+                      .setOverlay(row.value())
+                      .setMeta(row.meta())
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private static java.util.Optional<
@@ -167,110 +182,116 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Override
   public Uni<CreateCatalogOverlayResponse> createCatalogOverlay(
       CreateCatalogOverlayRequest request) {
-    return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
-              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
-              // The overlay will materialize managed resources into the selected catalog.
-              authz.require(pc, RolePermissions.CATALOG_WRITE);
-              String corr = pc.getCorrelationId();
-              CatalogOverlaySpec spec = request.getSpec();
-              String name =
-                  normalizeName(mustNonEmpty(spec.getDisplayName(), "display_name", corr));
-              var createPolicy =
-                  CatalogCreatePolicy.validate(
-                      request.getCreateMode(),
-                      request.hasIdempotency() ? request.getIdempotency().getKey() : "",
-                      corr);
-              String key = createPolicy.idempotencyKey();
-              CreateMode mode = createPolicy.mode();
-              if (mode == CreateMode.CM_RETURN_EXISTING) {
-                var existing = overlays.getByNameWithMeta(pc.getAccountId(), name);
-                if (existing.isPresent()) {
-                  return CreateCatalogOverlayResponse.newBuilder()
-                      .setOverlay(existing.get().value())
-                      .setMeta(existing.get().meta())
-                      .build();
-                }
-              }
-              ResourceId integrationId =
-                  scopedIntegrationId(pc.getAccountId(), spec.getIntegrationId());
-              ResourceId catalogId = scopedCatalogId(pc.getAccountId(), spec.getCatalogId());
-              List<NamespacePath> includes =
-                  normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
-              List<NamespacePath> excludes =
-                  normalizePaths(spec.getExcludeNamespacesList(), "exclude_namespaces", corr);
-              byte[] fingerprint =
-                  canonicalFingerprint(name, integrationId, catalogId, includes, excludes);
-              var now = nowTs();
+    var L = LogHelper.start(LOG, "CreateCatalogOverlay");
 
-              if (key.isEmpty()) {
-                var created =
-                    createOrReplace(
-                        randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
-                        name,
-                        integrationId,
-                        catalogId,
-                        includes,
-                        excludes,
-                        mode,
-                        false,
-                        null,
-                        now,
-                        corr);
-                return CreateCatalogOverlayResponse.newBuilder()
-                    .setOverlay(created.value())
-                    .setMeta(created.meta())
-                    .build();
-              }
-              var result =
-                  runIdempotentCreate(
-                      () ->
-                          MutationOps.createProtoRecoverable(
-                              pc.getAccountId(),
-                              "CreateCatalogOverlay",
-                              key,
-                              () -> fingerprint,
-                              () ->
-                                  randomResourceId(
-                                      pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
-                              (reservedId, completion) -> {
-                                var recovered = overlays.getByIdWithMeta(reservedId);
-                                if (recovered.isPresent()) {
-                                  throw new BaseResourceRepository.AbortRetryableException(
-                                      "overlay exists before its idempotency receipt committed");
-                                }
-                                var created =
-                                    createOrReplace(
-                                        reservedId,
-                                        name,
-                                        integrationId,
-                                        catalogId,
-                                        includes,
-                                        excludes,
-                                        CreateMode.CM_ERROR_IF_EXISTS,
-                                        true,
-                                        completion,
-                                        now,
-                                        corr);
-                                return new IdempotencyGuard.CommittedCreate<>(
-                                    created.value(),
-                                    created.value().getResourceId(),
-                                    created.meta());
-                              },
-                              idempotencyStore,
-                              now,
-                              idempotencyTtlSeconds(),
-                              this::correlationId,
-                              CatalogOverlay::parseFrom));
-              return CreateCatalogOverlayResponse.newBuilder()
-                  .setOverlay(result.body)
-                  .setMeta(result.meta)
-                  .build();
-            }),
-        correlationId());
+    return mapFailures(
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+                  // The overlay will materialize managed resources into the selected catalog.
+                  authz.require(pc, RolePermissions.CATALOG_WRITE);
+                  String corr = pc.getCorrelationId();
+                  CatalogOverlaySpec spec = request.getSpec();
+                  String name =
+                      normalizeName(mustNonEmpty(spec.getDisplayName(), "display_name", corr));
+                  var createPolicy =
+                      CatalogCreatePolicy.validate(
+                          request.getCreateMode(),
+                          request.hasIdempotency() ? request.getIdempotency().getKey() : "",
+                          corr);
+                  String key = createPolicy.idempotencyKey();
+                  CreateMode mode = createPolicy.mode();
+                  if (mode == CreateMode.CM_RETURN_EXISTING) {
+                    var existing = overlays.getByNameWithMeta(pc.getAccountId(), name);
+                    if (existing.isPresent()) {
+                      return CreateCatalogOverlayResponse.newBuilder()
+                          .setOverlay(existing.get().value())
+                          .setMeta(existing.get().meta())
+                          .build();
+                    }
+                  }
+                  ResourceId integrationId =
+                      scopedIntegrationId(pc.getAccountId(), spec.getIntegrationId());
+                  ResourceId catalogId = scopedCatalogId(pc.getAccountId(), spec.getCatalogId());
+                  List<NamespacePath> includes =
+                      normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
+                  List<NamespacePath> excludes =
+                      normalizePaths(spec.getExcludeNamespacesList(), "exclude_namespaces", corr);
+                  byte[] fingerprint =
+                      canonicalFingerprint(name, integrationId, catalogId, includes, excludes);
+                  var now = nowTs();
+
+                  if (key.isEmpty()) {
+                    var created =
+                        createOrReplace(
+                            randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
+                            name,
+                            integrationId,
+                            catalogId,
+                            includes,
+                            excludes,
+                            mode,
+                            false,
+                            null,
+                            now,
+                            corr);
+                    return CreateCatalogOverlayResponse.newBuilder()
+                        .setOverlay(created.value())
+                        .setMeta(created.meta())
+                        .build();
+                  }
+                  var result =
+                      runIdempotentCreate(
+                          () ->
+                              MutationOps.createProtoRecoverable(
+                                  pc.getAccountId(),
+                                  "CreateCatalogOverlay",
+                                  key,
+                                  () -> fingerprint,
+                                  () ->
+                                      randomResourceId(
+                                          pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
+                                  (reservedId, completion) -> {
+                                    var recovered = overlays.getByIdWithMeta(reservedId);
+                                    if (recovered.isPresent()) {
+                                      throw new BaseResourceRepository.AbortRetryableException(
+                                          "overlay exists before its idempotency receipt committed");
+                                    }
+                                    var created =
+                                        createOrReplace(
+                                            reservedId,
+                                            name,
+                                            integrationId,
+                                            catalogId,
+                                            includes,
+                                            excludes,
+                                            CreateMode.CM_ERROR_IF_EXISTS,
+                                            true,
+                                            completion,
+                                            now,
+                                            corr);
+                                    return new IdempotencyGuard.CommittedCreate<>(
+                                        created.value(),
+                                        created.value().getResourceId(),
+                                        created.meta());
+                                  },
+                                  idempotencyStore,
+                                  now,
+                                  idempotencyTtlSeconds(),
+                                  this::correlationId,
+                                  CatalogOverlay::parseFrom));
+                  return CreateCatalogOverlayResponse.newBuilder()
+                      .setOverlay(result.body)
+                      .setMeta(result.meta)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta<
@@ -449,104 +470,118 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Override
   public Uni<UpdateCatalogOverlayResponse> updateCatalogOverlay(
       UpdateCatalogOverlayRequest request) {
+    var L = LogHelper.start(LOG, "UpdateCatalogOverlay");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
-              String corr = pc.getCorrelationId();
-              ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
-              requiredMask(request.hasUpdateMask() ? request.getUpdateMask() : null, corr);
-              var current =
-                  overlays
-                      .getByIdWithMeta(id)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(corr, CATALOG_OVERLAY, Map.of("id", id.getId())));
-              MutationOps.BaseServiceChecks.enforcePreconditions(
-                  corr, current.meta(), request.getPrecondition());
-              var desiredBuilder = current.value().toBuilder();
-              for (String path : request.getUpdateMask().getPathsList()) {
-                switch (path) {
-                  case "display_name" ->
-                      desiredBuilder.setDisplayName(
-                          normalizeName(
-                              mustNonEmpty(
-                                  request.getSpec().getDisplayName(), "display_name", corr)));
-                  case "include_namespaces" ->
-                      desiredBuilder
-                          .clearIncludeNamespaces()
-                          .addAllIncludeNamespaces(
-                              normalizePaths(
-                                  request.getSpec().getIncludeNamespacesList(), path, corr));
-                  case "exclude_namespaces" ->
-                      desiredBuilder
-                          .clearExcludeNamespaces()
-                          .addAllExcludeNamespaces(
-                              normalizePaths(
-                                  request.getSpec().getExcludeNamespacesList(), path, corr));
-                  default -> throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", path));
-                }
-              }
-              CatalogOverlay desired = desiredBuilder.setUpdatedAt(nowTs()).build();
-              try {
-                var meta =
-                    overlays
-                        .updateWithMetaUnlessIntegrationDeleting(
-                            desired, current.meta().getPointerVersion())
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.preconditionFailed(
-                                    corr, CATALOG_OVERLAY_CHANGED, Map.of()));
-                return UpdateCatalogOverlayResponse.newBuilder()
-                    .setOverlay(desired)
-                    .setMeta(meta)
-                    .build();
-              } catch (BaseResourceRepository.NameConflictException e) {
-                throw GrpcErrors.alreadyExists(
-                    corr,
-                    CATALOG_OVERLAY_ALREADY_EXISTS,
-                    Map.of("display_name", desired.getDisplayName()));
-              }
-            }),
-        correlationId());
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  String corr = pc.getCorrelationId();
+                  ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
+                  requiredMask(request.hasUpdateMask() ? request.getUpdateMask() : null, corr);
+                  var current =
+                      overlays
+                          .getByIdWithMeta(id)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      corr, CATALOG_OVERLAY, Map.of("id", id.getId())));
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, current.meta(), request.getPrecondition());
+                  var desiredBuilder = current.value().toBuilder();
+                  for (String path : request.getUpdateMask().getPathsList()) {
+                    switch (path) {
+                      case "display_name" ->
+                          desiredBuilder.setDisplayName(
+                              normalizeName(
+                                  mustNonEmpty(
+                                      request.getSpec().getDisplayName(), "display_name", corr)));
+                      case "include_namespaces" ->
+                          desiredBuilder
+                              .clearIncludeNamespaces()
+                              .addAllIncludeNamespaces(
+                                  normalizePaths(
+                                      request.getSpec().getIncludeNamespacesList(), path, corr));
+                      case "exclude_namespaces" ->
+                          desiredBuilder
+                              .clearExcludeNamespaces()
+                              .addAllExcludeNamespaces(
+                                  normalizePaths(
+                                      request.getSpec().getExcludeNamespacesList(), path, corr));
+                      default ->
+                          throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", path));
+                    }
+                  }
+                  CatalogOverlay desired = desiredBuilder.setUpdatedAt(nowTs()).build();
+                  try {
+                    var meta =
+                        overlays
+                            .updateWithMetaUnlessIntegrationDeleting(
+                                desired, current.meta().getPointerVersion())
+                            .orElseThrow(
+                                () ->
+                                    GrpcErrors.preconditionFailed(
+                                        corr, CATALOG_OVERLAY_CHANGED, Map.of()));
+                    return UpdateCatalogOverlayResponse.newBuilder()
+                        .setOverlay(desired)
+                        .setMeta(meta)
+                        .build();
+                  } catch (BaseResourceRepository.NameConflictException e) {
+                    throw GrpcErrors.alreadyExists(
+                        corr,
+                        CATALOG_OVERLAY_ALREADY_EXISTS,
+                        Map.of("display_name", desired.getDisplayName()));
+                  }
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   @Override
   public Uni<DeleteCatalogOverlayResponse> deleteCatalogOverlay(
       DeleteCatalogOverlayRequest request) {
+    var L = LogHelper.start(LOG, "DeleteCatalogOverlay");
+
     return mapFailures(
-        runWithRetry(
-            () -> {
-              var pc = principal.get();
-              authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
-              String corr = pc.getCorrelationId();
-              ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
-              var current = overlays.getByIdWithMeta(id);
-              if (current.isEmpty()) {
-                if (hasMeaningfulPrecondition(request.getPrecondition()))
-                  throw GrpcErrors.notFound(corr, CATALOG_OVERLAY, Map.of("id", id.getId()));
-                return DeleteCatalogOverlayResponse.newBuilder()
-                    .setMeta(overlays.metaForSafe(id))
-                    .build();
-              }
-              var meta = current.get().meta();
-              MutationOps.BaseServiceChecks.enforcePreconditions(
-                  corr, meta, request.getPrecondition());
-              if (!overlays.beginDeletion(id, meta.getPointerVersion()))
-                throw new BaseResourceRepository.AbortRetryableException(
-                    "overlay changed while deletion was fenced");
-              // Reconciliation has not landed in this API change, so there are no materialized
-              // contributions to retire yet. The fence is nevertheless installed before the
-              // dependency pointers and resource are removed.
-              long fenceVersion = overlays.deletionFenceVersion(id);
-              if (fenceVersion == 0L
-                  || !overlays.deleteWithFence(id, meta.getPointerVersion(), fenceVersion))
-                throw new BaseResourceRepository.AbortRetryableException(
-                    "overlay changed during deletion");
-              return DeleteCatalogOverlayResponse.newBuilder().setMeta(meta).build();
-            }),
-        correlationId());
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  String corr = pc.getCorrelationId();
+                  ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
+                  var current = overlays.getByIdWithMeta(id);
+                  if (current.isEmpty()) {
+                    if (hasMeaningfulPrecondition(request.getPrecondition()))
+                      throw GrpcErrors.notFound(corr, CATALOG_OVERLAY, Map.of("id", id.getId()));
+                    return DeleteCatalogOverlayResponse.newBuilder()
+                        .setMeta(overlays.metaForSafe(id))
+                        .build();
+                  }
+                  var meta = current.get().meta();
+                  MutationOps.BaseServiceChecks.enforcePreconditions(
+                      corr, meta, request.getPrecondition());
+                  if (!overlays.beginDeletion(id, meta.getPointerVersion()))
+                    throw new BaseResourceRepository.AbortRetryableException(
+                        "overlay changed while deletion was fenced");
+                  // Reconciliation has not landed in this API change, so there are no materialized
+                  // contributions to retire yet. The fence is nevertheless installed before the
+                  // dependency pointers and resource are removed.
+                  long fenceVersion = overlays.deletionFenceVersion(id);
+                  if (fenceVersion == 0L
+                      || !overlays.deleteWithFence(id, meta.getPointerVersion(), fenceVersion))
+                    throw new BaseResourceRepository.AbortRetryableException(
+                        "overlay changed during deletion");
+                  return DeleteCatalogOverlayResponse.newBuilder().setMeta(meta).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 
   private List<NamespacePath> normalizePaths(List<NamespacePath> paths, String field, String corr) {
