@@ -113,8 +113,10 @@ ConnectorFactory.create(cfg)
       → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
 ```
 
-Source-specific resources follow the `FloecatConnector.close()` lifecycle; per-file S3 range readers
-are closed by their consumers.
+Source-specific resources follow the `FloecatConnector.close()` lifecycle:
+`UnityDeltaConnector.close()` releases the `UnityCatalogClient` transport, which matters because the
+storage service builds a connector per vend (once per scan session and once per file group).
+Per-file S3 range readers are closed by their consumers.
 
 ## Configuration & Extensibility
 

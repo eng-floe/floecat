@@ -26,7 +26,6 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -52,6 +51,7 @@ class HttpUnityCatalogClientTest {
 
   @AfterEach
   void tearDown() {
+    client.close();
     server.stop(0);
   }
 
@@ -201,8 +201,122 @@ class HttpUnityCatalogClientTest {
     assertThat(requestBody.get()).contains("\"table_id\":\"table-id\"", "\"operation\":\"READ\"");
     assertThat(credentials.awsCredentials().accessKeyId()).isEqualTo("key");
     assertThat(credentials.awsCredentials().accessPoint()).contains("accesspoint/example");
-    assertThat(credentials.expiresAt()).isEqualTo(Instant.ofEpochMilli(1893456000000L));
+    // Carried through unparsed: the epoch-millis rule lives once, in the connector SPI.
+    assertThat(credentials.expirationEpochMillis()).isEqualTo("1893456000000");
     assertThat(credentials.storageUrl()).isEqualTo("s3://bucket/table");
+  }
+
+  @Test
+  void tablePropertiesAreCollectedFromBothWireShapesInEitherField() {
+    // The mirror of getTableDecodesWireShapesIntoNormalizedMetadata: Unity Catalog has shipped
+    // `properties` and `table_properties` in both the object and the key/value-array shape, so the
+    // decoder has to accept either spelling in either field.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                """
+                {
+                  "name":"orders",
+                  "table_id":"table-id",
+                  "properties":[{"key":"delta.appendOnly","value":"true"}],
+                  "table_properties":{"delta.constraints.positive":"id > 0"}
+                }
+                """));
+
+    UnityCatalogTable table = client.getTable("cat.schema.orders").orElseThrow();
+
+    assertThat(table.properties())
+        .containsEntry("delta.appendOnly", "true")
+        .containsEntry("delta.constraints.positive", "id > 0");
+  }
+
+  @Test
+  void namesAreNeverNullEvenWhenTheCatalogOmitsThem() {
+    // A nameless entry must not poison the listing: `name` is the sort key, and Stream.sorted()
+    // uses natural ordering, so a null there fails the whole page with a NullPointerException.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                """
+                {"tables":[
+                  {"name":"","columns":[{"name":"","type_name":null}]},
+                  {"table_id":"no-name"}
+                ]}
+                """));
+
+    assertThat(client.listTables("cat", "schema"))
+        .hasSize(2)
+        .allSatisfy(table -> assertThat(table.name()).isNotNull());
+    assertThat(client.listTables("cat", "schema").getFirst().columns())
+        .singleElement()
+        .satisfies(column -> assertThat(column.name()).isEmpty());
+  }
+
+  @Test
+  void aDatabricksErrorCodeOutranksTheHttpStatus() {
+    // A workspace without EXTERNAL USE SCHEMA answers the credentials endpoint with 400 and puts
+    // the refusal in the body. Classified on status alone it is an unclassified 4xx, which the
+    // connector leaves retryable -- so the reconcile job loops on a permanent condition.
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                400,
+                "{\"error_code\":\"PERMISSION_DENIED\",\"message\":\"missing EXTERNAL USE SCHEMA\"}"));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.PERMISSION_DENIED);
+              assertThat(failure.statusCode()).isEqualTo(400);
+              assertThat(failure.errorCode()).isEqualTo("PERMISSION_DENIED");
+            });
+  }
+
+  @Test
+  void anUnrecognizedClientErrorIsPermanentRatherThanUnclassified() {
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange, 400, "{\"error_code\":\"INVALID_PARAMETER_VALUE\",\"message\":\"no\"}"));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST);
+              assertThat(failure.errorCode()).isEqualTo("INVALID_PARAMETER_VALUE");
+            });
+  }
+
+  @Test
+  void aServerErrorStaysRetryableWhateverTheBodySays() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs", exchange -> respond(exchange, 503, "upstream down"));
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure ->
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.SERVER_ERROR));
   }
 
   @Test

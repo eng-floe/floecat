@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -172,7 +173,7 @@ class UnityDeltaConnectorTest {
                 new TemporaryTableCredentials.AwsCredentials(
                     "key", "secret", "token", "arn:aws:s3:us-east-1:123:accesspoint/orders"),
                 false,
-                expiry,
+                Long.toString(expiry.toEpochMilli()),
                 "s3://bucket/orders"));
 
     var result = connector.vendStorageCredentials("cat.schema", "orders");
@@ -200,6 +201,54 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
+  void vendStorageCredentialsFallsBackForAnUnrecognizedCredentialShape() {
+    // Neither an AWS tuple nor a cloud this client knows about -- a UC response shape newer than
+    // this code. "Cannot vend" must stay a fallback to a storage authority: handing back an empty
+    // credential object instead would reach the service's usability check and fail the reconcile
+    // job terminally on a condition the caller can recover from.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(new TemporaryTableCredentials(null, false, "1893456000000", "s3://b/orders"));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsClassifiesPermanentNonAuthRefusalsAsTerminal() {
+    // Databricks answers with 400 + error_code when the workspace lacks EXTERNAL USE SCHEMA, and
+    // with 404 for a table id it no longer knows. Both are permanent; left unclassified they
+    // escape as a retryable INTERNAL and the reconciler loops on a job that can never succeed.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    for (UnityCatalogException.Failure failure :
+        new UnityCatalogException.Failure[] {
+          UnityCatalogException.Failure.INVALID_REQUEST, UnityCatalogException.Failure.NOT_FOUND
+        }) {
+      // doThrow, not when(...).thenThrow: when() would evaluate the already-stubbed call and
+      // rethrow the previous iteration's exception before it could re-stub.
+      doThrow(new UnityCatalogException(failure, 400, "refused"))
+          .when(catalog)
+          .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+      assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+          .as(failure.name())
+          .isInstanceOfSatisfying(
+              SourceCatalogAccessException.class,
+              error ->
+                  assertThat(error.denial())
+                      .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+    }
+  }
+
+  @Test
+  void closeReleasesTheCatalogTransport() {
+    connector.close();
+
+    verify(catalog).close();
+  }
+
+  @Test
   void vendStorageCredentialsPreservesIncompleteAwsTupleForServiceValidation() {
     when(catalog.getTable("cat.schema.orders"))
         .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
@@ -208,7 +257,7 @@ class UnityDeltaConnectorTest {
             new TemporaryTableCredentials(
                 new TemporaryTableCredentials.AwsCredentials("key", "secret", null, null),
                 false,
-                null,
+                "not-a-number",
                 null));
 
     var result = connector.vendStorageCredentials("cat.schema", "orders");
@@ -218,6 +267,8 @@ class UnityDeltaConnectorTest {
         .containsEntry("s3.access-key-id", "key")
         .containsEntry("s3.secret-access-key", "secret")
         .doesNotContainKey("s3.session-token");
+    // A malformed expiry folds to null rather than failing the vend, per the shared parser.
+    assertThat(result.orElseThrow().expiresAt()).isNull();
   }
 
   @Test

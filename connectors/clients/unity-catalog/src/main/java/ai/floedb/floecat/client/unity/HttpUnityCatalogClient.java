@@ -27,11 +27,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -136,7 +136,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
             || response.hasNonNull("gcp_oauth_token")
             || response.hasNonNull("r2_temp_credentials");
     return new TemporaryTableCredentials(
-        aws, unsupported, expiration(response.path("expiration_time")), text(response, "url"));
+        aws, unsupported, text(response, "expiration_time"), text(response, "url"));
+  }
+
+  @Override
+  public void close() {
+    httpClient.close();
   }
 
   private <T> List<T> listAll(String path, String arrayField, Function<JsonNode, T> mapper) {
@@ -278,36 +283,80 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     }
   }
 
-  private static Instant expiration(JsonNode node) {
-    String raw = node.isMissingNode() || node.isNull() ? null : node.asText();
-    if (raw == null || raw.isBlank()) {
+  /**
+   * Classifies a non-2xx response.
+   *
+   * <p>The HTTP status alone is not enough on Databricks: a workspace without {@code EXTERNAL USE
+   * SCHEMA}, or a table with external access turned off, answers the credentials endpoint with
+   * {@code 400} and puts the real reason in the body's {@code error_code}. Read on status alone
+   * that is an unclassified {@code OTHER}, which the connector leaves retryable -- so the reconcile
+   * job retries a refusal that will never change. The body's code is consulted first, and any
+   * remaining 4xx becomes {@link UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code
+   * OTHER} so the connector can treat it as the permanent condition it is.
+   */
+  private static UnityCatalogException httpFailure(int status, String path, String body) {
+    String responseBody = body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
+    String errorCode = errorCode(body);
+    // Only for 4xx. A 5xx is transient whatever its body says, and letting an error_code override
+    // it would turn a retryable outage into a terminal refusal.
+    UnityCatalogException.Failure failure = status >= 500 ? null : failureFromErrorCode(errorCode);
+    if (failure == null) {
+      failure =
+          switch (status) {
+            case 401 -> UnityCatalogException.Failure.UNAUTHENTICATED;
+            case 403 -> UnityCatalogException.Failure.PERMISSION_DENIED;
+            case 404 -> UnityCatalogException.Failure.NOT_FOUND;
+            case 429 -> UnityCatalogException.Failure.RATE_LIMITED;
+            default -> {
+              if (status >= 500) {
+                yield UnityCatalogException.Failure.SERVER_ERROR;
+              }
+              yield status >= 400
+                  ? UnityCatalogException.Failure.INVALID_REQUEST
+                  : UnityCatalogException.Failure.OTHER;
+            }
+          };
+    }
+    return new UnityCatalogException(
+        failure,
+        status,
+        errorCode,
+        "Unity Catalog returned HTTP " + status + " for " + path + ": " + responseBody,
+        null);
+  }
+
+  /** Databricks' {@code error_code}, or null when the body is not its error envelope. */
+  private static String errorCode(String body) {
+    if (body == null || body.isBlank()) {
       return null;
     }
     try {
-      long epochMillis = Long.parseLong(raw.trim());
-      return epochMillis > 0 ? Instant.ofEpochMilli(epochMillis) : null;
-    } catch (NumberFormatException e) {
+      JsonNode parsed = JSON.readTree(body);
+      return parsed.isObject() ? text(parsed, "error_code") : null;
+    } catch (JsonProcessingException e) {
       return null;
     }
   }
 
-  private static UnityCatalogException httpFailure(int status, String path, String body) {
-    UnityCatalogException.Failure failure =
-        switch (status) {
-          case 401 -> UnityCatalogException.Failure.UNAUTHENTICATED;
-          case 403 -> UnityCatalogException.Failure.PERMISSION_DENIED;
-          case 404 -> UnityCatalogException.Failure.NOT_FOUND;
-          case 429 -> UnityCatalogException.Failure.RATE_LIMITED;
-          default ->
-              status >= 500
-                  ? UnityCatalogException.Failure.SERVER_ERROR
-                  : UnityCatalogException.Failure.OTHER;
-        };
-    String responseBody = body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
-    return new UnityCatalogException(
-        failure,
-        status,
-        "Unity Catalog returned HTTP " + status + " for " + path + ": " + responseBody);
+  /**
+   * The failure a Databricks {@code error_code} names, or null to fall back to the HTTP status.
+   *
+   * <p>Only codes whose retry behaviour differs from what the status implies are listed. Anything
+   * unrecognised deliberately falls through: guessing terminal from an unknown code would stop the
+   * reconciler retrying something that would have recovered.
+   */
+  private static UnityCatalogException.Failure failureFromErrorCode(String errorCode) {
+    if (errorCode == null) {
+      return null;
+    }
+    return switch (errorCode.trim().toUpperCase(Locale.ROOT)) {
+      case "UNAUTHENTICATED" -> UnityCatalogException.Failure.UNAUTHENTICATED;
+      case "PERMISSION_DENIED", "CUSTOMER_UNAUTHORIZED" ->
+          UnityCatalogException.Failure.PERMISSION_DENIED;
+      case "RESOURCE_DOES_NOT_EXIST", "NOT_FOUND" -> UnityCatalogException.Failure.NOT_FOUND;
+      case "REQUEST_LIMIT_EXCEEDED" -> UnityCatalogException.Failure.RATE_LIMITED;
+      default -> null;
+    };
   }
 
   private static UnityCatalogException invalidResponse(String message, Throwable cause) {

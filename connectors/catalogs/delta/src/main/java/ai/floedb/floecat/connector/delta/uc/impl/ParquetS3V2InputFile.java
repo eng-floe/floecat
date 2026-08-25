@@ -29,13 +29,13 @@ public class ParquetS3V2InputFile implements InputFile {
   private final String bucket;
   private final String key;
 
-  ParquetS3V2InputFile(RefreshingAwsClient<S3Client> s3, String s3Uri) {
-    this(s3, s3Uri, null);
-  }
-
+  /**
+   * @param bucketOverride the S3 access point ARN to address instead of the bucket named in the
+   *     URI, or null/blank to address the bucket directly
+   */
   ParquetS3V2InputFile(RefreshingAwsClient<S3Client> s3, String s3Uri, String bucketOverride) {
     var u = URI.create(s3Uri.startsWith("s3a://") ? "s3://" + s3Uri.substring(6) : s3Uri);
-    this.bucket = bucketOverride == null || bucketOverride.isBlank() ? u.getHost() : bucketOverride;
+    this.bucket = S3V2FileSystemClient.requestBucket(u, bucketOverride);
     this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       this.reader = new S3RangeReader(s3, bucket, key);

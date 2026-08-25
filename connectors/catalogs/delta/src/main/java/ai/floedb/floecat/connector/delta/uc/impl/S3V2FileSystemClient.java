@@ -43,10 +43,11 @@ final class S3V2FileSystemClient implements FileIO {
   private final RefreshingAwsClient<S3Client> s3;
   private final String bucketOverride;
 
-  S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
-    this(s3, null);
-  }
-
+  /**
+   * @param bucketOverride the S3 access point ARN to address instead of the bucket named in each
+   *     URI, or null/blank to address the bucket directly. Vended Unity Catalog credentials are
+   *     only valid against the access point when the catalog supplies one.
+   */
   S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3, String bucketOverride) {
     this.s3 = s3;
     this.bucketOverride = blankToNull(bucketOverride);
@@ -299,7 +300,7 @@ final class S3V2FileSystemClient implements FileIO {
       this.resolvedPath = resolvedPath;
 
       var u = URI.create(resolvedPath);
-      this.bucket = bucketOverride == null ? u.getHost() : bucketOverride;
+      this.bucket = requestBucket(u, bucketOverride);
       this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
 
       try {

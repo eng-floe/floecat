@@ -20,17 +20,22 @@ package ai.floedb.floecat.client.unity;
 public final class UnityCatalogException extends RuntimeException {
   private final Failure failure;
   private final int statusCode;
+  private final String errorCode;
 
   public UnityCatalogException(Failure failure, int statusCode, String message) {
-    super(message);
-    this.failure = failure;
-    this.statusCode = statusCode;
+    this(failure, statusCode, null, message, null);
   }
 
   public UnityCatalogException(Failure failure, int statusCode, String message, Throwable cause) {
+    this(failure, statusCode, null, message, cause);
+  }
+
+  public UnityCatalogException(
+      Failure failure, int statusCode, String errorCode, String message, Throwable cause) {
     super(message, cause);
     this.failure = failure;
     this.statusCode = statusCode;
+    this.errorCode = errorCode;
   }
 
   public Failure failure() {
@@ -41,6 +46,15 @@ public final class UnityCatalogException extends RuntimeException {
     return statusCode;
   }
 
+  /**
+   * Databricks' machine-readable {@code error_code} from the response body, or null when the
+   * catalog did not send one. Kept alongside {@link #failure()} for diagnostics: the classification
+   * already folds the codes that change retry behaviour into {@code Failure}.
+   */
+  public String errorCode() {
+    return errorCode;
+  }
+
   public enum Failure {
     UNAUTHENTICATED,
     PERMISSION_DENIED,
@@ -49,6 +63,13 @@ public final class UnityCatalogException extends RuntimeException {
     SERVER_ERROR,
     TRANSPORT,
     INVALID_RESPONSE,
+
+    /**
+     * A 4xx the catalog will keep returning for this request -- a Databricks {@code 400
+     * INVALID_PARAMETER_VALUE} for a table without external access, a 405, a 422. Separate from
+     * {@link #OTHER} because it is permanent: retrying it can only loop.
+     */
+    INVALID_REQUEST,
     OTHER
   }
 }

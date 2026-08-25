@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** A small, transport-independent boundary for the Unity Catalog operations Floecat uses. */
-public interface UnityCatalogClient {
+public interface UnityCatalogClient extends AutoCloseable {
   List<String> listCatalogs();
 
   List<String> listSchemas(String catalogName);
@@ -31,6 +31,16 @@ public interface UnityCatalogClient {
 
   TemporaryTableCredentials generateTemporaryTableCredentials(
       String tableId, TableOperation operation);
+
+  /**
+   * Releases the transport this client owns.
+   *
+   * <p>Declared here, and narrowed to throw nothing, because the connector that owns a client is
+   * built per vend -- once per scan session and once per file group -- so an implementation holding
+   * a pooled transport leaks a thread and an executor on every call unless the owner can close it.
+   */
+  @Override
+  void close();
 
   enum TableOperation {
     READ,

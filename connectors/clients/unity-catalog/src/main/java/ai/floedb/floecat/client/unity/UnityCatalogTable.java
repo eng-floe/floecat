@@ -30,11 +30,25 @@ public record UnityCatalogTable(
     List<Column> columns,
     Map<String, String> properties) {
 
+  /**
+   * Normalizes the two components callers treat as always-present.
+   *
+   * <p>{@code name} is never null even when the catalog omits it or sends a blank string: it is the
+   * sort key for {@code listTables} and {@code listViewDescriptors}, and {@code Stream.sorted()}
+   * uses natural ordering, so a single nameless entry in a page would fail the whole listing with a
+   * NullPointerException rather than degrade. Every other component stays nullable, because absent
+   * is meaningful for them -- a null {@code storageLocation} is "not an external table", not "".
+   */
   public UnityCatalogTable {
+    name = name == null ? "" : name;
     columns = columns == null ? List.of() : List.copyOf(columns);
     properties = properties == null ? Map.of() : Map.copyOf(properties);
   }
 
   public record Column(
-      String name, String typeName, String typeText, String typeJson, boolean nullable) {}
+      String name, String typeName, String typeText, String typeJson, boolean nullable) {
+    public Column {
+      name = name == null ? "" : name;
+    }
+  }
 }
