@@ -23,12 +23,23 @@ import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/field_mask.proto";
 
+// The table format a connector reads. The catalog that indexes those tables is a
+// separate axis, carried in properties (`delta.source`, `iceberg.source`), because one
+// format is reachable through several catalogs: a Delta table may be catalogued by Unity
+// Catalog, by AWS Glue, or by nothing at all.
+//
+// 4 was CK_UNITY, which conflated the two axes -- it named a catalog, not a format, and
+// duplicated `delta.source=unity`. It never had a registered provider, so a connector
+// created with it could be persisted but never built. Removed rather than deprecated, and
+// the number stays reserved so no future kind can inherit its meaning on the wire.
 enum ConnectorKind {
+  reserved 4;
+  reserved "CK_UNITY";
+
   CK_UNSPECIFIED = 0;
   CK_ICEBERG = 1;
   CK_DELTA = 2;
   CK_GLUE = 3;
-  CK_UNITY = 4;
 }
 
 message NamespacePath {

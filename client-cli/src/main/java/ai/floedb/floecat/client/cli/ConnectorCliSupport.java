@@ -2099,7 +2099,8 @@ final class ConnectorCliSupport {
       case "ICEBERG" -> ConnectorKind.CK_ICEBERG;
       case "DELTA" -> ConnectorKind.CK_DELTA;
       case "GLUE" -> ConnectorKind.CK_GLUE;
-      case "UNITY" -> ConnectorKind.CK_UNITY;
+      // No "UNITY": Unity Catalog is a Delta source, not a format. Use
+      // --kind DELTA --props delta.source=unity.
       default -> ConnectorKind.CK_UNSPECIFIED;
     };
   }

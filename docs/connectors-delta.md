@@ -122,7 +122,11 @@ Per-file S3 range readers are closed by their consumers.
 
 Important connector properties:
 
-- `delta.source` – Selects backend (`unity`, `glue`, `filesystem`). Defaults to `unity`.
+- `delta.source` – **Required on create.** Selects the catalog that indexes the tables
+  (`unity`, `glue`, `filesystem`). Connector `kind` names the table format (`DELTA`); the
+  catalog is this separate axis, because a Delta table may be catalogued by Unity Catalog, by
+  AWS Glue, or by nothing at all. Omitting it still reads as `unity` for connectors persisted
+  before the property was required.
 - `delta.table-root` – Required for `delta.source=filesystem`, pointing at a Delta table root.
 - `external.namespace`, `external.table-name` – Optional overrides for filesystem connector naming.
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.

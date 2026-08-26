@@ -230,7 +230,6 @@ public class ServerSideStorageConfigResolver {
       return config;
     }
     if ((config.kind() != ConnectorConfig.Kind.DELTA
-            && config.kind() != ConnectorConfig.Kind.UNITY
             && config.kind() != ConnectorConfig.Kind.ICEBERG)
         || !connector.hasResourceId()) {
       return config;

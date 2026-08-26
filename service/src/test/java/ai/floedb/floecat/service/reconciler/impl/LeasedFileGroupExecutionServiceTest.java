@@ -1227,64 +1227,6 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void resolveAddsTableStorageLocationHintToUnityConnectorPayload() {
-    // CK_UNITY is a Delta-family kind and needs the same hint. Without it the worker finds no
-    // storage_location and no delta.table-root, skips the storage authority lookup entirely, and
-    // never reaches source-catalog credential vending for a Unity Catalog table.
-    ReconcileFileGroupTask group =
-        ReconcileFileGroupTask.of(
-            "plan-1",
-            "group-1",
-            TABLE_ID,
-            SNAPSHOT_ID,
-            List.of("s3://bucket/table/file-1.parquet"));
-
-    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(CHILD_JOB_ID))
-        .thenReturn(
-            Optional.of(
-                job(
-                    CHILD_JOB_ID,
-                    ReconcileJobKind.EXEC_FILE_GROUP,
-                    ReconcileSnapshotTask.empty(),
-                    group.asReference(),
-                    PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
-        .thenReturn(
-            Optional.of(
-                job(
-                    PARENT_JOB_ID,
-                    ReconcileJobKind.PLAN_SNAPSHOT,
-                    ReconcileSnapshotTask.of(
-                        TABLE_ID,
-                        SNAPSHOT_ID,
-                        "db",
-                        "events",
-                        List.of(group),
-                        true,
-                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                        1),
-                    ReconcileFileGroupTask.empty(),
-                    "")));
-    when(tableRepo.getById(tableId()))
-        .thenReturn(
-            Optional.of(
-                table().toBuilder()
-                    .putProperties("storage_location", "s3://bucket/table")
-                    .build()));
-    when(connectorRepo.getById(connectorId()))
-        .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_UNITY).build()));
-    stubIndexedPlan(group);
-
-    StandaloneFileGroupExecutionPayload payload =
-        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
-
-    assertEquals(
-        "s3://bucket/table", payload.sourceConnector().getPropertiesOrThrow("storage_location"));
-  }
-
-  @Test
   void resolveAddsTableStorageLocationHintToDeltaConnectorPayload() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(

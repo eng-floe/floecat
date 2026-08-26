@@ -40,9 +40,10 @@ public final class DatabricksAccessDelegation {
   /**
    * The property that turns on source-catalog vending for a Delta/Unity connector.
    *
-   * <p>Set with {@code --props databricks.access-delegation=vended-credentials}. Honored only for
-   * the Delta-family connector kinds; a stray copy on an Iceberg connector is ignored, since that
-   * path is governed by {@link IcebergAccessDelegation#HEADER_PROPERTY} instead.
+   * <p>Set with {@code --props databricks.access-delegation=vended-credentials}. Honored only for a
+   * Delta connector whose {@code delta.source} is Unity Catalog; a stray copy on an Iceberg
+   * connector is ignored, since that path is governed by {@link
+   * IcebergAccessDelegation#HEADER_PROPERTY} instead.
    *
    * <p>The key ends in {@code access-delegation} rather than {@code vend-credentials} on purpose:
    * the connector-property secret guard rejects any key whose canonical form ends in {@code
@@ -72,10 +73,19 @@ public final class DatabricksAccessDelegation {
     return isTruthy(config.options().get(VEND_OPTION));
   }
 
+  /**
+   * Whether this Delta connector is pointed at Unity Catalog.
+   *
+   * <p>The catalog, not the format, is what can vend: {@code delta.source=glue} has no equivalent
+   * API and {@code delta.source=filesystem} has no catalog at all, so both keep using a storage
+   * authority.
+   *
+   * <p>An absent {@code delta.source} still reads as Unity Catalog because that has always been
+   * {@code DeltaConnectorFactory.selectSource}'s default, and connectors persisted before the
+   * option was required rely on it. New connectors must state it explicitly -- the service rejects
+   * a Delta spec without it -- so this fallback only ever applies to legacy configuration.
+   */
   private static boolean usesUnityCatalog(ConnectorConfig config) {
-    if (config.kind() == ConnectorConfig.Kind.UNITY) {
-      return true;
-    }
     if (config.kind() != ConnectorConfig.Kind.DELTA) {
       return false;
     }

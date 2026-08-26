@@ -427,7 +427,7 @@ class ServerSideStorageConfigResolverTest {
   void delegatingUnityConnectorPropagatesMissingAuthority() {
     ConnectorConfig config =
         new ConnectorConfig(
-            ConnectorConfig.Kind.UNITY,
+            ConnectorConfig.Kind.DELTA,
             "unity",
             "https://workspace.example.com",
             Map.of(
@@ -644,7 +644,7 @@ class ServerSideStorageConfigResolverTest {
   private static Connector unityConnector() {
     Connector connector =
         Connector.newBuilder()
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_DELTA)
             .setResourceId(
                 ResourceId.newBuilder()
                     .setAccountId("acct")

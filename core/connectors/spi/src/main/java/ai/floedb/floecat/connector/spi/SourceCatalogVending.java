@@ -24,9 +24,9 @@ package ai.floedb.floecat.connector.spi;
  * <em>attempt</em> source-catalog vending for a table with no matching storage authority, and the
  * reconciler's config resolver decides whether to <em>absorb</em> the resulting missing-authority
  * error. Each catalog format declares vending its own way -- Iceberg REST through the {@code
- * X-Iceberg-Access-Delegation} header, Unity Catalog through an explicit opt-in property -- so both
- * gates route through this single dispatcher rather than special-casing formats independently and
- * drifting apart.
+ * X-Iceberg-Access-Delegation} header, a Delta connector pointed at Unity Catalog through an
+ * explicit opt-in property -- so both gates route through this single dispatcher rather than
+ * special-casing formats independently and drifting apart.
  */
 public final class SourceCatalogVending {
 
@@ -39,7 +39,7 @@ public final class SourceCatalogVending {
     }
     return switch (config.kind()) {
       case ICEBERG -> IcebergAccessDelegation.declaresVendedCredentials(config);
-      case DELTA, UNITY -> DatabricksAccessDelegation.declaresVendedCredentials(config);
+      case DELTA -> DatabricksAccessDelegation.declaresVendedCredentials(config);
       case GLUE -> false;
     };
   }
@@ -67,7 +67,7 @@ public final class SourceCatalogVending {
     }
     return switch (config.kind()) {
       case ICEBERG -> IcebergAccessDelegation.declaresVendedCredentials(config);
-      case DELTA, UNITY, GLUE -> false;
+      case DELTA, GLUE -> false;
     };
   }
 }

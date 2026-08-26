@@ -26,7 +26,9 @@ public final class ConnectorConfigMapper {
           case CK_ICEBERG -> ConnectorConfig.Kind.ICEBERG;
           case CK_DELTA -> ConnectorConfig.Kind.DELTA;
           case CK_GLUE -> ConnectorConfig.Kind.GLUE;
-          case CK_UNITY -> ConnectorConfig.Kind.UNITY;
+          // Includes the reserved wire value 4 (once CK_UNITY), which arrives as UNRECOGNIZED. A
+          // persisted connector carrying it never had a provider to build from, so rejecting it
+          // here reports the configuration error rather than failing later inside the factory.
           default -> throw new IllegalArgumentException("unsupported kind: " + c.getKind());
         };
 

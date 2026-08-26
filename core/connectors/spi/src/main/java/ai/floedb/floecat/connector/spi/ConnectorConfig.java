@@ -31,11 +31,19 @@ public record ConnectorConfig(
     auth = auth == null ? new Auth("none", Map.of(), Map.of()) : auth;
   }
 
+  /**
+   * The table format a connector reads.
+   *
+   * <p>Deliberately not the catalog. Which catalog indexes those tables is a separate axis carried
+   * in {@link #options()} -- {@code delta.source}, {@code iceberg.source} -- because one format is
+   * reachable through several catalogs. A {@code UNITY} member used to sit here and named a
+   * catalog, which made {@code DELTA} + {@code delta.source=unity} and {@code UNITY} two spellings
+   * of one connector; every Delta-family check then had to remember both, and one of them did not.
+   */
   public enum Kind {
     ICEBERG,
     DELTA,
-    GLUE,
-    UNITY
+    GLUE
   }
 
   public record Auth(String scheme, Map<String, String> props, Map<String, String> headerHints) {

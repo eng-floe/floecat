@@ -141,12 +141,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "jwt",
           "assertion",
           "external_id");
+
+  /**
+   * Kinds whose properties are scanned for plaintext secrets. Every kind a connector can be created
+   * with is listed; dropping one would let that kind persist secrets in connector metadata.
+   * CK_UNITY was removed from the enum, not from this guard -- it is no longer creatable.
+   */
   private static final Set<ConnectorKind> CONNECTOR_KINDS_WITH_FORBIDDEN_SECRET_PROPERTIES =
-      Set.of(
-          ConnectorKind.CK_ICEBERG,
-          ConnectorKind.CK_DELTA,
-          ConnectorKind.CK_GLUE,
-          ConnectorKind.CK_UNITY);
+      Set.of(ConnectorKind.CK_ICEBERG, ConnectorKind.CK_DELTA, ConnectorKind.CK_GLUE);
+
+  /** Catalogs a Delta connector can be pointed at, mirroring DeltaConnectorFactory.selectSource. */
+  private static final Set<String> DELTA_SOURCES = Set.of("unity", "glue", "filesystem");
+
+  private static final String DELTA_SOURCE_PROPERTY = "delta.source";
 
   @Override
   public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
@@ -246,6 +253,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+                  validateConnectorKind(spec.getKind(), corr);
+                  validateDeltaSource(spec.getKind(), spec.getPropertiesMap(), corr, true);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -527,6 +536,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  validateConnectorKind(desired.getKind(), corr);
+                  validateDeltaSource(desired.getKind(), desired.getPropertiesMap(), corr, false);
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
@@ -700,7 +711,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         case CK_ICEBERG -> Kind.ICEBERG;
                         case CK_DELTA -> Kind.DELTA;
                         case CK_GLUE -> Kind.GLUE;
-                        case CK_UNITY -> Kind.UNITY;
                         default ->
                             throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
                       };
@@ -714,6 +724,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           mustNonEmpty(spec.getUri(), "uri", corr),
                           spec.getPropertiesMap(),
                           auth);
+                  validateDeltaSource(spec.getKind(), spec.getPropertiesMap(), corr, false);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -938,6 +949,53 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       }
     }
     return false;
+  }
+
+  /**
+   * Rejects a kind this build cannot construct a connector for.
+   *
+   * <p>Create used to persist whatever kind arrived and fail much later inside {@code
+   * ConnectorFactory} with "No ConnectorProvider for kind=...", leaving an unusable connector in
+   * the repository. The reserved wire value 4 -- the former {@code CK_UNITY} -- arrives as {@code
+   * UNRECOGNIZED} and is refused here alongside {@code CK_UNSPECIFIED}.
+   */
+  private static void validateConnectorKind(ConnectorKind kind, String corr) {
+    if (kind != ConnectorKind.CK_ICEBERG
+        && kind != ConnectorKind.CK_DELTA
+        && kind != ConnectorKind.CK_GLUE) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
+    }
+  }
+
+  /**
+   * Checks the catalog a Delta connector is pointed at.
+   *
+   * <p>Kind is the table format; {@code delta.source} is the catalog that indexes it. Leaving the
+   * source implicit meant a Delta connector silently defaulted to Unity Catalog -- the same thing
+   * the removed {@code CK_UNITY} kind expressed, which is how one connector came to have two
+   * spellings.
+   *
+   * <p>{@code required} only on create. Connectors persisted before this rule legitimately omit the
+   * property and rely on the factory's Unity default, so an update must not start rejecting them;
+   * the value is still checked whenever one is present.
+   */
+  private static void validateDeltaSource(
+      ConnectorKind kind, Map<String, String> properties, String corr, boolean required) {
+    if (kind != ConnectorKind.CK_DELTA) {
+      return;
+    }
+    String source = properties == null ? null : properties.get(DELTA_SOURCE_PROPERTY);
+    if (source == null || source.isBlank()) {
+      if (required) {
+        throw GrpcErrors.invalidArgument(
+            corr, null, Map.of("field", "properties", "key", DELTA_SOURCE_PROPERTY));
+      }
+      return;
+    }
+    if (!DELTA_SOURCES.contains(source.trim().toLowerCase(java.util.Locale.ROOT))) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "properties", "key", DELTA_SOURCE_PROPERTY));
+    }
   }
 
   private static void validateConnectorProperties(

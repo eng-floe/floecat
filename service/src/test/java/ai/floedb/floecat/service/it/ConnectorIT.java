@@ -1159,6 +1159,7 @@ public class ConnectorIT {
               .setDestination(dest("cat-delta"))
               .setAuth(deltaFixtureStorageAuth())
               .putAllProperties(deltaFixtureNonSecretS3Options())
+              .putProperties("delta.source", "unity")
               .build();
 
       var conn = TestSupport.createConnector(connectors, spec);
@@ -1233,6 +1234,7 @@ public class ConnectorIT {
                   .setDestination(dest("cat-delta-plan-files"))
                   .setAuth(deltaFixtureStorageAuth())
                   .putAllProperties(deltaFixtureNonSecretS3Options())
+                  .putProperties("delta.source", "unity")
                   .build());
 
       var planJob = runReconcile(conn.getResourceId(), true, null, true);
@@ -2191,7 +2193,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void unityConnectorRejectsInlineStaticS3Credentials() throws Exception {
+  void unityBackedDeltaConnectorRejectsInlineStaticS3Credentials() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-unity-props", "");
 
     var createEx =
@@ -2203,10 +2205,11 @@ public class ConnectorIT {
                         .setSpec(
                             ConnectorSpec.newBuilder()
                                 .setDisplayName("unity-inline-s3-creds")
-                                .setKind(ConnectorKind.CK_UNITY)
+                                .setKind(ConnectorKind.CK_DELTA)
                                 .setUri("dummy://x")
                                 .setSource(source(List.of("main", "sales")))
                                 .setDestination(dest("cat-unity-props"))
+                                .putProperties("delta.source", "unity")
                                 .putProperties("s3.secret-access-key", "should-not-store")
                                 .build())
                         .build()));

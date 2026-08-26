@@ -33,17 +33,20 @@ class SourceCatalogVendingTest {
   }
 
   @Test
-  void unityConnectorOptsInWhenFlagIsTruthy() {
+  void unityBackedDeltaConnectorOptsInWhenFlagIsTruthy() {
     for (String truthy : new String[] {"true", "1", "yes", "vended-credentials", "TRUE"}) {
       var cfg =
           config(
-              ConnectorConfig.Kind.UNITY, Map.of(DatabricksAccessDelegation.VEND_OPTION, truthy));
+              ConnectorConfig.Kind.DELTA,
+              Map.of("delta.source", "unity", DatabricksAccessDelegation.VEND_OPTION, truthy));
       assertThat(DatabricksAccessDelegation.declaresVendedCredentials(cfg)).as(truthy).isTrue();
     }
   }
 
   @Test
-  void deltaKindAlsoHonorsTheOptIn() {
+  void anOmittedSourceStillReadsAsUnityForLegacyConfiguration() {
+    // Connectors persisted before delta.source was required rely on the factory's Unity default;
+    // the service now demands the property on create, so this only covers existing records.
     var cfg =
         config(ConnectorConfig.Kind.DELTA, Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"));
     assertThat(DatabricksAccessDelegation.declaresVendedCredentials(cfg)).isTrue();
@@ -64,13 +67,14 @@ class SourceCatalogVendingTest {
   void absentOrFalsyFlagIsNotDeclared() {
     assertThat(
             DatabricksAccessDelegation.declaresVendedCredentials(
-                config(ConnectorConfig.Kind.UNITY, Map.of())))
+                config(ConnectorConfig.Kind.DELTA, Map.of("delta.source", "unity"))))
         .isFalse();
     assertThat(
             DatabricksAccessDelegation.declaresVendedCredentials(
                 config(
-                    ConnectorConfig.Kind.UNITY,
-                    Map.of(DatabricksAccessDelegation.VEND_OPTION, "false"))))
+                    ConnectorConfig.Kind.DELTA,
+                    Map.of(
+                        "delta.source", "unity", DatabricksAccessDelegation.VEND_OPTION, "false"))))
         .isFalse();
   }
 
@@ -86,12 +90,13 @@ class SourceCatalogVendingTest {
 
   @Test
   void neutralDispatcherAcceptsBothFormats() {
-    // Unity via the opt-in option...
+    // Unity-backed Delta via the opt-in option...
     assertThat(
             SourceCatalogVending.declaresVendedCredentials(
                 config(
-                    ConnectorConfig.Kind.UNITY,
-                    Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"))))
+                    ConnectorConfig.Kind.DELTA,
+                    Map.of(
+                        "delta.source", "unity", DatabricksAccessDelegation.VEND_OPTION, "true"))))
         .isTrue();
     // ...and Iceberg via its access-delegation header.
     assertThat(
@@ -137,7 +142,9 @@ class SourceCatalogVendingTest {
   @Test
   void onlyIcebergAppliesVendedCredentialsWhenLoading() {
     ConnectorConfig unity =
-        config(ConnectorConfig.Kind.UNITY, Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"));
+        config(
+            ConnectorConfig.Kind.DELTA,
+            Map.of("delta.source", "unity", DatabricksAccessDelegation.VEND_OPTION, "true"));
     ConnectorConfig delta =
         config(ConnectorConfig.Kind.DELTA, Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"));
     ConnectorConfig iceberg =
@@ -161,8 +168,12 @@ class SourceCatalogVendingTest {
     assertThat(
             SourceCatalogVending.declaresVendedCredentials(
                 config(
-                    ConnectorConfig.Kind.UNITY,
-                    Map.of(IcebergAccessDelegation.HEADER_PROPERTY, "vended-credentials"))))
+                    ConnectorConfig.Kind.DELTA,
+                    Map.of(
+                        "delta.source",
+                        "unity",
+                        IcebergAccessDelegation.HEADER_PROPERTY,
+                        "vended-credentials"))))
         .isFalse();
     assertThat(
             SourceCatalogVending.declaresVendedCredentials(

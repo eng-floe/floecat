@@ -13,4 +13,3 @@
 # limitations under the License.
 
 ai.floedb.floecat.connector.delta.uc.impl.DeltaConnectorProvider
-ai.floedb.floecat.connector.delta.uc.impl.UnityConnectorProvider
