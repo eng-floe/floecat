@@ -46,7 +46,8 @@ public final class SourceCatalogVending {
 
   /**
    * Whether a connector's own catalog client already carries vended storage credentials once a
-   * table is loaded -- i.e. whether an <em>untouched</em> config is enough to read the table's data.
+   * table is loaded -- i.e. whether an <em>untouched</em> config is enough to read the table's
+   * data.
    *
    * <p>Distinct from {@link #declaresVendedCredentials}, and deliberately narrower. Declaring
    * vending is what makes the storage service <em>attempt</em> a source-catalog vend; this is what
