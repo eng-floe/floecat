@@ -24,9 +24,20 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class DummyConnectorProvider implements ConnectorProvider {
   private static final AtomicReference<ConnectorConfig> LAST_CONFIG = new AtomicReference<>();
 
+  /**
+   * {@code glue} is the one {@link ConnectorConfig.Kind} with no production provider: a real AWS
+   * Glue catalog is reached as {@code delta} with {@code delta.source=glue}. Every other kind now
+   * ships one, and {@code ConnectorFactory} builds its provider map with a duplicate-rejecting
+   * collector in a class initializer -- so squatting on a kind that has a real provider poisons the
+   * class on first use and fails every later connector call with {@code NoClassDefFoundError}.
+   *
+   * <p>Squatting also silently inherits whatever behaviour the service gives that kind. This dummy
+   * sat on {@code unity} until the Unity Catalog connector landed, at which point the storage
+   * authority and credential-vending paths started treating dummy connectors as Delta-family.
+   */
   @Override
   public String kind() {
-    return "unity";
+    return "glue";
   }
 
   @Override

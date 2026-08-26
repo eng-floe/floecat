@@ -136,6 +136,7 @@ final class DeltaConnectorFactory {
         yield new UnityDeltaConnector(
             "delta-unity",
             uc,
+            authProvider,
             engineContext.engine(),
             engineContext.parquetInput(),
             ndvEnabled,

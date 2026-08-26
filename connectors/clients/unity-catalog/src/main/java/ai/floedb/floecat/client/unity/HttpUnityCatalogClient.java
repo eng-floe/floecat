@@ -59,7 +59,14 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         baseUri,
         requestTimeout,
         authentication,
-        HttpClient.newBuilder().connectTimeout(connectTimeout).build());
+        // The JDK default is Redirect.NEVER, which turns an ordinary workspace redirect -- an
+        // http:// base URI upgraded to HTTPS, a renamed workspace host -- into a bare 3xx that no
+        // caller can act on. NORMAL follows it, and still refuses an HTTPS-to-HTTP downgrade; a
+        // 3xx that survives that is classified permanent below rather than retried forever.
+        HttpClient.newBuilder()
+            .connectTimeout(connectTimeout)
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build());
   }
 
   HttpUnityCatalogClient(
@@ -291,8 +298,9 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * {@code 400} and puts the real reason in the body's {@code error_code}. Read on status alone
    * that is an unclassified {@code OTHER}, which the connector leaves retryable -- so the reconcile
    * job retries a refusal that will never change. The body's code is consulted first, and any
-   * remaining 4xx becomes {@link UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code
-   * OTHER} so the connector can treat it as the permanent condition it is.
+   * remaining 4xx -- or 3xx the client declined to follow -- becomes {@link
+   * UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code OTHER} so the connector can
+   * treat it as the permanent condition it is.
    *
    * <p>That default is only safe because the 4xx statuses that are <em>not</em> permanent are named
    * explicitly first. Otherwise it would be asymmetric with {@link #failureFromErrorCode}, which
@@ -321,7 +329,10 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
               if (status >= 500) {
                 yield UnityCatalogException.Failure.SERVER_ERROR;
               }
-              yield status >= 400
+              // A 3xx here is one the client declined to follow -- an HTTPS-to-HTTP downgrade, or
+              // a redirect loop past the JDK's limit. That is a misconfigured base URI, which no
+              // amount of retrying fixes, so it is permanent like the 4xx default.
+              yield status >= 300
                   ? UnityCatalogException.Failure.INVALID_REQUEST
                   : UnityCatalogException.Failure.OTHER;
             }

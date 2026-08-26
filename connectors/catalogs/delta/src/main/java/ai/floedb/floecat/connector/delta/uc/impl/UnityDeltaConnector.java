@@ -21,6 +21,7 @@ import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -39,9 +40,16 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   private final UnityCatalogClient catalog;
 
+  /**
+   * The auth provider backing {@link #catalog}'s request headers, closed with the connector when it
+   * owns resources. Null when the caller keeps ownership.
+   */
+  private final AuthProvider auth;
+
   UnityDeltaConnector(
       String connectorId,
       UnityCatalogClient catalog,
+      AuthProvider auth,
       Engine engine,
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
@@ -49,6 +57,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
       long ndvMaxFiles) {
     super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
     this.catalog = catalog;
+    this.auth = auth;
   }
 
   @Override
@@ -229,11 +238,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   /**
-   * Releases the catalog client's transport along with the Delta engine's.
+   * Releases the catalog client's transport and the auth provider's, along with the Delta engine's.
    *
    * <p>A connector is built per vend -- once per scan session and once per file group -- so the
    * HTTP client behind {@code catalog} would otherwise leak a selector thread and an executor pool
-   * on every call.
+   * on every call. The auth provider leaks the same way: with {@code oauth.mode=cli} it is an
+   * {@code OAuth2BearerAuthProvider} wrapping a token provider that owns a second {@link
+   * java.net.http.HttpClient}.
    */
   @Override
   public void close() {
@@ -242,7 +253,15 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (RuntimeException e) {
       LOG.debugf(e, "Failed to close the Unity Catalog client for connector %s", id());
     } finally {
-      super.close();
+      try {
+        if (auth instanceof AutoCloseable closeable) {
+          closeable.close();
+        }
+      } catch (Exception e) {
+        LOG.debugf(e, "Failed to close the auth provider for connector %s", id());
+      } finally {
+        super.close();
+      }
     }
   }
 

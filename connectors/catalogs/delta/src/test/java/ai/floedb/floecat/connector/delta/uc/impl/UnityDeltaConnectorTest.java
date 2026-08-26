@@ -28,6 +28,7 @@ import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import java.time.Instant;
 import java.util.List;
@@ -43,7 +44,7 @@ class UnityDeltaConnectorTest {
   @BeforeEach
   void setUp() {
     catalog = mock(UnityCatalogClient.class);
-    connector = new UnityDeltaConnector("test-id", catalog, null, null, false, 0.0, 0);
+    connector = new UnityDeltaConnector("test-id", catalog, null, null, null, false, 0.0, 0);
   }
 
   @Test
@@ -297,6 +298,53 @@ class UnityDeltaConnectorTest {
     assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
         .isInstanceOf(UnityCatalogException.class)
         .isNotInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  /**
+   * A connector is built per vend, so an auth provider that owns an HTTP client leaks a selector
+   * thread and an executor on every call unless {@code close()} releases it alongside the catalog
+   * transport.
+   */
+  @Test
+  void closeReleasesTheAuthProvider() {
+    var auth = new ClosableAuthProvider();
+    try (var scoped =
+        new UnityDeltaConnector("test-id", catalog, auth, null, null, false, 0.0, 0)) {
+      assertThat(auth.closed).isFalse();
+    }
+
+    verify(catalog).close();
+    assertThat(auth.closed).isTrue();
+  }
+
+  /** A failure closing the catalog transport must not skip the auth provider. */
+  @Test
+  void closeReleasesTheAuthProviderEvenWhenTheCatalogCloseFails() {
+    var auth = new ClosableAuthProvider();
+    doThrow(new IllegalStateException("boom")).when(catalog).close();
+
+    new UnityDeltaConnector("test-id", catalog, auth, null, null, false, 0.0, 0).close();
+
+    assertThat(auth.closed).isTrue();
+  }
+
+  private static final class ClosableAuthProvider implements AuthProvider, AutoCloseable {
+    private boolean closed;
+
+    @Override
+    public String scheme() {
+      return "oauth2";
+    }
+
+    @Override
+    public Map<String, String> apply(Map<String, String> baseProps) {
+      return baseProps;
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+    }
   }
 
   private static UnityCatalogTable table(String name, String type, String format) {

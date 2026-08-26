@@ -323,7 +323,47 @@ class HttpUnityCatalogClientTest {
                     "table-id", UnityCatalogClient.TableOperation.READ))
         .isInstanceOfSatisfying(
             UnityCatalogException.class,
-            failure -> assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.OTHER));
+            failure ->
+                assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.OTHER));
+  }
+
+  /**
+   * The JDK's default redirect policy is NEVER, which surfaced an ordinary workspace redirect as an
+   * unusable 3xx. A moved workspace host has to be followed like any other client would.
+   */
+  @Test
+  void aRedirectIsFollowed() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          exchange.getResponseHeaders().add("Location", "/moved/catalogs");
+          respond(exchange, 301, "");
+        });
+    server.createContext(
+        "/moved/catalogs", exchange -> respond(exchange, 200, "{\"catalogs\":[{\"name\":\"c\"}]}"));
+
+    assertThat(client.listCatalogs()).containsExactly("c");
+  }
+
+  /**
+   * A 3xx the client declined to follow is a misconfigured base URI, not an outage. Left as {@code
+   * OTHER} it stays retryable, so the reconciler would loop on it forever.
+   */
+  @Test
+  void anUnfollowableRedirectIsPermanent() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          exchange.getResponseHeaders().add("Location", "/api/2.1/unity-catalog/catalogs");
+          respond(exchange, 302, "");
+        });
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure ->
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
   }
 
   @Test
