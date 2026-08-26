@@ -63,6 +63,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         // http:// base URI upgraded to HTTPS, a renamed workspace host -- into a bare 3xx that no
         // caller can act on. NORMAL follows it, and still refuses an HTTPS-to-HTTP downgrade; a
         // 3xx that survives that is classified permanent below rather than retried forever.
+        //
+        // NORMAL re-issues a followed 301/302/303 as a bodyless GET, so the one POST here -- the
+        // credentials call -- does not survive a redirect: what surfaces is the redirect target's
+        // 404 or 405, not the 3xx. Both are permanent, so retry behaviour is unchanged, but the
+        // status alone would read as a missing endpoint; the failure message therefore names the
+        // effective URI whenever it differs from the one requested.
         HttpClient.newBuilder()
             .connectTimeout(connectTimeout)
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -222,14 +228,31 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     }
 
     int status = response.statusCode();
+    String target = describeTarget(path, response.uri());
     if (status < 200 || status >= 300) {
-      throw httpFailure(status, path, response.body());
+      throw httpFailure(status, target, response.body());
     }
     try {
       return JSON.readTree(response.body());
     } catch (JsonProcessingException e) {
-      throw invalidResponse("Invalid JSON from Unity Catalog for " + path, e);
+      throw invalidResponse(
+          status, "Invalid JSON from Unity Catalog for " + target, response.body(), e);
     }
+  }
+
+  /**
+   * The request target for a failure message: the path, plus where a followed redirect landed.
+   *
+   * <p>With {@link HttpClient.Redirect#NORMAL} the response can come from somewhere other than the
+   * URI built here, and a 404 from a redirect target reads as a missing endpoint unless the message
+   * says which URI actually answered.
+   */
+  private String describeTarget(String path, URI effectiveUri) {
+    String requested = baseUri + path;
+    if (effectiveUri == null || requested.equals(effectiveUri.toString())) {
+      return path;
+    }
+    return path + " (redirected to " + effectiveUri + ")";
   }
 
   private static UnityCatalogTable table(JsonNode node) {
@@ -298,16 +321,19 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * {@code 400} and puts the real reason in the body's {@code error_code}. Read on status alone
    * that is an unclassified {@code OTHER}, which the connector leaves retryable -- so the reconcile
    * job retries a refusal that will never change. The body's code is consulted first, and any
-   * remaining 4xx -- or 3xx the client declined to follow -- becomes {@link
-   * UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code OTHER} so the connector can
-   * treat it as the permanent condition it is.
+   * remaining 4xx that <em>came from Databricks</em> -- or a 3xx the client declined to follow --
+   * becomes {@link UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code OTHER} so the
+   * connector can treat it as the permanent condition it is.
    *
-   * <p>That default is only safe because the 4xx statuses that are <em>not</em> permanent are named
-   * explicitly first. Otherwise it would be asymmetric with {@link #failureFromErrorCode}, which
-   * deliberately falls through on anything unrecognised rather than guess terminal.
+   * <p>"From Databricks" means the body carries its {@code error_code} envelope. A 4xx without one
+   * need not be the workspace's answer at all -- an HTML {@code 400} or {@code 404} from a load
+   * balancer or WAF in front of it is transient -- and permanently failing the job on it would be
+   * exactly the over-eager terminal {@link #failureFromErrorCode} refuses to guess at. Those stay
+   * {@code OTHER}, retryable. The 4xx statuses that are never permanent are still named explicitly
+   * first, so an envelope-bearing 408 or 429 is not swept into the default either.
    */
   private static UnityCatalogException httpFailure(int status, String path, String body) {
-    String responseBody = body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
+    String responseBody = truncate(body);
     String errorCode = errorCode(body);
     // Only for 4xx. A 5xx is transient whatever its body says, and letting an error_code override
     // it would turn a retryable outage into a terminal refusal.
@@ -331,8 +357,14 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
               }
               // A 3xx here is one the client declined to follow -- an HTTPS-to-HTTP downgrade, or
               // a redirect loop past the JDK's limit. That is a misconfigured base URI, which no
-              // amount of retrying fixes, so it is permanent like the 4xx default.
-              yield status >= 300
+              // amount of retrying fixes, so it is permanent whatever the body looks like.
+              if (status >= 300 && status < 400) {
+                yield UnityCatalogException.Failure.INVALID_REQUEST;
+              }
+              // An unlisted 4xx is permanent only when Databricks answered it: its error envelope
+              // is what distinguishes "this workspace refuses this request" from an error page
+              // served by something in front of the workspace, which will recover.
+              yield status >= 400 && errorCode != null
                   ? UnityCatalogException.Failure.INVALID_REQUEST
                   : UnityCatalogException.Failure.OTHER;
             }
@@ -383,6 +415,28 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   private static UnityCatalogException invalidResponse(String message, Throwable cause) {
     return new UnityCatalogException(
         UnityCatalogException.Failure.INVALID_RESPONSE, -1, message, cause);
+  }
+
+  /**
+   * An {@code INVALID_RESPONSE} that keeps what the catalog actually sent.
+   *
+   * <p>{@code INVALID_RESPONSE} stays retryable, so a body that never becomes JSON -- usually a
+   * proxy error page rather than the catalog -- shows up as a looping vend. The status and a
+   * snippet of the body are the two things needed to tell which proxy is answering, and both are in
+   * hand at the call site.
+   */
+  private static UnityCatalogException invalidResponse(
+      int status, String message, String body, Throwable cause) {
+    String snippet = truncate(body);
+    return new UnityCatalogException(
+        UnityCatalogException.Failure.INVALID_RESPONSE,
+        status,
+        snippet.isEmpty() ? message : message + ": " + snippet,
+        cause);
+  }
+
+  private static String truncate(String body) {
+    return body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
   }
 
   private static String text(JsonNode node, String field) {

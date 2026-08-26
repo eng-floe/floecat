@@ -307,6 +307,31 @@ class HttpUnityCatalogClientTest {
   }
 
   /**
+   * The permanent default applies only to a 4xx Databricks itself answered, which its {@code
+   * error_code} envelope is what identifies. An HTML 400 from a load balancer or WAF in front of
+   * the workspace is not the workspace refusing anything, and making it terminal permanently fails
+   * a job that would have recovered.
+   */
+  @Test
+  void aClientErrorWithoutADatabricksEnvelopeStaysRetryable() {
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange -> respond(exchange, 400, "<html><body>Bad Request</body></html>"));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.OTHER);
+              assertThat(failure.statusCode()).isEqualTo(400);
+              assertThat(failure.errorCode()).isNull();
+            });
+  }
+
+  /**
    * A 4xx that is transient by definition must not fall into the permanent default. 408 is what a
    * load balancer in front of a Databricks workspace emits when the upstream is slow; classifying
    * it INVALID_REQUEST would make the reconcile job give up on it for good.
@@ -395,6 +420,11 @@ class HttpUnityCatalogClientTest {
             });
   }
 
+  /**
+   * INVALID_RESPONSE stays retryable, so an unparseable body shows up as a looping vend. The status
+   * and the body are what identify the proxy answering instead of the catalog, so neither is
+   * discarded.
+   */
   @Test
   void malformedSuccessResponseIsAnInvalidResponse() {
     server.createContext(
@@ -403,9 +433,32 @@ class HttpUnityCatalogClientTest {
     assertThatThrownBy(client::listCatalogs)
         .isInstanceOfSatisfying(
             UnityCatalogException.class,
-            failure ->
-                assertThat(failure.failure())
-                    .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE));
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE);
+              assertThat(failure.statusCode()).isEqualTo(200);
+              assertThat(failure.getMessage()).contains("not-json");
+            });
+  }
+
+  /**
+   * With Redirect.NORMAL the response can come from a URI other than the one requested, and a 404
+   * from a redirect target reads as a missing endpoint unless the message says where it landed.
+   */
+  @Test
+  void aFailureAfterAFollowedRedirectNamesTheEffectiveUri() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          exchange.getResponseHeaders().add("Location", "/moved/catalogs");
+          respond(exchange, 301, "");
+        });
+    server.createContext("/moved/catalogs", exchange -> respond(exchange, 404, "no such endpoint"));
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> assertThat(failure.getMessage()).contains("/moved/catalogs"));
   }
 
   private static void respond(HttpExchange exchange, int status, String body) throws IOException {

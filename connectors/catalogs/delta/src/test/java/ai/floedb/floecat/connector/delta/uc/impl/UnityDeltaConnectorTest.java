@@ -242,6 +242,24 @@ class UnityDeltaConnectorTest {
     }
   }
 
+  /**
+   * The credentials endpoint keys on table_id, so a table without one can never be vended for, and
+   * a catalog that omits it will keep omitting it. An untyped failure escapes classification and
+   * comes back from the service as a retryable INTERNAL, looping the reconcile job forever.
+   */
+  @Test
+  void vendStorageCredentialsTreatsAMissingTableIdAsTerminal() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", " ", "EXTERNAL", "DELTA", null)));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+  }
+
   @Test
   void closeReleasesTheCatalogTransport() {
     connector.close();

@@ -198,7 +198,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
       }
       String tableId = table.get().tableId();
       if (tableId == null || tableId.isBlank()) {
-        throw new IllegalStateException("Unity Catalog table has no table_id: " + fullName);
+        // Terminal, and typed so it reads as one. The credentials endpoint keys on table_id, and a
+        // catalog that omits it for a table will keep omitting it. A bare IllegalStateException
+        // escapes classifyAccessFailure, reaches the service unrecognised, and comes back as a
+        // retryable INTERNAL -- the reconcile loop this classification exists to close.
+        throw new SourceCatalogAccessException(
+            SourceCatalogAccessException.Denial.UNSUPPORTED,
+            "Unity Catalog table has no table_id: " + fullName);
       }
 
       TemporaryTableCredentials credentials =
