@@ -26,6 +26,11 @@ import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.telemetry.StorageTelemetry;
+import ai.floedb.floecat.telemetry.StorageTelemetry.Backend;
+import ai.floedb.floecat.telemetry.StorageTelemetry.Call;
+import ai.floedb.floecat.telemetry.StorageTelemetry.Measurement;
+import ai.floedb.floecat.telemetry.StorageTelemetry.Operation;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -64,6 +69,7 @@ public class S3BlobStore implements BlobStore {
 
   private final S3Caller s3;
   private final String bucket;
+  private final StorageTelemetry telemetry;
   // Cached GetBucketVersioning outcome (a bucket's status changes rarely); refreshed on TTL
   // expiry. A lookup failure is cached as false — fail closed — and retried after the TTL.
   private volatile Boolean versionedDeletesSupported;
@@ -72,7 +78,8 @@ public class S3BlobStore implements BlobStore {
   @Inject
   public S3BlobStore(
       S3ClientManager s3ClientManager,
-      @ConfigProperty(name = "floecat.blob.s3.bucket") Optional<String> bucketOpt) {
+      @ConfigProperty(name = "floecat.blob.s3.bucket") Optional<String> bucketOpt,
+      StorageTelemetry telemetry) {
     this(
         new S3Caller() {
           @Override
@@ -80,11 +87,19 @@ public class S3BlobStore implements BlobStore {
             return s3ClientManager.call(operation);
           }
         },
-        bucketOpt);
+        bucketOpt,
+        telemetry);
   }
 
   public S3BlobStore(
       S3Client s3, @ConfigProperty(name = "floecat.blob.s3.bucket") Optional<String> bucketOpt) {
+    this(s3, bucketOpt, StorageTelemetry.noop());
+  }
+
+  public S3BlobStore(
+      S3Client s3,
+      @ConfigProperty(name = "floecat.blob.s3.bucket") Optional<String> bucketOpt,
+      StorageTelemetry telemetry) {
     this(
         new S3Caller() {
           @Override
@@ -92,11 +107,17 @@ public class S3BlobStore implements BlobStore {
             return operation.apply(s3);
           }
         },
-        bucketOpt);
+        bucketOpt,
+        telemetry);
   }
 
   S3BlobStore(S3Caller s3, Optional<String> bucketOpt) {
+    this(s3, bucketOpt, StorageTelemetry.noop());
+  }
+
+  S3BlobStore(S3Caller s3, Optional<String> bucketOpt, StorageTelemetry telemetry) {
     this.s3 = s3;
+    this.telemetry = telemetry;
     this.bucket = bucketOpt.orElseGet(() -> System.getProperty("floecat.blob.s3.bucket", ""));
     if (this.bucket.isBlank()) {
       throw new IllegalStateException("S3 bucket not configured: floecat.blob.s3.bucket");
@@ -105,6 +126,17 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public Optional<BlobHeader> head(String key) {
+    return observeS3(
+        Operation.HEAD,
+        () -> headInternal(key),
+        value ->
+            value
+                .map(header -> Measurement.of(header.getContentLength(), 1L))
+                .orElseGet(Measurement::notFound));
+  }
+
+  /** Loads and maps one S3 object header, preserving not-found as an empty result. */
+  private Optional<BlobHeader> headInternal(String key) {
     final String k = normalize(key);
     try {
       HeadObjectResponse r =
@@ -152,6 +184,12 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public byte[] get(String key) {
+    return observeS3(
+        Operation.GET, () -> getInternal(key), value -> Measurement.of(value.length, 1L));
+  }
+
+  /** Reads one complete object body and maps AWS failures into the storage error contract. */
+  private byte[] getInternal(String key) {
     final String k = normalize(key);
     try {
       return s3.call(
@@ -172,8 +210,37 @@ public class S3BlobStore implements BlobStore {
     }
   }
 
+  /**
+   * Reads a caller batch under one logical S3 observation while the SDK publisher retains every
+   * physical GetObject call and attempt.
+   */
+  @Override
+  public Map<String, byte[]> getBatch(List<String> uris) {
+    return observeS3(
+        Operation.GET_BATCH,
+        () -> {
+          Map<String, byte[]> values = new HashMap<>(uris.size());
+          uris.forEach(uri -> values.put(uri, getInternal(uri)));
+          return values;
+        },
+        values ->
+            Measurement.of(
+                values.values().stream().mapToLong(value -> value.length).sum(), values.size()));
+  }
+
   @Override
   public void put(String key, byte[] bytes, String contentType) {
+    observeS3(
+        Operation.PUT,
+        () -> {
+          putInternal(key, bytes, contentType);
+          return null;
+        },
+        ignored -> Measurement.of(bytes == null ? 0L : bytes.length, 1L));
+  }
+
+  /** Writes one object while retaining its original creation timestamp when it already exists. */
+  private void putInternal(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
     try {
       Long createdAtMs = null;
@@ -237,6 +304,14 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public BlobStore.Page list(String prefix, int limit, String pageToken) {
+    return observeS3(
+        Operation.LIST,
+        () -> listInternal(prefix, limit, pageToken),
+        page -> Measurement.of(0L, page.keys().size()));
+  }
+
+  /** Lists one bounded S3 page and returns only the storage SPI's key/token projection. */
+  private BlobStore.Page listInternal(String prefix, int limit, String pageToken) {
     final String p = normalize(prefix);
     final int lim = Math.max(1, limit);
 
@@ -271,6 +346,12 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public boolean delete(String key) {
+    return observeS3(
+        Operation.DELETE, () -> deleteInternal(key), ignored -> Measurement.of(0L, 1L));
+  }
+
+  /** Deletes one current object version, treating an absent object as an idempotent success. */
+  private boolean deleteInternal(String key) {
     final String k = normalize(key);
     try {
       s3.call(c -> c.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build()));
@@ -296,6 +377,14 @@ public class S3BlobStore implements BlobStore {
    */
   @Override
   public boolean supportsVersionedDeletes() {
+    return observeS3(
+        Operation.VERSIONING_STATUS,
+        this::supportsVersionedDeletesInternal,
+        ignored -> Measurement.of(0L, 1L));
+  }
+
+  /** Reads and caches whether the configured bucket can safely target immutable versions. */
+  private boolean supportsVersionedDeletesInternal() {
     Boolean cached = versionedDeletesSupported;
     if (cached != null
         && System.nanoTime() - versionedDeletesCheckedAtNanos < VERSIONING_STATUS_TTL_NANOS) {
@@ -337,6 +426,14 @@ public class S3BlobStore implements BlobStore {
       // delete-after-re-reference race. A blank version is a caller bug.
       throw new IllegalArgumentException("versioned delete requires a versionId: " + key);
     }
+    return observeS3(
+        Operation.DELETE_VERSION,
+        () -> deleteVersionInternal(key, versionId),
+        ignored -> Measurement.of(0L, 1L));
+  }
+
+  /** Deletes exactly one named object version without touching a concurrent replacement. */
+  private boolean deleteVersionInternal(String key, String versionId) {
     final String k = normalize(key);
     try {
       // Version-targeted DeleteObject: a HARD delete of exactly this version (no delete marker).
@@ -366,8 +463,17 @@ public class S3BlobStore implements BlobStore {
 
   @Override
   public void deletePrefix(String prefix) {
+    observeS3(
+        Operation.DELETE_PREFIX,
+        () -> deletePrefixInternal(prefix),
+        deleted -> Measurement.of(0L, deleted));
+  }
+
+  /** Deletes every page beneath a prefix and returns the number of listed objects removed. */
+  private long deletePrefixInternal(String prefix) {
     final String p = normalize(prefix);
     String ct = null;
+    long deleted = 0L;
 
     try {
       do {
@@ -383,6 +489,7 @@ public class S3BlobStore implements BlobStore {
 
         if (!resp.contents().isEmpty()) {
           var objs = resp.contents();
+          deleted += objs.size();
           for (int i = 0; i < objs.size(); i += 1000) {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
@@ -401,6 +508,7 @@ public class S3BlobStore implements BlobStore {
         } catch (Throwable ignore) {
         }
       }
+      return deleted;
 
     } catch (S3Exception e) {
       throw mapAndWrap("DELETE_PREFIX", p, e);
@@ -413,6 +521,16 @@ public class S3BlobStore implements BlobStore {
 
   private static String normalize(String key) {
     return key.startsWith("/") ? key.substring(1) : key;
+  }
+
+  /**
+   * Applies the shared timing, result, metric, and request-summary contract to one S3 operation.
+   */
+  private <T> T observeS3(
+      Operation operation,
+      java.util.function.Supplier<T> work,
+      java.util.function.Function<T, Measurement> measure) {
+    return telemetry.observe(new Call(Backend.S3, operation), work, measure);
   }
 
   @FunctionalInterface

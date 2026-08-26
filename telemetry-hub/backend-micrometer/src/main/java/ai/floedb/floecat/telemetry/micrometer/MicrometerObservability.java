@@ -91,6 +91,11 @@ public final class MicrometerObservability implements Observability {
   private static final Duration HISTOGRAM_MIN = Duration.ofNanos(10_000);
   private static final Duration[] RPC_SLOS =
       new Duration[] {
+        Duration.ofNanos(100_000),
+        Duration.ofNanos(250_000),
+        Duration.ofNanos(500_000),
+        Duration.ofMillis(1),
+        Duration.ofMillis(2),
         Duration.ofMillis(5),
         Duration.ofMillis(10),
         Duration.ofMillis(25),
@@ -102,6 +107,11 @@ public final class MicrometerObservability implements Observability {
       };
   private static final Duration[] STORE_SLOS =
       new Duration[] {
+        Duration.ofNanos(100_000),
+        Duration.ofNanos(250_000),
+        Duration.ofNanos(500_000),
+        Duration.ofMillis(1),
+        Duration.ofMillis(2),
         Duration.ofMillis(10),
         Duration.ofMillis(50),
         Duration.ofMillis(100),

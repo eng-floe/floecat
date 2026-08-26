@@ -67,6 +67,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-spi</artifactId>
       <scope>test</scope>
       <type>test-jar</type>

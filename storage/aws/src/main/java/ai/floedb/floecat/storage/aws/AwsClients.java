@@ -21,6 +21,7 @@ import ai.floedb.floecat.aws.RefreshingAwsClient.ClientResource;
 import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.net.URI;
 import java.util.Optional;
@@ -44,6 +45,8 @@ import software.amazon.awssdk.services.sts.StsClient;
 
 @ApplicationScoped
 public class AwsClients {
+
+  @Inject AwsStorageMetricPublisher storageMetricPublisher;
 
   @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   Region region;
@@ -89,7 +92,7 @@ public class AwsClients {
             .region(region)
             .httpClient(UrlConnectionHttpClient.create())
             .credentialsProvider(credentials)
-            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+            .overrideConfiguration(storageOverrideConfiguration());
     dynamoEndpoint.ifPresent(builder::endpointOverride);
     try {
       return RefreshingAwsClient.clientResource(
@@ -116,7 +119,7 @@ public class AwsClients {
         DynamoDbAsyncClient.builder()
             .region(region)
             .credentialsProvider(credentials)
-            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+            .overrideConfiguration(storageOverrideConfiguration());
     dynamoEndpoint.ifPresent(builder::endpointOverride);
     try {
       return RefreshingAwsClient.clientResource(
@@ -146,7 +149,7 @@ public class AwsClients {
             .serviceConfiguration(s3Cfg)
             .httpClient(UrlConnectionHttpClient.create())
             .credentialsProvider(credentials)
-            .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+            .overrideConfiguration(storageOverrideConfiguration());
     s3Endpoint.ifPresent(builder::endpointOverride);
     try {
       return RefreshingAwsClient.clientResource(
@@ -219,6 +222,10 @@ public class AwsClients {
     } catch (SdkClientException e) {
       throw new AwsCredentialsUnavailableException("AWS credentials are unavailable", e);
     }
+  }
+
+  private ClientOverrideConfiguration storageOverrideConfiguration() {
+    return ClientOverrideConfiguration.builder().addMetricPublisher(storageMetricPublisher).build();
   }
 
   AwsCredentialsProvider resolveCredentials() {

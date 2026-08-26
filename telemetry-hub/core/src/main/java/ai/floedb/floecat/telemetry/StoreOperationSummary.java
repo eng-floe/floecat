@@ -52,6 +52,15 @@ public final class StoreOperationSummary {
     }
   }
 
+  /** Records physical backend work independently of nested repository scope suppression. */
+  public static void recordBackend(
+      String backend, String operation, Duration elapsed, boolean success, long bytes, long items) {
+    Mutable current = current();
+    if (current != null) {
+      current.recordBackend(backend, operation, elapsed, success, bytes, items);
+    }
+  }
+
   public static boolean enterScope() {
     Mutable current = current();
     if (current == null) {
@@ -104,7 +113,7 @@ public final class StoreOperationSummary {
       return;
     }
     Snapshot snapshot = current.snapshot();
-    if (snapshot.operations == 0 && snapshot.values.isEmpty()) {
+    if (snapshot.operations == 0 && snapshot.backends.isEmpty() && snapshot.values.isEmpty()) {
       return;
     }
     diagnostics.put("store_operations", snapshot.operations);
@@ -117,6 +126,16 @@ public final class StoreOperationSummary {
     diagnostics.put("fallbacks", snapshot.fallbacks);
     snapshot.operationCounts.forEach((key, value) -> diagnostics.put(key + "_count", value));
     snapshot.operationNanos.forEach((key, value) -> diagnostics.nanos(key, value));
+    snapshot.backends.forEach(
+        (key, value) -> {
+          diagnostics.put(key + "_count", value.count());
+          diagnostics.nanos(key, value.nanos());
+          diagnostics.put(key + "_bytes", value.bytes());
+          diagnostics.put(key + "_items", value.items());
+          if (value.errors() > 0L) {
+            diagnostics.put(key + "_errors", value.errors());
+          }
+        });
     snapshot.values.forEach(
         (key, value) -> {
           if (value instanceof String stringValue) {
@@ -161,6 +180,7 @@ public final class StoreOperationSummary {
     private final LinkedHashMap<String, Long> operationCounts = new LinkedHashMap<>();
     private final LinkedHashMap<String, Long> operationNanos = new LinkedHashMap<>();
     private final LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+    private final LinkedHashMap<String, BackendAggregate> backends = new LinkedHashMap<>();
     private long operations;
     private long errors;
     private long totalNanos;
@@ -175,6 +195,7 @@ public final class StoreOperationSummary {
       operationCounts.clear();
       operationNanos.clear();
       values.clear();
+      backends.clear();
       operations = 0L;
       errors = 0L;
       totalNanos = 0L;
@@ -221,6 +242,20 @@ public final class StoreOperationSummary {
       values.put(key, value);
     }
 
+    /** Merges one physical operation into its bounded backend/operation aggregate. */
+    private synchronized void recordBackend(
+        String backend,
+        String operation,
+        Duration elapsed,
+        boolean success,
+        long bytes,
+        long items) {
+      String key = "backend_" + summarizeOperation(backend, operation);
+      backends
+          .computeIfAbsent(key, ignored -> new BackendAggregate())
+          .record(elapsed, success, bytes, items);
+    }
+
     private synchronized void fallback(String key) {
       fallbacks++;
       add("fallback_" + sanitize(key), 1L);
@@ -250,7 +285,10 @@ public final class StoreOperationSummary {
               left instanceof Number number ? number.longValue() + (Long) right : right);
     }
 
+    /** Captures immutable copies of all request totals for emission outside the mutable state. */
     private synchronized Snapshot snapshot() {
+      LinkedHashMap<String, BackendSnapshot> backendSnapshot = new LinkedHashMap<>();
+      backends.forEach((key, value) -> backendSnapshot.put(key, value.snapshot()));
       return new Snapshot(
           operations,
           errors,
@@ -262,9 +300,38 @@ public final class StoreOperationSummary {
           fallbacks,
           Map.copyOf(operationCounts),
           Map.copyOf(operationNanos),
+          Map.copyOf(backendSnapshot),
           Map.copyOf(values));
     }
   }
+
+  /** Mutable totals for one bounded backend/operation pair, guarded by the owning summary. */
+  private static final class BackendAggregate {
+    private long count;
+    private long nanos;
+    private long bytes;
+    private long items;
+    private long errors;
+
+    /** Adds one measured call while clamping externally supplied quantities at zero. */
+    private void record(Duration elapsed, boolean success, long measuredBytes, long measuredItems) {
+      count++;
+      nanos += elapsed == null ? 0L : Math.max(0L, elapsed.toNanos());
+      bytes += Math.max(0L, measuredBytes);
+      items += Math.max(0L, measuredItems);
+      if (!success) {
+        errors++;
+      }
+    }
+
+    /** Freezes the current totals for safe publication in the enclosing request snapshot. */
+    private BackendSnapshot snapshot() {
+      return new BackendSnapshot(count, nanos, bytes, items, errors);
+    }
+  }
+
+  /** Immutable request-summary totals for one backend/operation pair. */
+  private record BackendSnapshot(long count, long nanos, long bytes, long items, long errors) {}
 
   private record Snapshot(
       long operations,
@@ -277,5 +344,6 @@ public final class StoreOperationSummary {
       long fallbacks,
       Map<String, Long> operationCounts,
       Map<String, Long> operationNanos,
+      Map<String, BackendSnapshot> backends,
       Map<String, Object> values) {}
 }

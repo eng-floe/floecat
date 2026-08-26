@@ -47,6 +47,10 @@
       <version>${grpc.version}</version>
     </dependency>
     <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.grpc</groupId>
       <artifactId>grpc-testing</artifactId>
       <version>${grpc.version}</version>

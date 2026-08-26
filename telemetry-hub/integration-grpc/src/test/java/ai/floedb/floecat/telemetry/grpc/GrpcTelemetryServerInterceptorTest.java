@@ -20,6 +20,7 @@ import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TestObservability;
+import com.google.protobuf.StringValue;
 import io.grpc.Attributes;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
@@ -37,11 +38,36 @@ import org.junit.jupiter.api.Test;
 
 class GrpcTelemetryServerInterceptorTest {
   @Test
+  void summaryIncludesProtobufResponseSizeAndSendEnqueueTime() {
+    TestObservability observability = new TestObservability();
+    GrpcTelemetryServerInterceptor interceptor =
+        new GrpcTelemetryServerInterceptor(observability, "svc");
+    TestServerCall<StringValue> call =
+        new TestServerCall<>(
+            "ai.floedb.Service/Method",
+            MethodDescriptor.MethodType.SERVER_STREAMING,
+            new StringValueMarshaller());
+    ServerCall<Void, StringValue> activeCall = intercept(interceptor, call);
+    StringValue first = StringValue.of("one");
+    StringValue second = StringValue.of("longer");
+
+    activeCall.sendMessage(first);
+    activeCall.sendMessage(second);
+    activeCall.close(Status.OK, new Metadata());
+
+    Assertions.assertThat(observability.diagnosticEvents().get(0).fields())
+        .containsEntry(
+            "response_uncompressed_bytes",
+            (long) first.getSerializedSize() + second.getSerializedSize())
+        .containsKey("send_message_enqueue_ms");
+  }
+
+  @Test
   void recordsErrorMetrics() {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    TestServerCall<Void> call = TestServerCall.voidCall("ai.floedb.Service/Method");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     interceptor.interceptCall(
         call,
@@ -75,7 +101,7 @@ class GrpcTelemetryServerInterceptorTest {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    TestServerCall<Void> call = TestServerCall.voidCall("ai.floedb.Service/Method");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     interceptor.interceptCall(
         call,
@@ -102,8 +128,8 @@ class GrpcTelemetryServerInterceptorTest {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call =
-        new TestServerCall("ai.floedb.floecat.query.UserObjectsService/GetUserObjects");
+    TestServerCall<Void> call =
+        TestServerCall.voidCall("ai.floedb.floecat.query.UserObjectsService/GetUserObjects");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     interceptor.interceptCall(
         call,
@@ -125,7 +151,7 @@ class GrpcTelemetryServerInterceptorTest {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    TestServerCall<Void> call = TestServerCall.voidCall("ai.floedb.Service/Method");
     ServerCall.Listener<Void> listener =
         interceptor.interceptCall(
             call,
@@ -151,7 +177,7 @@ class GrpcTelemetryServerInterceptorTest {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    TestServerCall<Void> call = TestServerCall.voidCall("ai.floedb.Service/Method");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     interceptor.interceptCall(
         call,
@@ -180,7 +206,7 @@ class GrpcTelemetryServerInterceptorTest {
     TestObservability observability = new TestObservability();
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
-    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    TestServerCall<Void> call = TestServerCall.voidCall("ai.floedb.Service/Method");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     AtomicReference<Throwable> workerFailure = new AtomicReference<>();
     interceptor.interceptCall(
@@ -222,17 +248,26 @@ class GrpcTelemetryServerInterceptorTest {
         .containsEntry("repo_table_get_by_key_count", 1L);
   }
 
-  private static final class TestServerCall extends ServerCall<Void, Void> {
-    private final MethodDescriptor<Void, Void> descriptor;
+  /** Minimal generic server call shared by void and protobuf-response interceptor tests. */
+  private static final class TestServerCall<RespT> extends ServerCall<Void, RespT> {
+    private final MethodDescriptor<Void, RespT> descriptor;
 
-    private TestServerCall(String fullMethodName) {
+    private TestServerCall(
+        String fullMethodName,
+        MethodDescriptor.MethodType methodType,
+        MethodDescriptor.Marshaller<RespT> responseMarshaller) {
       this.descriptor =
-          MethodDescriptor.<Void, Void>newBuilder()
-              .setType(MethodDescriptor.MethodType.UNARY)
+          MethodDescriptor.<Void, RespT>newBuilder()
+              .setType(methodType)
               .setFullMethodName(fullMethodName)
               .setRequestMarshaller(new VoidMarshaller())
-              .setResponseMarshaller(new VoidMarshaller())
+              .setResponseMarshaller(responseMarshaller)
               .build();
+    }
+
+    private static TestServerCall<Void> voidCall(String fullMethodName) {
+      return new TestServerCall<>(
+          fullMethodName, MethodDescriptor.MethodType.UNARY, new VoidMarshaller());
     }
 
     @Override
@@ -242,7 +277,7 @@ class GrpcTelemetryServerInterceptorTest {
     public void sendHeaders(Metadata headers) {}
 
     @Override
-    public void sendMessage(Void message) {}
+    public void sendMessage(RespT message) {}
 
     @Override
     public void close(Status status, Metadata trailers) {}
@@ -263,7 +298,7 @@ class GrpcTelemetryServerInterceptorTest {
     }
 
     @Override
-    public MethodDescriptor<Void, Void> getMethodDescriptor() {
+    public MethodDescriptor<Void, RespT> getMethodDescriptor() {
       return descriptor;
     }
   }
@@ -280,5 +315,37 @@ class GrpcTelemetryServerInterceptorTest {
     public Void parse(InputStream stream) {
       return null;
     }
+  }
+
+  /** Protobuf marshaller used by the response-size fixture. */
+  private static final class StringValueMarshaller
+      implements MethodDescriptor.Marshaller<StringValue> {
+    @Override
+    public InputStream stream(StringValue value) {
+      return new ByteArrayInputStream(value.toByteArray());
+    }
+
+    @Override
+    public StringValue parse(InputStream stream) {
+      try {
+        return StringValue.parseFrom(stream);
+      } catch (java.io.IOException e) {
+        throw new IllegalArgumentException(e);
+      }
+    }
+  }
+
+  /** Starts one intercepted call and returns the forwarding call exposed to the handler. */
+  private static <RespT> ServerCall<Void, RespT> intercept(
+      GrpcTelemetryServerInterceptor interceptor, TestServerCall<RespT> call) {
+    AtomicReference<ServerCall<Void, RespT>> activeCall = new AtomicReference<>();
+    interceptor.interceptCall(
+        call,
+        new Metadata(),
+        (forwardingCall, headers) -> {
+          activeCall.set(forwardingCall);
+          return new ServerCall.Listener<>() {};
+        });
+    return activeCall.get();
   }
 }

@@ -17,8 +17,12 @@ package ai.floedb.floecat.storage.aws;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.telemetry.StorageTelemetry;
+import ai.floedb.floecat.telemetry.Telemetry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -28,7 +32,10 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.SdkClientOption;
+import software.amazon.awssdk.core.metrics.CoreMetric;
+import software.amazon.awssdk.metrics.MetricCollector;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -36,6 +43,32 @@ import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.sts.StsClient;
 
 public class AwsClientsTest {
+
+  @Test
+  void storageMetricPublisherIsInstalledAndSurvivesStorageClientClose() throws Exception {
+    AwsClients clients = baseClients();
+    TestObservability observability = new TestObservability();
+    clients.storageMetricPublisher =
+        new AwsStorageMetricPublisher(new StorageTelemetry(observability));
+    clients.accessKey = Optional.of("access");
+    clients.secretKey = Optional.of("secret");
+
+    try (DynamoDbClient dynamo = clients.newDynamoDbClient();
+        DynamoDbAsyncClient dynamoAsync = clients.newDynamoDbAsyncClient();
+        S3Client s3 = clients.newS3Client()) {
+      assertEquals(List.of(clients.storageMetricPublisher), metricPublishers(dynamo));
+      assertEquals(List.of(clients.storageMetricPublisher), metricPublishers(dynamoAsync));
+      assertEquals(List.of(clients.storageMetricPublisher), metricPublishers(s3));
+    }
+
+    MetricCollector afterClose = MetricCollector.create("ApiCall");
+    afterClose.reportMetric(CoreMetric.SERVICE_ID, "DynamoDb");
+    afterClose.reportMetric(CoreMetric.OPERATION_NAME, "GetItem");
+    afterClose.reportMetric(CoreMetric.API_CALL_SUCCESSFUL, true);
+    clients.storageMetricPublisher.publish(afterClose.collect());
+
+    assertEquals(1d, observability.counterValue(Telemetry.Metrics.STORE_REQUESTS));
+  }
 
   @Test
   void uses_DefaultCredentialsProvider_when_access_and_secret_not_set() throws Exception {
@@ -175,6 +208,8 @@ public class AwsClientsTest {
 
   private static AwsClients baseClients() {
     AwsClients clients = new AwsClients();
+    clients.storageMetricPublisher =
+        new AwsStorageMetricPublisher(new StorageTelemetry(new TestObservability()));
     clients.region = Region.US_EAST_1;
     clients.accessKey = Optional.empty();
     clients.secretKey = Optional.empty();
@@ -185,6 +220,20 @@ public class AwsClientsTest {
     clients.stsEndpoint = Optional.empty();
     clients.forcePathStyle = false;
     return clients;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<software.amazon.awssdk.metrics.MetricPublisher> metricPublishers(
+      Object client) throws Exception {
+    java.lang.reflect.Field field = client.getClass().getDeclaredField("clientConfiguration");
+    field.setAccessible(true);
+    Object sdkConfig = field.get(client);
+    Method option =
+        sdkConfig
+            .getClass()
+            .getMethod("option", software.amazon.awssdk.core.client.config.ClientOption.class);
+    return (List<software.amazon.awssdk.metrics.MetricPublisher>)
+        option.invoke(sdkConfig, SdkClientOption.METRIC_PUBLISHERS);
   }
 
   private static S3Configuration s3ServiceConfiguration(S3Client client) throws Exception {

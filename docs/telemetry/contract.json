@@ -310,6 +310,16 @@
     "allowedTags": ["account", "component", "exception", "operation", "result"]
   },
   {
+    "name": "floecat.core.store.items",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of items processed by store operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
     "name": "floecat.core.store.latency",
     "type": "TIMER",
     "unit": "seconds",

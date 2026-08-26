@@ -649,6 +649,9 @@ class MicrometerObservabilityTest {
     assertThat(timer).isNotNull();
     HistogramSnapshot snapshot = timer.takeSnapshot();
     assertThat(snapshot.histogramCounts()).isNotEmpty();
+    assertThat(snapshot.histogramCounts())
+        .extracting(io.micrometer.core.instrument.distribution.CountAtBucket::bucket)
+        .contains(100_000d, 250_000d, 500_000d, 1_000_000d, 2_000_000d);
   }
 
   @Test

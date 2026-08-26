@@ -17,6 +17,7 @@
 package ai.floedb.floecat.telemetry.quarkus;
 
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.StorageTelemetry;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.TelemetryPolicy;
 import ai.floedb.floecat.telemetry.TelemetryRegistry;
@@ -60,5 +61,12 @@ public class QuarkusObservabilityProducer {
   @ApplicationScoped
   public TelemetryRegistry telemetryRegistry() {
     return telemetryRegistry;
+  }
+
+  /** Provides the single physical-storage telemetry module shared by all backend adapters. */
+  @Produces
+  @ApplicationScoped
+  public StorageTelemetry storageTelemetry(Observability observability) {
+    return new StorageTelemetry(observability);
   }
 }

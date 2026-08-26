@@ -51,11 +51,36 @@ public final class StoreMetrics extends BaseMetrics {
     recording(Telemetry.Metrics.STORE_BYTES, bytes, result, extraTags);
   }
 
+  /** Records a bounded count of items handled by a completed store operation. */
+  public void recordItems(double items, String result, Tag... extraTags) {
+    recording(Telemetry.Metrics.STORE_ITEMS, items, result, extraTags);
+  }
+
+  /** Records the SDK retry count without adding a result label to the retry contract. */
+  public void recordRetries(double retries, Tag... extraTags) {
+    List<Tag> tags = new ArrayList<>(metricTagList(List.of()));
+    addExtra(tags, extraTags);
+    observability.counter(Telemetry.Metrics.STORE_RETRIES, retries, tags.toArray(Tag[]::new));
+  }
+
   public ObservationScope observe(Tag... extraTags) {
+    return observeWithTraceOperation(operation(), extraTags);
+  }
+
+  /**
+   * Observes a physical backend call while including its bounded component in the child-span name.
+   * Metric and request-summary operation names remain unchanged.
+   */
+  public ObservationScope observePhysical(Tag... extraTags) {
+    return observeWithTraceOperation(component() + "." + operation(), extraTags);
+  }
+
+  /** Builds one metric scope and one independently named trace scope over the same operation. */
+  private ObservationScope observeWithTraceOperation(String traceOperation, Tag... extraTags) {
     Tag[] tags = scopeTags(extraTags);
     ObservationScope metricsScope =
         observability.observe(Category.STORE, component(), operation(), tags);
-    StoreTraceScope traceScope = observability.storeTraceScope(component(), operation(), tags);
+    StoreTraceScope traceScope = observability.storeTraceScope(component(), traceOperation, tags);
     return new StoreObservationScope(metricsScope, traceScope, component(), operation());
   }
 

@@ -151,6 +151,8 @@ public final class Telemetry {
           new MetricId("floecat.core.store.latency", MetricType.TIMER, "seconds", "v1", "core");
       public static final MetricId BYTES =
           new MetricId("floecat.core.store.bytes", MetricType.COUNTER, "bytes", "v1", "core");
+      public static final MetricId ITEMS =
+          new MetricId("floecat.core.store.items", MetricType.COUNTER, "count", "v1", "core");
       public static final MetricId ERRORS =
           new MetricId("floecat.core.store.errors", MetricType.COUNTER, "", "v1", "core");
       public static final MetricId RETRIES =
@@ -232,6 +234,7 @@ public final class Telemetry {
     public static final MetricId STORE_REQUESTS = Store.REQUESTS;
     public static final MetricId STORE_LATENCY = Store.LATENCY;
     public static final MetricId STORE_BYTES = Store.BYTES;
+    public static final MetricId STORE_ITEMS = Store.ITEMS;
     public static final MetricId STORE_ERRORS = Store.ERRORS;
     public static final MetricId STORE_RETRIES = Store.RETRIES;
     public static final MetricId CACHE_ENABLED = Cache.ENABLED;
@@ -372,6 +375,12 @@ public final class Telemetry {
           storeRequired,
           storeAllowed,
           "Count of bytes processed by store operations.");
+      add(
+          definitions,
+          STORE_ITEMS,
+          storeRequired,
+          storeAllowed,
+          "Count of items processed by store operations.");
       add(
           definitions,
           STORE_ERRORS,

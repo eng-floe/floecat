@@ -70,6 +70,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.telemetry.TestObservability;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
@@ -134,6 +135,7 @@ class UserObjectBundleServiceTest {
   private TestQueryInputResolver resolver;
   private TestQueryContextStore queryStore;
   private UserObjectBundleService service;
+  private TestObservability observability;
 
   private final QueryContext ctx =
       QueryContext.builder()
@@ -189,6 +191,29 @@ class UserObjectBundleServiceTest {
             47470,
             false,
             "test");
+    observability = new TestObservability();
+    service.observability = observability;
+  }
+
+  @Test
+  void summaryIncludesRequestedTablesAndAllResponseChunkBytes() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    long responseBytes = chunks.stream().mapToLong(UserObjectsBundleChunk::getSerializedSize).sum();
+    assertThat(observability.diagnosticEvents())
+        .filteredOn(event -> event.eventName().equals("floecat.get_user_objects.summary"))
+        .singleElement()
+        .satisfies(
+            event ->
+                assertThat(event.fields())
+                    .containsEntry("requested_tables", 1L)
+                    .containsEntry("response_bytes", responseBytes));
   }
 
   @Test

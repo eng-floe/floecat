@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.telemetry.StorageTelemetry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +40,58 @@ import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 
 class S3BlobStoreTest {
+
+  @Test
+  void everyBackendOperationCrossesTheSharedTelemetrySeamOnce() {
+    TestObservability observability = new TestObservability();
+    S3BlobStore store = closedPoolStore(observability);
+
+    assertThrows(StorageAbortRetryableException.class, () -> store.head("key"));
+    assertThrows(StorageAbortRetryableException.class, () -> store.get("key"));
+    assertThrows(StorageAbortRetryableException.class, () -> store.getBatch(List.of("key")));
+    assertThrows(StorageAbortRetryableException.class, () -> store.put("key", new byte[1], null));
+    assertThrows(StorageAbortRetryableException.class, () -> store.list("prefix", 10, ""));
+    assertThrows(StorageAbortRetryableException.class, () -> store.delete("key"));
+    assertFalse(store.supportsVersionedDeletes());
+    assertThrows(StorageAbortRetryableException.class, () -> store.delete("key", "v1"));
+    assertThrows(StorageAbortRetryableException.class, () -> store.deletePrefix("prefix"));
+
+    assertEquals(
+        List.of(
+            "head",
+            "get",
+            "get_batch",
+            "put",
+            "list",
+            "delete",
+            "versioning_status",
+            "delete_version",
+            "delete_prefix"),
+        observability.scopes().get("STORE").stream().map(scope -> scope.operation()).toList());
+  }
+
+  @Test
+  void headCrossesSharedStorageTelemetrySeamOnce() {
+    TestObservability observability = new TestObservability();
+    var client =
+        new FakeS3Client() {
+          @Override
+          public HeadObjectResponse headObject(HeadObjectRequest request) {
+            return HeadObjectResponse.builder()
+                .contentLength(3L)
+                .lastModified(Instant.EPOCH)
+                .build();
+          }
+        };
+    S3BlobStore store =
+        new S3BlobStore(client, Optional.of("bucket"), new StorageTelemetry(observability));
+
+    store.head("/k");
+
+    assertEquals(1, observability.scopes().get("STORE").size());
+    assertEquals("s3", observability.scopes().get("STORE").get(0).component());
+    assertEquals("head", observability.scopes().get("STORE").get(0).operation());
+  }
 
   @Test
   void headExposesTheS3VersionId() {
@@ -238,13 +292,20 @@ class S3BlobStoreTest {
   }
 
   private static S3BlobStore closedPoolStore() {
-    return new S3BlobStore(
+    return closedPoolStore(null);
+  }
+
+  private static S3BlobStore closedPoolStore(TestObservability observability) {
+    S3BlobStore.S3Caller caller =
         new S3BlobStore.S3Caller() {
           @Override
           public <T> T call(Function<S3Client, T> operation) {
             throw new IllegalStateException("Connection pool shut down");
           }
-        },
-        Optional.of("bucket"));
+        };
+    if (observability != null) {
+      return new S3BlobStore(caller, Optional.of("bucket"), new StorageTelemetry(observability));
+    }
+    return new S3BlobStore(caller, Optional.of("bucket"));
   }
 }

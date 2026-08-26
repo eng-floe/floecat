@@ -13,26 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.storage.aws;
 
-package ai.floedb.floecat.storage.aws.dynamodb;
-
-import ai.floedb.floecat.storage.kv.dynamodb.ps.KvPointerStore;
-import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
 import ai.floedb.floecat.telemetry.StorageTelemetry;
-import io.quarkus.arc.properties.IfBuildProperty;
-import jakarta.inject.Inject;
+import io.quarkus.arc.DefaultBean;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 
-@Singleton
-@IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
-public final class DynamoPointerStore extends KvPointerStore {
-
-  public DynamoPointerStore(PointerStoreEntity pointers) {
-    this(pointers, StorageTelemetry.noop());
-  }
-
-  @Inject
-  public DynamoPointerStore(PointerStoreEntity pointers, StorageTelemetry telemetry) {
-    super(pointers, telemetry);
+/** Supplies inert storage telemetry to applications that embed storage without a telemetry hub. */
+@ApplicationScoped
+public final class StorageTelemetryFallbackProducer {
+  @Produces
+  @Singleton
+  @DefaultBean
+  StorageTelemetry storageTelemetry() {
+    return StorageTelemetry.noop();
   }
 }

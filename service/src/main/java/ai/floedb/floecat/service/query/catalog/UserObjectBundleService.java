@@ -1608,6 +1608,7 @@ public class UserObjectBundleService {
     private int foundCount = 0;
     private int notFoundCount = 0;
     private int emittedResolutionChunks = 0;
+    private long responseBytes = 0L;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
     private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
@@ -1672,7 +1673,7 @@ public class UserObjectBundleService {
         if (LOG.isDebugEnabled()) {
           LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
         }
-        return headerChunk(ctx.getQueryId(), seq++);
+        return recordChunk(headerChunk(ctx.getQueryId(), seq++));
       }
 
       if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
@@ -1685,13 +1686,16 @@ public class UserObjectBundleService {
 
       if (!endEmitted) {
         endEmitted = true;
+        UserObjectsBundleChunk chunk =
+            recordChunk(
+                endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount));
         publishStreamTelemetry("completed");
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
               "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
               ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
         }
-        return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
+        return chunk;
       }
 
       throw new NoSuchElementException();
@@ -1971,7 +1975,13 @@ public class UserObjectBundleService {
             "Resolved chunk query_id=%s seq=%d items=%d found=%d not_found=%d error=%d",
             ctx.getQueryId(), seq, resolutions.size(), chunkFound, chunkNotFound, chunkError);
       }
-      return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
+      return recordChunk(resolutionsChunk(ctx.getQueryId(), seq++, resolutions));
+    }
+
+    /** Adds one emitted protobuf chunk to the response-size total without serializing it. */
+    private UserObjectsBundleChunk recordChunk(UserObjectsBundleChunk chunk) {
+      responseBytes += chunk.getSerializedSize();
+      return chunk;
     }
 
     private void publishStreamTelemetry(String outcome) {
@@ -2053,6 +2063,7 @@ public class UserObjectBundleService {
       parentSpan.setAttribute("floecat.get_user_objects.chunks", emittedResolutionChunks);
       parentSpan.setAttribute("floecat.get_user_objects.found", foundCount);
       parentSpan.setAttribute("floecat.get_user_objects.not_found", notFoundCount);
+      parentSpan.setAttribute("floecat.get_user_objects.response_bytes", responseBytes);
     }
 
     // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
@@ -2064,6 +2075,8 @@ public class UserObjectBundleService {
       diagnostics.put("query_id", ctx.getQueryId());
       diagnostics.put("correlation_id", correlationId);
       diagnostics.put("candidates", resolutionCount);
+      diagnostics.put("requested_tables", resolutionCount);
+      diagnostics.put("response_bytes", responseBytes);
       diagnostics.put("chunks", emittedResolutionChunks);
       diagnostics.put("found", foundCount);
       diagnostics.put("not_found", notFoundCount);

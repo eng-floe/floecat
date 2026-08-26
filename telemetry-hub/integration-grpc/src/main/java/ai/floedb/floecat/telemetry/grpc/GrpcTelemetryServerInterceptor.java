@@ -22,6 +22,7 @@ import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.RpcMetrics;
+import com.google.protobuf.MessageLite;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
 import io.grpc.ForwardingServerCallListener.SimpleForwardingServerCallListener;
 import io.grpc.Metadata;
@@ -134,6 +135,8 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
     private final long startedNanos;
     private final AtomicLong requestMessages = new AtomicLong();
     private final AtomicLong responseMessages = new AtomicLong();
+    private final AtomicLong responseUncompressedBytes = new AtomicLong();
+    private final AtomicLong sendMessageEnqueueNanos = new AtomicLong();
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private final AtomicBoolean completed = new AtomicBoolean();
     private final AtomicBoolean finished = new AtomicBoolean();
@@ -157,10 +160,19 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
       this.startedNanos = startedNanos;
     }
 
+    /** Counts protobuf bytes and the synchronous handoff time for one outbound message. */
     @Override
     public void sendMessage(RespT message) {
       responseMessages.incrementAndGet();
-      super.sendMessage(message);
+      if (message instanceof MessageLite protobuf) {
+        responseUncompressedBytes.addAndGet(protobuf.getSerializedSize());
+      }
+      long startedNanos = System.nanoTime();
+      try {
+        super.sendMessage(message);
+      } finally {
+        sendMessageEnqueueNanos.addAndGet(Math.max(0L, System.nanoTime() - startedNanos));
+      }
     }
 
     @Override
@@ -205,6 +217,8 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
         diagnostics.put("completed", completed.get() || status.isOk());
         diagnostics.put("request_messages", requestMessages.get());
         diagnostics.put("response_messages", responseMessages.get());
+        diagnostics.put("response_uncompressed_bytes", responseUncompressedBytes.get());
+        diagnostics.nanos("send_message_enqueue", sendMessageEnqueueNanos.get());
         diagnostics.nanos("duration", System.nanoTime() - startedNanos);
         StoreOperationSummary.addTo(diagnostics);
         diagnostics.emit("floecat.rpc.summary");
