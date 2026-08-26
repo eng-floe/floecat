@@ -1944,7 +1944,11 @@ Per-file S3 range readers are closed by their consumers.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <p>Important connector properties:</p>
 <ul>
-<li><code>delta.source</code> – Selects backend (<code>unity</code>, <code>glue</code>, <code>filesystem</code>). Defaults to <code>unity</code>.</li>
+<li><code>delta.source</code> – <strong>Required on create.</strong> Selects the catalog that indexes the tables
+  (<code>unity</code>, <code>glue</code>, <code>filesystem</code>). Connector <code>kind</code> names the table format (<code>DELTA</code>); the
+  catalog is this separate axis, because a Delta table may be catalogued by Unity Catalog, by
+  AWS Glue, or by nothing at all. Omitting it still reads as <code>unity</code> for connectors persisted
+  before the property was required.</li>
 <li><code>delta.table-root</code> – Required for <code>delta.source=filesystem</code>, pointing at a Delta table root.</li>
 <li><code>external.namespace</code>, <code>external.table-name</code> – Optional overrides for filesystem connector naming.</li>
 <li><code>http.connect.ms</code>, <code>http.read.ms</code> – Timeout controls for Unity Catalog HTTP calls.</li>
