@@ -451,11 +451,24 @@ public class ServerSideStorageConfigResolver {
                         + " session token, and expiresAt"));
   }
 
+  /**
+   * Whether a failed refresh will keep failing.
+   *
+   * <p>The two structured vending reasons belong here as well as in {@code
+   * ReconcileFailureClassifier}: a refresh failure that is merely "ordinary" is suppressed by
+   * {@code RefreshingAwsCredentialsProviderRegistry} while the previous tuple is still valid, so a
+   * source catalog that refuses to vend for this table -- or vends an unrenewable tuple -- would be
+   * re-asked on every refresh until the tuple expires, instead of failing the job at once. Matched
+   * by reason, not by code: they share {@code FAILED_PRECONDITION} with lease-precondition
+   * failures, which are retryable by design.
+   */
   static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
     Status.Code code = error.getStatus().getCode();
     return ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)
         || code == Status.Code.UNAUTHENTICATED
-        || code == Status.Code.PERMISSION_DENIED;
+        || code == Status.Code.PERMISSION_DENIED
+        || SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(error)
+        || SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(error);
   }
 
   static Optional<ResolvedStorageCredentials> resolvedStorageCredentials(

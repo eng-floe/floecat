@@ -33,13 +33,27 @@ public final class ConnectorFactory {
 
   private ConnectorFactory() {}
 
+  /**
+   * Whether this build has a provider registered for {@code kind}.
+   *
+   * <p>Lets a caller refuse a kind up front rather than persisting a connector that only fails much
+   * later inside {@link #create} with "No ConnectorProvider for kind=...". Answered from the
+   * resolved providers, not a hardcoded list, so it stays true whatever is on the classpath.
+   */
+  public static boolean isSupported(ConnectorConfig.Kind kind) {
+    return kind != null && PROVIDERS.containsKey(kindId(kind));
+  }
+
+  private static String kindId(ConnectorConfig.Kind kind) {
+    return switch (kind) {
+      case ICEBERG -> "iceberg";
+      case DELTA -> "delta";
+      case GLUE -> "glue";
+    };
+  }
+
   public static FloecatConnector create(ConnectorConfig config) {
-    String kindId =
-        switch (config.kind()) {
-          case ICEBERG -> "iceberg";
-          case DELTA -> "delta";
-          case GLUE -> "glue";
-        };
+    String kindId = kindId(config.kind());
     ConnectorProvider p = PROVIDERS.get(kindId);
     if (p == null) {
       throw new IllegalStateException("No ConnectorProvider for kind=" + kindId);

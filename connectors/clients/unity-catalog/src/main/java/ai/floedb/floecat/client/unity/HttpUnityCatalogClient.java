@@ -20,8 +20,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -37,6 +39,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 /** JDK HTTP implementation of the small Unity Catalog client boundary. */
 public final class HttpUnityCatalogClient implements UnityCatalogClient {
@@ -47,7 +50,10 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   private static final int MAX_REDIRECTS = 5;
   private static final int MAX_BODY_SNIPPET = 512;
 
+  private static final Pattern IPV4_LITERAL = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
+
   private final String baseUri;
+  private final boolean cleartextTransport;
   private final Duration requestTimeout;
   private final UnityCatalogAuthentication authentication;
   private final HttpClient httpClient;
@@ -85,7 +91,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     if (!baseUri.isAbsolute()) {
       throw new IllegalArgumentException("Unity Catalog base URI must be absolute: " + baseUri);
     }
-    requireCredentialSafeScheme(baseUri);
+    this.cleartextTransport = isCleartextTransport(baseUri);
     this.baseUri = stripTrailingSlash(baseUri.toString());
     this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
     this.authentication = Objects.requireNonNull(authentication, "authentication");
@@ -266,9 +272,10 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    */
   private void applyAuthentication(HttpRequest.Builder builder) {
     Map<String, String> headers = authentication.headers();
-    if (headers == null) {
+    if (headers == null || headers.isEmpty()) {
       return;
     }
+    requireCredentialSafeTransport(headers);
     try {
       headers.forEach(builder::header);
     } catch (IllegalArgumentException e) {
@@ -312,11 +319,32 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     return next;
   }
 
+  /**
+   * Same scheme, host and effective port.
+   *
+   * <p>Ports are compared after defaulting, not as raw authority text: a proxy or load balancer in
+   * front of a self-hosted Unity Catalog OSS server does emit an explicit {@code :443}, and
+   * comparing authorities verbatim would refuse {@code https://host/} to {@code https://host:443/}
+   * as cross-origin -- a permanent failure on a redirect that is the same origin.
+   */
   private static boolean sameOrigin(URI from, URI to) {
-    return from.getScheme() != null
-        && from.getScheme().equalsIgnoreCase(to.getScheme())
-        && from.getAuthority() != null
-        && from.getAuthority().equalsIgnoreCase(to.getAuthority());
+    if (from.getScheme() == null || !from.getScheme().equalsIgnoreCase(to.getScheme())) {
+      return false;
+    }
+    if (from.getHost() == null || to.getHost() == null) {
+      // No parsable host on either side (a registry-based authority): fall back to exact text.
+      return from.getAuthority() != null && from.getAuthority().equalsIgnoreCase(to.getAuthority());
+    }
+    return from.getHost().equalsIgnoreCase(to.getHost())
+        && effectivePort(from) == effectivePort(to)
+        && Objects.equals(from.getUserInfo(), to.getUserInfo());
+  }
+
+  private static int effectivePort(URI uri) {
+    if (uri.getPort() != -1) {
+      return uri.getPort();
+    }
+    return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
   }
 
   private static UnityCatalogException redirectRefused(
@@ -329,33 +357,65 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   }
 
   /**
-   * Rejects a base URI that would put the catalog credential on the wire in cleartext.
+   * Refuses to put a catalog credential on the wire in cleartext.
    *
-   * <p>Every request carries the bearer token from {@link UnityCatalogAuthentication}, and the
-   * first request goes out before any server can answer -- so an {@code http://} base URI discloses
-   * a long-lived credential to anyone on the path whether or not the workspace would have
-   * redirected to HTTPS. A loopback host stays allowed so a local Unity Catalog OSS server, and
-   * this module's tests, still work.
+   * <p>An {@code http://} base URI discloses whatever {@link UnityCatalogAuthentication} produced
+   * to anyone on the path, and the request goes out before any server can redirect it to HTTPS --
+   * so the refusal has to happen here, before the send. It is scoped to requests that actually
+   * carry credentials: a Unity Catalog OSS server reached unauthenticated over plain HTTP has no
+   * secret to leak, and rejecting its base URI outright would break listing and describe as well as
+   * vending. A loopback host stays allowed, as used throughout this module's tests.
+   *
+   * <p>Typed, not an {@code IllegalArgumentException}: the connector maps {@code INVALID_REQUEST}
+   * to a terminal refusal, whereas an unclassified runtime exception reaches the storage service as
+   * a retryable {@code INTERNAL} and the reconciler loops on a configuration fault that never
+   * self-corrects. Only the header names appear in the message; the values are the credential.
    */
-  private static void requireCredentialSafeScheme(URI baseUri) {
-    String scheme = baseUri.getScheme();
-    if ("https".equalsIgnoreCase(scheme)
-        || ("http".equalsIgnoreCase(scheme) && isLoopback(baseUri.getHost()))) {
+  private void requireCredentialSafeTransport(Map<String, String> headers) {
+    if (!cleartextTransport) {
       return;
     }
-    throw new IllegalArgumentException(
-        "Unity Catalog base URI must use https, because every request carries a bearer token"
-            + " (http is allowed only for a loopback host): "
-            + baseUri);
+    throw new UnityCatalogException(
+        UnityCatalogException.Failure.INVALID_REQUEST,
+        -1,
+        "Unity Catalog base URI "
+            + baseUri
+            + " uses cleartext http, but this request carries credentials (headers: "
+            + String.join(", ", headers.keySet())
+            + "); use https, or a loopback host for a local server");
   }
 
+  private static boolean isCleartextTransport(URI baseUri) {
+    return !"https".equalsIgnoreCase(baseUri.getScheme()) && !isLoopback(baseUri.getHost());
+  }
+
+  /**
+   * Whether the host is unambiguously loopback.
+   *
+   * <p>Only {@code localhost} -- reserved to loopback by RFC 6761 -- and an IP literal that
+   * resolves to a loopback address count. A textual match such as {@code startsWith("127.")} is not
+   * enough: a DNS hostname may legally begin with a numeric label, so {@code 127.attacker.example}
+   * would pass while resolving anywhere at all. The literal test runs before {@link
+   * InetAddress#getByName}, which parses a literal without touching DNS but would resolve a name.
+   */
   private static boolean isLoopback(String host) {
     if (host == null) {
       return false;
     }
     String bare =
         host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
-    return bare.equalsIgnoreCase("localhost") || bare.equals("::1") || bare.startsWith("127.");
+    if (bare.equalsIgnoreCase("localhost")) {
+      return true;
+    }
+    boolean literal = bare.indexOf(':') >= 0 || IPV4_LITERAL.matcher(bare).matches();
+    if (!literal) {
+      return false;
+    }
+    try {
+      return InetAddress.getByName(bare).isLoopbackAddress();
+    } catch (UnknownHostException e) {
+      return false;
+    }
   }
 
   /**
@@ -473,12 +533,8 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
               if (status >= 500) {
                 yield UnityCatalogException.Failure.SERVER_ERROR;
               }
-              // A 3xx here is one the client declined to follow -- an HTTPS-to-HTTP downgrade, or
-              // a redirect loop past the JDK's limit. That is a misconfigured base URI, which no
-              // amount of retrying fixes, so it is permanent whatever the body looks like.
-              if (status >= 300 && status < 400) {
-                yield UnityCatalogException.Failure.INVALID_REQUEST;
-              }
+              // No 3xx reaches here: send() leaves its redirect loop only on a non-3xx status,
+              // and every declined redirect throws redirectRefused (INVALID_REQUEST) inside it.
               // An unlisted 4xx is permanent only when Databricks answered it: its error envelope
               // is what distinguishes "this workspace refuses this request" from an error page
               // served by something in front of the workspace, which will recover.

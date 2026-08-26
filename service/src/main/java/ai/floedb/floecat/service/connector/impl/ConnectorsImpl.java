@@ -958,11 +958,21 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
    * ConnectorFactory} with "No ConnectorProvider for kind=...", leaving an unusable connector in
    * the repository. The reserved wire value 4 -- the former {@code CK_UNITY} -- arrives as {@code
    * UNRECOGNIZED} and is refused here alongside {@code CK_UNSPECIFIED}.
+   *
+   * <p>Asked of {@code ConnectorFactory} rather than listed here. A hardcoded allowlist drifts from
+   * what is actually registered: {@code CK_GLUE} has no production {@code ConnectorProvider} on the
+   * {@code ServiceLoader} path, so listing it would keep the very trap this check closes -- a
+   * persisted connector that fails at reconcile time -- open for glue.
    */
   private static void validateConnectorKind(ConnectorKind kind, String corr) {
-    if (kind != ConnectorKind.CK_ICEBERG
-        && kind != ConnectorKind.CK_DELTA
-        && kind != ConnectorKind.CK_GLUE) {
+    Kind resolved =
+        switch (kind) {
+          case CK_ICEBERG -> Kind.ICEBERG;
+          case CK_DELTA -> Kind.DELTA;
+          case CK_GLUE -> Kind.GLUE;
+          default -> null;
+        };
+    if (resolved == null || !ConnectorFactory.isSupported(resolved)) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
     }
   }

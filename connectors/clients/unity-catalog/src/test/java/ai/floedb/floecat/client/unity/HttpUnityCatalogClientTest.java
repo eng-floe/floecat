@@ -436,21 +436,77 @@ class HttpUnityCatalogClientTest {
   }
 
   /**
-   * Every request carries a bearer token, and the first one goes out before any server can redirect
-   * it -- so an http:// base URI discloses the credential in the clear whatever the workspace would
-   * have answered. Rejected at construction; loopback, as used throughout this test, stays allowed.
+   * A credentialed request goes out before any server can redirect it to HTTPS, so an http:// base
+   * URI would disclose the bearer token in the clear. Refused before the send, and terminally --
+   * loopback, as used throughout this test, stays allowed.
    */
   @Test
-  void aCleartextBaseUriIsRejected() {
-    assertThatThrownBy(
-            () ->
-                new HttpUnityCatalogClient(
-                    URI.create("http://workspace.cloud.databricks.com"),
-                    Duration.ofSeconds(1),
-                    Duration.ofSeconds(5),
-                    () -> Map.of("Authorization", "Bearer catalog-token")))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("https");
+  void aCleartextRequestCarryingCredentialsIsRefused() {
+    var cleartext =
+        new HttpUnityCatalogClient(
+            URI.create("http://workspace.cloud.databricks.com"),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> Map.of("Authorization", "Bearer catalog-token"));
+
+    try (cleartext) {
+      assertThatThrownBy(cleartext::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure -> {
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST);
+                assertThat(failure.getMessage()).contains("https");
+                assertThat(failure.getMessage()).doesNotContain("catalog-token");
+              });
+    }
+  }
+
+  /**
+   * A hostname may legally begin with a numeric label, so a textual "127." prefix test is not a
+   * loopback test: it would hand the bearer token to whatever that name resolves to, in the clear.
+   */
+  @Test
+  void aHostnameThatMerelyLooksLikeLoopbackIsNotTreatedAsLoopback() {
+    var cleartext =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.attacker.example"),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> Map.of("Authorization", "Bearer catalog-token"));
+
+    try (cleartext) {
+      assertThatThrownBy(cleartext::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure())
+                      .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
+    }
+  }
+
+  /**
+   * An unauthenticated Unity Catalog OSS server over plain HTTP has no secret to leak, so it is not
+   * refused: the cleartext guard is scoped to requests that actually carry credentials. The host
+   * never resolves, so the call fails in transport -- which is exactly the point, since the guard
+   * would have refused it before any connection was attempted.
+   */
+  @Test
+  void anUnauthenticatedCleartextRequestIsNotRefused() {
+    var anonymous =
+        new HttpUnityCatalogClient(
+            URI.create("http://unity-catalog.invalid:8080"),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            Map::of);
+
+    try (anonymous) {
+      assertThatThrownBy(anonymous::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.TRANSPORT));
+    }
   }
 
   /**
