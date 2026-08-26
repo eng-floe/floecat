@@ -1929,9 +1929,8 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 </code></pre></div>
 <p>Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via <code>connector job &lt;id&gt;</code>.</p>
-<p>Integration validation and discovery connect directly through the catalog-access SPI. Overlay
-records remain configuration-only at this stack stage; they do not reconcile metadata or affect
-query execution.
+<p>Integration validation connects directly through the catalog-access SPI. Overlay reconciliation
+materializes selected upstream metadata without creating or invoking a legacy Connector resource.
 To exercise the resource model from the Shell, create an integration and overlay:</p>
 <div class="highlight"><pre><span></span><code>integration create lakehouse iceberg-rest https://catalog.example/v1 \
   --auth-type bearer --cred token=secret --props warehouse=analytics
@@ -1939,8 +1938,8 @@ overlay create sales-overlay lakehouse local-catalog --include prod.sales
 integration validate lakehouse
 integration namespaces lakehouse
 integration objects lakehouse prod.sales --kinds table,view
+overlay reconcile sales-overlay
 </code></pre></div>
-<p>Legacy connector commands remain the operational path for external catalog connectivity.</p>
 <p><code>connector jobs</code> shows a parent-job summary table by default. Use
 <code>connector jobs --child &lt;parent-job-id&gt;</code> to render the descendant job tree rooted at that job.
 Both commands support <code>--json</code> for machine-readable output, while <code>connector job &lt;id&gt;</code> remains a

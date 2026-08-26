@@ -1882,8 +1882,10 @@ pass. Authentication, expiry, scope, and storage failures remain distinct in the
 result.</p>
 <p>Discovery results are not persisted and do not materialize Floecat resources. Pagination is applied
 to deterministic provider inventories and continuation tokens are bound to the Integration pointer
-and credential generation, namespace, and object filter. Scheduling, reconciliation, and captured
-resource writes remain separate changes.</p>
+and credential generation, namespace, and object filter.</p>
+<p>The synchronous Catalog Overlay reconciliation RPC uses the same Integration adapter to materialize
+selected namespaces, table definitions, and views as ordinary Floecat resources. Durable scheduling
+and snapshot/file capture remain separate changes.</p>
 <p>The legacy Connector remains operational and unchanged until its explicit migration/removal change.
 The Integration adapter and discovery implementation do not import, call, or fall back to it.</p>
 <p>See <a href="../catalog-integration-design/">Catalog Integration Architecture Decisions</a> for ownership,
