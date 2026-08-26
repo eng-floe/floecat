@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.catalog.access;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -25,6 +26,8 @@ public record CatalogTable(
     CatalogObjectName name,
     ExternalObjectIdentity identity,
     String format,
+    String schemaJson,
+    List<String> partitionKeys,
     Optional<String> metadataLocation,
     Optional<String> storageLocation,
     Map<String, String> properties) {
@@ -35,6 +38,11 @@ public record CatalogTable(
     if (format.isEmpty()) {
       throw new IllegalArgumentException("format must not be blank");
     }
+    schemaJson = Objects.requireNonNull(schemaJson, "schemaJson").trim();
+    if (schemaJson.isEmpty()) {
+      throw new IllegalArgumentException("schemaJson must not be blank");
+    }
+    partitionKeys = List.copyOf(Objects.requireNonNull(partitionKeys, "partitionKeys"));
     metadataLocation = Objects.requireNonNull(metadataLocation, "metadataLocation");
     storageLocation = Objects.requireNonNull(storageLocation, "storageLocation");
     properties = Map.copyOf(Objects.requireNonNull(properties, "properties"));

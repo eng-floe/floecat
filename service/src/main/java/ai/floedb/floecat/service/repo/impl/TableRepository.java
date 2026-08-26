@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +34,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -67,8 +69,20 @@ public class TableRepository {
     repo.create(table);
   }
 
+  public Optional<MutationMeta> createWhilePointersMatch(
+      Table table, PointerConditions conditions) {
+    return repo.createWithMeta(table, conditions, null)
+        .map(GenericResourceRepository.ResourceWithMeta::meta);
+  }
+
   public boolean update(Table table, long expectedPointerVersion) {
     return repo.update(table, expectedPointerVersion);
+  }
+
+  public Optional<MutationMeta> updateWhilePointersMatch(
+      Table table, long expectedPointerVersion, PointerConditions conditions) {
+    return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
+        table, expectedPointerVersion, conditions);
   }
 
   public boolean delete(ResourceId tableResourceId) {
@@ -79,6 +93,15 @@ public class TableRepository {
     return repo.deleteWithPrecondition(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
         expectedPointerVersion);
+  }
+
+  public boolean deleteWhilePointersMatch(
+      ResourceId tableResourceId, long expectedPointerVersion, PointerConditions conditions) {
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
+        expectedPointerVersion,
+        conditions,
+        Map.of());
   }
 
   public Optional<Table> getById(ResourceId tableResourceId) {

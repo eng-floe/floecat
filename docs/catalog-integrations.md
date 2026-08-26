@@ -55,6 +55,7 @@ overlay create sales-overlay lakehouse local-catalog --include prod.sales,prod.r
 integration validate lakehouse
 integration namespaces lakehouse
 integration objects lakehouse prod.sales --kinds table,view
+overlay reconcile sales-overlay
 ```
 
 The overlay command accepts either a resource ID or display name for the integration.
@@ -80,8 +81,17 @@ overlay list [--integration <name|id>]
 overlay get <name|id>
 overlay create <name> <integration-name|id> <catalog-name|id> [options]
 overlay update <name|id> [options]
+overlay reconcile <name|id> [--etag <etag>]
 overlay delete <name|id>
 ```
+
+Run only the real-Polaris Integration validation and Overlay reconciliation smoke scenario with:
+
+```text
+COMPOSE_SMOKE_MODES=polaris-integration make compose-smoke
+```
+
+This mode does not create or trigger a legacy Connector resource.
 
 Authentication types and their properties are:
 

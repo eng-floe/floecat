@@ -118,10 +118,31 @@ message DeleteCatalogOverlayResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
+// Runs one synchronous metadata reconciliation for an overlay. This materializes the selected
+// upstream namespace, table, and view inventory into the catalog owned by the overlay. Snapshot
+// and file capture are handled by the durable reconciliation layer in a later stack change.
+message ReconcileCatalogOverlayRequest {
+  ai.floedb.floecat.common.ResourceId overlay_id = 1;
+  ai.floedb.floecat.common.Precondition precondition = 2;
+}
+
+message ReconcileCatalogOverlayResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+  uint32 namespaces_created = 2;
+  uint32 namespaces_deleted = 3;
+  uint32 tables_created = 4;
+  uint32 tables_updated = 5;
+  uint32 tables_deleted = 6;
+  uint32 views_created = 7;
+  uint32 views_updated = 8;
+  uint32 views_deleted = 9;
+}
+
 service CatalogOverlays {
   rpc GetCatalogOverlay(GetCatalogOverlayRequest) returns (GetCatalogOverlayResponse);
   rpc ListCatalogOverlays(ListCatalogOverlaysRequest) returns (ListCatalogOverlaysResponse);
   rpc CreateCatalogOverlay(CreateCatalogOverlayRequest) returns (CreateCatalogOverlayResponse);
   rpc UpdateCatalogOverlay(UpdateCatalogOverlayRequest) returns (UpdateCatalogOverlayResponse);
   rpc DeleteCatalogOverlay(DeleteCatalogOverlayRequest) returns (DeleteCatalogOverlayResponse);
+  rpc ReconcileCatalogOverlay(ReconcileCatalogOverlayRequest) returns (ReconcileCatalogOverlayResponse);
 }

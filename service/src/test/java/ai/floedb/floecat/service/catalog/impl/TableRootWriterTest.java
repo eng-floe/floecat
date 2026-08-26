@@ -118,6 +118,13 @@ class TableRootWriterTest {
     return MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build();
   }
 
+  private MutationMeta definitionMeta(String revision) {
+    return MutationMeta.newBuilder()
+        .setBlobUri("s3://t/table-" + revision + ".pb")
+        .setEtag("etag-" + revision)
+        .build();
+  }
+
   @Test
   void commitStatsGenerationRecordsTheActiveGenerationOnTheEntry() {
     when(statsStore.activeStatsGeneration(tableId, 7L))
@@ -168,6 +175,33 @@ class TableRootWriterTest {
     when(constraintRepo.metaForSafe(tableId, 7L)).thenReturn(MutationMeta.getDefaultInstance());
     writer.commitConstraints(tableId, 7L);
     assertFalse(entry(7).hasConstraintsRef());
+  }
+
+  @Test
+  void replacingAStaleDefinitionPreservesSnapshotStateAndDoesNotClobberAWinner() {
+    MutationMeta original = definitionMeta("original");
+    MutationMeta stale = definitionMeta("stale");
+    MutationMeta winner = definitionMeta("winner");
+    writer.commitDefinition(tableId, original);
+    var before = roots.get(tableId).orElseThrow();
+
+    writer.commitDefinition(tableId, stale);
+    writer.replaceDefinitionIfMatches(tableId, stale, original);
+
+    var restored = roots.get(tableId).orElseThrow();
+    assertEquals(original.getBlobUri(), restored.getDefinitionRef().getUri());
+    assertEquals(original.getEtag(), restored.getDefinitionRef().getVersion());
+    assertEquals(before.getSnapshotManifestRef(), restored.getSnapshotManifestRef());
+    assertEquals(7L, restored.getCurrentSnapshotId());
+
+    writer.commitDefinition(tableId, winner);
+    writer.replaceDefinitionIfMatches(tableId, stale, original);
+
+    var retainedWinner = roots.get(tableId).orElseThrow();
+    assertEquals(winner.getBlobUri(), retainedWinner.getDefinitionRef().getUri());
+    assertEquals(winner.getEtag(), retainedWinner.getDefinitionRef().getVersion());
+    assertEquals(before.getSnapshotManifestRef(), retainedWinner.getSnapshotManifestRef());
+    assertEquals(7L, retainedWinner.getCurrentSnapshotId());
   }
 
   @Test

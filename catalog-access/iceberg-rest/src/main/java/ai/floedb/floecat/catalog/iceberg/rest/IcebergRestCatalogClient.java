@@ -179,6 +179,8 @@ final class IcebergRestCatalogClient implements CatalogClient {
               name,
               externalIdentity(name, metadata),
               "ICEBERG",
+              SchemaParser.toJson(table.schema()),
+              table.spec().fields().stream().map(field -> field.name()).toList(),
               metadataLocation(metadata),
               Optional.ofNullable(table.location()).filter(location -> !location.isBlank()),
               table.properties());

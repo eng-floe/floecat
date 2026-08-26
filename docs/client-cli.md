@@ -93,9 +93,8 @@ User command → Picocli parser → Shell subcommand → gRPC stub call
 Commands run synchronously inside the REPL thread; long-running operations (for example connector
 reconciliation) show job IDs that can be polled via `connector job <id>`.
 
-Integration validation and discovery connect directly through the catalog-access SPI. Overlay
-records remain configuration-only at this stack stage; they do not reconcile metadata or affect
-query execution.
+Integration validation connects directly through the catalog-access SPI. Overlay reconciliation
+materializes selected upstream metadata without creating or invoking a legacy Connector resource.
 To exercise the resource model from the Shell, create an integration and overlay:
 
 ```text
@@ -105,9 +104,8 @@ overlay create sales-overlay lakehouse local-catalog --include prod.sales
 integration validate lakehouse
 integration namespaces lakehouse
 integration objects lakehouse prod.sales --kinds table,view
+overlay reconcile sales-overlay
 ```
-
-Legacy connector commands remain the operational path for external catalog connectivity.
 
 `connector jobs` shows a parent-job summary table by default. Use
 `connector jobs --child <parent-job-id>` to render the descendant job tree rooted at that job.

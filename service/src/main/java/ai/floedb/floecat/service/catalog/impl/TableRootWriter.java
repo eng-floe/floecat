@@ -159,6 +159,19 @@ public class TableRootWriter {
     committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
   }
 
+  /** Restores the current table definition only when the root still publishes a stale revision. */
+  public void replaceDefinitionIfMatches(
+      ResourceId tableId, MutationMeta staleDefinition, MutationMeta currentDefinition) {
+    BlobRef staleRef = BlobRefs.refFrom(staleDefinition);
+    if (staleRef == null) {
+      return;
+    }
+    committer.commit(
+        tableId,
+        TableRootMutations.replaceDefinitionIfMatches(
+            staleRef, BlobRefs.refFrom(currentDefinition)));
+  }
+
   /**
    * Records the snapshot's active stats generation on its manifest entry — called when a generation
    * is activated (a replace-all publish, a first upsert creating the generation) or removed. The

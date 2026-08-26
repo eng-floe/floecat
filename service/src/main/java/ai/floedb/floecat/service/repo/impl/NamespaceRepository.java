@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +34,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -75,8 +77,18 @@ public class NamespaceRepository {
     repo.create(namespace);
   }
 
+  public boolean createWhilePointersMatch(Namespace namespace, PointerConditions conditions) {
+    return repo.createWithMeta(namespace, conditions, null).isPresent();
+  }
+
   public boolean update(Namespace namespace, long expectedPointerVersion) {
     return repo.update(namespace, expectedPointerVersion);
+  }
+
+  public Optional<MutationMeta> updateWhilePointersMatch(
+      Namespace namespace, long expectedPointerVersion, PointerConditions conditions) {
+    return repo.updateWithMetaWhilePointersMatchAndBumpMarkers(
+        namespace, expectedPointerVersion, conditions);
   }
 
   public boolean delete(ResourceId namespaceResourceId) {
@@ -89,6 +101,15 @@ public class NamespaceRepository {
     return repo.deleteWithPrecondition(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
         expectedPointerVersion);
+  }
+
+  public boolean deleteWhilePointersMatch(
+      ResourceId namespaceResourceId, long expectedPointerVersion, PointerConditions conditions) {
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
+        expectedPointerVersion,
+        conditions,
+        Map.of());
   }
 
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {

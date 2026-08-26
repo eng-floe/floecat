@@ -288,7 +288,7 @@ public final class RefreshingAwsCredentialsRegistry {
                 throw terminalRefresh;
               }
               if (snapshot.credentials().expiresAt() != null
-                  && now.isBefore(snapshot.credentials().expiresAt())) {
+                  && clock.instant().isBefore(snapshot.credentials().expiresAt())) {
                 return toAwsCredentials(snapshot.credentials());
               }
               throw e;

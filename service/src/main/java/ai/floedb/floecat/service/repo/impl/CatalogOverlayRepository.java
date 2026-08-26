@@ -152,13 +152,17 @@ public class CatalogOverlayRepository {
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
       Map<String, Long> parentMarkerVersions) {
+    String deletionFence =
+        Keys.catalogOverlayDeletionMarker(
+            current.getResourceId().getAccountId(), current.getResourceId().getId());
+    long deletionFenceVersion = deletionFenceVersion(current.getResourceId());
     return repo.replaceIdentityWithMeta(
         current,
         expectedPointerVersion,
         replacement,
         new PointerConditions(
             requiredPointerVersions, requiredAbsentPointers, parentMarkerVersions),
-        Map.of());
+        deletionFenceVersion == 0L ? Map.of() : Map.of(deletionFence, deletionFenceVersion));
   }
 
   public boolean deleteWithPrecondition(ResourceId overlayId, long expectedPointerVersion) {

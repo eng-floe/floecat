@@ -508,6 +508,12 @@ final class TableCliSupport {
     out.printf(
         "  connector_id: %s%n",
         upstream.hasConnectorId() ? upstream.getConnectorId().getId() : "-");
+    out.printf(
+        "  integration_id: %s%n",
+        upstream.hasCatalogIntegrationId() ? upstream.getCatalogIntegrationId().getId() : "-");
+    out.printf(
+        "  overlay_id:    %s%n",
+        upstream.hasCatalogOverlayId() ? upstream.getCatalogOverlayId().getId() : "-");
     if (!upstream.getPartitionKeysList().isEmpty()) {
       out.printf("  partitions:   %s%n", String.join(", ", upstream.getPartitionKeysList()));
     }

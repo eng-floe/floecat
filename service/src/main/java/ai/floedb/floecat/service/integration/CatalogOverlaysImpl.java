@@ -31,8 +31,12 @@ import ai.floedb.floecat.integration.rpc.GetCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysRequest;
 import ai.floedb.floecat.integration.rpc.ListCatalogOverlaysResponse;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogOverlayResponse;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -74,6 +78,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject CatalogOverlayReconciler reconciler;
+  @Inject CatalogGraphView graphView;
 
   @Override
   public Uni<ListCatalogOverlaysResponse> listCatalogOverlays(ListCatalogOverlaysRequest request) {
@@ -215,6 +221,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   ResourceId integrationId =
                       scopedIntegrationId(pc.getAccountId(), spec.getIntegrationId());
                   ResourceId catalogId = scopedCatalogId(pc.getAccountId(), spec.getCatalogId());
+                  catalogSurfaceWritePolicy().requireWritableCatalog(catalogId, "catalog_id", corr);
                   List<NamespacePath> includes =
                       normalizePaths(spec.getIncludeNamespacesList(), "include_namespaces", corr);
                   List<NamespacePath> excludes =
@@ -388,8 +395,6 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             Keys.catalogOverlaysMarker(accountId, oldCatalogId.getId()),
             markerStore.catalogOverlaysMarkerVersion(oldCatalogId));
       }
-      requiredAbsent.add(
-          Keys.catalogOverlayDeletionMarker(accountId, current.value().getResourceId().getId()));
       var replacement =
           CatalogOverlay.newBuilder()
               .setResourceId(overlayId)
@@ -401,14 +406,23 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               .setCreatedAt(now)
               .setUpdatedAt(now)
               .build();
+      Map<String, Long> replacementParents = Map.copyOf(parentVersions);
+      Set<String> replacementRequiredAbsent = Set.copyOf(requiredAbsent);
+      Map<String, Long> replacementMarkers = Map.copyOf(markerVersions);
+      if (!overlays.beginDeletion(
+          current.value().getResourceId(), current.meta().getPointerVersion())) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "overlay changed while replacement fenced its old identity");
+      }
+      reconciler.retireMaterializedResources(current.value());
       return overlays
           .replaceIdentityAttachedWithMeta(
               current.value(),
               current.meta().getPointerVersion(),
               replacement,
-              Map.copyOf(parentVersions),
-              Set.copyOf(requiredAbsent),
-              Map.copyOf(markerVersions))
+              replacementParents,
+              replacementRequiredAbsent,
+              replacementMarkers)
           .orElseThrow(
               () ->
                   new BaseResourceRepository.AbortRetryableException(
@@ -542,6 +556,53 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   }
 
   @Override
+  public Uni<ReconcileCatalogOverlayResponse> reconcileCatalogOverlay(
+      ReconcileCatalogOverlayRequest request) {
+    return mapFailures(
+        runWithRetry(
+            () -> {
+              var pc = principal.get();
+              authz.require(pc, RolePermissions.CATALOG_OVERLAY_RECONCILE);
+              authz.require(pc, RolePermissions.CATALOG_INTEGRATION_USE);
+              String corr = pc.getCorrelationId();
+              ResourceId overlayId = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
+              var current =
+                  overlays
+                      .getByIdWithMeta(overlayId)
+                      .orElseThrow(
+                          () -> GrpcErrors.notFound(corr, null, Map.of("id", overlayId.getId())));
+              MutationOps.BaseServiceChecks.enforcePreconditions(
+                  corr, current.meta(), request.getPrecondition());
+              catalogSurfaceWritePolicy()
+                  .requireWritableCatalog(current.value().getCatalogId(), "catalog_id", corr);
+              var integration =
+                  integrations
+                      .getByIdWithMeta(current.value().getIntegrationId())
+                      .orElseThrow(
+                          () ->
+                              new BaseResourceRepository.CorruptionException(
+                                  "overlay references a missing Catalog Integration: "
+                                      + current.value().getIntegrationId().getId(),
+                                  null));
+              var result =
+                  reconciler.reconcile(
+                      current.value(), current.meta(), integration.value(), integration.meta());
+              return ReconcileCatalogOverlayResponse.newBuilder()
+                  .setMeta(current.meta())
+                  .setNamespacesCreated(result.namespacesCreated())
+                  .setNamespacesDeleted(result.namespacesDeleted())
+                  .setTablesCreated(result.tablesCreated())
+                  .setTablesUpdated(result.tablesUpdated())
+                  .setTablesDeleted(result.tablesDeleted())
+                  .setViewsCreated(result.viewsCreated())
+                  .setViewsUpdated(result.viewsUpdated())
+                  .setViewsDeleted(result.viewsDeleted())
+                  .build();
+            }),
+        correlationId());
+  }
+
+  @Override
   public Uni<DeleteCatalogOverlayResponse> deleteCatalogOverlay(
       DeleteCatalogOverlayRequest request) {
     var L = LogHelper.start(LOG, "DeleteCatalogOverlay");
@@ -550,7 +611,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
             runWithRetry(
                 () -> {
                   var pc = principal.get();
-                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_WRITE);
+                  authz.require(pc, RolePermissions.CATALOG_OVERLAY_DELETE);
                   String corr = pc.getCorrelationId();
                   ResourceId id = scopedOverlayId(pc.getAccountId(), request.getOverlayId());
                   var current = overlays.getByIdWithMeta(id);
@@ -567,9 +628,10 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   if (!overlays.beginDeletion(id, meta.getPointerVersion()))
                     throw new BaseResourceRepository.AbortRetryableException(
                         "overlay changed while deletion was fenced");
-                  // Reconciliation has not landed in this API change, so there are no materialized
-                  // contributions to retire yet. The fence is nevertheless installed before the
-                  // dependency pointers and resource are removed.
+                  reconciler.retireMaterializedResources(current.get().value());
+                  // Managed descendants retire behind the fence first. The final transaction
+                  // removes
+                  // only the overlay, its dependencies, and the fence; the target catalog remains.
                   long fenceVersion = overlays.deletionFenceVersion(id);
                   if (fenceVersion == 0L
                       || !overlays.deleteWithFence(id, meta.getPointerVersion(), fenceVersion))
@@ -582,6 +644,10 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(graphView);
   }
 
   private List<NamespacePath> normalizePaths(List<NamespacePath> paths, String field, String corr) {

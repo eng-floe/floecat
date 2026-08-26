@@ -39,6 +39,8 @@ import ai.floedb.floecat.integration.rpc.ListUpstreamNamespacesRequest;
 import ai.floedb.floecat.integration.rpc.ListUpstreamObjectsRequest;
 import ai.floedb.floecat.integration.rpc.NamespacePath;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayRequest;
+import ai.floedb.floecat.integration.rpc.ReconcileCatalogOverlayResponse;
 import ai.floedb.floecat.integration.rpc.SecretValue;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationAuthenticationRequest;
 import ai.floedb.floecat.integration.rpc.UpdateCatalogIntegrationRequest;
@@ -259,7 +261,7 @@ final class IntegrationCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> accountId) {
     if (args.isEmpty()) {
-      out.println("usage: overlay <list|get|create|update|delete> ...");
+      out.println("usage: overlay <list|get|create|update|reconcile|delete> ...");
       return;
     }
     switch (args.getFirst()) {
@@ -313,6 +315,18 @@ final class IntegrationCliSupport {
         var precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) request.setPrecondition(precondition);
         printOverlays(List.of(overlays.updateCatalogOverlay(request.build()).getOverlay()), out);
+      }
+      case "reconcile" -> {
+        if (args.size() < 2) {
+          out.println("usage: overlay reconcile <name|id> [--etag <etag>]");
+          return;
+        }
+        var request =
+            ReconcileCatalogOverlayRequest.newBuilder()
+                .setOverlayId(resolveOverlay(args.get(1), overlays, accountId));
+        var precondition = CliArgs.preconditionFromEtag(args);
+        if (precondition != null) request.setPrecondition(precondition);
+        printReconcile(overlays.reconcileCatalogOverlay(request.build()), out);
       }
       case "delete" -> {
         if (args.size() < 2) {
@@ -676,6 +690,17 @@ final class IntegrationCliSupport {
           check.getIssue().name().replaceFirst("^CIVI_", ""),
           check.getSummary());
     }
+  }
+
+  private static void printReconcile(ReconcileCatalogOverlayResponse response, PrintStream out) {
+    out.printf("namespaces_created: %d%n", response.getNamespacesCreated());
+    out.printf("namespaces_deleted: %d%n", response.getNamespacesDeleted());
+    out.printf("tables_created: %d%n", response.getTablesCreated());
+    out.printf("tables_updated: %d%n", response.getTablesUpdated());
+    out.printf("tables_deleted: %d%n", response.getTablesDeleted());
+    out.printf("views_created: %d%n", response.getViewsCreated());
+    out.printf("views_updated: %d%n", response.getViewsUpdated());
+    out.printf("views_deleted: %d%n", response.getViewsDeleted());
   }
 
   private static void printIntegrationHeader(PrintStream out) {

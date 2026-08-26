@@ -192,6 +192,32 @@ class RefreshingAwsCredentialsRegistryTest {
     }
   }
 
+  @Test
+  void failedRefreshDoesNotReturnCredentialsThatExpiredDuringTheRefresh() {
+    Instant start = Instant.parse("2026-08-05T12:00:00Z");
+    MutableClock clock = new MutableClock(start);
+    IllegalStateException refreshFailure = new IllegalStateException("refresh failed");
+    try (var registration =
+        RefreshingAwsCredentialsRegistry.register(
+            "expiry-during-refresh-test",
+            credentials("old", start.plusSeconds(30)),
+            () -> {
+              clock.advance(Duration.ofSeconds(10));
+              throw refreshFailure;
+            },
+            Duration.ofMinutes(1),
+            clock)) {
+      clock.advance(Duration.ofSeconds(21));
+      assertSame(
+          refreshFailure,
+          assertThrows(
+              IllegalStateException.class,
+              () ->
+                  RefreshingAwsCredentialsRegistry.resolve(
+                      registration.providerId(), AwsCredentialScope.CATALOG)));
+    }
+  }
+
   private static Map<String, String> providerProperties(
       RefreshingAwsCredentialsRegistry.Registration registration, AwsCredentialScope scope) {
     String providerId =

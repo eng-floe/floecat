@@ -116,7 +116,7 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   Get accepts either resource ID or
   exact display name. Reads require
   `catalog-integration.read`; writes require `catalog-integration.write`, and cascading deletion of
-  dependent overlays also requires `catalog-overlay.write`.
+  dependent overlays also requires `catalog-overlay.delete`.
 - **CatalogOverlaysImpl** – Binds an integration and optional upstream namespace filters to an
   existing Catalog. The Catalog remains independently named, writable, and managed, and multiple
   overlays may target it. Creating an overlay atomically publishes Integration and Catalog
@@ -129,9 +129,12 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   selects all namespaces; paths select subtrees, exclusions
   take precedence, and matching is case-sensitive. The Integration and Catalog bindings are immutable through
   update; updates only replace the selected include/exclude lists or rename the overlay. Reads require
-  `catalog-overlay.read`; writes require `catalog-overlay.write`, and creation also requires
-  `catalog-integration.use`. Connectivity and
-  reconciliation are deferred.
+  `catalog-overlay.read`; create and update require `catalog-overlay.write`, and creation also
+  requires `catalog-integration.use` and `catalog.write`.
+  Reconciliation requires `catalog-overlay.reconcile` plus `catalog-integration.use`; deletion
+  requires `catalog-overlay.delete`. These dedicated permissions are not
+  inferred from `catalog-overlay.write` or namespace/table/view permissions. Connectivity is
+  deferred.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
   `CaptureNow` maps to reconciler capture modes:
