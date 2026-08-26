@@ -67,6 +67,9 @@ public class SourceCatalogCredentialVendor {
   private static final org.jboss.logging.Logger LOG =
       org.jboss.logging.Logger.getLogger(SourceCatalogCredentialVendor.class);
 
+  /** Cap on the gRPC status description built from a catalog failure. See catalogFailureStatus. */
+  private static final int MAX_STATUS_DESCRIPTION = 512;
+
   /**
    * Non-secret S3 routing keys a vended credential carries, safe to expose in client_safe_config.
    */
@@ -383,6 +386,16 @@ public class SourceCatalogCredentialVendor {
         String.format(
             "source catalog %s refused credentials for %s.%s: %s",
             connector.getResourceId().getId(), namespaceFq, tableName, cause);
+    // The cause's message can carry a snippet of whatever the catalog -- or a proxy in front of it
+    // -- returned. That belongs in the server log, not in the status: grpc-message is
+    // percent-encoded trailer metadata that travels to every consumer and competes with HTTP/2's
+    // header-size limits, and an HTML error page there is unreadable noise. The full text is
+    // logged here; the status carries a bounded summary that says where to find the rest.
+    LOG.warnf(cause, "%s", detail);
+    String description =
+        detail.length() <= MAX_STATUS_DESCRIPTION
+            ? detail
+            : detail.substring(0, MAX_STATUS_DESCRIPTION) + "... (truncated; see server log)";
 
     // Typed exceptions only. Substring-matching the cause chain for 401/403/"access denied" gets
     // the risk backwards: a transient failure whose text merely contains one of those tokens -- a
@@ -397,13 +410,13 @@ public class SourceCatalogCredentialVendor {
     for (Throwable c = cause; c != null && seen.add(c); c = c.getCause()) {
       if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
         return io.grpc.Status.UNAUTHENTICATED
-            .withDescription(detail)
+            .withDescription(description)
             .withCause(cause)
             .asRuntimeException();
       }
       if (c instanceof org.apache.iceberg.exceptions.ForbiddenException) {
         return io.grpc.Status.PERMISSION_DENIED
-            .withDescription(detail)
+            .withDescription(description)
             .withCause(cause)
             .asRuntimeException();
       }
@@ -414,12 +427,12 @@ public class SourceCatalogCredentialVendor {
         return switch (access.denial()) {
           case UNAUTHENTICATED ->
               io.grpc.Status.UNAUTHENTICATED
-                  .withDescription(detail)
+                  .withDescription(description)
                   .withCause(cause)
                   .asRuntimeException();
           case PERMISSION_DENIED ->
               io.grpc.Status.PERMISSION_DENIED
-                  .withDescription(detail)
+                  .withDescription(description)
                   .withCause(cause)
                   .asRuntimeException();
           // Terminal, but not a denial, so it must not travel as one: PERMISSION_DENIED here would
@@ -428,13 +441,16 @@ public class SourceCatalogCredentialVendor {
           // rather than by the shared FAILED_PRECONDITION code.
           case UNSUPPORTED ->
               ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
-                  .sourceCatalogVendRefused(detail);
+                  .sourceCatalogVendRefused(description);
         };
       }
     }
     // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager
     // retry only costs time.
-    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
+    return io.grpc.Status.INTERNAL
+        .withDescription(description)
+        .withCause(cause)
+        .asRuntimeException();
   }
 
   /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */

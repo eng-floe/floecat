@@ -244,13 +244,19 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   /**
-   * Releases the catalog client's transport and the auth provider's, along with the Delta engine's.
+   * Releases the catalog client's transport and the auth provider's.
    *
    * <p>A connector is built per vend -- once per scan session and once per file group -- so the
    * HTTP client behind {@code catalog} would otherwise leak a selector thread and an executor pool
    * on every call. The auth provider leaks the same way: with {@code oauth.mode=cli} it is an
    * {@code OAuth2BearerAuthProvider} wrapping a token provider that owns a second {@link
    * java.net.http.HttpClient}.
+   *
+   * <p>{@code super.close()} is called for form, not for effect: {@code DeltaConnector.close()} is
+   * a no-op, so nothing here releases the Delta engine or the {@code RefreshingAwsClient} behind
+   * it. That is currently harmless -- the S3 client is built lazily, and a connector used only for
+   * credential vending never triggers it -- but it is not a release, and this javadoc does not
+   * claim one.
    */
   @Override
   public void close() {

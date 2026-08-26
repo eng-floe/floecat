@@ -353,11 +353,12 @@ class HttpUnityCatalogClientTest {
   }
 
   /**
-   * The JDK's default redirect policy is NEVER, which surfaced an ordinary workspace redirect as an
-   * unusable 3xx. A moved workspace host has to be followed like any other client would.
+   * An ordinary workspace redirect has to be followed, and the Authorization header has to survive
+   * it -- which is why redirects are followed by hand: Redirect.NORMAL would have stripped it.
    */
   @Test
-  void aRedirectIsFollowed() {
+  void aSameOriginRedirectIsFollowedWithAuthenticationIntact() {
+    var authorization = new AtomicReference<String>();
     server.createContext(
         "/api/2.1/unity-catalog/catalogs",
         exchange -> {
@@ -365,9 +366,144 @@ class HttpUnityCatalogClientTest {
           respond(exchange, 301, "");
         });
     server.createContext(
-        "/moved/catalogs", exchange -> respond(exchange, 200, "{\"catalogs\":[{\"name\":\"c\"}]}"));
+        "/moved/catalogs",
+        exchange -> {
+          authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+          respond(exchange, 200, "{\"catalogs\":[{\"name\":\"c\"}]}");
+        });
 
     assertThat(client.listCatalogs()).containsExactly("c");
+    assertThat(authorization.get()).isEqualTo("Bearer catalog-token");
+  }
+
+  /**
+   * Redirect.NORMAL re-issues a followed 301 as a bodyless GET, which the credentials call cannot
+   * survive: the redirect target sees no table_id and answers 404 or 405. Following by hand replays
+   * the POST and its body.
+   */
+  @Test
+  void aRedirectedPostKeepsItsMethodAndBody() {
+    var method = new AtomicReference<String>();
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange -> {
+          exchange.getResponseHeaders().add("Location", "/moved/credentials");
+          respond(exchange, 307, "");
+        });
+    server.createContext(
+        "/moved/credentials",
+        exchange -> {
+          method.set(exchange.getRequestMethod());
+          String body =
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+          assertThat(body).contains("table-id");
+          respond(
+              exchange,
+              200,
+              "{\"aws_temp_credentials\":{\"access_key_id\":\"ak\",\"secret_access_key\":\"sk\"}}");
+        });
+
+    var credentials =
+        client.generateTemporaryTableCredentials(
+            "table-id", UnityCatalogClient.TableOperation.READ);
+
+    assertThat(method.get()).isEqualTo("POST");
+    assertThat(credentials.awsCredentials().accessKeyId()).isEqualTo("ak");
+  }
+
+  /**
+   * A redirect to another origin is where the JDK drops Authorization, and following it by hand
+   * would instead hand the long-lived catalog token to a host the configuration never named. It is
+   * a misconfigured base URI, so it is permanent and names the Location it declined.
+   */
+  @Test
+  void aCrossOriginRedirectIsRefusedPermanently() {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          exchange.getResponseHeaders().add("Location", "https://elsewhere.example.com/catalogs");
+          respond(exchange, 302, "");
+        });
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST);
+              assertThat(failure.getMessage()).contains("elsewhere.example.com");
+            });
+  }
+
+  /**
+   * Every request carries a bearer token, and the first one goes out before any server can redirect
+   * it -- so an http:// base URI discloses the credential in the clear whatever the workspace would
+   * have answered. Rejected at construction; loopback, as used throughout this test, stays allowed.
+   */
+  @Test
+  void aCleartextBaseUriIsRejected() {
+    assertThatThrownBy(
+            () ->
+                new HttpUnityCatalogClient(
+                    URI.create("http://workspace.cloud.databricks.com"),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(5),
+                    () -> Map.of("Authorization", "Bearer catalog-token")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("https");
+  }
+
+  /**
+   * HttpRequest.Builder.header rejects a value HTTP cannot carry -- a token pasted with a trailing
+   * newline. Bare, that IllegalArgumentException reaches the storage service unclassified and comes
+   * back retryable, so the reconciler loops on a config fault that never self-corrects.
+   */
+  @Test
+  void anUnusableAuthenticationHeaderIsTerminal() {
+    var broken =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> Map.of("Authorization", "Bearer token-with-a-newline\n"));
+
+    try (broken) {
+      assertThatThrownBy(broken::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure())
+                      .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
+    }
+  }
+
+  /**
+   * The credentials response carries secret_access_key and session_token in the clear, so a body
+   * truncated past those fields must not be quoted into an exception message that reaches the
+   * storage service's gRPC status and the logs.
+   */
+  @Test
+  void aMalformedCredentialsResponseDoesNotQuoteTheBody() {
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                "{\"aws_temp_credentials\":{\"secret_access_key\":\"super-secret\","));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE);
+              assertThat(failure.getMessage()).doesNotContain("super-secret");
+              assertThat(failure.getMessage()).contains("body withheld");
+            });
   }
 
   /**
@@ -442,7 +578,7 @@ class HttpUnityCatalogClientTest {
   }
 
   /**
-   * With Redirect.NORMAL the response can come from a URI other than the one requested, and a 404
+   * A followed redirect means the response came from a URI other than the one requested, and a 404
    * from a redirect target reads as a missing endpoint unless the message says where it landed.
    */
   @Test
