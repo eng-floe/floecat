@@ -290,10 +290,14 @@ public class ServerSideStorageConfigResolver {
       // validation failures, so matching the code alone turned a real configuration error into a
       // silent fallback whose cause only resurfaced as an opaque FileIO failure much later.
       //
-      // Only "no authority covers this location" is recoverable by delegation: the catalog client
-      // holds vended credentials of its own, so the untouched config is what it needs.
+      // Only "no authority covers this location" is recoverable by delegation, and only for a
+      // catalog whose own client applies vended credentials when it loads the table -- for that
+      // one the untouched config is exactly what it needs. Deliberately not the broader
+      // "declares vending" gate: Delta/Unity vend only on request and build their S3 client from
+      // the connector's own s3.* options, so absorbing there would replace a precise
+      // missing-authority failure with an opaque 403 on the first read.
       if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
-          && SourceCatalogVending.declaresVendedCredentials(config)) {
+          && SourceCatalogVending.clientAppliesVendedCredentials(config)) {
         return config;
       }
       throw e;

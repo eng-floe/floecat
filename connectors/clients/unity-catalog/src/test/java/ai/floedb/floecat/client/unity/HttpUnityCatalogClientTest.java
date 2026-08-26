@@ -306,6 +306,26 @@ class HttpUnityCatalogClientTest {
             });
   }
 
+  /**
+   * A 4xx that is transient by definition must not fall into the permanent default. 408 is what a
+   * load balancer in front of a Databricks workspace emits when the upstream is slow; classifying
+   * it INVALID_REQUEST would make the reconcile job give up on it for good.
+   */
+  @Test
+  void aTransientClientErrorStaysRetryable() {
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange -> respond(exchange, 408, "gateway timed out"));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.OTHER));
+  }
+
   @Test
   void aServerErrorStaysRetryableWhateverTheBodySays() {
     server.createContext(

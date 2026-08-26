@@ -129,6 +129,33 @@ class SourceCatalogVendingTest {
     assertThat(DatabricksAccessDelegation.declaresVendedCredentials(null)).isFalse();
   }
 
+  /**
+   * Declaring vending and applying it at load time are different questions. Only Iceberg REST
+   * answers yes to the second: Delta/Unity vend on request and build their S3 client from the
+   * connector's own options, so an untouched config carries no storage credentials.
+   */
+  @Test
+  void onlyIcebergAppliesVendedCredentialsWhenLoading() {
+    ConnectorConfig unity =
+        config(ConnectorConfig.Kind.UNITY, Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"));
+    ConnectorConfig delta =
+        config(ConnectorConfig.Kind.DELTA, Map.of(DatabricksAccessDelegation.VEND_OPTION, "true"));
+    ConnectorConfig iceberg =
+        config(
+            ConnectorConfig.Kind.ICEBERG,
+            Map.of(IcebergAccessDelegation.HEADER_PROPERTY, "vended-credentials"));
+
+    assertThat(SourceCatalogVending.declaresVendedCredentials(unity)).isTrue();
+    assertThat(SourceCatalogVending.clientAppliesVendedCredentials(unity)).isFalse();
+    assertThat(SourceCatalogVending.clientAppliesVendedCredentials(delta)).isFalse();
+    assertThat(SourceCatalogVending.clientAppliesVendedCredentials(iceberg)).isTrue();
+    assertThat(
+            SourceCatalogVending.clientAppliesVendedCredentials(
+                config(ConnectorConfig.Kind.ICEBERG, Map.of())))
+        .isFalse();
+    assertThat(SourceCatalogVending.clientAppliesVendedCredentials(null)).isFalse();
+  }
+
   @Test
   void neutralDispatcherDoesNotCrossFormatBoundaries() {
     assertThat(

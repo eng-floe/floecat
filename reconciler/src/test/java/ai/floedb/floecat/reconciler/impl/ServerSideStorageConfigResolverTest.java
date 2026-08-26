@@ -417,8 +417,14 @@ class ServerSideStorageConfigResolverTest {
     assertEquals(config.options(), resolved.options());
   }
 
+  /**
+   * Unity declares vending, but its connector applies vended credentials only when asked: the Delta
+   * engine's S3 client is built from the connector's own {@code s3.*} options. An untouched config
+   * therefore carries no storage credentials, so the missing-authority error must propagate rather
+   * than be absorbed into an opaque 403 on the first read.
+   */
   @Test
-  void delegatingUnityConnectorFallsBackToCatalogWhenNoAuthorityMatches() {
+  void delegatingUnityConnectorPropagatesMissingAuthority() {
     ConnectorConfig config =
         new ConnectorConfig(
             ConnectorConfig.Kind.UNITY,
@@ -436,11 +442,11 @@ class ServerSideStorageConfigResolverTest {
     when(resolver.storageAuthorities.vendStorageCredentials(any()))
         .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
 
-    ConnectorConfig resolved =
-        resolveWithStorageLocation(resolver, unityConnector(), config).config();
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> resolveWithStorageLocation(resolver, unityConnector(), config));
 
     verify(resolver.storageAuthorities).vendStorageCredentials(any());
-    assertEquals(config.options(), resolved.options());
   }
 
   /**

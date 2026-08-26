@@ -293,6 +293,10 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * job retries a refusal that will never change. The body's code is consulted first, and any
    * remaining 4xx becomes {@link UnityCatalogException.Failure#INVALID_REQUEST} rather than {@code
    * OTHER} so the connector can treat it as the permanent condition it is.
+   *
+   * <p>That default is only safe because the 4xx statuses that are <em>not</em> permanent are named
+   * explicitly first. Otherwise it would be asymmetric with {@link #failureFromErrorCode}, which
+   * deliberately falls through on anything unrecognised rather than guess terminal.
    */
   private static UnityCatalogException httpFailure(int status, String path, String body) {
     String responseBody = body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
@@ -307,6 +311,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
             case 403 -> UnityCatalogException.Failure.PERMISSION_DENIED;
             case 404 -> UnityCatalogException.Failure.NOT_FOUND;
             case 429 -> UnityCatalogException.Failure.RATE_LIMITED;
+            // 4xx codes that are transient by definition, listed so they do not fall into the
+            // permanent default below: 408 is what a load balancer or proxy in front of a
+            // Databricks workspace emits when the upstream is slow, and 409/423/425 all mean
+            // "the same request will work again shortly". OTHER, like an unrecognised
+            // error_code, leaves the connector's retry behaviour unchanged.
+            case 408, 409, 423, 425 -> UnityCatalogException.Failure.OTHER;
             default -> {
               if (status >= 500) {
                 yield UnityCatalogException.Failure.SERVER_ERROR;

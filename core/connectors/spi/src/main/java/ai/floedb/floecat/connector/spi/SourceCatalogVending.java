@@ -43,4 +43,30 @@ public final class SourceCatalogVending {
       case GLUE -> false;
     };
   }
+
+  /**
+   * Whether a connector's own catalog client already carries vended storage credentials once a
+   * table is loaded -- i.e. whether an <em>untouched</em> config is enough to read the table's data.
+   *
+   * <p>Distinct from {@link #declaresVendedCredentials}, and deliberately narrower. Declaring
+   * vending is what makes the storage service <em>attempt</em> a source-catalog vend; this is what
+   * makes it safe for the reconciler's config resolver to <em>absorb</em> a missing-authority error
+   * and hand the connector back unchanged. Only Iceberg REST satisfies it: {@code loadTable}
+   * returns storage-credentials and the {@code FileIO} built from that response uses them.
+   *
+   * <p>Delta and Unity Catalog do not. Their connector vends only when asked, through {@code
+   * vendStorageCredentials}, and the Delta engine's S3 client is built once from the connector's
+   * own {@code s3.*} options -- so an untouched config carries no storage credentials at all.
+   * Absorbing there would trade a precise "no authority covers this location" failure for an opaque
+   * {@code 403 AccessDenied} on the first read.
+   */
+  public static boolean clientAppliesVendedCredentials(ConnectorConfig config) {
+    if (config == null) {
+      return false;
+    }
+    return switch (config.kind()) {
+      case ICEBERG -> IcebergAccessDelegation.declaresVendedCredentials(config);
+      case DELTA, UNITY, GLUE -> false;
+    };
+  }
 }
