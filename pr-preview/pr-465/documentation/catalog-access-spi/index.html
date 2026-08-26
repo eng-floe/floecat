@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/fixed-roles/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/catalog-access-spi/">
       
       
-        <link rel="prev" href="../external-authentication/">
+        <link rel="prev" href="../catalog-integrations/">
       
       
-        <link rel="next" href="../log/">
+        <link rel="next" href="../metadata-graph/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Fixed Roles - Floecat Documentation</title>
+        <title>Catalog Access SPI - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#fixed-roles" class="md-skip">
+        <a href="#catalog-access-spi" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Fixed Roles
+              Catalog Access SPI
             
           </span>
         </div>
@@ -644,8 +644,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -656,13 +658,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -678,7 +678,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -735,10 +735,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../catalog-access-spi/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -749,6 +771,68 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#connection-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Connection boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#iceberg-rest-slice" class="md-nav__link">
+    <span class="md-ellipsis">
+      Iceberg REST slice
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Iceberg REST slice">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#renewable-aws-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Renewable AWS credentials
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current boundary
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1237,8 +1321,6 @@
       
   
   
-    
-  
   
   
     
@@ -1251,11 +1333,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
           <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
@@ -1271,7 +1355,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             Storage and Security
@@ -1420,32 +1504,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Fixed Roles
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
         
   
   
@@ -1456,44 +1518,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#role-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      Role Matrix
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
-    <span class="md-ellipsis">
-      Behavior Notes
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1677,18 +1701,42 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#role-matrix" class="md-nav__link">
+  <a href="#connection-boundary" class="md-nav__link">
     <span class="md-ellipsis">
-      Role Matrix
+      Connection boundary
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#behavior-notes" class="md-nav__link">
+  <a href="#iceberg-rest-slice" class="md-nav__link">
     <span class="md-ellipsis">
-      Behavior Notes
+      Iceberg REST slice
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Iceberg REST slice">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#renewable-aws-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Renewable AWS credentials
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current boundary
     </span>
   </a>
   
@@ -1710,7 +1758,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/kw-delta-vending/docs/fixed-roles.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/kw-delta-vending/docs/catalog-access-spi.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1718,85 +1766,130 @@
   
 
 
-<h1 id="fixed-roles">Fixed Roles<a class="headerlink" href="#fixed-roles" title="Permanent link">&para;</a></h1>
-<p>This document defines the fixed role names recognized by Floecat and the permissions each role grants.</p>
-<p>Source of truth: <code>service/src/main/java/ai/floedb/floecat/service/security/RolePermissions.java</code>.</p>
-<h2 id="role-matrix">Role Matrix<a class="headerlink" href="#role-matrix" title="Permanent link">&para;</a></h2>
+<h1 id="catalog-access-spi">Catalog Access SPI<a class="headerlink" href="#catalog-access-spi" title="Permanent link">&para;</a></h1>
+<p>The catalog-access SPI is the Connector-independent boundary for communicating with upstream
+catalogs. Catalog Integrations will use this boundary for connection validation, discovery, and
+provider metadata access without creating or reading legacy Connector resources.</p>
+<p>The SPI and its first provider are separate Maven modules:</p>
 <table>
 <thead>
 <tr>
-<th>Role name</th>
-<th>Purpose</th>
-<th>Granted permissions</th>
+<th>Module</th>
+<th>Responsibility</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>default</code></td>
-<td>Baseline read-only tenant access. Used when no roles are provided in normal (<code>oidc</code>) mode.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code>, <code>catalog-overlay.read</code></td>
+<td><code>core/catalog-access-spi</code></td>
+<td>Provider-neutral connection, authentication, credentials, capabilities, namespace, table, view, and client contracts.</td>
 </tr>
 <tr>
-<td><code>administrator</code></td>
-<td>Full tenant-scoped administration of metadata, catalog integrations, catalog overlays, and legacy connectors.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>developer</code></td>
-<td>Development-role equivalent of <code>administrator</code>.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>platform-admin</code> (or configured value of <code>floecat.auth.platform-admin.role</code>)</td>
-<td>Platform-level account management role from IdP.</td>
-<td><code>account.read</code>, <code>account.write</code>, <code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>init-account</code></td>
-<td>Bootstrap role used to initialize account + initial resources.</td>
-<td><code>account.read</code>, <code>account.write</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>connector.create</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code></td>
-</tr>
-<tr>
-<td><code>delete-account</code></td>
-<td>Narrow internal role used to trigger account teardown. Floecat performs the implied cleanup internally.</td>
-<td><code>account.delete</code></td>
-</tr>
-<tr>
-<td><code>system-objects</code></td>
-<td>Minimal role for SystemObjects/GetSystemObjects access.</td>
-<td><code>system-objects.read</code></td>
-</tr>
-<tr>
-<td><code>reconcile-worker</code></td>
-<td>Dedicated machine principal for reconciler background gRPC work.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.reconcile</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
+<td><code>catalog-access/iceberg-rest</code></td>
+<td>Iceberg REST client provider and ServiceLoader registration.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="behavior-notes">Behavior Notes<a class="headerlink" href="#behavior-notes" title="Permanent link">&para;</a></h2>
+<p>Neither module depends on Connector protobufs or <code>FloecatConnector</code>.</p>
+<h2 id="connection-boundary">Connection boundary<a class="headerlink" href="#connection-boundary" title="Permanent link">&para;</a></h2>
+<p><code>CatalogConnectionConfig</code> contains only persistable, non-secret configuration: protocol, endpoint,
+properties, and <code>CatalogAuthentication</code>. Secret material is resolved immediately before opening a
+client and supplied separately as <code>ResolvedCatalogCredentials</code>. Its <code>toString()</code> implementation
+redacts property and header values.</p>
+<div class="highlight"><pre><span></span><code><span class="n">CatalogConnectionConfig</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="k">new</span><span class="w"> </span><span class="n">CatalogConnectionConfig</span><span class="p">(</span>
+<span class="w">        </span><span class="n">CatalogProtocol</span><span class="p">.</span><span class="na">ICEBERG_REST</span><span class="p">,</span>
+<span class="w">        </span><span class="n">URI</span><span class="p">.</span><span class="na">create</span><span class="p">(</span><span class="s">&quot;https://catalog.example/v1&quot;</span><span class="p">),</span>
+<span class="w">        </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">&quot;warehouse&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;sales&quot;</span><span class="p">),</span>
+<span class="w">        </span><span class="k">new</span><span class="w"> </span><span class="n">CatalogAuthentication</span><span class="p">(</span><span class="n">CatalogAuthenticationScheme</span><span class="p">.</span><span class="na">OAUTH2</span><span class="p">,</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">()));</span>
+
+<span class="n">ResolvedCatalogCredentials</span><span class="w"> </span><span class="n">credentials</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="k">new</span><span class="w"> </span><span class="n">ResolvedCatalogCredentials</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">&quot;token&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">token</span><span class="p">),</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(),</span><span class="w"> </span><span class="n">expiresAt</span><span class="p">);</span>
+
+<span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="n">CatalogClient</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CatalogClientFactory</span><span class="p">.</span><span class="na">load</span><span class="p">().</span><span class="na">open</span><span class="p">(</span><span class="n">config</span><span class="p">,</span><span class="w"> </span><span class="n">credentials</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">client</span><span class="p">.</span><span class="na">validate</span><span class="p">();</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">NamespacePath</span><span class="o">&gt;</span><span class="w"> </span><span class="n">namespaces</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="na">listNamespaces</span><span class="p">(</span><span class="n">NamespacePath</span><span class="p">.</span><span class="na">root</span><span class="p">());</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Provider lookup is by <code>CatalogProtocol</code>, which describes the catalog protocol/provider rather than
+the table format. Missing and duplicate providers fail explicitly.</p>
+<h2 id="iceberg-rest-slice">Iceberg REST slice<a class="headerlink" href="#iceberg-rest-slice" title="Permanent link">&para;</a></h2>
+<p>The Iceberg REST provider currently supports:</p>
 <ul>
-<li>Role comparison is case-insensitive.</li>
-<li>Unknown roles are ignored.</li>
-<li>If no effective roles are present:</li>
-<li><code>oidc</code> mode falls back to <code>default</code>.</li>
-<li><code>dev</code> mode falls back to <code>developer</code>.</li>
-<li>In <code>dev</code> mode, <code>account.write</code> is always added.</li>
-<li><code>init-account</code> also bypasses strict account existence validation during inbound context building.</li>
-<li><code>account.delete</code> is the dedicated destructive permission for account teardown. It is intentionally
-  separate from broad catalog/table/connector management permissions.</li>
-<li><code>catalog-integration.write</code> administers integration records, while <code>catalog-integration.use</code>
-  permits an integration to be bound to an overlay without granting integration-management
-  authority. Cascading integration deletion additionally requires <code>catalog-overlay.delete</code> because
-  it deletes the dependent overlay resources.</li>
-<li><code>catalog-overlay.write</code> administers overlay records. Creating an overlay additionally requires
-  <code>catalog-integration.use</code> and <code>catalog.write</code>, because it binds an integration to an existing
-  writable target Catalog. Renaming an overlay does not rename that Catalog.</li>
-<li><code>catalog-overlay.reconcile</code> authorizes materializing upstream metadata into an overlay and also
-  requires <code>catalog-integration.use</code>. It is not implied by <code>catalog-overlay.write</code> or the
-  namespace/table/view write permissions.</li>
-<li><code>catalog-overlay.delete</code> authorizes deletion of an overlay and its managed contributions. It does
-  not delete the target Catalog and is not implied by <code>catalog-overlay.write</code>.</li>
+<li>anonymous, OAuth2, and AWS SigV4 connections;</li>
+<li>connection validation through a real namespace-list operation;</li>
+<li>structured, case-preserving namespace discovery;</li>
+<li>table enumeration and provider-neutral table metadata;</li>
+<li>view enumeration and provider-neutral output schema, SQL dialect, default namespace, properties,
+  and identity metadata;</li>
+<li>metadata and storage locations when exposed by Iceberg;</li>
+<li>table-scoped storage credentials obtained only from Iceberg's dedicated protocol vending channel;</li>
+<li>non-mutating validation of storage access through an upstream table metadata-file read using the
+  exact vended credentials returned to the caller, without ambient credential fallback; and</li>
+<li>idempotent ownership of the underlying REST session.</li>
 </ul>
+<p><code>vendStorageCredentials</code> performs a fresh <code>loadTable</code> request on every call, selects the
+longest-prefix credential matching the table location, and copies only the S3 storage credential
+allowlist. Callers reacquire credentials at the returned expiry. A missing or invalid expiry means
+the result must not be cached. Catalog tokens and ordinary FileIO properties are never treated as
+vended storage credentials, so a server that does not vend returns an empty result instead of
+falling back to catalog authentication, configured storage keys, or Connector behavior.</p>
+<h3 id="renewable-aws-credentials">Renewable AWS credentials<a class="headerlink" href="#renewable-aws-credentials" title="Permanent link">&para;</a></h3>
+<p>SigV4 catalog signing and storage/FileIO access are separate credential scopes. Either scope can
+use static resolved keys or a renewable registration. Renewable registrations are process-local,
+opaque, and owned by the caller:</p>
+<div class="highlight"><pre><span></span><code><span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">catalogRegistration</span><span class="w"> </span><span class="o">=</span>
+<span class="w">        </span><span class="n">RefreshingAwsCredentialsRegistry</span><span class="p">.</span><span class="na">register</span><span class="p">(</span><span class="n">initialCatalogCredentials</span><span class="p">,</span><span class="w"> </span><span class="n">catalogRefresher</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">storageRegistration</span><span class="w"> </span><span class="o">=</span>
+<span class="w">        </span><span class="n">RefreshingAwsCredentialsRegistry</span><span class="p">.</span><span class="na">register</span><span class="p">(</span><span class="n">initialStorageCredentials</span><span class="p">,</span><span class="w"> </span><span class="n">storageRefresher</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">resolved</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">  </span><span class="n">resolved</span><span class="p">.</span><span class="na">putAll</span><span class="p">(</span>
+<span class="w">      </span><span class="n">RefreshingAwsCredentialsRegistry</span><span class="p">.</span><span class="na">propertiesFor</span><span class="p">(</span>
+<span class="w">          </span><span class="n">catalogRegistration</span><span class="p">,</span><span class="w"> </span><span class="n">AwsCredentialScope</span><span class="p">.</span><span class="na">CATALOG</span><span class="p">));</span>
+<span class="w">  </span><span class="n">resolved</span><span class="p">.</span><span class="na">putAll</span><span class="p">(</span>
+<span class="w">      </span><span class="n">RefreshingAwsCredentialsRegistry</span><span class="p">.</span><span class="na">propertiesFor</span><span class="p">(</span>
+<span class="w">          </span><span class="n">storageRegistration</span><span class="p">,</span><span class="w"> </span><span class="n">AwsCredentialScope</span><span class="p">.</span><span class="na">STORAGE</span><span class="p">));</span>
+
+<span class="w">  </span><span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="n">CatalogClient</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span>
+<span class="w">      </span><span class="n">factory</span><span class="p">.</span><span class="na">open</span><span class="p">(</span><span class="n">config</span><span class="p">,</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ResolvedCatalogCredentials</span><span class="p">(</span><span class="n">resolved</span><span class="p">,</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(),</span><span class="w"> </span><span class="kc">null</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">client</span><span class="p">.</span><span class="na">validate</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The registry refreshes expiring credentials with adaptive skew and refreshes credentials without a
+reported expiry on the configured refresh cadence. It serializes concurrent refresh for a
+registration, retains still-valid credentials after a transient refresh failure, caches terminal
+refresh failures, and stops resolving a registration after it is closed. Logs and object string
+representations use hashed provider references and never include keys or tokens.</p>
+<p>The Iceberg REST auth manager replaces storage provider configuration with the catalog-scoped
+provider only while signing REST requests. FileIO retains the separately configured storage scope,
+including credentials vended through later Iceberg table configuration.</p>
+<p>Iceberg REST tables use the Iceberg table UUID as their stable external identity when table metadata
+exposes it. Tables without an available UUID use a path-derived, explicitly unstable fallback; a
+rename of such a table is interpreted as deletion plus creation.</p>
+<p>OAuth secrets, AWS keys, renewable-provider IDs, and Iceberg credential-provider hooks are rejected
+in persistable connection configuration and accepted only through <code>ResolvedCatalogCredentials</code>.
+Persisted secret-bearing properties, HTTP headers, endpoint user-info, endpoint fragments, and
+secret-bearing endpoint query parameters are rejected. Configuration string representations print
+property names but redact their values and query values. Unsupported authentication schemes,
+incomplete or unknown credential properties, and endpoint protocols fail instead of falling back
+to Connector behavior.</p>
+<h2 id="current-boundary">Current boundary<a class="headerlink" href="#current-boundary" title="Permanent link">&para;</a></h2>
+<p>The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
+credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
+namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
+connection, authentication, discovery, credential vending, and a non-mutating storage read all
+pass. Authentication, expiry, scope, and storage failures remain distinct in the public validation
+result.</p>
+<p>Discovery results are not persisted and do not materialize Floecat resources. Pagination is applied
+to deterministic provider inventories and continuation tokens are bound to the Integration pointer
+and credential generation, namespace, and object filter.</p>
+<p>The synchronous Catalog Overlay reconciliation RPC uses the same Integration adapter to materialize
+selected namespaces, table definitions, and views as ordinary Floecat resources. Durable scheduling
+and snapshot/file capture remain separate changes.</p>
+<p>The legacy Connector remains operational and unchanged until its explicit migration/removal change.
+The Integration adapter and discovery implementation do not import, call, or fall back to it.</p>
+<p>See <a href="../catalog-integration-design/">Catalog Integration Architecture Decisions</a> for ownership,
+mapping, reconciliation, and migration decisions.</p>
 
 
 
