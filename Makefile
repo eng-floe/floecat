@@ -107,7 +107,8 @@ SUREFIRE_SELECTOR_ARGS := -Dsurefire.failIfNoSpecifiedTests=false
 LOCALSTACK_TEST_HAS_IT := $(findstring IT,$(TEST))
 LOCALSTACK_TEST_GOAL := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),verify,test),verify)
 LOCALSTACK_TEST_SKIP_ITS := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),,-DskipITs=true),)
-LOCALSTACK_TEST_PROJECTS := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),protocol-gateway/iceberg-rest,service),service,protocol-gateway/iceberg-rest,client-cli)
+LOCALSTACK_IT_PROJECTS := service,protocol-gateway/iceberg-rest
+LOCALSTACK_TEST_PROJECTS := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),$(LOCALSTACK_IT_PROJECTS),service),service,protocol-gateway/iceberg-rest,client-cli)
 TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 SITE_MAKEFILE ?= tools/site/make/site.mk
 
