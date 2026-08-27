@@ -496,9 +496,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
               .equals(workerAffinity.indexFilterValue(policy.executionClass().name()));
       case EXECUTION_LANE ->
           (!blank(policy.lane())
-                  && candidate
-                      .filterValue()
-                      .equals(workerAffinity.indexFilterValue(policy.lane())))
+                  && candidate.filterValue().equals(workerAffinity.indexFilterValue(policy.lane())))
               || (!blank(record.laneKey)
                   && candidate
                       .filterValue()
