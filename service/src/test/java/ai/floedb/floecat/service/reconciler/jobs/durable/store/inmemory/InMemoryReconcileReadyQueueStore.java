@@ -170,7 +170,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       return List.of();
     }
     long dueAtMs = readyPointerDueAt(record);
-    List<String> keys = new java.util.ArrayList<>();
+    java.util.Set<String> keys = new java.util.LinkedHashSet<>();
     ReconcileWorkerAffinity workerAffinity =
         ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     String pinnedExecutorId = record.pinnedExecutorId();
@@ -189,17 +189,29 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
             record,
             ReadyIndexType.EXECUTION_CLASS,
             dueAtMs,
-            record.executionPolicy().executionClass().name());
+            workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name()));
     if (!executionClassKey.isBlank()) {
       keys.add(executionClassKey);
     }
-    String executionLaneKey =
-        readyPointerKeyFor(record, ReadyIndexType.EXECUTION_LANE, dueAtMs, record.laneKey);
-    if (!executionLaneKey.isBlank()) {
-      keys.add(executionLaneKey);
+    for (String lane : new String[] {record.executionPolicy().lane(), record.laneKey}) {
+      String executionLaneKey =
+          blank(lane)
+              ? ""
+              : readyPointerKeyFor(
+                  record,
+                  ReadyIndexType.EXECUTION_LANE,
+                  dueAtMs,
+                  workerAffinity.indexFilterValue(lane));
+      if (!executionLaneKey.isBlank()) {
+        keys.add(executionLaneKey);
+      }
     }
     String jobKindKey =
-        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
+        readyPointerKeyFor(
+            record,
+            ReadyIndexType.JOB_KIND,
+            dueAtMs,
+            workerAffinity.indexFilterValue(record.jobKind().name()));
     if (!jobKindKey.isBlank()) {
       keys.add(jobKindKey);
     }
@@ -473,9 +485,14 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
               .filterValue()
               .equals(workerAffinity.indexFilterValue(policy.executionClass().name()));
       case EXECUTION_LANE ->
-          candidate
-              .filterValue()
-              .equals(workerAffinity.indexFilterValue(blankToEmpty(record.laneKey)));
+          (!blank(policy.lane())
+                  && candidate
+                      .filterValue()
+                      .equals(workerAffinity.indexFilterValue(policy.lane())))
+              || (!blank(record.laneKey)
+                  && candidate
+                      .filterValue()
+                      .equals(workerAffinity.indexFilterValue(record.laneKey)));
       case PINNED_EXECUTOR ->
           candidate
               .filterValue()

@@ -19,8 +19,9 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
-import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Predicate;
 
 public final class ReadyQueueKeys {
@@ -88,7 +89,7 @@ public final class ReadyQueueKeys {
         || dueAtMs <= 0L) {
       return List.of();
     }
-    List<String> keys = new ArrayList<>();
+    Set<String> keys = new LinkedHashSet<>();
     ReconcileWorkerAffinity workerAffinity =
         ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     String pinnedExecutorId = record.pinnedExecutorId();
@@ -113,16 +114,18 @@ public final class ReadyQueueKeys {
     if (!executionClassKey.isBlank()) {
       keys.add(executionClassKey);
     }
-    String executionLaneKey =
-        blank(record.laneKey)
-            ? ""
-            : readyPointerKeyFor(
-                record,
-                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
-                dueAtMs,
-                workerAffinity.indexFilterValue(record.laneKey));
-    if (!executionLaneKey.isBlank()) {
-      keys.add(executionLaneKey);
+    for (String lane : new String[] {record.executionPolicy().lane(), record.laneKey}) {
+      String executionLaneKey =
+          blank(lane)
+              ? ""
+              : readyPointerKeyFor(
+                  record,
+                  ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                  dueAtMs,
+                  workerAffinity.indexFilterValue(lane));
+      if (!executionLaneKey.isBlank()) {
+        keys.add(executionLaneKey);
+      }
     }
     String jobKindKey =
         readyPointerKeyFor(
