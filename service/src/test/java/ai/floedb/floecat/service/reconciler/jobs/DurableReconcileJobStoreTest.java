@@ -7741,6 +7741,9 @@ class DurableReconcileJobStoreTest {
                 workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                workerAffinity.indexFilterValue(record.executionPolicy().lane())),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
                 workerAffinity.indexFilterValue(record.laneKey)),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
