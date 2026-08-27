@@ -20,8 +20,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -37,6 +39,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 /** JDK HTTP implementation of the small Unity Catalog client boundary. */
 public final class HttpUnityCatalogClient implements UnityCatalogClient {
@@ -44,8 +47,13 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   private static final String TEMPORARY_TABLE_CREDENTIALS_PATH =
       "/api/2.0/unity-catalog/temporary-table-credentials";
   private static final ObjectMapper JSON = new ObjectMapper();
+  private static final int MAX_REDIRECTS = 5;
+  private static final int MAX_BODY_SNIPPET = 512;
+
+  private static final Pattern IPV4_LITERAL = Pattern.compile("\\d{1,3}(\\.\\d{1,3}){3}");
 
   private final String baseUri;
+  private final boolean cleartextTransport;
   private final Duration requestTimeout;
   private final UnityCatalogAuthentication authentication;
   private final HttpClient httpClient;
@@ -59,19 +67,18 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         baseUri,
         requestTimeout,
         authentication,
-        // The JDK default is Redirect.NEVER, which turns an ordinary workspace redirect -- an
-        // http:// base URI upgraded to HTTPS, a renamed workspace host -- into a bare 3xx that no
-        // caller can act on. NORMAL follows it, and still refuses an HTTPS-to-HTTP downgrade; a
-        // 3xx that survives that is classified permanent below rather than retried forever.
-        //
-        // NORMAL re-issues a followed 301/302/303 as a bodyless GET, so the one POST here -- the
-        // credentials call -- does not survive a redirect: what surfaces is the redirect target's
-        // 404 or 405, not the 3xx. Both are permanent, so retry behaviour is unchanged, but the
-        // status alone would read as a missing endpoint; the failure message therefore names the
-        // effective URI whenever it differs from the one requested.
+        // Redirects are followed by hand in send(), not by the HttpClient. Redirect.NORMAL
+        // cannot do the job: the JDK strips Authorization (and Host, Cookie, Origin, Referer)
+        // from any redirect that changes scheme *or* authority, so exactly the two cases a
+        // workspace redirect covers -- an http:// base URI upgraded to HTTPS, a renamed workspace
+        // host -- would reach the target unauthenticated and come back as a bare 401 naming
+        // neither the redirect nor the dropped header. NORMAL also re-issues a followed
+        // 301/302/303 as a bodyless GET, which the one POST here -- the credentials call --
+        // cannot survive. followRedirect() instead replays the same method, body and headers to a
+        // same-origin target and refuses anything else outright.
         HttpClient.newBuilder()
             .connectTimeout(connectTimeout)
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            .followRedirects(HttpClient.Redirect.NEVER)
             .build());
   }
 
@@ -84,6 +91,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     if (!baseUri.isAbsolute()) {
       throw new IllegalArgumentException("Unity Catalog base URI must be absolute: " + baseUri);
     }
+    this.cleartextTransport = isCleartextTransport(baseUri);
     this.baseUri = stripTrailingSlash(baseUri.toString());
     this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
     this.authentication = Objects.requireNonNull(authentication, "authentication");
@@ -203,18 +211,48 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   }
 
   private JsonNode send(HttpRequest.Builder builder, String path) {
-    builder
-        .uri(URI.create(baseUri + path))
-        .timeout(requestTimeout)
-        .header("Accept", "application/json");
-    Map<String, String> headers = authentication.headers();
-    if (headers != null) {
-      headers.forEach(builder::header);
+    builder.timeout(requestTimeout).header("Accept", "application/json");
+    if (carriesCredentials(path)) {
+      // The secret travels in the *response* here, so this refusal cannot be conditioned on the
+      // request carrying a catalog credential: an anonymous vend against an http:// endpoint hands
+      // secret_access_key and session_token to anyone on the path.
+      refuseCleartext("its response would carry vended storage credentials");
+    }
+    applyAuthentication(builder);
+
+    URI uri = URI.create(baseUri + path);
+    HttpResponse<String> response;
+    for (int hop = 0; ; hop++) {
+      response = sendOnce(builder.uri(uri).build(), path);
+      int code = response.statusCode();
+      if (code < 300 || code >= 400) {
+        break;
+      }
+      if (hop >= MAX_REDIRECTS) {
+        throw redirectRefused(code, path, uri, "more than " + MAX_REDIRECTS + " redirects");
+      }
+      uri = followRedirect(response, uri, path);
     }
 
-    HttpResponse<String> response;
+    int status = response.statusCode();
+    String target = describeTarget(path, uri);
+    if (status < 200 || status >= 300) {
+      throw httpFailure(status, target, response.body());
+    }
     try {
-      response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      return JSON.readTree(response.body());
+    } catch (JsonProcessingException e) {
+      throw invalidResponse(
+          status,
+          "Invalid JSON from Unity Catalog for " + target,
+          carriesCredentials(path) ? describeBody(response) : truncate(response.body()),
+          e);
+    }
+  }
+
+  private HttpResponse<String> sendOnce(HttpRequest request, String path) {
+    try {
+      return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new UnityCatalogException(
@@ -226,26 +264,186 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
           "Unity Catalog request failed for " + path,
           e);
     }
+  }
 
+  /**
+   * Attaches the authentication headers, typing an unusable header value as terminal.
+   *
+   * <p>{@link HttpRequest.Builder#header} throws {@link IllegalArgumentException} for a value HTTP
+   * cannot carry -- a personal access token pasted with a trailing newline, a non-ASCII character.
+   * Left bare that escapes as an unclassified runtime exception: the connector does not recognise
+   * it, the storage service maps it to a retryable {@code INTERNAL}, and the reconciler loops
+   * forever on a static configuration fault that can never self-correct. Only the header names go
+   * into the message; the value is the catalog credential.
+   *
+   * <p>{@link UnityCatalogAuthentication#headers()} is inside the guard for the same reason, not
+   * only {@link HttpRequest.Builder#header}: a static-token provider is {@code () -> require(props,
+   * "token")}, which throws the same {@code IllegalArgumentException} at request time when the
+   * secret was never materialised. Left outside it that is precisely the unclassified runtime
+   * exception this method exists to prevent.
+   */
+  private void applyAuthentication(HttpRequest.Builder builder) {
+    Map<String, String> headers;
+    try {
+      headers = authentication.headers();
+      if (headers == null || headers.isEmpty()) {
+        return;
+      }
+      requireCredentialSafeTransport(headers);
+      headers.forEach(builder::header);
+    } catch (IllegalArgumentException e) {
+      throw new UnityCatalogException(
+          UnityCatalogException.Failure.INVALID_REQUEST,
+          -1,
+          "Unity Catalog authentication could not produce usable HTTP headers for this request",
+          e);
+    }
+  }
+
+  /**
+   * Where a 3xx points, or a permanent failure when following it would be unsafe.
+   *
+   * <p>Only a same-origin redirect is followed, with the original method, body and headers intact.
+   * A cross-scheme or cross-authority redirect is precisely where the JDK drops {@code
+   * Authorization}, and following it by hand would do the opposite and hand the long-lived catalog
+   * credential to a host the configuration never named. Neither is acceptable, so it surfaces as
+   * the misconfigured base URI it is, naming the {@code Location} that would have been followed.
+   * That is permanent: retrying cannot fix it.
+   */
+  private URI followRedirect(HttpResponse<String> response, URI from, String path) {
     int status = response.statusCode();
-    String target = describeTarget(path, response.uri());
-    if (status < 200 || status >= 300) {
-      throw httpFailure(status, target, response.body());
+    String location = response.headers().firstValue("Location").orElse(null);
+    if (location == null || location.isBlank()) {
+      throw redirectRefused(status, path, from, "no Location header");
+    }
+    URI next;
+    try {
+      next = from.resolve(location);
+    } catch (IllegalArgumentException e) {
+      throw redirectRefused(status, path, from, "unusable Location '" + location + "'");
+    }
+    if (!sameOrigin(from, next)) {
+      throw redirectRefused(
+          status, path, from, "refusing to send catalog credentials to another origin at " + next);
+    }
+    return next;
+  }
+
+  /**
+   * Same scheme, host and effective port.
+   *
+   * <p>Ports are compared after defaulting, not as raw authority text: a proxy or load balancer in
+   * front of a self-hosted Unity Catalog OSS server does emit an explicit {@code :443}, and
+   * comparing authorities verbatim would refuse {@code https://host/} to {@code https://host:443/}
+   * as cross-origin -- a permanent failure on a redirect that is the same origin.
+   */
+  private static boolean sameOrigin(URI from, URI to) {
+    if (from.getScheme() == null || !from.getScheme().equalsIgnoreCase(to.getScheme())) {
+      return false;
+    }
+    if (from.getHost() == null || to.getHost() == null) {
+      // No parsable host on either side (a registry-based authority): fall back to exact text.
+      return from.getAuthority() != null && from.getAuthority().equalsIgnoreCase(to.getAuthority());
+    }
+    return from.getHost().equalsIgnoreCase(to.getHost())
+        && effectivePort(from) == effectivePort(to)
+        && Objects.equals(from.getUserInfo(), to.getUserInfo());
+  }
+
+  private static int effectivePort(URI uri) {
+    if (uri.getPort() != -1) {
+      return uri.getPort();
+    }
+    return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+  }
+
+  private static UnityCatalogException redirectRefused(
+      int status, String path, URI from, String reason) {
+    return new UnityCatalogException(
+        UnityCatalogException.Failure.INVALID_REQUEST,
+        status,
+        "Unity Catalog returned HTTP " + status + " for " + path + " at " + from + ": " + reason,
+        null);
+  }
+
+  /**
+   * Refuses to put a catalog credential on the wire in cleartext.
+   *
+   * <p>An {@code http://} base URI discloses whatever {@link UnityCatalogAuthentication} produced
+   * to anyone on the path, and the request goes out before any server can redirect it to HTTPS --
+   * so the refusal has to happen here, before the send. It is scoped to exchanges that actually
+   * move a secret: a metadata read from a Unity Catalog OSS server reached unauthenticated over
+   * plain HTTP has nothing to leak, and rejecting its base URI outright would break listing and
+   * describe. The vend path is refused whether or not the request is authenticated, because there
+   * the secret is in the response -- see {@link #send}. A loopback host stays allowed, as used
+   * throughout this module's tests.
+   *
+   * <p>Typed, not an {@code IllegalArgumentException}: the connector maps {@code INVALID_REQUEST}
+   * to a terminal refusal, whereas an unclassified runtime exception reaches the storage service as
+   * a retryable {@code INTERNAL} and the reconciler loops on a configuration fault that never
+   * self-corrects. Only the header names appear in the message; the values are the credential.
+   */
+  private void requireCredentialSafeTransport(Map<String, String> headers) {
+    if (!cleartextTransport) {
+      return;
+    }
+    refuseCleartext(
+        "it carries credentials (headers: " + String.join(", ", headers.keySet()) + ")");
+  }
+
+  private void refuseCleartext(String reason) {
+    if (!cleartextTransport) {
+      return;
+    }
+    throw new UnityCatalogException(
+        UnityCatalogException.Failure.INVALID_REQUEST,
+        -1,
+        "Unity Catalog base URI "
+            + baseUri
+            + " uses cleartext http, but this request is refused because "
+            + reason
+            + "; use https, or a loopback host for a local server");
+  }
+
+  private static boolean isCleartextTransport(URI baseUri) {
+    return !"https".equalsIgnoreCase(baseUri.getScheme()) && !isLoopback(baseUri.getHost());
+  }
+
+  /**
+   * Whether the host is unambiguously loopback.
+   *
+   * <p>Only {@code localhost} -- reserved to loopback by RFC 6761 -- and an IP literal that
+   * resolves to a loopback address count. A textual match such as {@code startsWith("127.")} is not
+   * enough: a DNS hostname may legally begin with a numeric label, so {@code 127.attacker.example}
+   * would pass while resolving anywhere at all. The literal test runs before {@link
+   * InetAddress#getByName}, which parses a literal without touching DNS but would resolve a name.
+   */
+  private static boolean isLoopback(String host) {
+    if (host == null) {
+      return false;
+    }
+    String bare =
+        host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+    if (bare.equalsIgnoreCase("localhost")) {
+      return true;
+    }
+    boolean literal = bare.indexOf(':') >= 0 || IPV4_LITERAL.matcher(bare).matches();
+    if (!literal) {
+      return false;
     }
     try {
-      return JSON.readTree(response.body());
-    } catch (JsonProcessingException e) {
-      throw invalidResponse(
-          status, "Invalid JSON from Unity Catalog for " + target, response.body(), e);
+      return InetAddress.getByName(bare).isLoopbackAddress();
+    } catch (UnknownHostException e) {
+      return false;
     }
   }
 
   /**
    * The request target for a failure message: the path, plus where a followed redirect landed.
    *
-   * <p>With {@link HttpClient.Redirect#NORMAL} the response can come from somewhere other than the
-   * URI built here, and a 404 from a redirect target reads as a missing endpoint unless the message
-   * says which URI actually answered.
+   * <p>A followed redirect means the response came from somewhere other than the URI built here,
+   * and a 404 from a redirect target reads as a missing endpoint unless the message says which URI
+   * actually answered.
    */
   private String describeTarget(String path, URI effectiveUri) {
     String requested = baseUri + path;
@@ -331,6 +529,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * exactly the over-eager terminal {@link #failureFromErrorCode} refuses to guess at. Those stay
    * {@code OTHER}, retryable. The 4xx statuses that are never permanent are still named explicitly
    * first, so an envelope-bearing 408 or 429 is not swept into the default either.
+   *
+   * <p>401, 403 and 404 are the exception: they are classified on status alone, because {@link
+   * #getTable} reads {@code NOT_FOUND} as "no such table" and a Unity Catalog OSS server answers
+   * that with a bare {@code {"message": ...}}. The envelope test that would tell a workspace 404
+   * from a load balancer's HTML 404 therefore happens where the distinction decides whether a job
+   * fails permanently -- {@code UnityDeltaConnector.classifyAccessFailure} -- not here.
    */
   private static UnityCatalogException httpFailure(int status, String path, String body) {
     String responseBody = truncate(body);
@@ -355,12 +559,8 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
               if (status >= 500) {
                 yield UnityCatalogException.Failure.SERVER_ERROR;
               }
-              // A 3xx here is one the client declined to follow -- an HTTPS-to-HTTP downgrade, or
-              // a redirect loop past the JDK's limit. That is a misconfigured base URI, which no
-              // amount of retrying fixes, so it is permanent whatever the body looks like.
-              if (status >= 300 && status < 400) {
-                yield UnityCatalogException.Failure.INVALID_REQUEST;
-              }
+              // No 3xx reaches here: send() leaves its redirect loop only on a non-3xx status,
+              // and every declined redirect throws redirectRefused (INVALID_REQUEST) inside it.
               // An unlisted 4xx is permanent only when Databricks answered it: its error envelope
               // is what distinguishes "this workspace refuses this request" from an error page
               // served by something in front of the workspace, which will recover.
@@ -418,25 +618,47 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   }
 
   /**
-   * An {@code INVALID_RESPONSE} that keeps what the catalog actually sent.
+   * An {@code INVALID_RESPONSE} that keeps what identifies the responder.
    *
    * <p>{@code INVALID_RESPONSE} stays retryable, so a body that never becomes JSON -- usually a
-   * proxy error page rather than the catalog -- shows up as a looping vend. The status and a
-   * snippet of the body are the two things needed to tell which proxy is answering, and both are in
-   * hand at the call site.
+   * proxy error page rather than the catalog -- shows up as a looping vend. The status plus a
+   * description of the body are what tell which proxy is answering. The caller decides whether that
+   * description may quote the body: see {@link #carriesCredentials}.
    */
   private static UnityCatalogException invalidResponse(
-      int status, String message, String body, Throwable cause) {
-    String snippet = truncate(body);
+      int status, String message, String detail, Throwable cause) {
     return new UnityCatalogException(
         UnityCatalogException.Failure.INVALID_RESPONSE,
         status,
-        snippet.isEmpty() ? message : message + ": " + snippet,
+        detail == null || detail.isEmpty() ? message : message + ": " + detail,
         cause);
   }
 
+  /**
+   * Whether a successful body from this path can contain vended credentials.
+   *
+   * <p>The credentials endpoint answers with {@code secret_access_key} and {@code session_token} in
+   * the clear, so a body that fails to parse -- truncated mid-document by a proxy, say -- can carry
+   * both secrets past the point the parser gave up. This exception's message reaches the storage
+   * service's gRPC status description and every log that prints it, so nothing from that body is
+   * quoted; its shape is described instead, which is what actually identifies a responder that is
+   * not the catalog.
+   */
+  private static boolean carriesCredentials(String path) {
+    return path.startsWith(TEMPORARY_TABLE_CREDENTIALS_PATH);
+  }
+
+  private static String describeBody(HttpResponse<String> response) {
+    String body = response.body();
+    return "<body withheld: "
+        + (body == null ? 0 : body.length())
+        + " chars, content-type="
+        + response.headers().firstValue("Content-Type").orElse("absent")
+        + ">";
+  }
+
   private static String truncate(String body) {
-    return body == null ? "" : body.substring(0, Math.min(body.length(), 2_000));
+    return body == null ? "" : body.substring(0, Math.min(body.length(), MAX_BODY_SNIPPET));
   }
 
   private static String text(JsonNode node, String field) {
