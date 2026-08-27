@@ -27,7 +27,8 @@ import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -41,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -65,14 +67,26 @@ public class SourceCatalogCredentialVendor {
   private static final org.jboss.logging.Logger LOG =
       org.jboss.logging.Logger.getLogger(SourceCatalogCredentialVendor.class);
 
+  /** Cap on the gRPC status description built from a catalog failure. See catalogFailureStatus. */
+  private static final int MAX_STATUS_DESCRIPTION = 512;
+
   /**
    * Non-secret S3 routing keys a vended credential carries, safe to expose in client_safe_config.
    */
   private static final List<String> VENDED_ROUTING_KEYS =
-      List.of("s3.region", "s3.endpoint", "s3.path-style-access");
+      List.of("s3.region", "s3.endpoint", "s3.path-style-access", "s3.access-point");
 
   /** Region aliases, matching what {@code StorageAuthorityResolver.putRegionConfig} writes. */
   private static final List<String> REGION_KEYS = List.of("s3.region", "region", "client.region");
+
+  /**
+   * Where a connector's own region may be spelled. A superset of {@link #REGION_KEYS}: {@code
+   * aws.region} is documented for Delta and Iceberg connector options ({@code
+   * DeltaConnectorFactory} reads it) but is not one of the keys written back, so it is read-only
+   * here.
+   */
+  private static final List<String> REGION_ALIAS_KEYS =
+      List.of("s3.region", "region", "client.region", "aws.region");
 
   /**
    * What the caller will do with the credentials. Selects how strictly they are validated: only the
@@ -87,6 +101,7 @@ public class SourceCatalogCredentialVendor {
 
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
+  Function<ConnectorConfig, FloecatConnector> connectorFactory = ConnectorFactory::create;
 
   @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   String defaultRegion;
@@ -139,7 +154,7 @@ public class SourceCatalogCredentialVendor {
 
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
     Optional<FloecatConnector.VendedStorageCredentials> vended;
-    try (FloecatConnector source = ConnectorFactory.create(resolvedConfig)) {
+    try (FloecatConnector source = connectorFactory.apply(resolvedConfig)) {
       vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
     } catch (StatusRuntimeException e) {
       throw e;
@@ -150,6 +165,11 @@ public class SourceCatalogCredentialVendor {
       // recognisably an authorization refusal stays retryable.
       throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName());
     }
+    // Empty and absent are the same answer. A connector that hands back a credential object with
+    // no properties has vended nothing, and falling through would reach requireUsableCredentials
+    // and fail the job terminally on a condition the caller can recover from by using a storage
+    // authority. Partial credentials are deliberately *not* screened here -- those do reach the
+    // usability check, which is where "the catalog vended something unusable" belongs.
     if (vended.isEmpty() || vended.get().isEmpty()) {
       LOG.infof(
           "source-catalog vending skipped: connector %s returned no credentials for %s.%s"
@@ -188,7 +208,7 @@ public class SourceCatalogCredentialVendor {
     storageConfig.putAll(routing);
     VendedStorageCredential.Builder credential =
         VendedStorageCredential.newBuilder()
-            .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
+            .setPrefix(responsePrefix(vended.get(), responseLocationPrefix))
             .putAllConfig(Map.copyOf(storageConfig));
     Instant expiresAt = vended.get().expiresAt();
     if (expiresAt != null) {
@@ -207,6 +227,36 @@ public class SourceCatalogCredentialVendor {
         .putAllClientSafeConfig(routing)
         .addStorageCredentials(credential)
         .build();
+  }
+
+  /**
+   * The prefix to stamp on the vended credential: the catalog's own scope when it narrows the
+   * request, otherwise the location the caller was authorized for.
+   *
+   * <p>The catalog-issued scope is preferred because it is the truth about what the credential
+   * covers -- but only downwards. {@code requestedPrefix} is {@code credentialScope.location()},
+   * the same value {@code isWithinExecutionScope} and {@code resolvePlannerBootstrapLocation} use
+   * to refuse out-of-scope requests, so letting a broader catalog scope replace it would hand back
+   * a credential stamped for more than the caller may read: a table at {@code
+   * s3://warehouse/tpch_10/customer} covered by a catalog credential scoped to {@code
+   * s3://warehouse/tpch} would come back claiming all of {@code s3://warehouse/tpch*}, and the
+   * consumers that key their client cache on this prefix would apply it to sibling prefixes. The
+   * credential itself may well be broader; what travels back is bounded by the authorization.
+   */
+  static String responsePrefix(
+      FloecatConnector.VendedStorageCredentials vended, String requestedPrefix) {
+    String requested = requestedPrefix == null ? "" : requestedPrefix;
+    String scope = vended == null ? null : vended.scopePrefix();
+    if (scope == null) {
+      return requested;
+    }
+    // Blank request: nothing to bound against, so the catalog's scope is the only answer available
+    // and is narrower than the unbounded alternative. Otherwise containment is decided by the same
+    // path-boundary rule the authority resolver uses -- a plain startsWith would accept
+    // "s3://warehouse/tpch_other" as inside "s3://warehouse/tpch".
+    return requested.isBlank() || StorageAuthorityResolver.matchesLocationPrefix(scope, requested)
+        ? scope
+        : requested;
   }
 
   static Map<String, String> clientSafeRoutingProperties(Map<String, String> props) {
@@ -233,16 +283,24 @@ public class SourceCatalogCredentialVendor {
    * falls back to the connector's own configuration and then to the deployment's configured region,
    * mirroring {@code resolveSnapshotCompatStorageSettings}, which synthesizes exactly these
    * settings when no authority exists. A wrong region announces itself immediately as an S3
-   * redirect; an absent one fails mid-scan with nothing pointing at the cause.
+   * redirect; an absent one fails mid-scan with nothing pointing at the cause. The connector's
+   * region is read under every documented alias, {@link #REGION_ALIAS_KEYS}, so a connector
+   * configured with {@code aws.region} is not silently replaced by the deployment default.
    */
   Map<String, String> routingProperties(
       Map<String, String> vendedProps, Map<String, String> connectorOptions) {
     LinkedHashMap<String, String> routing =
         new LinkedHashMap<>(clientSafeRoutingProperties(vendedProps));
+    // A Unity response carries only the credential tuple and an optional access point, so anything
+    // else the reader needs to reach the bucket at all -- a MinIO/S3-compatible endpoint,
+    // path-style
+    // addressing -- can only come from the connector. Vended wins where both are present.
+    clientSafeRoutingProperties(connectorOptions).forEach(routing::putIfAbsent);
     String region =
         firstNonBlank(
             firstNonBlank(REGION_KEYS.stream().map(vendedProps::get).toArray(String[]::new)),
-            firstNonBlank(REGION_KEYS.stream().map(connectorOptions::get).toArray(String[]::new)),
+            firstNonBlank(
+                REGION_ALIAS_KEYS.stream().map(connectorOptions::get).toArray(String[]::new)),
             defaultRegion);
     if (region != null) {
       // Same three keys putRegionConfig writes for an authority-backed response.
@@ -270,7 +328,7 @@ public class SourceCatalogCredentialVendor {
    * absorb the resulting missing-authority error -- cannot drift apart.
    */
   static boolean connectorDeclaresVendedDelegation(Connector connector) {
-    return IcebergAccessDelegation.declaresVendedCredentials(
+    return SourceCatalogVending.declaresVendedCredentials(
         ConnectorConfigMapper.fromProto(connector));
   }
 
@@ -339,12 +397,22 @@ public class SourceCatalogCredentialVendor {
    * -- a connection reset, a 5xx, a timeout -- is genuinely transient and keeps INTERNAL so the
    * existing retry behaviour still applies.
    */
-  private static StatusRuntimeException catalogFailureStatus(
+  static StatusRuntimeException catalogFailureStatus(
       RuntimeException cause, Connector connector, String namespaceFq, String tableName) {
     String detail =
         String.format(
             "source catalog %s refused credentials for %s.%s: %s",
             connector.getResourceId().getId(), namespaceFq, tableName, cause);
+    // The cause's message can carry a snippet of whatever the catalog -- or a proxy in front of it
+    // -- returned. That belongs in the server log, not in the status: grpc-message is
+    // percent-encoded trailer metadata that travels to every consumer and competes with HTTP/2's
+    // header-size limits, and an HTML error page there is unreadable noise. The full text is
+    // logged here; the status carries a bounded summary that says where to find the rest.
+    LOG.warnf(cause, "%s", detail);
+    String description =
+        detail.length() <= MAX_STATUS_DESCRIPTION
+            ? detail
+            : detail.substring(0, MAX_STATUS_DESCRIPTION) + "... (truncated; see server log)";
 
     // Typed exceptions only. Substring-matching the cause chain for 401/403/"access denied" gets
     // the risk backwards: a transient failure whose text merely contains one of those tokens -- a
@@ -359,20 +427,47 @@ public class SourceCatalogCredentialVendor {
     for (Throwable c = cause; c != null && seen.add(c); c = c.getCause()) {
       if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
         return io.grpc.Status.UNAUTHENTICATED
-            .withDescription(detail)
+            .withDescription(description)
             .withCause(cause)
             .asRuntimeException();
       }
       if (c instanceof org.apache.iceberg.exceptions.ForbiddenException) {
         return io.grpc.Status.PERMISSION_DENIED
-            .withDescription(detail)
+            .withDescription(description)
             .withCause(cause)
             .asRuntimeException();
+      }
+      // Format-neutral refusal for connectors that do not speak Iceberg REST (e.g. Unity Catalog
+      // over HTTP): they raise a typed SourceCatalogAccessException rather than an Iceberg
+      // exception, carrying whether it was an authentication or authorization failure.
+      if (c instanceof SourceCatalogAccessException access) {
+        return switch (access.denial()) {
+          case UNAUTHENTICATED ->
+              io.grpc.Status.UNAUTHENTICATED
+                  .withDescription(description)
+                  .withCause(cause)
+                  .asRuntimeException();
+          case PERMISSION_DENIED ->
+              io.grpc.Status.PERMISSION_DENIED
+                  .withDescription(description)
+                  .withCause(cause)
+                  .asRuntimeException();
+          // Terminal, but not a denial, so it must not travel as one: PERMISSION_DENIED here would
+          // report "you may not read this table" for a catalog that simply cannot vend for it. It
+          // goes back as the structured vend-refused reason, which the reconciler matches by reason
+          // rather than by the shared FAILED_PRECONDITION code.
+          case UNSUPPORTED ->
+              ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+                  .sourceCatalogVendRefused(description);
+        };
       }
     }
     // Unrecognised stays retryable: an over-eager terminal permanently fails a job, an over-eager
     // retry only costs time.
-    return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
+    return io.grpc.Status.INTERNAL
+        .withDescription(description)
+        .withCause(cause)
+        .asRuntimeException();
   }
 
   /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */

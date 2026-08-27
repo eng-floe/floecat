@@ -232,6 +232,8 @@ final class DeltaConnectorFactory {
 
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(options, "s3.path-style-access", "false"));
+    String accessPoint =
+        S3V2FileSystemClient.blankToNull(resolveOption(options, "s3.access-point", null));
 
     var credentials = credentialsProviderFactory(options);
 
@@ -244,7 +246,10 @@ final class DeltaConnectorFactory {
                   S3Client.builder()
                       .region(region)
                       .serviceConfiguration(
-                          S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+                          S3Configuration.builder()
+                              .pathStyleAccessEnabled(pathStyle)
+                              .useArnRegionEnabled(accessPoint != null)
+                              .build())
                       .credentialsProvider(provider);
               try {
                 if (endpoint != null && !endpoint.isBlank()) {
@@ -257,8 +262,8 @@ final class DeltaConnectorFactory {
                 throw e;
               }
             });
-    Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3Client));
-    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3Client, p);
+    Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3Client, accessPoint));
+    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3Client, p, accessPoint);
     return new EngineContext(engine, inputFn);
   }
 

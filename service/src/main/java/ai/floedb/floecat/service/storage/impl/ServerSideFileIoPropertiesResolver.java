@@ -31,11 +31,21 @@ import java.util.Map;
 
 @ApplicationScoped
 public class ServerSideFileIoPropertiesResolver {
+  /**
+   * The FileIO properties a resolved storage answer owns end to end -- replaced wholesale rather
+   * than merged, so a stale value never survives alongside a fresh credential.
+   *
+   * <p>{@code s3.access-point} is here because Unity Catalog vends an access point ARN for buckets
+   * behind an access-point policy, and those credentials only authorize requests addressed to the
+   * ARN. The Delta compat path in the Iceberg REST gateway reads it back when it builds its S3
+   * client; addressing the raw bucket instead returns 403 for every read.
+   */
   private static final List<String> FILE_IO_PROPERTY_KEYS =
       List.of(
           "s3.region",
           "s3.endpoint",
           "s3.path-style-access",
+          "s3.access-point",
           "s3.access-key-id",
           "s3.secret-access-key",
           "s3.session-token");

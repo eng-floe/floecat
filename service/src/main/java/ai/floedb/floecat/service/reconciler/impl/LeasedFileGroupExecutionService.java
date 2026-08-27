@@ -208,6 +208,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return pinned;
   }
 
+  /**
+   * Stamps the table's {@code storage_location} onto the connector payload the worker receives.
+   *
+   * <p>The only writer of the property that {@code ReconcilerService.sourceStorageLocation} and
+   * {@code StorageAuthorityServiceImpl.connectorSourceStorageLocation} read to decide which storage
+   * authority covers a table -- and, when none does, whether to ask the source catalog to vend. A
+   * kind missing here silently skips both.
+   */
   private Connector withTableStorageLocation(Connector connector, Table table) {
     if (connector == null
         || table == null

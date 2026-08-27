@@ -913,11 +913,13 @@ class StorageAuthorityServiceImplTest {
                 "s3.session-token", "token",
                 "s3.region", "eu-west-1",
                 "s3.endpoint", "https://s3.eu-west-1.example",
-                "s3.path-style-access", "true"));
+                "s3.path-style-access", "true",
+                "s3.access-point", "arn:aws:s3:eu-west-1:123:accesspoint/orders"));
 
     assertEquals("eu-west-1", routing.get("s3.region"));
     assertEquals("https://s3.eu-west-1.example", routing.get("s3.endpoint"));
     assertEquals("true", routing.get("s3.path-style-access"));
+    assertEquals("arn:aws:s3:eu-west-1:123:accesspoint/orders", routing.get("s3.access-point"));
     assertFalse(routing.containsKey("s3.access-key-id"));
     assertFalse(routing.containsKey("s3.secret-access-key"));
     assertFalse(routing.containsKey("s3.session-token"));

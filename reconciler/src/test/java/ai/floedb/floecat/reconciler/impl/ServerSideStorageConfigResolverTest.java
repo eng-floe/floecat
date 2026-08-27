@@ -418,6 +418,38 @@ class ServerSideStorageConfigResolverTest {
   }
 
   /**
+   * Unity declares vending, but its connector applies vended credentials only when asked: the Delta
+   * engine's S3 client is built from the connector's own {@code s3.*} options. An untouched config
+   * therefore carries no storage credentials, so the missing-authority error must propagate rather
+   * than be absorbed into an opaque 403 on the first read.
+   */
+  @Test
+  void delegatingUnityConnectorPropagatesMissingAuthority() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "unity",
+            "https://workspace.example.com",
+            Map.of(
+                "storage_location", "s3://8c554103--table-s3",
+                "databricks.access-delegation", "vended-credentials"),
+            new ConnectorConfig.Auth("oauth2", Map.of("token", "secret"), Map.of()));
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenThrow(SourceCatalogVendingGrpcStatus.noMatchingStorageAuthority("none matches"));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> resolveWithStorageLocation(resolver, unityConnector(), config));
+
+    verify(resolver.storageAuthorities).vendStorageCredentials(any());
+  }
+
+  /**
    * INVALID_ARGUMENT alone must not trigger the fallback. vendStorageCredentials returns it for
    * account_id, execution_binding and location_prefix validation failures too, and turning those
    * into a silent "use the catalog instead" hides the real cause behind a later FileIO error.
@@ -583,15 +615,11 @@ class ServerSideStorageConfigResolverTest {
 
   private static ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveWithStorageLocation(
       ServerSideStorageConfigResolver resolver, ConnectorConfig config) {
-    Connector connector =
-        Connector.newBuilder()
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setResourceId(
-                ResourceId.newBuilder()
-                    .setAccountId("acct")
-                    .setId("conn")
-                    .setKind(ResourceKind.RK_CONNECTOR))
-            .build();
+    return resolveWithStorageLocation(resolver, icebergConnector(), config);
+  }
+
+  private static ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveWithStorageLocation(
+      ServerSideStorageConfigResolver resolver, Connector connector, ConnectorConfig config) {
     return resolver.resolveManagedWithAuthorization(
         java.util.Optional.empty(),
         java.util.Optional.empty(),
@@ -600,6 +628,30 @@ class ServerSideStorageConfigResolverTest {
         java.util.Optional.empty(),
         connector,
         config);
+  }
+
+  private static Connector icebergConnector() {
+    return Connector.newBuilder()
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setId("conn")
+                .setKind(ResourceKind.RK_CONNECTOR))
+        .build();
+  }
+
+  private static Connector unityConnector() {
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_DELTA)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .build();
+    return connector;
   }
 
   @Test
