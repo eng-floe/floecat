@@ -163,7 +163,7 @@ public class ConnectorIT {
     var proto =
         Connector.newBuilder()
             .setDisplayName("dummy-conn")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://ignored")
             .setDestination(dest("cat-e2e"))
             .build();
@@ -183,7 +183,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-conn")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source(List.of("db")))
                 .setDestination(dest("cat-e2e"))
@@ -200,7 +200,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-conn2")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source(List.of("examples", "iceberg")))
                 .setDestination(dest("cat-e2e"))
@@ -276,7 +276,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-stats")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source(List.of("db")))
                 .setDestination(dest("cat-stats"))
@@ -1006,7 +1006,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-dest-table")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(src)
                 .setDestination(dest)
@@ -1047,7 +1047,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-scope-miss")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source(List.of("db")))
                 .setDestination(dest("cat-scope-miss"))
@@ -1080,7 +1080,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("dummy-plan-views")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source(List.of("db")))
                 .setDestination(
@@ -1783,7 +1783,7 @@ public class ConnectorIT {
     var proto =
         Connector.newBuilder()
             .setDisplayName("dummy-conn-nested")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://ignored")
             .setDestination(dest("cat-e2e"))
             .build();
@@ -1896,7 +1896,7 @@ public class ConnectorIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-1")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://x")
             .setSource(source(List.of("a", "b")))
             .setDestination(dest("cat-idem"))
@@ -1922,7 +1922,7 @@ public class ConnectorIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("kind-check")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://x")
             .setSource(source(List.of("a", "b")))
             .setDestination(dest("cat-kind"))
@@ -1969,7 +1969,7 @@ public class ConnectorIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("auth-mask")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://x")
             .setSource(source(List.of("a", "b")))
             .setDestination(dest("cat-auth"))
@@ -2008,7 +2008,7 @@ public class ConnectorIT {
                         .setSpec(
                             ConnectorSpec.newBuilder()
                                 .setDisplayName("auth-reject")
-                                .setKind(ConnectorKind.CK_UNITY)
+                                .setKind(ConnectorKind.CK_GLUE)
                                 .setUri("dummy://x")
                                 .setSource(source(List.of("a", "b")))
                                 .setDestination(dest("cat-auth-reject"))
@@ -2191,36 +2191,12 @@ public class ConnectorIT {
   }
 
   @Test
-  void unityConnectorRejectsInlineStaticS3Credentials() throws Exception {
-    TestSupport.createCatalog(catalogService, "cat-unity-props", "");
-
-    var createEx =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                connectors.createConnector(
-                    CreateConnectorRequest.newBuilder()
-                        .setSpec(
-                            ConnectorSpec.newBuilder()
-                                .setDisplayName("unity-inline-s3-creds")
-                                .setKind(ConnectorKind.CK_UNITY)
-                                .setUri("dummy://x")
-                                .setSource(source(List.of("main", "sales")))
-                                .setDestination(dest("cat-unity-props"))
-                                .putProperties("s3.secret-access-key", "should-not-store")
-                                .build())
-                        .build()));
-    TestSupport.assertGrpcAndMc(
-        createEx, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
-  }
-
-  @Test
   void createConnectorIdempotencyMismatchOnUri() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-idem-2", "");
     var specA =
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-2")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://x")
             .setSource(source(List.of("a", "b")))
             .setDestination(dest("cat-idem-2"))
@@ -2229,7 +2205,7 @@ public class ConnectorIT {
     var specB =
         ConnectorSpec.newBuilder()
             .setDisplayName("idem-2")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://y")
             .setSource(source(List.of("a", "b")))
             .setDestination(dest("cat-idem-2"))
@@ -2278,7 +2254,7 @@ public class ConnectorIT {
           connectors,
           ConnectorSpec.newBuilder()
               .setDisplayName("p-" + i)
-              .setKind(ConnectorKind.CK_UNITY)
+              .setKind(ConnectorKind.CK_GLUE)
               .setUri("dummy://x")
               .setSource(source(List.of("a", "b")))
               .setDestination(dest("cat-p"))
@@ -2309,7 +2285,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-a")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://x")
                 .setSource(source(List.of("a", "b")))
                 .setDestination(dest("cat-u"))
@@ -2320,7 +2296,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("u-b")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://x")
                 .setSource(source(List.of("a", "b")))
                 .setDestination(dest("cat-u"))
@@ -2361,7 +2337,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("pre-a")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://x")
                 .setSource(source(List.of("a", "b")))
                 .setDestination(dest("cat-pre"))
@@ -2398,7 +2374,7 @@ public class ConnectorIT {
                         .setSpec(
                             ConnectorSpec.newBuilder()
                                 .setDisplayName("policy-create-invalid")
-                                .setKind(ConnectorKind.CK_UNITY)
+                                .setKind(ConnectorKind.CK_GLUE)
                                 .setUri("dummy://x")
                                 .setSource(source(List.of("a", "b")))
                                 .setDestination(dest("cat-policy-create"))
@@ -2421,7 +2397,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("policy-update-invalid")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://x")
                 .setSource(source(List.of("a", "b")))
                 .setDestination(dest("cat-policy-update"))
@@ -2456,7 +2432,7 @@ public class ConnectorIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("del-1")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://x")
                 .setSource(source(List.of("a", "b")))
                 .setDestination(dest("cat-del"))
@@ -2515,7 +2491,7 @@ public class ConnectorIT {
                 .setSpec(
                     ConnectorSpec.newBuilder()
                         .setDisplayName("v-ok")
-                        .setKind(ConnectorKind.CK_UNITY)
+                        .setKind(ConnectorKind.CK_GLUE)
                         .setUri("dummy://x")
                         .setDestination(dest("cat-v")))
                 .build());
