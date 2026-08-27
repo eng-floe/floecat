@@ -2013,6 +2013,7 @@ guide listed below.</p>
   &quot;kind&quot;:&quot;CK_DELTA&quot;,
   &quot;uri&quot;:&quot;https://dbc-1234.cloud.databricks.com&quot;,
   &quot;properties&quot;:{
+    &quot;delta.source&quot;:&quot;unity&quot;,
     &quot;s3.region&quot;:&quot;us-west-2&quot;,
     &quot;stats.ndv.enabled&quot;:&quot;true&quot;
   },
@@ -2032,6 +2033,7 @@ guide listed below.</p>
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta SP&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type client \
   --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
@@ -2047,6 +2049,7 @@ guide listed below.</p>
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta WIF&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type token-exchange \
   --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
@@ -2061,6 +2064,7 @@ guide listed below.</p>
 <p><strong>CLI cache</strong> – Connector reads the Databricks CLI cache directly:</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta CLI&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type cli \
   --cred cache_path=~/.databricks/token-cache.json
@@ -2072,6 +2076,7 @@ guide listed below.</p>
 </ul>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta Token&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --props delta.source=unity \
   --auth-scheme oauth2 --cred-type bearer --cred token=&lt;access-token&gt;
 </code></pre></div>
 <ul>
