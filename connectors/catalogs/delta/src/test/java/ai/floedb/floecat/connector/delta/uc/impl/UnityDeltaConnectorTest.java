@@ -24,10 +24,13 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -172,12 +175,185 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
+  void vendStorageCredentialsMapsAwsCredentials() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "table-id", "EXTERNAL", "DELTA", null)));
+    Instant expiry = Instant.parse("2030-01-01T00:00:00Z");
+    when(catalog.generateTemporaryTableCredentials(
+            "table-id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(
+            new TemporaryTableCredentials(
+                new TemporaryTableCredentials.AwsCredentials(
+                    "key", "secret", "token", "arn:aws:s3:us-east-1:123:accesspoint/orders"),
+                false,
+                Long.toString(expiry.toEpochMilli()),
+                "s3://bucket/orders"));
+
+    var result = connector.vendStorageCredentials("cat.schema", "orders");
+
+    assertThat(result).isPresent();
+    assertThat(result.orElseThrow().properties())
+        .containsEntry("s3.access-key-id", "key")
+        .containsEntry("s3.secret-access-key", "secret")
+        .containsEntry("s3.session-token", "token")
+        .containsEntry("s3.access-point", "arn:aws:s3:us-east-1:123:accesspoint/orders");
+    assertThat(result.orElseThrow().expiresAt()).isEqualTo(expiry);
+    assertThat(result.orElseThrow().scopePrefix()).isEqualTo("s3://bucket/orders");
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackForMissingTableOrUnsupportedCloud() {
+    when(catalog.getTable("cat.schema.missing")).thenReturn(Optional.empty());
+    when(catalog.getTable("cat.schema.azure"))
+        .thenReturn(Optional.of(table("azure", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(new TemporaryTableCredentials(null, true, null, null));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "missing")).isEmpty();
+    assertThat(connector.vendStorageCredentials("cat.schema", "azure")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackForAnUnrecognizedCredentialShape() {
+    // Neither an AWS tuple nor a cloud this client knows about -- a UC response shape newer than
+    // this code. "Cannot vend" must stay a fallback to a storage authority: handing back an empty
+    // credential object instead would reach the service's usability check and fail the reconcile
+    // job terminally on a condition the caller can recover from.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(new TemporaryTableCredentials(null, false, "1893456000000", "s3://b/orders"));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsClassifiesPermanentNonAuthRefusalsAsTerminal() {
+    // Databricks answers with 400 + error_code when the workspace lacks EXTERNAL USE SCHEMA, and
+    // with 404 for a table id it no longer knows. Both are permanent; left unclassified they
+    // escape as a retryable INTERNAL and the reconciler loops on a job that can never succeed.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    for (UnityCatalogException.Failure failure :
+        new UnityCatalogException.Failure[] {
+          UnityCatalogException.Failure.INVALID_REQUEST, UnityCatalogException.Failure.NOT_FOUND
+        }) {
+      // doThrow, not when(...).thenThrow: when() would evaluate the already-stubbed call and
+      // rethrow the previous iteration's exception before it could re-stub.
+      // errorCode set: only a failure Databricks itself envelopes is permanent. See
+      // notFoundWithoutAnErrorEnvelopeStaysRetryable.
+      doThrow(new UnityCatalogException(failure, 400, "RESOURCE_DOES_NOT_EXIST", "refused", null))
+          .when(catalog)
+          .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+      assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+          .as(failure.name())
+          .isInstanceOfSatisfying(
+              SourceCatalogAccessException.class,
+              error ->
+                  assertThat(error.denial())
+                      .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+    }
+  }
+
+  @Test
+  void notFoundWithoutAnErrorEnvelopeStaysRetryable() {
+    // The client types 404 as NOT_FOUND on status alone, so an HTML 404 from a load balancer in
+    // front of the workspace -- what one serves mid-deploy -- is indistinguishable here from an
+    // unknown table id except by the error_code envelope. Without one it must stay unclassified:
+    // classifying it terminally fails the reconcile job on a condition that recovers by itself.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(new UnityCatalogException(UnityCatalogException.Failure.NOT_FOUND, 404, "<html/>"))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(UnityCatalogException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  /**
+   * The credentials endpoint keys on table_id, so a table without one can never be vended for, and
+   * a catalog that omits it will keep omitting it. An untyped failure escapes classification and
+   * comes back from the service as a retryable INTERNAL, looping the reconcile job forever.
+   */
+  @Test
+  void vendStorageCredentialsTreatsAMissingTableIdAsTerminal() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", " ", "EXTERNAL", "DELTA", null)));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+  }
+
+  @Test
   void closeReleasesTheCatalogTransport() {
     connector.close();
 
     verify(catalog).close();
   }
 
+  @Test
+  void vendStorageCredentialsPreservesIncompleteAwsTupleForServiceValidation() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(
+            new TemporaryTableCredentials(
+                new TemporaryTableCredentials.AwsCredentials("key", "secret", null, null),
+                false,
+                "not-a-number",
+                null));
+
+    var result = connector.vendStorageCredentials("cat.schema", "orders");
+
+    assertThat(result).isPresent();
+    assertThat(result.orElseThrow().properties())
+        .containsEntry("s3.access-key-id", "key")
+        .containsEntry("s3.secret-access-key", "secret")
+        .doesNotContainKey("s3.session-token");
+    // A malformed expiry folds to null rather than failing the vend, per the shared parser.
+    assertThat(result.orElseThrow().expiresAt()).isNull();
+  }
+
+  @Test
+  void vendStorageCredentialsClassifiesAuthenticationFailures() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.UNAUTHENTICATED, 401, "HTTP 401"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNAUTHENTICATED));
+  }
+
+  @Test
+  void vendStorageCredentialsLeavesServerFailuresRetryable() {
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenThrow(
+            new UnityCatalogException(UnityCatalogException.Failure.SERVER_ERROR, 503, "HTTP 503"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(UnityCatalogException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  /**
+   * A connector is built per vend, so an auth provider that owns an HTTP client leaks a selector
+   * thread and an executor on every call unless {@code close()} releases it alongside the catalog
+   * transport.
+   */
   @Test
   void closeReleasesTheAuthProvider() {
     var auth = new ClosableAuthProvider();

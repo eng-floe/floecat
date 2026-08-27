@@ -126,6 +126,13 @@ Important connector properties:
 - `delta.table-root` – Required for `delta.source=filesystem`, pointing at a Delta table root.
 - `external.namespace`, `external.table-name` – Optional overrides for filesystem connector naming.
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.
+- `databricks.access-delegation=vended-credentials` – Explicitly enables table-scoped temporary
+  AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
+  metastore must allow external access and the caller needs `EXTERNAL USE SCHEMA` on the parent
+  schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
+  storage authority. Accepted values are `vended-credentials`, `true`, `1`, `yes` (enabled) and
+  `false`, `0`, `no`, `none` (disabled); anything else is rejected at create/update time rather
+  than read as "disabled".
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`

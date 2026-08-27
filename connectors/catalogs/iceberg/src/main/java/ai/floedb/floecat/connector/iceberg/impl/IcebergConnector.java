@@ -1860,6 +1860,10 @@ public abstract class IcebergConnector implements FloecatConnector {
           // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
           "s3.region",
           "s3.endpoint",
+          // Deliberately no "s3.access-point": Iceberg has no such property. S3FileIOProperties
+          // keys access points per bucket as "s3.access-points.<bucket>", so a literal lookup can
+          // never match and listing it would read as coverage that does not exist. Unity Catalog
+          // is the only source that vends an access point today, through the Delta connector.
           "s3.path-style-access");
 
   /** Iceberg's key for when vended session credentials stop working. */
@@ -1899,7 +1903,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(ioProps)));
+    return Optional.of(
+        new VendedStorageCredentials(vended, parseVendedExpiry(ioProps), table.location()));
   }
 
   /**
@@ -1946,7 +1951,10 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(best.config())));
+    String scopePrefix =
+        best.prefix() == null || best.prefix().isBlank() ? table.location() : best.prefix();
+    return Optional.of(
+        new VendedStorageCredentials(vended, parseVendedExpiry(best.config()), scopePrefix));
   }
 
   private static Map<String, String> filterVendedKeys(Map<String, String> source) {
@@ -1964,18 +1972,10 @@ public abstract class IcebergConnector implements FloecatConnector {
    * Reads the credential expiry, or null when absent or unparseable.
    *
    * <p>Null is deliberately not "never expires": callers are documented to treat it as "do not
-   * cache". Guessing a TTL here would produce credentials that fail mid-read.
+   * cache". Guessing a TTL here would produce credentials that fail mid-read. Delegates to the
+   * shared parser so every vending connector agrees on the epoch-millis semantics.
    */
   private static Instant parseVendedExpiry(Map<String, String> ioProps) {
-    String raw = ioProps.get(VENDED_EXPIRY_KEY);
-    if (raw == null || raw.isBlank()) {
-      return null;
-    }
-    try {
-      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
-    } catch (NumberFormatException e) {
-      LOG.warnf("ignoring unparseable %s from delegated loadTable: %s", VENDED_EXPIRY_KEY, raw);
-      return null;
-    }
+    return VendedStorageCredentials.expiryFromEpochMillis(ioProps.get(VENDED_EXPIRY_KEY));
   }
 }

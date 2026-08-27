@@ -49,6 +49,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -242,6 +243,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var display = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
+                  validateAccessDelegation(spec.getKind(), spec.getPropertiesMap(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -523,6 +525,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  validateAccessDelegation(desired.getKind(), desired.getPropertiesMap(), corr);
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
@@ -709,6 +712,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           mustNonEmpty(spec.getUri(), "uri", corr),
                           spec.getPropertiesMap(),
                           auth);
+                  validateAccessDelegation(spec.getKind(), spec.getPropertiesMap(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -933,6 +937,28 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       }
     }
     return false;
+  }
+
+  /**
+   * Checks the vend-credentials opt-in a Delta connector spelled out.
+   *
+   * <p>{@code DatabricksAccessDelegation} reads any unrecognized value as "not opted in", which is
+   * the only safe reading at request time but makes {@code vended_credentials} (underscore) or
+   * {@code vended-credential} (singular) silently disable vending. Both gates that consult it --
+   * the one that attempts vending and the one that lets the reconciler absorb the resulting
+   * missing-authority error -- then agree, so a typo surfaces far away as reads falling back to a
+   * storage authority that was never configured.
+   */
+  private static void validateAccessDelegation(
+      ConnectorKind kind, Map<String, String> properties, String corr) {
+    if (kind != ConnectorKind.CK_DELTA || properties == null) {
+      return;
+    }
+    String value = properties.get(DatabricksAccessDelegation.VEND_OPTION);
+    if (!DatabricksAccessDelegation.isRecognizedValue(value)) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "properties", "key", DatabricksAccessDelegation.VEND_OPTION));
+    }
   }
 
   private static void validateConnectorProperties(

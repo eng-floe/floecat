@@ -1174,14 +1174,44 @@ public interface FloecatConnector extends Closeable {
    * @param expiresAt when the credentials stop working, or null if the catalog did not say. Null is
    *     meaningful — callers that cache must treat it as "do not cache" rather than "never
    *     expires".
+   * @param scopePrefix catalog-issued storage prefix to which the credentials apply, or null when
+   *     the catalog did not provide one. Callers may fall back to the requested table location but
+   *     must prefer this value when producing a scoped credential response.
    */
-  record VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+  record VendedStorageCredentials(
+      Map<String, String> properties, Instant expiresAt, String scopePrefix) {
+    public VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+      this(properties, expiresAt, null);
+    }
+
     public VendedStorageCredentials {
       properties = properties == null ? Map.of() : Map.copyOf(properties);
+      scopePrefix = scopePrefix == null || scopePrefix.isBlank() ? null : scopePrefix.trim();
     }
 
     public boolean isEmpty() {
       return properties.isEmpty();
+    }
+
+    /**
+     * Parses a vended expiry expressed as epoch milliseconds, shared by every connector that vends.
+     *
+     * <p>Null (absent, blank, non-positive, or unparseable) is deliberately not "never expires":
+     * callers that cache must treat it as "do not cache", and the reconcile path refuses a
+     * credential with no expiry because it cannot schedule a renewal for one. A malformed value is
+     * folded into the same null rather than failing the vend -- the credential still reads, it just
+     * cannot be cached or refreshed.
+     */
+    public static Instant expiryFromEpochMillis(String rawEpochMillis) {
+      if (rawEpochMillis == null || rawEpochMillis.isBlank()) {
+        return null;
+      }
+      try {
+        long millis = Long.parseLong(rawEpochMillis.trim());
+        return millis > 0 ? Instant.ofEpochMilli(millis) : null;
+      } catch (NumberFormatException e) {
+        return null;
+      }
     }
   }
 }

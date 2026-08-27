@@ -17,10 +17,13 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
+import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.delta.kernel.engine.Engine;
 import java.util.ArrayList;
@@ -175,6 +178,63 @@ public final class UnityDeltaConnector extends DeltaConnector {
                     buildSchemaJson(table)));
   }
 
+  @Override
+  public Optional<FloecatConnector.VendedStorageCredentials> vendStorageCredentials(
+      String namespaceFq, String tableName) {
+    String fullName = namespaceFq + "." + tableName;
+    try {
+      Optional<UnityCatalogTable> table = catalog.getTable(fullName);
+      if (table.isEmpty()) {
+        LOG.warnf("Unity Catalog table %s not found; cannot vend credentials", fullName);
+        return Optional.empty();
+      }
+      String tableId = table.get().tableId();
+      if (tableId == null || tableId.isBlank()) {
+        // Terminal, and typed so it reads as one. The credentials endpoint keys on table_id, and a
+        // catalog that omits it for a table will keep omitting it. A bare IllegalStateException
+        // escapes classifyAccessFailure, reaches the service unrecognised, and comes back as a
+        // retryable INTERNAL -- the reconcile loop this classification exists to close.
+        throw new SourceCatalogAccessException(
+            SourceCatalogAccessException.Denial.UNSUPPORTED,
+            "Unity Catalog table has no table_id: " + fullName);
+      }
+
+      TemporaryTableCredentials credentials =
+          catalog.generateTemporaryTableCredentials(
+              tableId, UnityCatalogClient.TableOperation.READ);
+      TemporaryTableCredentials.AwsCredentials aws = credentials.awsCredentials();
+      if (aws == null) {
+        // No credential shape this connector recognises -- either a cloud it does not map, or a
+        // field Unity Catalog added after this code was written. Both are "cannot vend", not
+        // "vended nothing": returning a credential object with an empty property map would reach
+        // the service's usability check and fail the reconcile job terminally, when the correct
+        // answer is the same fallback to a configured storage authority the non-AWS branch takes.
+        LOG.warnf(
+            "Unity Catalog vended no AWS credentials for %s (unsupportedCloud=%s); "
+                + "falling back to a storage authority",
+            fullName, credentials.hasUnsupportedCredentials());
+        return Optional.empty();
+      }
+
+      Map<String, String> properties = new LinkedHashMap<>();
+      putIfNonBlank(properties, "s3.access-key-id", aws.accessKeyId());
+      putIfNonBlank(properties, "s3.secret-access-key", aws.secretAccessKey());
+      putIfNonBlank(properties, "s3.session-token", aws.sessionToken());
+      putIfNonBlank(properties, "s3.access-point", aws.accessPoint());
+      // An incomplete tuple is deliberately passed through rather than dropped: the service decides
+      // how strict to be, because the reconcile path needs a renewable session tuple and the query
+      // path does not. Only "no credentials at all" is handled here, above.
+      return Optional.of(
+          new FloecatConnector.VendedStorageCredentials(
+              properties,
+              FloecatConnector.VendedStorageCredentials.expiryFromEpochMillis(
+                  credentials.expirationEpochMillis()),
+              credentials.storageUrl()));
+    } catch (UnityCatalogException e) {
+      throw classifyAccessFailure(e);
+    }
+  }
+
   /**
    * Releases the catalog client's transport and the auth provider's.
    *
@@ -220,6 +280,45 @@ public final class UnityDeltaConnector extends DeltaConnector {
     return catalog
         .getTable(fullName)
         .orElseThrow(() -> new IllegalStateException("Unity Catalog table not found: " + fullName));
+  }
+
+  /**
+   * Turns a Unity Catalog failure into the typed signal the storage service classifies on.
+   *
+   * <p>Every permanent refusal must be named here, not just 401 and 403. Databricks answers the
+   * credentials endpoint with {@code 400} plus an {@code error_code} when the workspace lacks
+   * {@code EXTERNAL USE SCHEMA} or the table has external access turned off, and with {@code 404}
+   * for a table id it no longer knows -- none of which change on retry. Anything left unclassified
+   * escapes as a plain {@link UnityCatalogException}, which the service maps to a retryable {@code
+   * INTERNAL}, so the reconciler would loop on a job that can never succeed.
+   *
+   * <p>Transient failures -- 5xx, rate limits, transport errors, and a malformed body, which is
+   * usually a proxy error page rather than the catalog itself -- stay unclassified on purpose.
+   *
+   * <p>A 404 is permanent only when Databricks answered it. The client types 404 as {@code
+   * NOT_FOUND} on status alone, so an HTML 404 from a load balancer or WAF in front of the
+   * workspace -- what one briefly serves mid-deploy -- arrives here looking identical to an unknown
+   * table id. Its {@code error_code} envelope is what separates them, and without one the failure
+   * stays unclassified so the reconciler retries instead of permanently failing a job that would
+   * have succeeded a minute later.
+   */
+  private static RuntimeException classifyAccessFailure(UnityCatalogException failure) {
+    if (failure.failure() == UnityCatalogException.Failure.NOT_FOUND
+        && failure.errorCode() == null) {
+      return failure;
+    }
+    return switch (failure.failure()) {
+      case UNAUTHENTICATED ->
+          new SourceCatalogAccessException(
+              SourceCatalogAccessException.Denial.UNAUTHENTICATED, failure.getMessage());
+      case PERMISSION_DENIED ->
+          new SourceCatalogAccessException(
+              SourceCatalogAccessException.Denial.PERMISSION_DENIED, failure.getMessage());
+      case NOT_FOUND, INVALID_REQUEST ->
+          new SourceCatalogAccessException(
+              SourceCatalogAccessException.Denial.UNSUPPORTED, failure.getMessage());
+      default -> failure;
+    };
   }
 
   private static Namespace parseNamespace(String namespaceFq) {
@@ -274,6 +373,16 @@ public final class UnityDeltaConnector extends DeltaConnector {
     if (value != null) {
       values.put(key, value);
     }
+  }
+
+  private static void putIfNonBlank(Map<String, String> values, String key, String value) {
+    if (!isBlank(value)) {
+      values.put(key, value);
+    }
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.isBlank();
   }
 
   private static String nullToEmpty(String value) {
