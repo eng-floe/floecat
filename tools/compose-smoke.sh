@@ -915,6 +915,16 @@ EOF
       local access_delegation_arg=""
 
       if [ "$expect_vended_creds" = "true" ]; then
+        # The baseline scenario deliberately proves the storage-authority path. Remove that
+        # authority before the delegated scenario so a successful import cannot silently use the
+        # same authority and pass without ever consuming the credentials returned by Polaris.
+        local authority_remove_out
+        authority_remove_out=$(run_cli_script "$compose_cmd" "account t-0001
+storage-authority delete $scenario_storage_authority_name
+quit")
+        echo "$authority_remove_out"
+        assert_contains "$label upstream iceberg ${scenario_key} storage authority removal" "$authority_remove_out" "ok"
+
         local load_table_resp
         load_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
           -X GET "${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/$warehouse/namespaces/$source_namespace/tables/$source_table?snapshots=all" \
@@ -931,7 +941,7 @@ if not isinstance(creds, list) or not creds:
 PY
         then
           echo "[FAIL] $label upstream iceberg ${scenario_key} Polaris loadTable did not return storage-credentials"
-          echo "$load_table_resp"
+          echo "[FAIL] Polaris response omitted because it may contain storage credentials"
           return 1
         fi
         access_delegation_arg=" --head X-Iceberg-Access-Delegation=${access_delegation_header}"
@@ -974,6 +984,17 @@ quit")
         "$scenario_expected_table" \
         "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
         "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+
+      if [ "$expect_vended_creds" = "true" ]; then
+        # Later smoke sections still exercise authority-backed reads. Restore the authority only
+        # after every delegated assertion has completed, keeping the vending scenario honest.
+        local authority_restore_out
+        authority_restore_out=$(run_cli_script "$compose_cmd" "account t-0001
+storage-authority create $scenario_storage_authority_name --location-prefix s3://floecat/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
+quit")
+        echo "$authority_restore_out"
+        assert_contains "$label upstream iceberg ${scenario_key} storage authority restoration" "$authority_restore_out" "$scenario_storage_authority_name"
+      fi
     }
 
     if [ "$smoke_scope" = "full" ]; then
