@@ -17,567 +17,205 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.client.unity.UnityCatalogClient;
+import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
-import ai.floedb.floecat.connector.spi.FloecatConnector;
-import com.sun.net.httpserver.HttpServer;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class UnityDeltaConnectorTest {
-
-  private HttpServer server;
+  private UnityCatalogClient catalog;
   private UnityDeltaConnector connector;
 
-  private static final AuthProvider NO_AUTH =
-      new AuthProvider() {
-        @Override
-        public String scheme() {
-          return "none";
-        }
-
-        @Override
-        public Map<String, String> apply(Map<String, String> baseProps) {
-          return baseProps;
-        }
-      };
-
   @BeforeEach
-  void setUp() throws Exception {
-    server = HttpServer.create(new InetSocketAddress(0), 0);
-    server.setExecutor(null);
-    server.start();
-    int port = server.getAddress().getPort();
-    UcHttp http = new UcHttp("http://127.0.0.1:" + port, 1000, 5000, NO_AUTH);
-    connector = new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0);
-  }
-
-  @AfterEach
-  void tearDown() {
-    server.stop(0);
+  void setUp() {
+    catalog = mock(UnityCatalogClient.class);
+    connector = new UnityDeltaConnector("test-id", catalog, null, null, null, false, 0.0, 0);
   }
 
   @Test
-  void describeThrowsOnNotFound() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          String body = "{\"error_code\":\"RESOURCE_DOES_NOT_EXIST\",\"message\":\"Not found\"}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(404, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void listNamespacesCombinesCatalogsAndSchemasAndSorts() {
+    when(catalog.listCatalogs()).thenReturn(List.of("z", "a"));
+    when(catalog.listSchemas("z")).thenReturn(List.of("two", "one"));
+    when(catalog.listSchemas("a")).thenReturn(List.of("default"));
 
-    assertThatThrownBy(() -> connector.describe("mycat.myschema", "missing_table"))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessageContaining("404");
+    assertThat(connector.listNamespaces()).containsExactly("a.default", "z.one", "z.two");
   }
 
   @Test
-  void storageLocationLoadsFromUcWhenHintMissing() throws Exception {
-    AtomicInteger requests = new AtomicInteger();
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          requests.incrementAndGet();
-          String body = "{\"storage_location\":\"s3://bucket/table\"}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void listTablesFiltersNonDeltaEntries() {
+    when(catalog.listTables("cat", "schema"))
+        .thenReturn(
+            List.of(
+                table("view", "VIEW", null),
+                table("z_orders", "MANAGED", "DELTA"),
+                table("a_orders", "EXTERNAL", "delta")));
 
-    assertThat(connector.storageLocation("mycat.myschema", "orders"))
-        .isEqualTo("s3://bucket/table");
-    assertThat(connector.storageLocation("mycat.myschema", "orders"))
-        .isEqualTo("s3://bucket/table");
-
-    assertThat(requests.get()).isEqualTo(2);
+    assertThat(connector.listTables("cat.schema")).containsExactly("a_orders", "z_orders");
   }
 
   @Test
-  void storageLocationThrowsOnNonSuccessStatus() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          String body = "{\"error_code\":\"TEMPORARY_UNAVAILABLE\",\"message\":\"retry later\"}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(503, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void malformedNamespaceDoesNotCallClient() {
+    assertThat(connector.listTables("missing_separator")).isEmpty();
+    assertThat(connector.listViews("missing_separator")).isEmpty();
 
-    assertThatThrownBy(() -> connector.storageLocation("mycat.myschema", "orders"))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessageContaining("503")
-        .hasMessageContaining("mycat.myschema.orders");
+    verify(catalog, never())
+        .listTables(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
   }
 
   @Test
-  void listViewsReturnsOnlyViewTableTypes() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String body =
-              """
-              {"tables":[
-                {"name":"sales_view","table_type":"VIEW"},
-                {"name":"orders","data_source_format":"DELTA"},
-                {"name":"summary_view","table_type":"VIEW"}
-              ]}
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void describeMapsNormalizedTableMetadata() {
+    var column =
+        new UnityCatalogTable.Column(
+            "tags",
+            "ARRAY",
+            "array<string>",
+            "{\"name\":\"tags\",\"type\":{\"type\":\"array\",\"elementType\":\"string\"}}",
+            true);
+    var table =
+        new UnityCatalogTable(
+            "orders", "id", "EXTERNAL", "DELTA", null, null, List.of(column), Map.of());
+    when(catalog.getTable("cat.schema.orders")).thenReturn(Optional.of(table));
 
-    List<String> views = connector.listViews("mycat.myschema");
+    var descriptor = connector.describe("cat.schema", "orders");
 
-    // Only VIEW table_type entries are returned; sorted alphabetically.
-    assertThat(views).containsExactly("sales_view", "summary_view");
+    assertThat(descriptor.schemaJson()).contains("\"elementType\":\"string\"");
+    assertThat(descriptor.schemaJson()).doesNotContain("array<string>");
+    assertThat(descriptor.properties())
+        .containsEntry("table_type", "EXTERNAL")
+        .containsEntry("data_source_format", "DELTA");
   }
 
   @Test
-  void listViewsReturnsEmptyWhenNamespaceHasNoDot() {
-    // No HTTP call expected since the namespace is malformed.
-    List<String> views = connector.listViews("nodot");
-    assertThat(views).isEmpty();
+  void storageLocationLoadsThroughClientEachTime() {
+    var table = table("orders", "EXTERNAL", "DELTA", "s3://bucket/orders");
+    when(catalog.getTable("cat.schema.orders")).thenReturn(Optional.of(table));
+
+    assertThat(connector.storageLocation("cat.schema", "orders")).isEqualTo("s3://bucket/orders");
+    assertThat(connector.storageLocation("cat.schema", "orders")).isEqualTo("s3://bucket/orders");
+
+    verify(catalog, org.mockito.Mockito.times(2)).getTable("cat.schema.orders");
   }
 
   @Test
-  void listViewsIgnoresDeltaTables() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String body =
-              """
-              {"tables":[
-                {"name":"orders","data_source_format":"DELTA"},
-                {"name":"customers","data_source_format":"DELTA"}
-              ]}
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void constraintFallbackUsesNormalizedProperties() {
+    var table =
+        new UnityCatalogTable(
+            "orders",
+            "id",
+            "EXTERNAL",
+            "DELTA",
+            null,
+            null,
+            List.of(),
+            Map.of("delta.constraints.positive", "amount > 0"));
+    when(catalog.getTable("cat.schema.orders")).thenReturn(Optional.of(table));
 
-    List<String> views = connector.listViews("mycat.myschema");
-    assertThat(views).isEmpty();
+    assertThat(connector.fallbackTablePropertiesForConstraints("cat.schema", "orders"))
+        .containsEntry("delta.constraints.positive", "amount > 0");
   }
 
   @Test
-  void describeViewReturnsViewDescriptorWithSqlAndColumns() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          String body =
-              """
-              {
-                "name":"revenue_view",
-                "table_type":"VIEW",
-                "view_definition":"SELECT amount, region FROM sales",
-                "columns":[
-                  {"name":"amount","type_name":"DOUBLE","nullable":false},
-                  {"name":"region","type_name":"STRING","nullable":true}
-                ]
-              }
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void listViewDescriptorsUsesSingleTypedListAndSchemaOnlySearchPath() {
+    var column = new UnityCatalogTable.Column("amount", "DOUBLE", null, null, false);
+    var view =
+        new UnityCatalogTable(
+            "revenue",
+            "view-id",
+            "VIEW",
+            null,
+            null,
+            "SELECT amount FROM sales",
+            List.of(column),
+            Map.of());
+    when(catalog.listTables("cat", "nested.schema"))
+        .thenReturn(List.of(table("orders", "EXTERNAL", "DELTA"), view));
 
-    Optional<FloecatConnector.ViewDescriptor> result =
-        connector.describeView("mycat.myschema", "revenue_view");
+    var descriptors = connector.listViewDescriptors("cat.nested.schema");
 
-    assertThat(result).isPresent();
-    FloecatConnector.ViewDescriptor view = result.get();
-    assertThat(view.sql()).isEqualTo("SELECT amount, region FROM sales");
-    assertThat(view.dialect()).isEqualTo("spark");
-    assertThat(view.namespaceFq()).isEqualTo("mycat.myschema");
-    assertThat(view.name()).isEqualTo("revenue_view");
-    // searchPath must contain only the schema segment — catalog is handled separately.
-    assertThat(view.searchPath()).containsExactly("myschema");
-    // schemaJson must contain the column names
-    assertThat(view.schemaJson()).contains("\"amount\"");
-    assertThat(view.schemaJson()).contains("\"region\"");
+    assertThat(descriptors).hasSize(1);
+    assertThat(descriptors.getFirst().name()).isEqualTo("revenue");
+    assertThat(descriptors.getFirst().sql()).isEqualTo("SELECT amount FROM sales");
+    assertThat(descriptors.getFirst().searchPath()).containsExactly("nested", "schema");
+    assertThat(descriptors.getFirst().schemaJson()).contains("amount", "DOUBLE");
+    verify(catalog).listTables("cat", "nested.schema");
   }
 
   @Test
-  void describeViewUsesTypeJsonForComplexColumns() throws Exception {
-    // UC's type_text for an array column is the display string "array<string>", which no Delta
-    // schema parser accepts. type_json carries the real Delta StructField JSON and must win.
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          String body =
-              """
-              {
-                "name":"tags_view",
-                "table_type":"VIEW",
-                "view_definition":"SELECT id, tags FROM t",
-                "columns":[
-                  {"name":"id","type_name":"INT","type_text":"int",
-                   "type_json":"{\\"name\\":\\"id\\",\\"type\\":\\"integer\\",\\"nullable\\":false,\\"metadata\\":{}}",
-                   "nullable":false},
-                  {"name":"tags","type_name":"ARRAY","type_text":"array<string>",
-                   "type_json":"{\\"name\\":\\"tags\\",\\"type\\":{\\"type\\":\\"array\\",\\"elementType\\":\\"string\\",\\"containsNull\\":true},\\"nullable\\":true,\\"metadata\\":{}}",
-                   "nullable":true}
-                ]
-              }
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void describeViewReturnsEmptyWhenClientDoesNotFindIt() {
+    when(catalog.getTable("cat.schema.missing")).thenReturn(Optional.empty());
 
-    Optional<FloecatConnector.ViewDescriptor> result =
-        connector.describeView("cat.schema", "tags_view");
-
-    assertThat(result).isPresent();
-    String schemaJson = result.get().schemaJson();
-    // The array column carries structured Delta type JSON, not the "array<string>" display string.
-    assertThat(schemaJson).contains("\"elementType\":\"string\"");
-    assertThat(schemaJson).doesNotContain("array<string>");
-    // The scalar column resolves from type_json too.
-    assertThat(schemaJson).contains("\"integer\"");
+    assertThat(connector.describeView("cat.schema", "missing")).isEmpty();
   }
 
   @Test
-  void describeViewUsesTypeNameFallbackWhenTypeTextMissing() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          String body =
-              """
-              {
-                "name":"typed_view",
-                "table_type":"VIEW",
-                "view_definition":"SELECT id FROM t",
-                "columns":[
-                  {"name":"id","type_name":"INT","nullable":false}
-                ]
-              }
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void closeReleasesTheCatalogTransport() {
+    connector.close();
 
-    Optional<FloecatConnector.ViewDescriptor> result =
-        connector.describeView("cat.schema", "typed_view");
-
-    assertThat(result).isPresent();
-    assertThat(result.get().sql()).isEqualTo("SELECT id FROM t");
-    // type_name "INT" should appear in schema JSON
-    assertThat(result.get().schemaJson()).contains("\"id\"");
-    assertThat(result.get().schemaJson()).contains("INT");
+    verify(catalog).close();
   }
 
   @Test
-  void describeViewReturnsEmptyOnNotFound() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/tables/",
-        exchange -> {
-          // Simulate UC returning 404 (view deleted between list and describe)
-          String body = "{\"error_code\":\"RESOURCE_DOES_NOT_EXIST\",\"message\":\"Not found\"}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(404, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void closeReleasesTheAuthProvider() {
+    var auth = new ClosableAuthProvider();
+    try (var scoped =
+        new UnityDeltaConnector("test-id", catalog, auth, null, null, false, 0.0, 0)) {
+      assertThat(auth.closed).isFalse();
+    }
 
-    Optional<FloecatConnector.ViewDescriptor> result =
-        connector.describeView("mycat.myschema", "gone_view");
-
-    assertThat(result).isEmpty();
+    verify(catalog).close();
+    assertThat(auth.closed).isTrue();
   }
 
+  /** A failure closing the catalog transport must not skip the auth provider. */
   @Test
-  void listViewDescriptorsBatchesAllViewsInSingleCall() throws Exception {
-    // listViewDescriptors() must call the list endpoint only once and return full descriptors.
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String body =
-              """
-              {"tables":[
-                {"name":"v1","table_type":"VIEW","view_definition":"SELECT a FROM t1",
-                 "columns":[{"name":"a","type_text":"INT","nullable":true}]},
-                {"name":"orders","data_source_format":"DELTA"},
-                {"name":"v2","table_type":"VIEW","view_definition":"SELECT b FROM t2",
-                 "columns":[{"name":"b","type_text":"STRING","nullable":false}]}
-              ]}
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
+  void closeReleasesTheAuthProviderEvenWhenTheCatalogCloseFails() {
+    var auth = new ClosableAuthProvider();
+    doThrow(new IllegalStateException("boom")).when(catalog).close();
 
-    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.myschema");
+    new UnityDeltaConnector("test-id", catalog, auth, null, null, false, 0.0, 0).close();
 
-    // Only VIEW entries; sorted alphabetically.
-    assertThat(views).hasSize(2);
-    assertThat(views.get(0).name()).isEqualTo("v1");
-    assertThat(views.get(0).sql()).isEqualTo("SELECT a FROM t1");
-    assertThat(views.get(0).dialect()).isEqualTo("spark");
-    assertThat(views.get(0).schemaJson()).contains("\"a\"");
-    assertThat(views.get(1).name()).isEqualTo("v2");
-    assertThat(views.get(1).sql()).isEqualTo("SELECT b FROM t2");
+    assertThat(auth.closed).isTrue();
   }
 
-  @Test
-  void listViewDescriptorsReturnsEmptyWhenNamespaceHasNoDot() {
-    // No HTTP call expected since the namespace is malformed.
-    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("nodot");
-    assertThat(views).isEmpty();
+  private static final class ClosableAuthProvider implements AuthProvider, AutoCloseable {
+    private boolean closed;
+
+    @Override
+    public String scheme() {
+      return "oauth2";
+    }
+
+    @Override
+    public Map<String, String> apply(Map<String, String> baseProps) {
+      return baseProps;
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+    }
   }
 
-  @Test
-  void listViewDescriptorsSearchPathContainsOnlySchemaSegments() throws Exception {
-    // Verifies fix for issue 3: searchPath must NOT include the catalog prefix.
-    // For "mycat.myschema", searchPath should be ["myschema"], not ["mycat", "myschema"].
-    // Including the catalog causes enrichForViewContext to prepend it a second time, producing
-    // catalog.catalog.schema.table resolution for unqualified base relation names.
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String body =
-              """
-              {"tables":[
-                {"name":"v1","table_type":"VIEW","view_definition":"SELECT x FROM t",
-                 "columns":[{"name":"x","type_text":"INT","nullable":true}]}
-              ]}
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-
-    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.myschema");
-
-    assertThat(views).hasSize(1);
-    assertThat(views.get(0).searchPath()).containsExactly("myschema");
+  private static UnityCatalogTable table(String name, String type, String format) {
+    return table(name, null, type, format, null);
   }
 
-  @Test
-  void listViewDescriptorsSearchPathPreservesMultiLevelSchema() throws Exception {
-    // For a three-segment namespace "mycat.ns1.ns2", searchPath should be ["ns1", "ns2"].
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String body =
-              """
-              {"tables":[
-                {"name":"v1","table_type":"VIEW","view_definition":"SELECT x FROM t",
-                 "columns":[{"name":"x","type_text":"INT","nullable":true}]}
-              ]}
-              """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-
-    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.ns1.ns2");
-
-    assertThat(views).hasSize(1);
-    assertThat(views.get(0).searchPath()).containsExactly("ns1", "ns2");
+  private static UnityCatalogTable table(String name, String type, String format, String location) {
+    return table(name, null, type, format, location);
   }
 
-  // -------------------------------------------------------------------------
-  // Pagination tests
-  // -------------------------------------------------------------------------
-
-  @Test
-  void listTablesPaginatesAcrossMultiplePages() throws Exception {
-    // UC returns two pages: first has next_page_token, second does not.
-    server.createContext(
-        "/api/2.1/unity-catalog/tables",
-        exchange -> {
-          String query = exchange.getRequestURI().getQuery();
-          String body =
-              (query != null && query.contains("page_token=page2"))
-                  ? """
-                  {"tables":[
-                    {"name":"t2","data_source_format":"DELTA"}
-                  ]}
-                  """
-                  : """
-                  {"tables":[
-                    {"name":"t1","data_source_format":"DELTA"}
-                  ],"next_page_token":"page2"}
-                  """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-
-    List<String> tables = connector.listTables("mycat.myschema");
-    assertThat(tables).containsExactly("t1", "t2");
-  }
-
-  @Test
-  void listNamespacesPaginatesCatalogs() throws Exception {
-    // Catalogs endpoint returns two pages; schemas endpoint returns a single page per catalog.
-    server.createContext(
-        "/api/2.1/unity-catalog/catalogs",
-        exchange -> {
-          String query = exchange.getRequestURI().getQuery();
-          String body =
-              (query != null && query.contains("page_token=cp2"))
-                  ? """
-                  {"catalogs":[{"name":"cat2"}]}
-                  """
-                  : """
-                  {"catalogs":[{"name":"cat1"}],"next_page_token":"cp2"}
-                  """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-    server.createContext(
-        "/api/2.1/unity-catalog/schemas",
-        exchange -> {
-          // Determine catalog from query and return one schema per catalog.
-          String query = exchange.getRequestURI().getQuery();
-          String schemaName = (query != null && query.contains("cat2")) ? "s2" : "s1";
-          String body = "{\"schemas\":[{\"name\":\"" + schemaName + "\"}]}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-
-    List<String> namespaces = connector.listNamespaces();
-    assertThat(namespaces).containsExactlyInAnyOrder("cat1.s1", "cat2.s2");
-  }
-
-  @Test
-  void listNamespacesPaginatesSchemasWithinCatalog() throws Exception {
-    // Schemas endpoint returns two pages for the same catalog.
-    server.createContext(
-        "/api/2.1/unity-catalog/catalogs",
-        exchange -> {
-          String body = "{\"catalogs\":[{\"name\":\"mycat\"}]}";
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-    server.createContext(
-        "/api/2.1/unity-catalog/schemas",
-        exchange -> {
-          String query = exchange.getRequestURI().getQuery();
-          String body =
-              (query != null && query.contains("page_token=sp2"))
-                  ? """
-                  {"schemas":[{"name":"ns2"}]}
-                  """
-                  : """
-                  {"schemas":[{"name":"ns1"}],"next_page_token":"sp2"}
-                  """;
-          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-          exchange.sendResponseHeaders(200, bytes.length);
-          exchange.getResponseBody().write(bytes);
-          exchange.getResponseBody().close();
-        });
-
-    List<String> namespaces = connector.listNamespaces();
-    assertThat(namespaces).containsExactlyInAnyOrder("mycat.ns1", "mycat.ns2");
-  }
-
-  @Test
-  void ucGetAllThrowsOnNonTwoHundredStatus() throws Exception {
-    server.createContext(
-        "/api/2.1/unity-catalog/catalogs",
-        exchange -> {
-          byte[] body =
-              "{\"error_code\":\"PERMISSION_DENIED\",\"message\":\"Forbidden\"}".getBytes();
-          exchange.sendResponseHeaders(403, body.length);
-          try (var out = exchange.getResponseBody()) {
-            out.write(body);
-          }
-        });
-
-    assertThatThrownBy(() -> connector.listNamespaces())
-        .isInstanceOf(RuntimeException.class)
-        .cause()
-        .hasMessageContaining("UC list returned HTTP 403");
-  }
-
-  @Test
-  void extractConstraintPropertiesReadsMapStyleProperties() throws Exception {
-    var node =
-        DeltaConnector.M.readTree(
-            """
-            {
-              "name":"t",
-              "properties":{
-                "delta.constraints.ck_positive":"amount > 0",
-                "delta.appendOnly":"true"
-              }
-            }
-            """);
-
-    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
-
-    assertThat(props)
-        .containsEntry("delta.constraints.ck_positive", "amount > 0")
-        .containsEntry("delta.appendOnly", "true");
-  }
-
-  @Test
-  void extractConstraintPropertiesReadsTablePropertiesObjectStyle() throws Exception {
-    var node =
-        DeltaConnector.M.readTree(
-            """
-            {
-              "name":"t",
-              "table_properties":{
-                "delta.constraints.ck_nonzero":"amount <> 0"
-              }
-            }
-            """);
-
-    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
-
-    assertThat(props).containsEntry("delta.constraints.ck_nonzero", "amount <> 0");
-  }
-
-  @Test
-  void extractConstraintPropertiesReadsArrayStyleProperties() throws Exception {
-    var node =
-        DeltaConnector.M.readTree(
-            """
-            {
-              "name":"t",
-              "table_properties":[
-                {"key":"delta.constraints.ck_valid","value":"amount < 1000"}
-              ]
-            }
-            """);
-
-    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
-
-    assertThat(props).containsEntry("delta.constraints.ck_valid", "amount < 1000");
+  private static UnityCatalogTable table(
+      String name, String id, String type, String format, String location) {
+    return new UnityCatalogTable(name, id, type, format, location, null, List.of(), Map.of());
   }
 }

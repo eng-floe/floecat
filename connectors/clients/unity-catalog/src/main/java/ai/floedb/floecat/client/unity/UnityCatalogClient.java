@@ -1,0 +1,49 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.client.unity;
+
+import java.util.List;
+import java.util.Optional;
+
+/** A small, transport-independent boundary for the Unity Catalog operations Floecat uses. */
+public interface UnityCatalogClient extends AutoCloseable {
+  List<String> listCatalogs();
+
+  List<String> listSchemas(String catalogName);
+
+  List<UnityCatalogTable> listTables(String catalogName, String schemaName);
+
+  Optional<UnityCatalogTable> getTable(String fullName);
+
+  TemporaryTableCredentials generateTemporaryTableCredentials(
+      String tableId, TableOperation operation);
+
+  /**
+   * Releases the transport this client owns.
+   *
+   * <p>Declared here, and narrowed to throw nothing, because the connector that owns a client is
+   * built per vend -- once per scan session and once per file group -- so an implementation holding
+   * a pooled transport leaks a thread and an executor on every call unless the owner can close it.
+   */
+  @Override
+  void close();
+
+  enum TableOperation {
+    READ,
+    READ_WRITE
+  }
+}

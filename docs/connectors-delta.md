@@ -3,21 +3,20 @@
 ## Overview
 
 `connectors/catalogs/delta/` implements a connector targeting Databricks Unity Catalog-powered Delta Lake
-warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL endpoints, and AWS S3
+warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, and AWS S3
 (through the v2 client) to enumerate tables, collect statistics, and plan files.
 
 The primary implementation is `DeltaConnector` (abstract) with source-specific subclasses for Unity
 Catalog, AWS Glue, and filesystem-backed tables, exposed via `DeltaConnectorProvider`. Supporting classes manage
-OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream),
-Databricks SQL execution, and custom file readers for S3.
+OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream), a
+typed Unity Catalog client boundary, and custom file readers for S3.
 
 ## Architecture & Responsibilities
 
 - **`DeltaConnector`** – Abstract `FloecatConnector` that centralizes snapshot/stat logic.
 - **`UnityDeltaConnector`** – Unity Catalog-backed connector that:
-  - Talks to Unity Catalog REST (`UcHttp`) to list catalogs/schemas/tables.
+  - Uses `UnityCatalogClient` to list catalogs/schemas/tables and vend storage credentials.
   - Uses Delta Kernel (`io.delta.kernel.Table`) for schema and snapshot access.
-  - Executes Databricks SQL statements via `SqlStmtClient` if a warehouse is configured.
   - Reads Parquet data with `S3V2FileSystemClient` and `ParquetS3V2InputFile` for NDV/statistics.
   - Plans files using `DeltaPlanner`, emitting `ScanFile`s for data/delete manifests.
 - **`DeltaFilesystemConnector`** – Single-table connector for `delta.table-root` plus optional
@@ -26,8 +25,10 @@ Databricks SQL execution, and custom file readers for S3.
   - Lists databases and Delta-registered tables from Glue.
   - Resolves table `storage_location` from Glue metadata and reads table snapshots via Delta Kernel.
 - **`DeltaConnectorFactory`** – Selects Unity, Glue, or filesystem sources and wires engine/auth/IO.
-- **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
-  handling retries/timeouts.
+- **`UnityCatalogClient` / `HttpUnityCatalogClient`** – Typed client boundary and HTTP adapter for
+  Unity Catalog metadata, pagination, error classification, and credential vending. The adapter
+  lives in `connectors/clients/unity-catalog/`; connector domain code does not depend on Java HTTP
+  types.
 - **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Floecat logical types for stats.
 
 ## Public API / Surface Area
@@ -61,9 +62,8 @@ Databricks SQL execution, and custom file readers for S3.
   For `delta.source=glue` and `delta.source=filesystem`, AWS temporary credentials from
   `aws-assume-role` or `aws-web-identity` are preserved as a shared refreshable provider so native
   Glue catalog access and S3 reads use the same AWS identity.
-- **HTTP & SQL clients** – `UcHttp` centralises base URI, connect/read timeouts, and error mapping.
-  `SqlStmtClient` optionally executes SQL statements (for example to inspect statistics tables) via
-  Databricks SQL warehouses.
+- **Unity Catalog client** – `HttpUnityCatalogClient` centralizes base URI, connect/read timeouts,
+  pagination, JSON decoding, and semantic error mapping behind the `UnityCatalogClient` interface.
 - **S3 integration** – Uses AWS SDK v2 (`S3Client`) with region from connector properties to read
   data files. `S3RangeReader` provides efficient range reads for Parquet file access.
 - **NDV sampling** – Controlled by `stats.ndv.enabled`, `stats.ndv.sample_fraction`, and
@@ -100,7 +100,7 @@ ConnectorFactory.create(cfg)
   → DeltaConnectorFactory.create(uri, options, authProvider)
       → Select Unity vs filesystem source
       → Instantiate S3 client + Delta Kernel engine
-      → Configure Unity Catalog HTTP and optional SQL client when needed
+      → Configure the UnityCatalogClient HTTP adapter when needed
   → listNamespaces/listTables via Unity Catalog REST
   → describe via REST + Delta Kernel schema inspection
   → enumerateSnapshots
@@ -113,7 +113,10 @@ ConnectorFactory.create(cfg)
       → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
 ```
 
-Connector resources (HTTP clients, S3 client, Delta engine) are closed when `close()` is invoked.
+Source-specific resources follow the `FloecatConnector.close()` lifecycle:
+`UnityDeltaConnector.close()` releases the `UnityCatalogClient` transport, which matters because the
+storage service builds a connector per vend (once per scan session and once per file group).
+Per-file S3 range readers are closed by their consumers.
 
 ## Configuration & Extensibility
 
@@ -123,7 +126,6 @@ Important connector properties:
 - `delta.table-root` – Required for `delta.source=filesystem`, pointing at a Delta table root.
 - `external.namespace`, `external.table-name` – Optional overrides for filesystem connector naming.
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.
-- `databricks.sql.warehouse_id` – Enables SQL statement execution when set.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`
@@ -164,7 +166,7 @@ Extensibility points:
     "kind":"CK_DELTA",
     "uri":"https://dbc-1234.cloud.databricks.com",
     "properties":{
-      "databricks.sql.warehouse_id":"abcd",
+      "delta.source":"unity",
       "s3.region":"us-west-2",
       "stats.ndv.enabled":"true"
     },
