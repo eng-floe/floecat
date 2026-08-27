@@ -1956,7 +1956,9 @@ Per-file S3 range readers are closed by their consumers.</p>
   AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
   metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
   schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
-  storage authority.</li>
+  storage authority. Accepted values are <code>vended-credentials</code>, <code>true</code>, <code>1</code>, <code>yes</code> (enabled) and
+  <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled); anything else is rejected at create/update time rather
+  than read as "disabled".</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
