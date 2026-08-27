@@ -510,6 +510,62 @@ class HttpUnityCatalogClientTest {
   }
 
   /**
+   * The vend response is itself the secret, so this refusal cannot be conditioned on the request
+   * carrying a credential: an anonymous vend over http:// hands secret_access_key and session_token
+   * to anyone on the path. Refused before the send, like the credentialed case.
+   */
+  @Test
+  void anAnonymousCleartextVendIsRefused() {
+    var anonymous =
+        new HttpUnityCatalogClient(
+            URI.create("http://unity-catalog.invalid:8080"),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            Map::of);
+
+    try (anonymous) {
+      assertThatThrownBy(
+              () ->
+                  anonymous.generateTemporaryTableCredentials(
+                      "table-id", UnityCatalogClient.TableOperation.READ))
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure -> {
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST);
+                assertThat(failure.getMessage()).contains("https");
+              });
+    }
+  }
+
+  /**
+   * A static-token provider is {@code () -> require(props, "token")}, which throws
+   * IllegalArgumentException at request time when the secret was never materialised. That is the
+   * same unclassified-runtime-exception retry loop the header guard exists to prevent, so the
+   * provider call belongs inside it.
+   */
+  @Test
+  void anAuthenticationProviderThatCannotProduceAHeaderIsTerminal() {
+    var broken =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> {
+              throw new IllegalArgumentException("Missing auth property: token");
+            });
+
+    try (broken) {
+      assertThatThrownBy(broken::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure())
+                      .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
+    }
+  }
+
+  /**
    * HttpRequest.Builder.header rejects a value HTTP cannot carry -- a token pasted with a trailing
    * newline. Bare, that IllegalArgumentException reaches the storage service unclassified and comes
    * back retryable, so the reconciler loops on a config fault that never self-corrects.

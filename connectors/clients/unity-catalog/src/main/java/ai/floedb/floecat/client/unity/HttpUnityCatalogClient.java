@@ -212,6 +212,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
 
   private JsonNode send(HttpRequest.Builder builder, String path) {
     builder.timeout(requestTimeout).header("Accept", "application/json");
+    if (carriesCredentials(path)) {
+      // The secret travels in the *response* here, so this refusal cannot be conditioned on the
+      // request carrying a catalog credential: an anonymous vend against an http:// endpoint hands
+      // secret_access_key and session_token to anyone on the path.
+      refuseCleartext("its response would carry vended storage credentials");
+    }
     applyAuthentication(builder);
 
     URI uri = URI.create(baseUri + path);
@@ -269,23 +275,27 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * it, the storage service maps it to a retryable {@code INTERNAL}, and the reconciler loops
    * forever on a static configuration fault that can never self-correct. Only the header names go
    * into the message; the value is the catalog credential.
+   *
+   * <p>{@link UnityCatalogAuthentication#headers()} is inside the guard for the same reason, not
+   * only {@link HttpRequest.Builder#header}: a static-token provider is {@code () -> require(props,
+   * "token")}, which throws the same {@code IllegalArgumentException} at request time when the
+   * secret was never materialised. Left outside it that is precisely the unclassified runtime
+   * exception this method exists to prevent.
    */
   private void applyAuthentication(HttpRequest.Builder builder) {
-    Map<String, String> headers = authentication.headers();
-    if (headers == null || headers.isEmpty()) {
-      return;
-    }
-    requireCredentialSafeTransport(headers);
+    Map<String, String> headers;
     try {
+      headers = authentication.headers();
+      if (headers == null || headers.isEmpty()) {
+        return;
+      }
+      requireCredentialSafeTransport(headers);
       headers.forEach(builder::header);
     } catch (IllegalArgumentException e) {
       throw new UnityCatalogException(
           UnityCatalogException.Failure.INVALID_REQUEST,
           -1,
-          "Unity Catalog authentication produced an HTTP header this request cannot carry"
-              + " (headers: "
-              + String.join(", ", headers.keySet())
-              + ")",
+          "Unity Catalog authentication could not produce usable HTTP headers for this request",
           e);
     }
   }
@@ -361,10 +371,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    *
    * <p>An {@code http://} base URI discloses whatever {@link UnityCatalogAuthentication} produced
    * to anyone on the path, and the request goes out before any server can redirect it to HTTPS --
-   * so the refusal has to happen here, before the send. It is scoped to requests that actually
-   * carry credentials: a Unity Catalog OSS server reached unauthenticated over plain HTTP has no
-   * secret to leak, and rejecting its base URI outright would break listing and describe as well as
-   * vending. A loopback host stays allowed, as used throughout this module's tests.
+   * so the refusal has to happen here, before the send. It is scoped to exchanges that actually
+   * move a secret: a metadata read from a Unity Catalog OSS server reached unauthenticated over
+   * plain HTTP has nothing to leak, and rejecting its base URI outright would break listing and
+   * describe. The vend path is refused whether or not the request is authenticated, because there
+   * the secret is in the response -- see {@link #send}. A loopback host stays allowed, as used
+   * throughout this module's tests.
    *
    * <p>Typed, not an {@code IllegalArgumentException}: the connector maps {@code INVALID_REQUEST}
    * to a terminal refusal, whereas an unclassified runtime exception reaches the storage service as
@@ -375,14 +387,22 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     if (!cleartextTransport) {
       return;
     }
+    refuseCleartext(
+        "it carries credentials (headers: " + String.join(", ", headers.keySet()) + ")");
+  }
+
+  private void refuseCleartext(String reason) {
+    if (!cleartextTransport) {
+      return;
+    }
     throw new UnityCatalogException(
         UnityCatalogException.Failure.INVALID_REQUEST,
         -1,
         "Unity Catalog base URI "
             + baseUri
-            + " uses cleartext http, but this request carries credentials (headers: "
-            + String.join(", ", headers.keySet())
-            + "); use https, or a loopback host for a local server");
+            + " uses cleartext http, but this request is refused because "
+            + reason
+            + "; use https, or a loopback host for a local server");
   }
 
   private static boolean isCleartextTransport(URI baseUri) {
@@ -509,6 +529,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * exactly the over-eager terminal {@link #failureFromErrorCode} refuses to guess at. Those stay
    * {@code OTHER}, retryable. The 4xx statuses that are never permanent are still named explicitly
    * first, so an envelope-bearing 408 or 429 is not swept into the default either.
+   *
+   * <p>401, 403 and 404 are the exception: they are classified on status alone, because {@link
+   * #getTable} reads {@code NOT_FOUND} as "no such table" and a Unity Catalog OSS server answers
+   * that with a bare {@code {"message": ...}}. The envelope test that would tell a workspace 404
+   * from a load balancer's HTML 404 therefore happens where the distinction decides whether a job
+   * fails permanently -- {@code UnityDeltaConnector.classifyAccessFailure} -- not here.
    */
   private static UnityCatalogException httpFailure(int status, String path, String body) {
     String responseBody = truncate(body);

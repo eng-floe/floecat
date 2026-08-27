@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.spi;
 
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Reads the vend-credentials opt-in off a Databricks / Unity Catalog connector's configuration.
@@ -54,6 +55,10 @@ public final class DatabricksAccessDelegation {
   public static final String VEND_OPTION = "databricks.access-delegation";
 
   private static final String DELTA_SOURCE_OPTION = "delta.source";
+
+  private static final Set<String> TRUTHY = Set.of("true", "1", "yes", "vended-credentials");
+
+  private static final Set<String> FALSY = Set.of("false", "0", "no", "none");
 
   private DatabricksAccessDelegation() {}
 
@@ -93,14 +98,30 @@ public final class DatabricksAccessDelegation {
     return source == null || source.isBlank() || source.trim().equalsIgnoreCase("unity");
   }
 
+  /**
+   * Whether a value for {@link #VEND_OPTION} means anything to this parser.
+   *
+   * <p>Exists so the service can reject a typo at create/update time. {@link #isTruthy} answers
+   * {@code false} for everything it does not recognise, which is the only safe reading at request
+   * time but makes {@code vended_credentials} (underscore) or {@code vended-credential} (singular)
+   * indistinguishable from a deliberate opt-out -- and because the "attempt vending" gate and the
+   * reconciler's "absorb the missing-authority error" gate both read this parser, the two agree
+   * that the connector never opted in and nothing anywhere reports why reads fall back to a storage
+   * authority that was never configured.
+   *
+   * <p>A blank value is recognised: an absent or cleared property is simply "not opted in".
+   */
+  public static boolean isRecognizedValue(String value) {
+    if (value == null || value.isBlank()) {
+      return true;
+    }
+    return isTruthy(value) || FALSY.contains(value.trim().toLowerCase(Locale.ROOT));
+  }
+
   private static boolean isTruthy(String value) {
     if (value == null || value.isBlank()) {
       return false;
     }
-    String token = value.trim().toLowerCase(Locale.ROOT);
-    return token.equals("true")
-        || token.equals("1")
-        || token.equals("yes")
-        || token.equals("vended-credentials");
+    return TRUTHY.contains(value.trim().toLowerCase(Locale.ROOT));
   }
 }

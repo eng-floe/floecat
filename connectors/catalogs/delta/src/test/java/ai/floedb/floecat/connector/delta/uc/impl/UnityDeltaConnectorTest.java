@@ -228,7 +228,9 @@ class UnityDeltaConnectorTest {
         }) {
       // doThrow, not when(...).thenThrow: when() would evaluate the already-stubbed call and
       // rethrow the previous iteration's exception before it could re-stub.
-      doThrow(new UnityCatalogException(failure, 400, "refused"))
+      // errorCode set: only a failure Databricks itself envelopes is permanent. See
+      // notFoundWithoutAnErrorEnvelopeStaysRetryable.
+      doThrow(new UnityCatalogException(failure, 400, "RESOURCE_DOES_NOT_EXIST", "refused", null))
           .when(catalog)
           .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
 
@@ -240,6 +242,23 @@ class UnityDeltaConnectorTest {
                   assertThat(error.denial())
                       .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
     }
+  }
+
+  @Test
+  void notFoundWithoutAnErrorEnvelopeStaysRetryable() {
+    // The client types 404 as NOT_FOUND on status alone, so an HTML 404 from a load balancer in
+    // front of the workspace -- what one serves mid-deploy -- is indistinguishable here from an
+    // unknown table id except by the error_code envelope. Without one it must stay unclassified:
+    // classifying it terminally fails the reconcile job on a condition that recovers by itself.
+    when(catalog.getTable("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(new UnityCatalogException(UnityCatalogException.Failure.NOT_FOUND, 404, "<html/>"))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(UnityCatalogException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class);
   }
 
   /**

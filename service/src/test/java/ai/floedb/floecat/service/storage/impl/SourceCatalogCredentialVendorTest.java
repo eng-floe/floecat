@@ -46,6 +46,50 @@ class SourceCatalogCredentialVendorTest {
       Connector.newBuilder().setResourceId(ResourceId.newBuilder().setId("c1")).build();
 
   @Test
+  void routingPropertiesKeepConnectorEndpointAndRegionAlias() {
+    // A Unity vend response carries only the credential tuple, so endpoint and path-style can come
+    // from nowhere but the connector: dropping them sends the reader at standard AWS S3 instead of
+    // the configured S3-compatible endpoint. aws.region is a documented alias, so a connector
+    // configured with it must not be overwritten by the deployment default either.
+    SourceCatalogCredentialVendor vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    Map<String, String> routing =
+        vendor.routingProperties(
+            Map.of("s3.access-point", "arn:aws:s3:us-west-2:1:accesspoint/ap"),
+            Map.of(
+                "s3.endpoint",
+                "https://minio.internal:9000",
+                "s3.path-style-access",
+                "true",
+                "aws.region",
+                "us-west-2"));
+
+    assertThat(routing)
+        .containsEntry("s3.endpoint", "https://minio.internal:9000")
+        .containsEntry("s3.path-style-access", "true")
+        .containsEntry("s3.access-point", "arn:aws:s3:us-west-2:1:accesspoint/ap")
+        .containsEntry("s3.region", "us-west-2")
+        .containsEntry("region", "us-west-2")
+        .containsEntry("client.region", "us-west-2");
+  }
+
+  @Test
+  void routingPropertiesPreferVendedValuesOverConnectorConfiguration() {
+    SourceCatalogCredentialVendor vendor = new SourceCatalogCredentialVendor();
+    vendor.defaultRegion = "us-east-1";
+
+    Map<String, String> routing =
+        vendor.routingProperties(
+            Map.of("s3.endpoint", "https://vended:9000", "s3.region", "eu-west-1"),
+            Map.of("s3.endpoint", "https://connector:9000", "aws.region", "us-west-2"));
+
+    assertThat(routing)
+        .containsEntry("s3.endpoint", "https://vended:9000")
+        .containsEntry("s3.region", "eu-west-1");
+  }
+
+  @Test
   void permissionDeniedAccessExceptionIsClassifiedTerminal() {
     // Regression guard for the misclassification bug: a non-Iceberg connector (e.g. Unity Catalog)
     // raises SourceCatalogAccessException, which must map to a terminal PERMISSION_DENIED rather

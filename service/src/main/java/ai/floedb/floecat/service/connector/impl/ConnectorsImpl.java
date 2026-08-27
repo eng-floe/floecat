@@ -49,6 +49,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -255,6 +256,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var uri = mustNonEmpty(spec.getUri(), "uri", corr);
                   validateConnectorKind(spec.getKind(), corr);
                   validateDeltaSource(spec.getKind(), spec.getPropertiesMap(), corr, true);
+                  validateAccessDelegation(spec.getKind(), spec.getPropertiesMap(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -536,8 +538,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
-                  validateConnectorKind(desired.getKind(), corr);
+                  // Only when the update actually moves the kind. A connector persisted before this
+                  // rule -- CK_GLUE, or a wire value this build does not recognise -- must stay
+                  // editable: rejecting an unrelated display-name or policy edit would leave delete
+                  // as the only way out, the same trap validateDeltaSource avoids by requiring its
+                  // property on create only.
+                  if (desired.getKind() != current.getKind()) {
+                    validateConnectorKind(desired.getKind(), corr);
+                  }
                   validateDeltaSource(desired.getKind(), desired.getPropertiesMap(), corr, false);
+                  validateAccessDelegation(desired.getKind(), desired.getPropertiesMap(), corr);
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
@@ -725,6 +735,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           spec.getPropertiesMap(),
                           auth);
                   validateDeltaSource(spec.getKind(), spec.getPropertiesMap(), corr, false);
+                  validateAccessDelegation(spec.getKind(), spec.getPropertiesMap(), corr);
                   validateConnectorProperties(spec.getKind(), spec.getPropertiesMap(), corr);
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
@@ -1005,6 +1016,29 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (!DELTA_SOURCES.contains(source.trim().toLowerCase(java.util.Locale.ROOT))) {
       throw GrpcErrors.invalidArgument(
           corr, null, Map.of("field", "properties", "key", DELTA_SOURCE_PROPERTY));
+    }
+  }
+
+  /**
+   * Checks the vend-credentials opt-in a Delta connector spelled out.
+   *
+   * <p>{@code DatabricksAccessDelegation} reads any unrecognized value as "not opted in", which is
+   * the only safe reading at request time but makes {@code vended_credentials} (underscore) or
+   * {@code vended-credential} (singular) silently disable vending. Both gates that consult it --
+   * the one that attempts vending and the one that lets the reconciler absorb the resulting
+   * missing-authority error -- then agree, so a typo surfaces far away as reads falling back to a
+   * storage authority that was never configured. Rejecting it here is the same argument {@link
+   * #validateDeltaSource} makes for a bad catalog selector.
+   */
+  private static void validateAccessDelegation(
+      ConnectorKind kind, Map<String, String> properties, String corr) {
+    if (kind != ConnectorKind.CK_DELTA || properties == null) {
+      return;
+    }
+    String value = properties.get(DatabricksAccessDelegation.VEND_OPTION);
+    if (!DatabricksAccessDelegation.isRecognizedValue(value)) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "properties", "key", DatabricksAccessDelegation.VEND_OPTION));
     }
   }
 

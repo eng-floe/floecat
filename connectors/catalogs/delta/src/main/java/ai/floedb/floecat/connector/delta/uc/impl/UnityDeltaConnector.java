@@ -302,8 +302,19 @@ public final class UnityDeltaConnector extends DeltaConnector {
    *
    * <p>Transient failures -- 5xx, rate limits, transport errors, and a malformed body, which is
    * usually a proxy error page rather than the catalog itself -- stay unclassified on purpose.
+   *
+   * <p>A 404 is permanent only when Databricks answered it. The client types 404 as {@code
+   * NOT_FOUND} on status alone, so an HTML 404 from a load balancer or WAF in front of the
+   * workspace -- what one briefly serves mid-deploy -- arrives here looking identical to an unknown
+   * table id. Its {@code error_code} envelope is what separates them, and without one the failure
+   * stays unclassified so the reconciler retries instead of permanently failing a job that would
+   * have succeeded a minute later.
    */
   private static RuntimeException classifyAccessFailure(UnityCatalogException failure) {
+    if (failure.failure() == UnityCatalogException.Failure.NOT_FOUND
+        && failure.errorCode() == null) {
+      return failure;
+    }
     return switch (failure.failure()) {
       case UNAUTHENTICATED ->
           new SourceCatalogAccessException(

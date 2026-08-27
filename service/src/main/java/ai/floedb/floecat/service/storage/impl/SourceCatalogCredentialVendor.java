@@ -80,6 +80,15 @@ public class SourceCatalogCredentialVendor {
   private static final List<String> REGION_KEYS = List.of("s3.region", "region", "client.region");
 
   /**
+   * Where a connector's own region may be spelled. A superset of {@link #REGION_KEYS}: {@code
+   * aws.region} is documented for Delta and Iceberg connector options ({@code
+   * DeltaConnectorFactory} reads it) but is not one of the keys written back, so it is read-only
+   * here.
+   */
+  private static final List<String> REGION_ALIAS_KEYS =
+      List.of("s3.region", "region", "client.region", "aws.region");
+
+  /**
    * What the caller will do with the credentials. Selects how strictly they are validated: only the
    * reconcile path renews them, so only it requires a renewable session tuple.
    */
@@ -274,16 +283,24 @@ public class SourceCatalogCredentialVendor {
    * falls back to the connector's own configuration and then to the deployment's configured region,
    * mirroring {@code resolveSnapshotCompatStorageSettings}, which synthesizes exactly these
    * settings when no authority exists. A wrong region announces itself immediately as an S3
-   * redirect; an absent one fails mid-scan with nothing pointing at the cause.
+   * redirect; an absent one fails mid-scan with nothing pointing at the cause. The connector's
+   * region is read under every documented alias, {@link #REGION_ALIAS_KEYS}, so a connector
+   * configured with {@code aws.region} is not silently replaced by the deployment default.
    */
   Map<String, String> routingProperties(
       Map<String, String> vendedProps, Map<String, String> connectorOptions) {
     LinkedHashMap<String, String> routing =
         new LinkedHashMap<>(clientSafeRoutingProperties(vendedProps));
+    // A Unity response carries only the credential tuple and an optional access point, so anything
+    // else the reader needs to reach the bucket at all -- a MinIO/S3-compatible endpoint,
+    // path-style
+    // addressing -- can only come from the connector. Vended wins where both are present.
+    clientSafeRoutingProperties(connectorOptions).forEach(routing::putIfAbsent);
     String region =
         firstNonBlank(
             firstNonBlank(REGION_KEYS.stream().map(vendedProps::get).toArray(String[]::new)),
-            firstNonBlank(REGION_KEYS.stream().map(connectorOptions::get).toArray(String[]::new)),
+            firstNonBlank(
+                REGION_ALIAS_KEYS.stream().map(connectorOptions::get).toArray(String[]::new)),
             defaultRegion);
     if (region != null) {
       // Same three keys putRegionConfig writes for an authority-backed response.
