@@ -180,7 +180,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       return List.of();
     }
     long dueAtMs = readyPointerDueAt(record);
-    List<String> keys = new java.util.ArrayList<>();
+    java.util.Set<String> keys = new java.util.LinkedHashSet<>();
     String pinnedExecutorId = record.pinnedExecutorId();
     if (!blank(pinnedExecutorId)) {
       String pinnedExecutorKey =
@@ -197,13 +197,25 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     if (!executionClassKey.isBlank()) {
       keys.add(executionClassKey);
     }
-    String executionLaneKey =
-        readyPointerKeyFor(record, ReadyIndexType.EXECUTION_LANE, dueAtMs, record.laneKey);
-    if (!executionLaneKey.isBlank()) {
-      keys.add(executionLaneKey);
+    for (String lane : new String[] {record.executionPolicy().lane(), record.laneKey}) {
+      String executionLaneKey =
+          blank(lane)
+              ? ""
+              : readyPointerKeyFor(
+                  record,
+                  ReadyIndexType.EXECUTION_LANE,
+                  dueAtMs,
+                  lane);
+      if (!executionLaneKey.isBlank()) {
+        keys.add(executionLaneKey);
+      }
     }
     String jobKindKey =
-        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
+        readyPointerKeyFor(
+            record,
+            ReadyIndexType.JOB_KIND,
+            dueAtMs,
+            record.jobKind().name());
     if (!jobKindKey.isBlank()) {
       keys.add(jobKindKey);
     }
@@ -461,7 +473,10 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     return switch (candidate.indexType()) {
       case GLOBAL -> true;
       case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
-      case EXECUTION_LANE -> candidate.filterValue().equals(blankToEmpty(record.laneKey));
+      case EXECUTION_LANE ->
+          (!blank(policy.lane()) && candidate.filterValue().equals(policy.lane()))
+              || (!blank(record.laneKey)
+                  && candidate.filterValue().equals(record.laneKey));
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };

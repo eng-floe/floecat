@@ -3125,7 +3125,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void execFileGroupReadyIndexesUseCanonicalLaneKey() throws Exception {
+  void execFileGroupReadyIndexesUseExecutionPolicyAndCanonicalLaneKeys() throws Exception {
     String jobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -3143,13 +3143,14 @@ class DurableReconcileJobStoreTest {
                 "table-1",
                 20L,
                 List.of("s3://bucket/data.parquet")),
-            ReconcileExecutionPolicy.defaults(),
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "ci-run", Map.of()),
             "",
             "");
 
     StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-    assertEquals("", queued.executionPolicy().lane());
+    assertEquals("ci-run", queued.executionPolicy().lane());
     assertFalse(queued.laneKey.isBlank());
+    assertNotEquals(queued.executionPolicy().lane(), queued.laneKey);
 
     @SuppressWarnings("unchecked")
     List<String> readyKeys =
@@ -3168,6 +3169,14 @@ class DurableReconcileJobStoreTest {
             .anyMatch(
                 key ->
                     key.startsWith(
+                        Keys.reconcileReadyByExecutionLanePointerPrefix(
+                            queued.executionPolicy().lane()))));
+    assertEquals(2, readyKeys.stream().filter(key -> key.contains("by-execution-lane")).count());
+    assertTrue(
+        readyKeys.stream()
+            .anyMatch(
+                key ->
+                    key.startsWith(
                         Keys.reconcileReadyByJobKindPointerPrefix(
                             ReconcileJobKind.EXEC_FILE_GROUP.name()))));
 
@@ -3176,7 +3185,7 @@ class DurableReconcileJobStoreTest {
             .leaseNext(
                 ReconcileJobStore.LeaseRequest.of(
                     java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
-                    Set.of(queued.laneKey),
+                    Set.of(queued.executionPolicy().lane()),
                     Set.of(),
                     java.util.EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
             .orElseThrow();
