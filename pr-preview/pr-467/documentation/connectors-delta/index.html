@@ -1944,11 +1944,7 @@ Per-file S3 range readers are closed by their consumers.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <p>Important connector properties:</p>
 <ul>
-<li><code>delta.source</code> – <strong>Required on create.</strong> Selects the catalog that indexes the tables
-  (<code>unity</code>, <code>glue</code>, <code>filesystem</code>). Connector <code>kind</code> names the table format (<code>DELTA</code>); the
-  catalog is this separate axis, because a Delta table may be catalogued by Unity Catalog, by
-  AWS Glue, or by nothing at all. Omitting it still reads as <code>unity</code> for connectors persisted
-  before the property was required.</li>
+<li><code>delta.source</code> – Selects backend (<code>unity</code>, <code>glue</code>, <code>filesystem</code>). Defaults to <code>unity</code>.</li>
 <li><code>delta.table-root</code> – Required for <code>delta.source=filesystem</code>, pointing at a Delta table root.</li>
 <li><code>external.namespace</code>, <code>external.table-name</code> – Optional overrides for filesystem connector naming.</li>
 <li><code>http.connect.ms</code>, <code>http.read.ms</code> – Timeout controls for Unity Catalog HTTP calls.</li>
@@ -2008,7 +2004,6 @@ guide listed below.</p>
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta SP&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
-  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type client \
   --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
@@ -2024,7 +2019,6 @@ guide listed below.</p>
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta WIF&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
-  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type token-exchange \
   --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
@@ -2039,7 +2033,6 @@ guide listed below.</p>
 <p><strong>CLI cache</strong> – Connector reads the Databricks CLI cache directly:</p>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta CLI&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
-  --props delta.source=unity \
   --auth-scheme oauth2 \
   --cred-type cli \
   --cred cache_path=~/.databricks/token-cache.json
@@ -2051,7 +2044,6 @@ guide listed below.</p>
 </ul>
 <div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta Token&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
   &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
-  --props delta.source=unity \
   --auth-scheme oauth2 --cred-type bearer --cred token=&lt;access-token&gt;
 </code></pre></div>
 <ul>

@@ -1748,7 +1748,7 @@ overlay delete &lt;name|id&gt; [--etag &lt;etag&gt;]
 connectors
 connector list [--kind &lt;KIND&gt;]
 connector get &lt;display_name|id&gt;
-connector create &lt;display_name&gt; &lt;source_type (ICEBERG|DELTA)&gt; &lt;uri&gt; &lt;source_namespace (a[.b[.c]...])&gt; &lt;destination_catalog (name)&gt;
+connector create &lt;display_name&gt; &lt;source_type (ICEBERG|DELTA|GLUE)&gt; &lt;uri&gt; &lt;source_namespace (a[.b[.c]...])&gt; &lt;destination_catalog (name)&gt;
     [--source-table &lt;name&gt;] [--source-cols c1,#id2,...]
     [--dest-ns &lt;a.b[.c]&gt;] [--dest-table &lt;name&gt;]
     [--desc &lt;text&gt;] [--auth-scheme &lt;scheme&gt;] [--auth k=v ...]
