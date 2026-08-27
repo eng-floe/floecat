@@ -45,7 +45,7 @@ class AuthCredentialsMarshallingIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("dummy")
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("https://example.invalid")
             .setAuth(
                 AuthConfig.newBuilder()

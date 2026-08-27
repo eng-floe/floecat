@@ -368,7 +368,7 @@ class WarmRequestStoreCostIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName(connectorName)
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://ignored")
                 .setSource(source)
                 .setDestination(

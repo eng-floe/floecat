@@ -24,11 +24,13 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/field_mask.proto";
 
 enum ConnectorKind {
+  reserved 4;
+  reserved "CK_UNITY";
+
   CK_UNSPECIFIED = 0;
   CK_ICEBERG = 1;
   CK_DELTA = 2;
   CK_GLUE = 3;
-  CK_UNITY = 4;
 }
 
 message NamespacePath {

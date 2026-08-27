@@ -34,8 +34,7 @@ public record ConnectorConfig(
   public enum Kind {
     ICEBERG,
     DELTA,
-    GLUE,
-    UNITY
+    GLUE
   }
 
   public record Auth(String scheme, Map<String, String> props, Map<String, String> headerHints) {
