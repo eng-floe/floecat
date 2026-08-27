@@ -488,8 +488,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
       case EXECUTION_LANE ->
           (!blank(policy.lane()) && candidate.filterValue().equals(policy.lane()))
-              || (!blank(record.laneKey)
-                  && candidate.filterValue().equals(record.laneKey));
+              || (!blank(record.laneKey) && candidate.filterValue().equals(record.laneKey));
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };

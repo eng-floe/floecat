@@ -201,21 +201,13 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       String executionLaneKey =
           blank(lane)
               ? ""
-              : readyPointerKeyFor(
-                  record,
-                  ReadyIndexType.EXECUTION_LANE,
-                  dueAtMs,
-                  lane);
+              : readyPointerKeyFor(record, ReadyIndexType.EXECUTION_LANE, dueAtMs, lane);
       if (!executionLaneKey.isBlank()) {
         keys.add(executionLaneKey);
       }
     }
     String jobKindKey =
-        readyPointerKeyFor(
-            record,
-            ReadyIndexType.JOB_KIND,
-            dueAtMs,
-            record.jobKind().name());
+        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
     if (!jobKindKey.isBlank()) {
       keys.add(jobKindKey);
     }
@@ -475,8 +467,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
       case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
       case EXECUTION_LANE ->
           (!blank(policy.lane()) && candidate.filterValue().equals(policy.lane()))
-              || (!blank(record.laneKey)
-                  && candidate.filterValue().equals(record.laneKey));
+              || (!blank(record.laneKey) && candidate.filterValue().equals(record.laneKey));
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };

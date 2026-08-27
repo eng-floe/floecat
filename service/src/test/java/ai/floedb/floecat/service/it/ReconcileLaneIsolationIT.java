@@ -159,8 +159,7 @@ class ReconcileLaneIsolationIT {
             .setExecutorId("lane-isolation-worker")
             .addExecutionClasses(ExecutionClass.EC_DEFAULT)
             .addLanes(lane)
-            .addJobKinds(
-                ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP)
+            .addJobKinds(ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_FILE_GROUP)
             .addJobKinds(
                 ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_FINALIZE_SNAPSHOT_CAPTURE)
             .build());

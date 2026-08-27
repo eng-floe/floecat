@@ -114,10 +114,7 @@ public final class ReadyQueueKeys {
           blank(lane)
               ? ""
               : readyPointerKeyFor(
-                  record,
-                  ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
-                  dueAtMs,
-                  lane);
+                  record, ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE, dueAtMs, lane);
       if (!executionLaneKey.isBlank()) {
         keys.add(executionLaneKey);
       }
