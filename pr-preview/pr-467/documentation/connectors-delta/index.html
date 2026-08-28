@@ -1948,6 +1948,8 @@ Per-file S3 range readers are closed by their consumers.</p>
 <li><code>delta.table-root</code> – Required for <code>delta.source=filesystem</code>, pointing at a Delta table root.</li>
 <li><code>external.namespace</code>, <code>external.table-name</code> – Optional overrides for filesystem connector naming.</li>
 <li><code>http.connect.ms</code>, <code>http.read.ms</code> – Timeout controls for Unity Catalog HTTP calls.</li>
+<li>Unity Catalog connector URIs must use <code>https://</code>. Cleartext <code>http://</code> is accepted only for
+  loopback hosts used by local tests.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
