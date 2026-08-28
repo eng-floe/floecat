@@ -67,7 +67,9 @@ public class ReconcileCancellationMaintenanceService {
   }
 
   private CancellationStats cleanupCancellationMarkers(long deadlineMs) {
-    if (pointerStore == null || cleanupCancellationRoot == null || cancellationCleanupPrefix.isBlank()) {
+    if (pointerStore == null
+        || cleanupCancellationRoot == null
+        || cancellationCleanupPrefix.isBlank()) {
       return CancellationStats.empty();
     }
     String token = blankToEmpty(cancellationScanToken);
@@ -94,8 +96,7 @@ public class ReconcileCancellationMaintenanceService {
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(
-              cancellationCleanupPrefix, readyScanLimit, token, next);
+          pointerStore.listPointersByPrefix(cancellationCleanupPrefix, readyScanLimit, token, next);
       if (pointers.isEmpty()) {
         cancellationScanToken = "";
         return new CancellationStats(

@@ -412,7 +412,9 @@ class ReconcileMaintenanceServicesTest {
     service.runCancellationMaintenanceOnce(200L);
 
     Pointer marker =
-        pointerStore.get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root")).orElseThrow();
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root"))
+            .orElseThrow();
     assertTrue(marker.getBlobUri().contains("child-token-1"));
     assertTrue(marker.getBlobUri().contains("true\nfalse"));
 
@@ -420,7 +422,9 @@ class ReconcileMaintenanceServicesTest {
 
     assertEquals(List.of("", "child-token-1"), cursors);
     assertTrue(
-        pointerStore.get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root")).isEmpty());
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root"))
+            .isEmpty());
   }
 
   @Test

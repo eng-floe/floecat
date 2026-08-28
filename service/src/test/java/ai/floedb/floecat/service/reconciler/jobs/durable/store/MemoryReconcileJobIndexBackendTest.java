@@ -250,7 +250,8 @@ class MemoryReconcileJobIndexBackendTest {
     String jobId = "job-1";
     String canonicalKey = Keys.reconcileJobPointerById(accountId, jobId);
     String parentKey = Keys.reconcileJobByParentPointer(accountId, "parent-1", jobId);
-    String leaseExpiryKey = Keys.reconcileJobLeaseExpiryPointer("reconciler-v1", 1_000L, accountId, jobId);
+    String leaseExpiryKey =
+        Keys.reconcileJobLeaseExpiryPointer("reconciler-v1", 1_000L, accountId, jobId);
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     assertTrue(
         pointers.compareAndSet(

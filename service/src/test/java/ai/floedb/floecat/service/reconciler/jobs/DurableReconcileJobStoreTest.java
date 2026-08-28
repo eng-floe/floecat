@@ -414,7 +414,8 @@ class DurableReconcileJobStoreTest {
                         PointerReferenceKind.PRK_POINTER_KEY)),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
-    String cancellationMarkerKey = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, emptyJobId);
+    String cancellationMarkerKey =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, emptyJobId);
     String cancellationPayload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -2601,7 +2602,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
 
     StoredReconcileJob table =
@@ -2617,7 +2620,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
   }
 
@@ -5623,7 +5628,8 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
 
-    String cleanupKey = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
+    String cleanupKey =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     assertTrue(store.pointerStore.get(cleanupKey).isPresent());
 
     runCancellationMaintenance();
@@ -5702,7 +5708,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
     assertTrue(
         store
@@ -5777,7 +5785,8 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -5825,7 +5834,8 @@ class DurableReconcileJobStoreTest {
                       current.nextAttemptAtMs = 0L;
                       return current;
                     }));
-    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(

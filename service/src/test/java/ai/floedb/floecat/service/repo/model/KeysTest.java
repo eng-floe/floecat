@@ -95,8 +95,7 @@ class KeysTest {
     assertEquals(
         "/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/reconciler-v1"
             + "/0000000000000000007/accounts/acct%2Blegacy/jobs/job%25legacy",
-        Keys.reconcileJobLeaseExpiryPointer(
-            "reconciler-v1", 7L, "acct+legacy", "job%legacy"));
+        Keys.reconcileJobLeaseExpiryPointer("reconciler-v1", 7L, "acct+legacy", "job%legacy"));
   }
 
   @Test
