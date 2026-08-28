@@ -123,7 +123,7 @@ floecat.reconciler.oidc.client-secret
 floecat.reconciler.oidc.token-refresh-skew-seconds
 floecat.reconciler.oidc.connect-timeout
 floecat.reconciler.auto.execution-class
-floecat.reconciler.auto.execution-lane
+floecat.reconciler.execution-lane
 ```
 
 Recommended split deployment:

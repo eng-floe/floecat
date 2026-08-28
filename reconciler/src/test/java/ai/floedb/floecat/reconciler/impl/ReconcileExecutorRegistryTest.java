@@ -215,15 +215,38 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
-  void leaseRequestForSingleExecutorKeepsExecutorCapabilitiesScoped() {
+  void leaseRequestForPlannerUsesConfiguredExecutionLane() {
     ReconcileExecutor planner = new KindExecutor("planner", ReconcileJobKind.PLAN_CONNECTOR);
     ReconcileExecutor snapshots = new KindExecutor("snapshots", ReconcileJobKind.PLAN_SNAPSHOT);
-    ReconcileExecutorRegistry registry = new ReconcileExecutorRegistry(List.of(planner, snapshots));
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(planner, snapshots), "ci-run-a");
 
     var request = registry.leaseRequestFor(snapshots);
 
     assertThat(request.executorIds).containsExactly("snapshots");
     assertThat(request.jobKinds).containsExactly(ReconcileJobKind.PLAN_SNAPSHOT);
+    assertThat(request.lanes).containsExactly("ci-run-a");
+  }
+
+  @Test
+  void leaseRequestForPlannerDefaultsToUnlabelledLaneInsteadOfWildcard() {
+    ReconcileExecutor planner = new KindExecutor("planner", ReconcileJobKind.PLAN_TABLE);
+    ReconcileExecutorRegistry registry = new ReconcileExecutorRegistry(List.of(planner));
+
+    var request = registry.leaseRequestFor(planner);
+
+    assertThat(request.lanes).containsExactly("");
+    assertThat(request.lanes).doesNotContain(ReconcileJobStore.LeaseRequest.anyLaneToken());
+  }
+
+  @Test
+  void leaseRequestForNonPlannerKeepsExecutorLaneCapabilities() {
+    ReconcileExecutor executor = new KindExecutor("file-groups", ReconcileJobKind.EXEC_FILE_GROUP);
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(executor), "ci-run-a");
+
+    var request = registry.leaseRequestFor(executor);
+
     assertThat(request.lanes).containsExactly(ReconcileJobStore.LeaseRequest.anyLaneToken());
   }
 

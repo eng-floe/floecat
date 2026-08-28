@@ -26,18 +26,31 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.config.Config;
 
 /** Resolves the executor that should execute a leased reconcile job. */
 @ApplicationScoped
 public class ReconcileExecutorRegistry {
   private final List<ReconcileExecutor> executors;
+  private final String plannerExecutionLane;
 
   @Inject
-  public ReconcileExecutorRegistry(Instance<ReconcileExecutor> executors) {
-    this(executors == null ? List.of() : executors.stream().toList());
+  public ReconcileExecutorRegistry(Instance<ReconcileExecutor> executors, Config config) {
+    this(
+        executors == null ? List.of() : executors.stream().toList(),
+        config == null
+            ? ""
+            : config
+                .getOptionalValue("floecat.reconciler.execution-lane", String.class)
+                .orElse(""));
   }
 
   ReconcileExecutorRegistry(List<ReconcileExecutor> executors) {
+    this(executors, "");
+  }
+
+  ReconcileExecutorRegistry(List<ReconcileExecutor> executors, String plannerExecutionLane) {
+    this.plannerExecutionLane = plannerExecutionLane == null ? "" : plannerExecutionLane.trim();
     this.executors =
         (executors == null ? List.<ReconcileExecutor>of() : executors)
             .stream()
@@ -128,7 +141,7 @@ public class ReconcileExecutorRegistry {
                         () ->
                             EnumSet.noneOf(
                                 ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass.class)));
-    Set<String> supportedLanes = executor.supportedLanes();
+    Set<String> supportedLanes = supportedLanesFor(executor);
     Set<String> lanes =
         supportedLanes == null || supportedLanes.isEmpty()
             ? Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken())
@@ -147,5 +160,22 @@ public class ReconcileExecutorRegistry {
                     java.util.stream.Collectors.toCollection(
                         () -> EnumSet.noneOf(ReconcileJobKind.class)));
     return ReconcileJobStore.LeaseRequest.of(executionClasses, lanes, executorIds, jobKinds);
+  }
+
+  private Set<String> supportedLanesFor(ReconcileExecutor executor) {
+    Set<ReconcileJobKind> jobKinds = executor.supportedJobKinds();
+    if (jobKinds != null
+        && !jobKinds.isEmpty()
+        && jobKinds.stream().allMatch(ReconcileExecutorRegistry::isPlanningJob)) {
+      return Set.of(plannerExecutionLane);
+    }
+    return executor.supportedLanes();
+  }
+
+  private static boolean isPlanningJob(ReconcileJobKind jobKind) {
+    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        || jobKind == ReconcileJobKind.PLAN_TABLE
+        || jobKind == ReconcileJobKind.PLAN_VIEW
+        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
   }
 }
