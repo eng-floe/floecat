@@ -5808,6 +5808,49 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancellationMaintenanceRejectsMisfiledMarkerForAnotherAffinity() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLING";
+                      current.message = "Cancelling";
+                      current.executionAttributes =
+                          ReconcileWorkerAffinity.of("other-affinity")
+                              .applyTo(current.executionPolicy())
+                              .attributes();
+                      return current;
+                    }));
+
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
+    String payload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                ACCOUNT_ID, connectorJobId, "", false, false, false));
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L)));
+
+    runCancellationMaintenance();
+
+    assertTrue(store.pointerStore.get(key).isEmpty());
+    assertEquals("JS_CANCELLING", store.getLeaseView(connectorJobId).orElseThrow().state);
+  }
+
+  @Test
   void cancellationMaintenanceDeletesPausedMarkerForCompletedCancelledRoot() {
     String connectorJobId =
         store.enqueue(
@@ -6894,6 +6937,27 @@ class DurableReconcileJobStoreTest {
         finalizerJobId,
         record -> {
           record.executionLane = "";
+          return record;
+        });
+    assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionAttributes =
+              ReconcileWorkerAffinity.of("other-affinity")
+                  .applyTo(record.executionPolicy())
+                  .attributes();
+          return record;
+        });
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionAttributes =
+              ReconcileWorkerAffinity.of(WORKER_AFFINITY)
+                  .applyTo(record.executionPolicy())
+                  .attributes();
           return record;
         });
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());

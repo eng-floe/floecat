@@ -19,7 +19,9 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import io.grpc.Status;
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -30,6 +32,10 @@ public class ReconcileWorkerAffinityGuard {
 
   @ConfigProperty(name = "floecat.reconciler.worker-affinity", defaultValue = "reconciler-v1")
   String configuredAffinity = "reconciler-v1";
+
+  void validateConfiguration(@Observes StartupEvent startup) {
+    configuredAffinity();
+  }
 
   public void requireLeaseRequestAffinity(String requestedAffinity) {
     ReconcileWorkerAffinity requested = ReconcileWorkerAffinity.of(requestedAffinity);
@@ -61,7 +67,12 @@ public class ReconcileWorkerAffinityGuard {
   }
 
   ReconcileWorkerAffinity configuredAffinity() {
-    return ReconcileWorkerAffinity.of(configuredAffinity);
+    ReconcileWorkerAffinity affinity = ReconcileWorkerAffinity.of(configuredAffinity);
+    if (!affinity.enabled()) {
+      throw new IllegalStateException(
+          "floecat.reconciler.worker-affinity must be configured and non-blank");
+    }
+    return affinity;
   }
 
   private static io.grpc.StatusRuntimeException mismatch(

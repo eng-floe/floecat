@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -80,11 +81,11 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
-      String workerAffinity, int limit, String pageToken) {
+      ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
     StringBuilder nextPageToken = new StringBuilder();
     List<Pointer> pointers =
         pointerStore.listPointersByPrefix(
-            Keys.reconcileJobLeaseExpiryPointerPrefix(workerAffinity),
+            Keys.reconcileJobLeaseExpiryPointerPrefix(workerAffinity.value()),
             limit,
             pageToken,
             nextPageToken);

@@ -3415,6 +3415,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (loaded == null
         || loaded.record == null
         || !accountId.equals(blankToEmpty(loaded.record.accountId))
+        || !workerAffinity.matches(loaded.record.executionPolicy())
         || !isCancellationState(loaded.record.state)) {
       return null;
     }

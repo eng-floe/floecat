@@ -661,7 +661,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     int limit = Math.max(1, pageSize);
     LeaseExpiryScanPage scanPage =
         leaseBackend.scanExpiredLeaseEntries(
-            workerAffinity.value(), limit, pageToken == null ? "" : pageToken);
+            workerAffinity, limit, pageToken == null ? "" : pageToken);
     if (scanPage.entries().isEmpty()) {
       return new LeaseExpiryScanPage(List.of(), "");
     }

@@ -21,6 +21,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
@@ -119,7 +120,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
-      String workerAffinity, int limit, String pageToken) {
+      ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
     String partitionKey = LeaseBackendSupport.leaseExpiryPartitionKeyFor(workerAffinity);
     QueryRequest.Builder query =
         QueryRequest.builder()

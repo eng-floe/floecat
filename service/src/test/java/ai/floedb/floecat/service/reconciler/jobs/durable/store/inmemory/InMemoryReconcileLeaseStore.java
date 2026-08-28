@@ -428,7 +428,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       long nowMs, int pageSize, String pageToken) {
     LeaseExpiryScanPage scanPage =
         leaseBackend.scanExpiredLeaseEntries(
-            workerAffinity.value(), Math.max(1, pageSize), blankToEmpty(pageToken));
+            workerAffinity, Math.max(1, pageSize), blankToEmpty(pageToken));
     List<LeaseExpiryEntry> pointers = new ArrayList<>();
     for (LeaseExpiryEntry pointer : scanPage.entries()) {
       long expiresAtMs = parseLeaseExpiryMillis(pointer.leaseExpiryPointerKey());

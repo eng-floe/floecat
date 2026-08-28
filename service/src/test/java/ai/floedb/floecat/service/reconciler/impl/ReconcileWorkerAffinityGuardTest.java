@@ -66,6 +66,17 @@ class ReconcileWorkerAffinityGuardTest {
   }
 
   @Test
+  void rejectsBlankDeploymentAffinityAtStartup() {
+    guard.configuredAffinity = "   ";
+
+    IllegalStateException error =
+        assertThrows(IllegalStateException.class, () -> guard.validateConfiguration(null));
+
+    assertEquals(
+        "floecat.reconciler.worker-affinity must be configured and non-blank", error.getMessage());
+  }
+
+  @Test
   void rejectsLeaseBoundCallRoutedThroughAnotherCohort() {
     when(guard.jobs.getCompactLeaseView("job-1"))
         .thenReturn(

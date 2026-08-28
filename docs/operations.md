@@ -148,6 +148,13 @@ affinity, route each worker fleet only to its matching control plane, and retire
 after its active trees have drained. A new deployment does not adopt, migrate, or lease the old
 cohort's jobs.
 
+Before deploying the affinity-qualified lease-expiry index, also drain every active lease written
+to the legacy `/accounts/by-id/reconcile/job-leases/by-expiry/` index. Stop new reconcile requests,
+wait for all non-terminal job trees and leases owned by the old deployment to finish, then remove
+any remaining legacy expiry pointers only after confirming their canonical jobs have no active
+lease. Do not start mixed-version queue sharing while legacy expiry pointers remain: an older
+deployment can still discover one of those pointers and requeue a job owned by the new deployment.
+
 Worker gRPC auth boundary:
 
 - Remote reconcile workers authenticate to `ReconcileExecutorControl` with an explicit bearer

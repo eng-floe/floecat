@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 
 final class LeaseBackendSupport {
@@ -126,8 +127,8 @@ final class LeaseBackendSupport {
     return LEASE_EXPIRY_PARTITION_PREFIX + workerAffinitySegment;
   }
 
-  static String leaseExpiryPartitionKeyFor(String workerAffinity) {
-    return leaseExpiryPartitionKey(Keys.encodeSegment(workerAffinity));
+  static String leaseExpiryPartitionKeyFor(ReconcileWorkerAffinity workerAffinity) {
+    return leaseExpiryPartitionKey(Keys.encodeSegment(workerAffinity.value()));
   }
 
   static String leaseExpirySortKey(LeaseExpiryPointerKey key) {

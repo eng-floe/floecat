@@ -428,6 +428,39 @@ class ReconcileMaintenanceServicesTest {
   }
 
   @Test
+  void cancellationCleanupOnlyConsumesItsWorkerAffinityNamespace() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
+    List<String> cleanedRoots = new ArrayList<>();
+
+    putCancellationMarker(pointerStore, WORKER_AFFINITY, "acct", "own-root");
+    putCancellationMarker(pointerStore, "other-affinity", "acct", "other-root");
+
+    service.bind(
+        pointerStore,
+        (request, childPageSize, deadlineMs) -> {
+          cleanedRoots.add(request.rootJobId());
+          return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
+              true, "", false, false, false);
+        },
+        (request, deadlineMs) -> false,
+        CANCELLATION_CLEANUP_PREFIX,
+        10);
+
+    service.runCancellationMaintenanceOnce(200L);
+
+    assertEquals(List.of("own-root"), cleanedRoots);
+    assertTrue(
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "own-root"))
+            .isEmpty());
+    assertTrue(
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer("other-affinity", "acct", "other-root"))
+            .isPresent());
+  }
+
+  @Test
   void cancellationCleanupSkipsPausedMarker() {
     PointerStore pointerStore = new TestPointerStore();
     ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
@@ -527,7 +560,12 @@ class ReconcileMaintenanceServicesTest {
 
   private static void putCancellationMarker(
       PointerStore pointerStore, String accountId, String rootJobId) {
-    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, accountId, rootJobId);
+    putCancellationMarker(pointerStore, WORKER_AFFINITY, accountId, rootJobId);
+  }
+
+  private static void putCancellationMarker(
+      PointerStore pointerStore, String workerAffinity, String accountId, String rootJobId) {
+    String key = Keys.reconcileCancellationCleanupPointer(workerAffinity, accountId, rootJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
