@@ -1955,6 +1955,14 @@ Per-file S3 range readers are closed by their consumers.</p>
   tenant-supplied connector URI cannot grant itself cleartext transport; this mirrors
   <code>floecat.security.allow-loopback-token-endpoints</code> for OAuth token endpoints. Private-CA HTTPS
   endpoints need no flag -- only the JVM truststore.</li>
+<li>A Unity Catalog connector URI naming a <strong>private address literal</strong> (10/8, 172.16/12, 192.168/16,
+  IPv6 unique-local) is rejected unless <code>floecat.security.allow-private-catalog-endpoints=true</code>
+  (or <code>FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS=true</code>). Set it for a catalog on an internal
+  network. Link-local, wildcard and multicast literals -- including the cloud metadata address
+  <code>169.254.169.254</code> -- are always rejected, with no opt-in. These checks apply only to address
+  <em>literals</em>: a hostname is never resolved during validation, deliberately, because a resolver in
+  the gate would disagree with the resolution the HTTP client performs at connect time. A hostname
+  pointing at a private address is therefore out of scope here and belongs to network policy.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
