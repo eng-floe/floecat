@@ -202,15 +202,16 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
           .uri(URI.create(baseUri + path))
           .timeout(requestTimeout)
           .header("Accept", "application/json");
-      Map<String, String> headers = authentication.headers();
-      if (headers != null) {
-        headers.forEach(builder::header);
-      }
+      applyAuthentication(builder);
       response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new UnityCatalogException(
           UnityCatalogException.Failure.TRANSPORT, -1, "Unity Catalog request interrupted", e);
+    } catch (UnityCatalogException e) {
+      // Already classified. Must precede the catch below: this type is a RuntimeException, and
+      // re-wrapping a permanent authentication failure as TRANSPORT would make it retryable.
+      throw e;
     } catch (IOException | RuntimeException e) {
       throw new UnityCatalogException(
           UnityCatalogException.Failure.TRANSPORT,
@@ -233,6 +234,32 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
           "Invalid JSON from Unity Catalog for " + target,
           includeResponseBody ? response.body() : null,
           includeResponseBody ? e : null);
+    }
+  }
+
+  /**
+   * Puts the authentication headers on a request.
+   *
+   * <p>Two failures with opposite retry semantics live here, so they are separated deliberately.
+   * Producing the header map can fail transiently -- a token endpoint that is briefly unreachable
+   * -- so an exception from the provider falls through to the transport classification and stays
+   * retryable. Turning that map into request headers cannot: a name or value the HTTP client
+   * rejects, or a null value, is a property of what the provider returned, and returning it again
+   * will fail identically. That is classified permanent so the reconciler stops rather than loops.
+   */
+  private void applyAuthentication(HttpRequest.Builder builder) {
+    Map<String, String> headers = authentication.headers();
+    if (headers == null || headers.isEmpty()) {
+      return;
+    }
+    try {
+      headers.forEach(builder::header);
+    } catch (RuntimeException e) {
+      throw new UnityCatalogException(
+          UnityCatalogException.Failure.INVALID_REQUEST,
+          -1,
+          "Unity Catalog authentication produced headers this request cannot carry",
+          e);
     }
   }
 

@@ -509,6 +509,47 @@ class HttpUnityCatalogClientTest {
    * discarded.
    */
   @Test
+  void anUnusableAuthenticationHeaderIsPermanent() {
+    // A header value the client refuses is a property of what the provider returned, so returning
+    // it again fails identically. Classified retryable it would loop a reconcile job forever.
+    var nullValued = new java.util.HashMap<String, String>();
+    nullValued.put("Authorization", null);
+    try (var badAuth =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> nullValued)) {
+      assertThatThrownBy(badAuth::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure())
+                      .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
+    }
+  }
+
+  @Test
+  void anAuthenticationProviderFailureStaysRetryable() {
+    // The other half of the split: producing the header map can fail transiently -- a token
+    // endpoint briefly unreachable -- and must not be classified terminally.
+    try (var failingAuth =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> {
+              throw new IllegalStateException("token endpoint unreachable");
+            })) {
+      assertThatThrownBy(failingAuth::listCatalogs)
+          .isInstanceOfSatisfying(
+              UnityCatalogException.class,
+              failure ->
+                  assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.TRANSPORT));
+    }
+  }
+
+  @Test
   void malformedSuccessResponseIsAnInvalidResponse() {
     server.createContext(
         "/api/2.1/unity-catalog/catalogs", exchange -> respond(exchange, 200, "not-json"));
