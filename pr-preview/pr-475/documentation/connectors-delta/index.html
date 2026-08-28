@@ -1948,6 +1948,8 @@ Per-file S3 range readers are closed by their consumers.</p>
 <li><code>delta.table-root</code> – Required for <code>delta.source=filesystem</code>, pointing at a Delta table root.</li>
 <li><code>external.namespace</code>, <code>external.table-name</code> – Optional overrides for filesystem connector naming.</li>
 <li><code>http.connect.ms</code>, <code>http.read.ms</code> – Timeout controls for Unity Catalog HTTP calls.</li>
+<li>Unity Catalog connector URIs must use <code>https://</code>. Cleartext <code>http://</code> is accepted only for
+  loopback hosts used by local tests.</li>
 <li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
   AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
   metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
