@@ -20,6 +20,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -54,6 +55,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   private long leaseMs;
   private long leaseRenewGraceMs;
   private ReconcileJobIndexStore jobIndexStore;
+  private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
   private CanonicalJobMutator mutateCanonicalJob;
   private Predicate<String> isTerminalState;
   private BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved;
@@ -72,7 +74,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       Predicate<String> isTerminalState,
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       int maxAttempts,
-      IntToLongFunction backoffMs) {
+      IntToLongFunction backoffMs,
+      ReconcileWorkerAffinity workerAffinity) {
     this.leaseBackend = leaseBackend;
     this.executionLoader = executionLoader;
     this.leaseStateCodec = leaseStateCodec;
@@ -85,6 +88,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     this.assertImmutableJobIdentityPreserved = assertImmutableJobIdentityPreserved;
     this.maxAttempts = Math.max(1, maxAttempts);
     this.backoffMs = backoffMs == null ? ignored -> 0L : backoffMs;
+    this.workerAffinity =
+        workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
   }
 
   public Optional<LeasedJob> leaseCanonical(
@@ -655,7 +660,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       long nowMs, int pageSize, String pageToken) {
     int limit = Math.max(1, pageSize);
     LeaseExpiryScanPage scanPage =
-        leaseBackend.scanExpiredLeaseEntries(limit, pageToken == null ? "" : pageToken);
+        leaseBackend.scanExpiredLeaseEntries(
+            workerAffinity.value(), limit, pageToken == null ? "" : pageToken);
     if (scanPage.entries().isEmpty()) {
       return new LeaseExpiryScanPage(List.of(), "");
     }
@@ -1007,7 +1013,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (expiresAtMs <= 0L || blank(accountId) || blank(jobId)) {
       return "";
     }
-    return Keys.reconcileJobLeaseExpiryPointer(expiresAtMs, accountId, jobId);
+    return Keys.reconcileJobLeaseExpiryPointer(
+        workerAffinity.value(), expiresAtMs, accountId, jobId);
   }
 
   // Lease coordination state is runtime ownership state and is intentionally separate from
@@ -1030,6 +1037,12 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       return;
     }
     var canonicalRecord = canonicalRecordOpt.get();
+    // Belt and braces alongside the cohort-partitioned expiry index: a job carries its owning
+    // cohort on its execution policy, and reclamation mutates job state, so never act on a job
+    // another cohort owns even if its expiry row somehow lands in this slice.
+    if (!workerAffinity.matches(canonicalRecord.executionPolicy())) {
+      return;
+    }
     StoredJobLease lease = loadLease(canonicalRecord).orElse(null);
     if (lease == null || blank(lease.epoch) || lease.expiresAtMs <= 0L) {
       return;
@@ -1379,7 +1392,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   private long parseLeaseExpiryMillis(String leaseExpiryPointerKey) {
     return parseTimestampFromOrderedPointer(
-        leaseExpiryPointerKey, Keys.reconcileJobLeaseExpiryPointerPrefix());
+        leaseExpiryPointerKey, Keys.reconcileJobLeaseExpiryPointerPrefix(workerAffinity.value()));
   }
 
   private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {

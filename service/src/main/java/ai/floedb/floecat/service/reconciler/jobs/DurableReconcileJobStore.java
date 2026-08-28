@@ -379,7 +379,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         DurableReconcileJobStore::isTerminalState,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
         maxAttempts,
-        this::backoffMs);
+        this::backoffMs,
+        workerAffinity);
     return leaseStore;
   }
 
@@ -569,6 +570,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         pointerStore,
         this::cleanupCancellationRoot,
         this::isObsoleteCancellationCleanupRoot,
+        Keys.reconcileCancellationCleanupPointerPrefix(workerAffinity.value()),
         readyScanLimit);
     return cancellationMaintenanceService;
   }
@@ -2631,6 +2633,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           || !executionLane.equals(record.executionPolicy().lane())) {
         continue;
       }
+      // The by-state index is global. Publishing another cohort's accepted finalizer would commit
+      // its result under this deployment's semantics, so only this cohort's intents are drained.
+      if (!workerAffinity.matches(record.executionPolicy())) {
+        continue;
+      }
       SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);
       if (intent != null) {
         intents.add(intent);
@@ -3329,7 +3336,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (effectiveAccountId.isBlank() || effectiveRootJobId.isBlank()) {
       return false;
     }
-    String key = Keys.reconcileCancellationCleanupPointer(effectiveAccountId, effectiveRootJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(
+            workerAffinity.value(), effectiveAccountId, effectiveRootJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -3776,7 +3785,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && pointerStore
             .get(
                 Keys.reconcileCancellationCleanupPointer(
-                    parent.record.accountId, parent.record.jobId))
+                    workerAffinity.value(), parent.record.accountId, parent.record.jobId))
             .isEmpty()) {
       return;
     }

@@ -1300,14 +1300,25 @@ public final class Keys {
     return reconcileDirtyParentPointerPrefix(affinity) + encode(tid) + "/" + encode(pid);
   }
 
-  public static String reconcileCancellationCleanupPointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup/";
+  public static String reconcileCancellationCleanupPointerRootPrefix() {
+    // This namespace deliberately does not descend from the legacy "cancellation-cleanup/" prefix.
+    // Older deployments scan that entire prefix and act on markers for job trees they do not own.
+    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup-by-worker-affinity/";
   }
 
-  public static String reconcileCancellationCleanupPointer(String accountId, String rootJobId) {
+  public static String reconcileCancellationCleanupPointerPrefix(String workerAffinity) {
+    String affinity = req("worker_affinity", workerAffinity);
+    return reconcileCancellationCleanupPointerRootPrefix() + encode(affinity) + "/";
+  }
+
+  public static String reconcileCancellationCleanupPointer(
+      String workerAffinity, String accountId, String rootJobId) {
     String tid = req("account_id", accountId);
     String jid = req("root_job_id", rootJobId);
-    return reconcileCancellationCleanupPointerPrefix() + encode(tid) + "/" + encode(jid);
+    return reconcileCancellationCleanupPointerPrefix(workerAffinity)
+        + encode(tid)
+        + "/"
+        + encode(jid);
   }
 
   public static String reconcileJobProjectionPointer(String accountId, String jobId) {
@@ -1513,14 +1524,23 @@ public final class Keys {
     return accountRootPrefix(tid) + "reconcile/job-leases/by-id/";
   }
 
-  public static String reconcileJobLeaseExpiryPointerPrefix() {
-    return "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  public static String reconcileJobLeaseExpiryPointerRootPrefix() {
+    // This namespace deliberately does not descend from the legacy "by-expiry/" prefix. Lease
+    // reclamation mutates whatever it finds here, and older deployments scan the whole prefix
+    // without knowing which cohort owns the job -- so they requeue work another deployment is
+    // still publishing. Keying the index by cohort makes those entries unreachable to them.
+    return "/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointerPrefix(String workerAffinity) {
+    String affinity = req("worker_affinity", workerAffinity);
+    return reconcileJobLeaseExpiryPointerRootPrefix() + encode(affinity) + "/";
   }
 
   public static String reconcileJobLeaseExpiryPointer(
-      long expiresAtMs, String accountId, String jobId) {
+      String workerAffinity, long expiresAtMs, String accountId, String jobId) {
     long expiresAt = reqPositive("expires_at_ms", expiresAtMs);
-    return reconcileJobLeaseExpiryPointerPrefix()
+    return reconcileJobLeaseExpiryPointerPrefix(workerAffinity)
         + String.format("%019d", expiresAt)
         + reconcileJobLeaseExpiryPointerSuffix(accountId, jobId);
   }

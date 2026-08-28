@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -43,6 +42,7 @@ public class ReconcileCancellationMaintenanceService {
   private PointerStore pointerStore;
   private CleanupCancellationRoot cleanupCancellationRoot;
   private IsObsoleteCancellationRoot isObsoleteCancellationRoot;
+  private String cancellationCleanupPrefix = "";
   private int readyScanLimit;
   private volatile String cancellationScanToken = "";
 
@@ -50,10 +50,12 @@ public class ReconcileCancellationMaintenanceService {
       PointerStore pointerStore,
       CleanupCancellationRoot cleanupCancellationRoot,
       IsObsoleteCancellationRoot isObsoleteCancellationRoot,
+      String cancellationCleanupPrefix,
       int readyScanLimit) {
     this.pointerStore = pointerStore;
     this.cleanupCancellationRoot = cleanupCancellationRoot;
     this.isObsoleteCancellationRoot = isObsoleteCancellationRoot;
+    this.cancellationCleanupPrefix = blankToEmpty(cancellationCleanupPrefix);
     this.readyScanLimit = readyScanLimit;
   }
 
@@ -65,7 +67,7 @@ public class ReconcileCancellationMaintenanceService {
   }
 
   private CancellationStats cleanupCancellationMarkers(long deadlineMs) {
-    if (pointerStore == null || cleanupCancellationRoot == null) {
+    if (pointerStore == null || cleanupCancellationRoot == null || cancellationCleanupPrefix.isBlank()) {
       return CancellationStats.empty();
     }
     String token = blankToEmpty(cancellationScanToken);
@@ -93,7 +95,7 @@ public class ReconcileCancellationMaintenanceService {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
           pointerStore.listPointersByPrefix(
-              Keys.reconcileCancellationCleanupPointerPrefix(), readyScanLimit, token, next);
+              cancellationCleanupPrefix, readyScanLimit, token, next);
       if (pointers.isEmpty()) {
         cancellationScanToken = "";
         return new CancellationStats(

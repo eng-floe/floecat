@@ -122,8 +122,8 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 @TestProfile(ReconcileJobStoreControlPlaneProfile.class)
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
-  private static final String CONNECTOR_ID = "conn-1";
   private static final String WORKER_AFFINITY = "reconciler-v1";
+  private static final String CONNECTOR_ID = "conn-1";
 
   private static DynamoDbClient sharedDynamoDbClient;
   private static DynamoDbAsyncClient sharedDynamoDbAsyncClient;
@@ -227,6 +227,74 @@ class DurableReconcileJobStoreTest {
       System.clearProperty("floecat.reconciler.worker-affinity");
       store.init();
     }
+  }
+
+  @Test
+  void leaseReclamationCannotReachAnotherCohortsExpiredJob() {
+    // Regression: the lease-expiry index was one global prefix keyed only by timestamp, account
+    // and job. A deployment sharing the durable queue scanned every entry in it and reclaimed
+    // whatever it found, so an older deployment requeued jobs ("Lease expired; requeued") that
+    // another deployment was still finalizing. Execution lanes did not help: they qualify ready
+    // leasing, not lease-expiry maintenance.
+    String jobId =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl"),
+            ReconcileExecutionPolicy.defaults(),
+            "");
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-1");
+    configureLeaseRenewGraceMs(0L);
+    expireLease(jobId);
+
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    long nowMs = System.currentTimeMillis();
+    ReconcileLeaseStore.LeaseExpiryEntry ownEntry =
+        leaseManager().scanExpiredLeasePointersPage(nowMs, 100, "").entries().stream()
+            .filter(entry -> canonicalPointerKey.equals(entry.canonicalPointerKey()))
+            .findFirst()
+            .orElseThrow();
+
+    System.setProperty("floecat.reconciler.worker-affinity", "other-cohort");
+    try {
+      store.init();
+      ReconcileLeaseStore otherCohort = leaseManager();
+      configureLeaseRenewGraceMs(0L);
+
+      // The expiry row lives in its owning cohort's slice, so another cohort never reads it.
+      assertTrue(
+          otherCohort.scanExpiredLeasePointersPage(nowMs, 100, "").entries().stream()
+              .noneMatch(entry -> canonicalPointerKey.equals(entry.canonicalPointerKey())));
+
+      // Handed the owning cohort's entry directly, the key round trip rejects it.
+      otherCohort.reclaimExpiredLease(ownEntry, nowMs);
+      assertEquals("JS_RUNNING", readStoredRecord(canonicalPointerKey).state);
+
+      // And an entry that does resolve inside this cohort's slice -- a job restamped to another
+      // cohort while its expiry row survives -- is still refused, because reclamation mutates
+      // job state and the job's own policy says which cohort owns it.
+      var liveLease = otherCohort.loadLease(ACCOUNT_ID, jobId).orElseThrow();
+      ReconcileLeaseStore.LeaseExpiryEntry misfiledEntry =
+          new ReconcileLeaseStore.LeaseExpiryEntry(
+              otherCohort.leaseExpiryPointerKey(liveLease.expiresAtMs, ACCOUNT_ID, jobId),
+              canonicalPointerKey);
+      otherCohort.reclaimExpiredLease(misfiledEntry, nowMs);
+      assertEquals("JS_RUNNING", readStoredRecord(canonicalPointerKey).state);
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
+
+    // The owning cohort still reclaims its own expired lease.
+    ReconcileLeaseStore owningCohort = leaseManager();
+    configureLeaseRenewGraceMs(0L);
+    owningCohort.reclaimExpiredLease(ownEntry, System.currentTimeMillis());
+    StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_QUEUED", requeued.state);
+    assertEquals("Lease expired; requeued", requeued.message);
   }
 
   @Test
@@ -346,7 +414,7 @@ class DurableReconcileJobStoreTest {
                         PointerReferenceKind.PRK_POINTER_KEY)),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
-    String cancellationMarkerKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, emptyJobId);
+    String cancellationMarkerKey = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, emptyJobId);
     String cancellationPayload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -2533,7 +2601,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
 
     StoredReconcileJob table =
@@ -2549,7 +2617,7 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
   }
 
@@ -5555,7 +5623,7 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
 
-    String cleanupKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String cleanupKey = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     assertTrue(store.pointerStore.get(cleanupKey).isPresent());
 
     runCancellationMaintenance();
@@ -5634,12 +5702,12 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, tableJobId))
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, tableJobId))
             .isEmpty());
     assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
   }
@@ -5709,7 +5777,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    String key = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -5757,7 +5825,7 @@ class DurableReconcileJobStoreTest {
                       current.nextAttemptAtMs = 0L;
                       return current;
                     }));
-    String key = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(

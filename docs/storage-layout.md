@@ -167,8 +167,8 @@ Reconcile job pointers:
 /accounts/{account_id}/reconcile/jobs/by-id/{job_id}
 /accounts/by-id/reconcile/jobs/by-id/{job_id}
 /accounts/{account_id}/reconcile/finalized-snapshots/by-id/{table_id}/{snapshot_id:019d}
-/accounts/by-id/reconcile/jobs/dirty-parents/{account_id}/{parent_job_id}
-/accounts/by-id/reconcile/jobs/cancellation-cleanup/{account_id}/{root_job_id}
+/accounts/by-id/reconcile/jobs/dirty-parents-by-worker-affinity/{worker_affinity}/{account_id}/{parent_job_id}
+/accounts/by-id/reconcile/jobs/cancellation-cleanup-by-worker-affinity/{worker_affinity}/{account_id}/{root_job_id}
 /accounts/{account_id}/reconcile/jobs/projections/by-id/{job_id}
 /accounts/{account_id}/reconcile/jobs/root-summaries/by-account/{sortable_job_token}
 /accounts/{account_id}/reconcile/jobs/root-summaries/by-connector/{connector_id}/{sortable_job_token}
@@ -180,7 +180,7 @@ Reconcile job pointers:
 /accounts/{account_id}/reconcile/jobs/terminal-retention/{terminal_timestamp:019d}/{job_id}
 /accounts/{account_id}/reconcile/jobs/by-connector-state/{connector_id}/{state}/{sortable_timestamp:019d}/{job_id}
 /accounts/{account_id}/reconcile/job-leases/by-id/{job_id}
-/accounts/by-id/reconcile/job-leases/by-expiry/{expiry_timestamp:019d}/accounts/{account_id}/jobs/{job_id}
+/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/{worker_affinity}/{expiry_timestamp:019d}/accounts/{account_id}/jobs/{job_id}
 /accounts/by-id/reconcile/jobs/ready/{due_timestamp:019d}/{account_id}/{lane_key}/{job_id}
 /accounts/by-id/reconcile/jobs/ready/by-execution-class/{execution_class}/{due_timestamp:019d}/{account_id}/{job_id}
 /accounts/by-id/reconcile/jobs/ready/by-execution-lane/{execution_lane}/{due_timestamp:019d}/{account_id}/{job_id}

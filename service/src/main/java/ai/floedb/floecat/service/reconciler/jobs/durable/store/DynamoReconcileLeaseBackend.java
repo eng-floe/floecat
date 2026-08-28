@@ -119,7 +119,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
-      int limit, String pageToken) {
+      String workerAffinity, int limit, String pageToken) {
+    String partitionKey = LeaseBackendSupport.leaseExpiryPartitionKeyFor(workerAffinity);
     QueryRequest.Builder query =
         QueryRequest.builder()
             .tableName(table)
@@ -127,16 +128,14 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
             .limit(Math.max(1, limit))
             .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
             .keyConditionExpression("#pk = :pk")
-            .expressionAttributeValues(
-                Map.of(
-                    ":pk", AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY)));
+            .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS(partitionKey)));
 
     String token = LeaseBackendSupport.decodeLeaseExpiryPageToken(pageToken);
     if (!token.isBlank()) {
       query.exclusiveStartKey(
           Map.of(
               ATTR_PARTITION_KEY,
-              AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
+              AttributeValue.fromS(partitionKey),
               ATTR_SORT_KEY,
               AttributeValue.fromS(token)));
     }
@@ -394,7 +393,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                             Map.of(
                                 ATTR_PARTITION_KEY,
                                 AttributeValue.fromS(
-                                    LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
+                                    LeaseBackendSupport.leaseExpiryPartitionKey(
+                                        expiryKey.affinitySegment())),
                                 ATTR_SORT_KEY,
                                 AttributeValue.fromS(
                                     LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
@@ -487,7 +487,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         LeaseBackendSupport.parseLeaseExpiryPointerKey(upsert.leaseExpiryKey());
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(
-        ATTR_PARTITION_KEY, AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY));
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(
+            LeaseBackendSupport.leaseExpiryPartitionKey(expiryKey.affinitySegment())));
     item.put(
         ATTR_SORT_KEY, AttributeValue.fromS(LeaseBackendSupport.leaseExpirySortKey(expiryKey)));
     item.put(ATTR_KIND, AttributeValue.fromS(LeaseBackendSupport.KIND_LEASE_EXPIRY_ENTRY));
@@ -519,7 +521,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                 .key(
                     Map.of(
                         ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
+                        AttributeValue.fromS(
+                            LeaseBackendSupport.leaseExpiryPartitionKey(
+                                expiryKey.affinitySegment())),
                         ATTR_SORT_KEY,
                         AttributeValue.fromS(LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
                 .conditionExpression("#v = :expected")

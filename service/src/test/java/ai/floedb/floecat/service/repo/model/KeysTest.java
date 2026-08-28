@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.repo.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.types.Hashing;
 import java.util.List;
@@ -90,9 +93,25 @@ class KeysTest {
   @Test
   void reconcileLeaseExpiryKeyEncodesAccountAndJobIds() {
     assertEquals(
-        "/accounts/by-id/reconcile/job-leases/by-expiry/0000000000000000007"
-            + "/accounts/acct%2Blegacy/jobs/job%25legacy",
-        Keys.reconcileJobLeaseExpiryPointer(7L, "acct+legacy", "job%legacy"));
+        "/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/reconciler-v1"
+            + "/0000000000000000007/accounts/acct%2Blegacy/jobs/job%25legacy",
+        Keys.reconcileJobLeaseExpiryPointer(
+            "reconciler-v1", 7L, "acct+legacy", "job%legacy"));
+  }
+
+  @Test
+  void reconcileLeaseExpiryKeyIsolatesCohorts() {
+    // A deployment scanning its own cohort prefix cannot reach another cohort's expiry rows, so
+    // it cannot reclaim leases on job trees it does not own.
+    assertNotEquals(
+        Keys.reconcileJobLeaseExpiryPointer("reconciler-v1", 7L, "acct", "job"),
+        Keys.reconcileJobLeaseExpiryPointer("ci-branch", 7L, "acct", "job"));
+    assertTrue(
+        Keys.reconcileJobLeaseExpiryPointer("ci-branch", 7L, "acct", "job")
+            .startsWith(Keys.reconcileJobLeaseExpiryPointerPrefix("ci-branch")));
+    assertFalse(
+        Keys.reconcileJobLeaseExpiryPointer("ci-branch", 7L, "acct", "job")
+            .startsWith(Keys.reconcileJobLeaseExpiryPointerPrefix("reconciler-v1")));
   }
 
   @Test

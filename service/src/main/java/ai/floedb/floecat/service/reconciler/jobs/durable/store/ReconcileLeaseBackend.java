@@ -68,7 +68,9 @@ public interface ReconcileLeaseBackend {
 
   Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey);
 
-  ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(int limit, String pageToken);
+  /** Scans only the given cohort's slice of the lease-expiry index. */
+  ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
+      String workerAffinity, int limit, String pageToken);
 
   default boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {

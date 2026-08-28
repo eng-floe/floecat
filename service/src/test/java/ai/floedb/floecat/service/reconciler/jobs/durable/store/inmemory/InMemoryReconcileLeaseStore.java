@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
@@ -64,6 +65,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   private BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved;
   private int maxAttempts;
   private IntToLongFunction backoffMs;
+  private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
 
   @Override
   public void bind(
@@ -78,7 +80,10 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       Predicate<String> isTerminalState,
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       int maxAttempts,
-      IntToLongFunction backoffMs) {
+      IntToLongFunction backoffMs,
+      ReconcileWorkerAffinity workerAffinity) {
+    this.workerAffinity =
+        workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
     this.leaseBackend = leaseBackend;
     this.executionLoader = executionLoader;
     this.leaseStateCodec = leaseStateCodec;
@@ -422,7 +427,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   public LeaseExpiryScanPage scanExpiredLeasePointersPage(
       long nowMs, int pageSize, String pageToken) {
     LeaseExpiryScanPage scanPage =
-        leaseBackend.scanExpiredLeaseEntries(Math.max(1, pageSize), blankToEmpty(pageToken));
+        leaseBackend.scanExpiredLeaseEntries(
+            workerAffinity.value(), Math.max(1, pageSize), blankToEmpty(pageToken));
     List<LeaseExpiryEntry> pointers = new ArrayList<>();
     for (LeaseExpiryEntry pointer : scanPage.entries()) {
       long expiresAtMs = parseLeaseExpiryMillis(pointer.leaseExpiryPointerKey());
@@ -653,7 +659,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     if (expiresAtMs <= 0L || blank(accountId) || blank(jobId)) {
       return "";
     }
-    return Keys.reconcileJobLeaseExpiryPointer(expiresAtMs, accountId, jobId);
+    return Keys.reconcileJobLeaseExpiryPointer(
+        workerAffinity.value(), expiresAtMs, accountId, jobId);
   }
 
   private void rollbackLeaseCanonicalOnHydrationFailure(
@@ -1039,19 +1046,16 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private long parseLeaseExpiryMillis(String leaseExpiryPointerKey) {
-    if (blank(leaseExpiryPointerKey)
-        || !leaseExpiryPointerKey.startsWith(Keys.reconcileJobLeaseExpiryPointerPrefix())) {
+    String prefix = Keys.reconcileJobLeaseExpiryPointerPrefix(workerAffinity.value());
+    if (blank(leaseExpiryPointerKey) || !leaseExpiryPointerKey.startsWith(prefix)) {
       return INVALID_ORDERED_POINTER_MS;
     }
-    int slash =
-        leaseExpiryPointerKey.indexOf('/', Keys.reconcileJobLeaseExpiryPointerPrefix().length());
+    int slash = leaseExpiryPointerKey.indexOf('/', prefix.length());
     if (slash < 0) {
       return INVALID_ORDERED_POINTER_MS;
     }
     try {
-      return Long.parseLong(
-          leaseExpiryPointerKey.substring(
-              Keys.reconcileJobLeaseExpiryPointerPrefix().length(), slash));
+      return Long.parseLong(leaseExpiryPointerKey.substring(prefix.length(), slash));
     } catch (NumberFormatException e) {
       return INVALID_ORDERED_POINTER_MS;
     }
