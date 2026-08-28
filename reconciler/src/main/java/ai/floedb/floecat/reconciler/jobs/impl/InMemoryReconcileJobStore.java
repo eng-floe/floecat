@@ -88,6 +88,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private volatile long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
   private volatile long lastReclaimAtMs;
   private volatile ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
+  private volatile String executionLane = "";
 
   public InMemoryReconcileJobStore() {
     reloadConfig();
@@ -116,6 +117,23 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             readLong(
                 "floecat.reconciler.job-store.reclaim-interval-ms", DEFAULT_RECLAIM_INTERVAL_MS));
     workerAffinity = readWorkerAffinity("floecat.reconciler.worker-affinity");
+    executionLane = readExecutionLane("floecat.reconciler.execution-lane");
+  }
+
+  private String readExecutionLane(String key) {
+    try {
+      var container = Arc.container();
+      if (container != null) {
+        var config = container.instance(org.eclipse.microprofile.config.Config.class);
+        if (config.isAvailable()) {
+          return ReconcileExecutionPolicy.normalizeLane(
+              config.get().getOptionalValue(key, String.class).orElse(""));
+        }
+      }
+    } catch (RuntimeException ignored) {
+      // Fall back to system properties for plain unit construction.
+    }
+    return ReconcileExecutionPolicy.normalizeLane(System.getProperty(key));
   }
 
   private ReconcileWorkerAffinity readWorkerAffinity(String key) {
@@ -1133,6 +1151,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     List<SnapshotFinalizeCommitIntent> pending =
         snapshotFinalizeCommitIntents.entrySet().stream()
             .filter(entry -> snapshotFinalizeCommits.contains(entry.getKey()))
+            .filter(
+                entry -> {
+                  ReconcileJob job = jobs.get(entry.getKey());
+                  return job != null && executionLane.equals(job.executionPolicy.lane());
+                })
             .map(Map.Entry::getValue)
             .limit(limit)
             .toList();

@@ -179,7 +179,7 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
-  void leaseRequestTreatsEmptySupportedLanesAsWildcard() {
+  void leaseRequestConstrainsWildcardExecutorToConfiguredLane() {
     ReconcileExecutor wildcardLaneExecutor =
         new ReconcileExecutor() {
           @Override
@@ -199,18 +199,17 @@ class ReconcileExecutorRegistryTest {
         };
 
     ReconcileExecutorRegistry registry =
-        new ReconcileExecutorRegistry(List.of(wildcardLaneExecutor));
+        new ReconcileExecutorRegistry(List.of(wildcardLaneExecutor), "ci-run-a");
 
     var request = registry.leaseRequest();
 
-    assertThat(request.lanes).containsExactly(ReconcileJobStore.LeaseRequest.anyLaneToken());
+    assertThat(request.lanes).containsExactly("ci-run-a");
     assertThat(
             request.matches(
-                ReconcileExecutionPolicy.of(
-                    ReconcileExecutionClass.HEAVY, "planner-lane", Map.of()),
+                ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "ci-run-a", Map.of()),
                 "",
                 ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR,
-                "planner-lane"))
+                "ci-run-a"))
         .isTrue();
   }
 
@@ -240,14 +239,14 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
-  void leaseRequestForNonPlannerKeepsExecutorLaneCapabilities() {
+  void leaseRequestForNonPlannerWildcardUsesConfiguredExecutionLane() {
     ReconcileExecutor executor = new KindExecutor("file-groups", ReconcileJobKind.EXEC_FILE_GROUP);
     ReconcileExecutorRegistry registry =
         new ReconcileExecutorRegistry(List.of(executor), "ci-run-a");
 
     var request = registry.leaseRequestFor(executor);
 
-    assertThat(request.lanes).containsExactly(ReconcileJobStore.LeaseRequest.anyLaneToken());
+    assertThat(request.lanes).containsExactly("ci-run-a");
   }
 
   @Test
