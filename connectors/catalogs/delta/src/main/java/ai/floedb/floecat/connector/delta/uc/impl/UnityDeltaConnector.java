@@ -59,18 +59,14 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   @Override
   public List<String> listNamespaces() {
-    try {
-      List<String> namespaces = new ArrayList<>();
-      for (String catalogName : catalog.listCatalogs()) {
-        for (String schemaName : catalog.listSchemas(catalogName)) {
-          namespaces.add(catalogName + "." + schemaName);
-        }
+    List<String> namespaces = new ArrayList<>();
+    for (String catalogName : catalog.listCatalogs()) {
+      for (String schemaName : catalog.listSchemas(catalogName)) {
+        namespaces.add(catalogName + "." + schemaName);
       }
-      namespaces.sort(String::compareTo);
-      return namespaces;
-    } catch (RuntimeException e) {
-      throw new RuntimeException("listNamespaces failed", e);
     }
+    namespaces.sort(String::compareTo);
+    return namespaces;
   }
 
   @Override
@@ -79,15 +75,11 @@ public final class UnityDeltaConnector extends DeltaConnector {
     if (namespace == null) {
       return List.of();
     }
-    try {
-      return catalog.listTables(namespace.catalog(), namespace.schema()).stream()
-          .filter(table -> "DELTA".equalsIgnoreCase(table.dataSourceFormat()))
-          .map(UnityCatalogTable::name)
-          .sorted()
-          .toList();
-    } catch (RuntimeException e) {
-      throw new RuntimeException("listTables failed", e);
-    }
+    return catalog.listTables(namespace.catalog(), namespace.schema()).stream()
+        .filter(table -> "DELTA".equalsIgnoreCase(table.dataSourceFormat()))
+        .map(UnityCatalogTable::name)
+        .sorted()
+        .toList();
   }
 
   @Override

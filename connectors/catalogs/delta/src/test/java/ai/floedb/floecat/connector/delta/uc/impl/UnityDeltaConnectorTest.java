@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -24,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
+import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import java.util.List;
@@ -61,6 +63,18 @@ class UnityDeltaConnectorTest {
                 table("a_orders", "EXTERNAL", "delta")));
 
     assertThat(connector.listTables("cat.schema")).containsExactly("a_orders", "z_orders");
+  }
+
+  @Test
+  void listingPreservesUnityCatalogFailureClassification() {
+    var failure =
+        new UnityCatalogException(
+            UnityCatalogException.Failure.PERMISSION_DENIED, 403, "catalog denied request");
+    when(catalog.listCatalogs()).thenThrow(failure);
+    when(catalog.listTables("cat", "schema")).thenThrow(failure);
+
+    assertThatThrownBy(connector::listNamespaces).isSameAs(failure);
+    assertThatThrownBy(() -> connector.listTables("cat.schema")).isSameAs(failure);
   }
 
   @Test

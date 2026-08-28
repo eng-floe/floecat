@@ -119,6 +119,19 @@ class HttpUnityCatalogClientTest {
   }
 
   @Test
+  void rejectsCleartextForNonLoopbackHosts() {
+    assertThatThrownBy(
+            () ->
+                new HttpUnityCatalogClient(
+                    URI.create("http://catalog.example.com"),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(5),
+                    Map::of))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must use HTTPS");
+  }
+
+  @Test
   void getTableDecodesWireShapesIntoNormalizedMetadata() {
     var rawPath = new AtomicReference<String>();
     server.createContext(
@@ -170,6 +183,19 @@ class HttpUnityCatalogClientTest {
   }
 
   @Test
+  void getTableRejectsANonObjectSuccessResponse() {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/", exchange -> respond(exchange, 200, "[]"));
+
+    assertThatThrownBy(() -> client.getTable("cat.schema.invalid"))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure ->
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE));
+  }
+
+  @Test
   void temporaryCredentialsAreTypedAndPostReadOperation() {
     var requestBody = new AtomicReference<String>();
     server.createContext(
@@ -204,6 +230,52 @@ class HttpUnityCatalogClientTest {
     // Carried through unparsed: the epoch-millis rule lives once, in the connector SPI.
     assertThat(credentials.expirationEpochMillis()).isEqualTo("1893456000000");
     assertThat(credentials.storageUrl()).isEqualTo("s3://bucket/table");
+  }
+
+  @Test
+  void malformedCredentialResponseDoesNotLeakItsBody() {
+    String secret = "credential-secret-that-must-not-be-logged";
+    server.createContext(
+        "/api/2.0/unity-catalog/temporary-table-credentials",
+        exchange ->
+            respond(
+                exchange,
+                200,
+                "{\"aws_temp_credentials\":{\"secret_access_key\":\"" + secret + "\""));
+
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure())
+                  .isEqualTo(UnityCatalogException.Failure.INVALID_RESPONSE);
+              assertThat(failure.getMessage()).doesNotContain(secret, "secret_access_key");
+              assertThat(failure).hasNoCause();
+            });
+  }
+
+  @Test
+  void authenticationFailureIsTranslated() {
+    client.close();
+    client =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            () -> {
+              throw new IllegalStateException("token unavailable");
+            });
+
+    assertThatThrownBy(client::listCatalogs)
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure -> {
+              assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.TRANSPORT);
+              assertThat(failure).hasCauseInstanceOf(IllegalStateException.class);
+            });
   }
 
   @Test
@@ -282,6 +354,7 @@ class HttpUnityCatalogClientTest {
                   .isEqualTo(UnityCatalogException.Failure.PERMISSION_DENIED);
               assertThat(failure.statusCode()).isEqualTo(400);
               assertThat(failure.errorCode()).isEqualTo("PERMISSION_DENIED");
+              assertThat(failure.getMessage()).doesNotContain("missing EXTERNAL USE SCHEMA");
             });
   }
 
@@ -352,22 +425,32 @@ class HttpUnityCatalogClientTest {
                 assertThat(failure.failure()).isEqualTo(UnityCatalogException.Failure.OTHER));
   }
 
-  /**
-   * The JDK's default redirect policy is NEVER, which surfaced an ordinary workspace redirect as an
-   * unusable 3xx. A moved workspace host has to be followed like any other client would.
-   */
   @Test
-  void aRedirectIsFollowed() {
+  void aCredentialRedirectIsNotFollowed() {
+    var redirectedRequests = new AtomicInteger();
     server.createContext(
-        "/api/2.1/unity-catalog/catalogs",
+        "/api/2.0/unity-catalog/temporary-table-credentials",
         exchange -> {
-          exchange.getResponseHeaders().add("Location", "/moved/catalogs");
-          respond(exchange, 301, "");
+          exchange.getResponseHeaders().add("Location", "/moved/credentials");
+          respond(exchange, 302, "");
         });
     server.createContext(
-        "/moved/catalogs", exchange -> respond(exchange, 200, "{\"catalogs\":[{\"name\":\"c\"}]}"));
+        "/moved/credentials",
+        exchange -> {
+          redirectedRequests.incrementAndGet();
+          respond(exchange, 200, "{}");
+        });
 
-    assertThat(client.listCatalogs()).containsExactly("c");
+    assertThatThrownBy(
+            () ->
+                client.generateTemporaryTableCredentials(
+                    "table-id", UnityCatalogClient.TableOperation.READ))
+        .isInstanceOfSatisfying(
+            UnityCatalogException.class,
+            failure ->
+                assertThat(failure.failure())
+                    .isEqualTo(UnityCatalogException.Failure.INVALID_REQUEST));
+    assertThat(redirectedRequests).hasValue(0);
   }
 
   /**
@@ -439,26 +522,6 @@ class HttpUnityCatalogClientTest {
               assertThat(failure.statusCode()).isEqualTo(200);
               assertThat(failure.getMessage()).contains("not-json");
             });
-  }
-
-  /**
-   * With Redirect.NORMAL the response can come from a URI other than the one requested, and a 404
-   * from a redirect target reads as a missing endpoint unless the message says where it landed.
-   */
-  @Test
-  void aFailureAfterAFollowedRedirectNamesTheEffectiveUri() {
-    server.createContext(
-        "/api/2.1/unity-catalog/catalogs",
-        exchange -> {
-          exchange.getResponseHeaders().add("Location", "/moved/catalogs");
-          respond(exchange, 301, "");
-        });
-    server.createContext("/moved/catalogs", exchange -> respond(exchange, 404, "no such endpoint"));
-
-    assertThatThrownBy(client::listCatalogs)
-        .isInstanceOfSatisfying(
-            UnityCatalogException.class,
-            failure -> assertThat(failure.getMessage()).contains("/moved/catalogs"));
   }
 
   private static void respond(HttpExchange exchange, int status, String body) throws IOException {

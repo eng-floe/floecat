@@ -20,6 +20,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -55,24 +56,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
       Duration connectTimeout,
       Duration requestTimeout,
       UnityCatalogAuthentication authentication) {
-    this(
-        baseUri,
-        requestTimeout,
-        authentication,
-        // The JDK default is Redirect.NEVER, which turns an ordinary workspace redirect -- an
-        // http:// base URI upgraded to HTTPS, a renamed workspace host -- into a bare 3xx that no
-        // caller can act on. NORMAL follows it, and still refuses an HTTPS-to-HTTP downgrade; a
-        // 3xx that survives that is classified permanent below rather than retried forever.
-        //
-        // NORMAL re-issues a followed 301/302/303 as a bodyless GET, so the one POST here -- the
-        // credentials call -- does not survive a redirect: what surfaces is the redirect target's
-        // 404 or 405, not the 3xx. Both are permanent, so retry behaviour is unchanged, but the
-        // status alone would read as a missing endpoint; the failure message therefore names the
-        // effective URI whenever it differs from the one requested.
-        HttpClient.newBuilder()
-            .connectTimeout(connectTimeout)
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build());
+    this(baseUri, requestTimeout, authentication, newHttpClient(baseUri, connectTimeout));
   }
 
   HttpUnityCatalogClient(
@@ -83,6 +67,10 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     Objects.requireNonNull(baseUri, "baseUri");
     if (!baseUri.isAbsolute()) {
       throw new IllegalArgumentException("Unity Catalog base URI must be absolute: " + baseUri);
+    }
+    if ("http".equalsIgnoreCase(baseUri.getScheme()) && !isLoopbackHost(baseUri.getHost())) {
+      throw new IllegalArgumentException(
+          "Unity Catalog base URI must use HTTPS unless it is loopback: " + baseUri);
     }
     this.baseUri = stripTrailingSlash(baseUri.toString());
     this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
@@ -118,7 +106,12 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   @Override
   public Optional<UnityCatalogTable> getTable(String fullName) {
     try {
-      return Optional.of(table(get(API_ROOT + "/tables/" + encode(fullName))));
+      String path = API_ROOT + "/tables/" + encode(fullName);
+      JsonNode response = get(path);
+      if (!response.isObject()) {
+        throw invalidResponse("Expected object response from " + path, null);
+      }
+      return Optional.of(table(response));
     } catch (UnityCatalogException e) {
       if (e.failure() == UnityCatalogException.Failure.NOT_FOUND) {
         return Optional.empty();
@@ -203,17 +196,16 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   }
 
   private JsonNode send(HttpRequest.Builder builder, String path) {
-    builder
-        .uri(URI.create(baseUri + path))
-        .timeout(requestTimeout)
-        .header("Accept", "application/json");
-    Map<String, String> headers = authentication.headers();
-    if (headers != null) {
-      headers.forEach(builder::header);
-    }
-
     HttpResponse<String> response;
     try {
+      builder
+          .uri(URI.create(baseUri + path))
+          .timeout(requestTimeout)
+          .header("Accept", "application/json");
+      Map<String, String> headers = authentication.headers();
+      if (headers != null) {
+        headers.forEach(builder::header);
+      }
       response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -229,23 +221,26 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
 
     int status = response.statusCode();
     String target = describeTarget(path, response.uri());
+    boolean includeResponseBody = !TEMPORARY_TABLE_CREDENTIALS_PATH.equals(path);
     if (status < 200 || status >= 300) {
-      throw httpFailure(status, target, response.body());
+      throw httpFailure(status, target, response.body(), includeResponseBody);
     }
     try {
       return JSON.readTree(response.body());
     } catch (JsonProcessingException e) {
       throw invalidResponse(
-          status, "Invalid JSON from Unity Catalog for " + target, response.body(), e);
+          status,
+          "Invalid JSON from Unity Catalog for " + target,
+          includeResponseBody ? response.body() : null,
+          includeResponseBody ? e : null);
     }
   }
 
   /**
    * The request target for a failure message: the path, plus where a followed redirect landed.
    *
-   * <p>With {@link HttpClient.Redirect#NORMAL} the response can come from somewhere other than the
-   * URI built here, and a 404 from a redirect target reads as a missing endpoint unless the message
-   * says which URI actually answered.
+   * <p>A caller of the package-private constructor may supply a redirecting client. Keeping the
+   * effective URI in that case makes the resulting failure diagnosable.
    */
   private String describeTarget(String path, URI effectiveUri) {
     String requested = baseUri + path;
@@ -332,8 +327,9 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * {@code OTHER}, retryable. The 4xx statuses that are never permanent are still named explicitly
    * first, so an envelope-bearing 408 or 429 is not swept into the default either.
    */
-  private static UnityCatalogException httpFailure(int status, String path, String body) {
-    String responseBody = truncate(body);
+  private static UnityCatalogException httpFailure(
+      int status, String path, String body, boolean includeResponseBody) {
+    String responseBody = includeResponseBody ? truncate(body) : "";
     String errorCode = errorCode(body);
     // Only for 4xx. A 5xx is transient whatever its body says, and letting an error_code override
     // it would turn a retryable outage into a terminal refusal.
@@ -374,7 +370,11 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         failure,
         status,
         errorCode,
-        "Unity Catalog returned HTTP " + status + " for " + path + ": " + responseBody,
+        "Unity Catalog returned HTTP "
+            + status
+            + " for "
+            + path
+            + (responseBody.isEmpty() ? "" : ": " + responseBody),
         null);
   }
 
@@ -454,5 +454,46 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
 
   private static String stripTrailingSlash(String value) {
     return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+  }
+
+  private static HttpClient newHttpClient(URI baseUri, Duration connectTimeout) {
+    Objects.requireNonNull(baseUri, "baseUri");
+    if ("http".equalsIgnoreCase(baseUri.getScheme()) && !isLoopbackHost(baseUri.getHost())) {
+      throw new IllegalArgumentException(
+          "Unity Catalog base URI must use HTTPS unless it is loopback: " + baseUri);
+    }
+    return HttpClient.newBuilder()
+        .connectTimeout(connectTimeout)
+        .followRedirects(HttpClient.Redirect.NEVER)
+        .build();
+  }
+
+  private static boolean isLoopbackHost(String host) {
+    if (host == null) {
+      return false;
+    }
+    String normalized = host.toLowerCase(Locale.ROOT);
+    if (normalized.startsWith("[") && normalized.endsWith("]")) {
+      normalized = normalized.substring(1, normalized.length() - 1);
+    }
+    if (normalized.endsWith(".")) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    if (normalized.equals("localhost") || normalized.endsWith(".localhost")) {
+      return true;
+    }
+    boolean numeric =
+        normalized.indexOf(':') >= 0
+            || normalized
+                .chars()
+                .allMatch(character -> Character.isDigit(character) || character == '.');
+    if (!numeric) {
+      return false;
+    }
+    try {
+      return InetAddress.getByName(normalized).isLoopbackAddress();
+    } catch (IOException e) {
+      return false;
+    }
   }
 }
