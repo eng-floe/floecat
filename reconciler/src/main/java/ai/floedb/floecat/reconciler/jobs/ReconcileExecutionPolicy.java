@@ -21,12 +21,13 @@ import java.util.TreeMap;
 
 public record ReconcileExecutionPolicy(
     ReconcileExecutionClass executionClass, String lane, Map<String, String> attributes) {
+  private static final String INTERNAL_ANY_LANE_TOKEN = "*";
   private static final ReconcileExecutionPolicy DEFAULT_POLICY =
       new ReconcileExecutionPolicy(ReconcileExecutionClass.DEFAULT, "", Map.of());
 
   public ReconcileExecutionPolicy {
     executionClass = executionClass == null ? ReconcileExecutionClass.DEFAULT : executionClass;
-    lane = lane == null ? "" : lane.trim();
+    lane = normalizeLane(lane);
 
     Map<String, String> normalized = new TreeMap<>();
     if (attributes != null) {
@@ -53,6 +54,15 @@ public record ReconcileExecutionPolicy(
       return DEFAULT_POLICY;
     }
     return new ReconcileExecutionPolicy(executionClass, lane, attributes);
+  }
+
+  /** Normalizes an externally configurable lane and rejects the internal lease wildcard token. */
+  public static String normalizeLane(String lane) {
+    String normalized = lane == null ? "" : lane.trim();
+    if (INTERNAL_ANY_LANE_TOKEN.equals(normalized)) {
+      throw new IllegalArgumentException("execution lane '*' is reserved for internal lease scans");
+    }
+    return normalized;
   }
 
   public boolean isDefaultPolicy() {

@@ -772,8 +772,10 @@ class InMemoryReconcileJobStoreTest {
   void acceptedSnapshotFinalizePublishesAfterWorkerLeaseAndGraceExpire() throws Exception {
     String leaseKey = "floecat.reconciler.job-store.lease-ms";
     String reclaimKey = "floecat.reconciler.job-store.reclaim-interval-ms";
+    String laneKey = "floecat.reconciler.execution-lane";
     String previousLease = System.getProperty(leaseKey);
     String previousReclaim = System.getProperty(reclaimKey);
+    String previousLane = System.getProperty(laneKey);
     try {
       System.setProperty(leaseKey, "1000");
       System.setProperty(reclaimKey, "1000");
@@ -808,6 +810,14 @@ class InMemoryReconcileJobStoreTest {
               0L,
               0L);
       assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, lease.leaseEpoch, intent));
+      assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
+      System.setProperty(laneKey, "other-lane");
+      store.init();
+      assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+      restoreProperty(laneKey, previousLane);
+      store.init();
+      assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
 
       Thread.sleep(1150L);
 
@@ -831,6 +841,7 @@ class InMemoryReconcileJobStoreTest {
     } finally {
       restoreProperty(leaseKey, previousLease);
       restoreProperty(reclaimKey, previousReclaim);
+      restoreProperty(laneKey, previousLane);
     }
   }
 
