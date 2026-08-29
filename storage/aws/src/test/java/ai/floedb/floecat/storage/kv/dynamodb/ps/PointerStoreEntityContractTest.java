@@ -78,6 +78,21 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   }
 
   @Test
+  void pointerKey_account_deletion_fence_routes_to_account_fence_partition() {
+    KvStore.Key key = PointerStoreEntity._testKey("/account-deletion-fences/acct/07");
+    assertEquals("_ACCOUNT_DELETION_FENCE/acct/07", key.partitionKey());
+    assertEquals("gate", key.sortKey());
+  }
+
+  @Test
+  void pointerKey_account_deletion_fence_shard_changes_partition() {
+    KvStore.Key shard07 = PointerStoreEntity._testKey("/account-deletion-fences/acct/07");
+    KvStore.Key shard08 = PointerStoreEntity._testKey("/account-deletion-fences/acct/08");
+
+    assertFalse(shard07.partitionKey().equals(shard08.partitionKey()));
+  }
+
+  @Test
   void pointerKey_account_scoped_routes_to_partition_accounts_accountId() {
     KvStore.Key key = PointerStoreEntity._testKey("accounts/77/catalog/xyz");
     assertEquals("accounts/77", key.partitionKey());

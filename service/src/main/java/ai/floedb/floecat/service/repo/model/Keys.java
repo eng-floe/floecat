@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -24,6 +25,17 @@ import java.util.List;
 import java.util.Objects;
 
 public final class Keys {
+  public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
+  private static final int DYNAMODB_TRANSACTION_ITEM_LIMIT = 100;
+
+  static {
+    if (ACCOUNT_DELETION_FENCE_SHARDS < 2
+        || ACCOUNT_DELETION_FENCE_SHARDS + 1 > DYNAMODB_TRANSACTION_ITEM_LIMIT) {
+      throw new ExceptionInInitializerError(
+          "account deletion fence must have at least two shards and fit with its marker in one "
+              + "DynamoDB transaction");
+    }
+  }
 
   public static final String SEG_ACCOUNT = "/account/";
   public static final String SEG_CATALOG = "/catalog/";
@@ -173,7 +185,7 @@ public final class Keys {
     return "/accounts/by-name/";
   }
 
-  /** Durable fence that prevents new account-scoped writes once deletion begins. */
+  /** Durable state marker recording that account deletion has begun. */
   public static String accountDeletionMarker(String accountId) {
     return accountDeletionMarkerForEncodedSegment(encode(req("account_id", accountId)));
   }
@@ -185,6 +197,44 @@ public final class Keys {
       throw new IllegalArgumentException("encoded_account_segment must be one path segment");
     }
     return accountRootPrefix() + segment + "/deleting";
+  }
+
+  /**
+   * One of the independent writer gates installed atomically when account deletion begins.
+   *
+   * <p>The gates live outside the account pointer prefix so teardown can sweep that prefix without
+   * reopening writes. A writer checks only the shard selected by its primary pointer key; unrelated
+   * writes therefore do not make every DynamoDB transaction read the same item.
+   */
+  public static String accountDeletionFenceShard(String accountId, String writeKey) {
+    return accountDeletionFenceShardForEncodedSegment(
+        encode(req("account_id", accountId)), writeKey);
+  }
+
+  public static String accountDeletionFenceShardForEncodedSegment(
+      String encodedAccountSegment, String writeKey) {
+    String segment = req("encoded_account_segment", encodedAccountSegment);
+    if (segment.indexOf('/') >= 0) {
+      throw new IllegalArgumentException("encoded_account_segment must be one path segment");
+    }
+    int hash = req("write_key", writeKey).hashCode();
+    hash ^= hash >>> 16;
+    return accountDeletionFenceShardKey(
+        segment, Math.floorMod(hash, ACCOUNT_DELETION_FENCE_SHARDS));
+  }
+
+  public static List<String> accountDeletionFenceShards(String accountId) {
+    String segment = encode(req("account_id", accountId));
+    return java.util.stream.IntStream.range(0, ACCOUNT_DELETION_FENCE_SHARDS)
+        .mapToObj(shard -> accountDeletionFenceShardKey(segment, shard))
+        .toList();
+  }
+
+  private static String accountDeletionFenceShardKey(String encodedAccountSegment, int shard) {
+    return PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX
+        + encodedAccountSegment
+        + "/"
+        + String.format("%02d", shard);
   }
 
   public static String accountBlobUri(String accountId, String sha256) {
