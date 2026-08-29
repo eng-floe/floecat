@@ -47,10 +47,8 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
@@ -65,7 +63,6 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
-import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -1433,73 +1430,6 @@ class UserObjectBundleServiceTest {
     }
 
     assertThat(callbackThread.get()).isSameAs(producer);
-  }
-
-  @Test
-  void concurrentBuildKeepsPinValidationOnTheStreamProducer() {
-    Thread producer = Thread.currentThread();
-    var userTable = TestNodes.tableNode(TABLE_A, "{}");
-    FakeCatalogGraphView concurrentGraphView =
-        new FakeCatalogGraphView() {
-          @Override
-          public boolean supportsConcurrentResolution() {
-            return true;
-          }
-
-          @Override
-          public SchemaResolution schemaFor(
-              String correlationId,
-              ResourceId tableId,
-              SnapshotRef snapshot,
-              String tableBlobUri,
-              String snapshotBlobUri) {
-            return new SchemaResolution(userTable, "{}");
-          }
-        };
-    concurrentGraphView.registerRelation(
-        TABLE_A,
-        userTable,
-        UserObjectBundleTestSupport.schemaFor("id_a"),
-        NameRef.newBuilder().setCatalog("cat").setName("a").build());
-    concurrentGraphView.registerCatalog(DEFAULT_CATALOG, "cat");
-    AtomicReference<Thread> validationThread = new AtomicReference<>();
-    PinValidator threadConfinedValidator =
-        new PinValidator(null, RootRepairRequests.disabled()) {
-          @Override
-          public void validate(String correlationId, TablePin pin) {
-            validationThread.set(Thread.currentThread());
-          }
-        };
-    UserObjectBundleService concurrentService =
-        new UserObjectBundleService(
-            concurrentGraphView,
-            resolver,
-            queryStore,
-            new CancelledQueryPinCleanup(queryStore, Runnable::run),
-            statsFactory,
-            decoratorProvider,
-            engineContextProvider,
-            threadConfinedValidator,
-            false,
-            "2",
-            "localhost",
-            47470,
-            false,
-            "test",
-            250L,
-            8);
-    TableReferenceCandidate candidate =
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
-            .build();
-
-    concurrentService.stream("cid", ctx, List.of(candidate))
-        .collect()
-        .asList()
-        .await()
-        .indefinitely();
-
-    assertThat(validationThread.get()).isSameAs(producer);
   }
 
   @Test

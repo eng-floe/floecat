@@ -44,7 +44,6 @@ import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
@@ -153,7 +152,6 @@ public class UserObjectBundleService {
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
-      PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
       // Epoch 2 covers the typed SchemaColumn payload migration and must never move backward.
@@ -200,8 +198,7 @@ public class UserObjectBundleService {
     this.engineRelationDecorator =
         new EngineRelationDecorator(decoratorProvider, engineSpecificEnabled);
     this.relationBuilder =
-        new RelationBundleBuilder(
-            graphView, engineRelationDecorator, systemExecutionResolver, pinValidator);
+        new RelationBundleBuilder(graphView, engineRelationDecorator, systemExecutionResolver);
     this.relationPayloadPolicy =
         new RelationPayloadPolicy(
             relationBuilder,
@@ -223,8 +220,8 @@ public class UserObjectBundleService {
       int flightPort,
       boolean grpcPlainText,
       String quarkusProfile) {
-    // Test-only: these tests never reach per-read pin validation (their schema flows go through
-    // the fake graph view). Fail explicitly if one ever does, rather than NPE-ing on null repos.
+    // Test-only: the production defaults for decoration epoch, slow-RPC threshold and relation
+    // parallelism, with an inline same-thread pin cleanup.
     this(
         graphView,
         inputResolver,
@@ -233,14 +230,6 @@ public class UserObjectBundleService {
         statsFactory,
         decoratorProvider,
         engineContext,
-        new PinValidator(
-            null, ai.floedb.floecat.service.catalog.impl.RootRepairRequests.disabled()) {
-          @Override
-          public void validate(String correlationId, ai.floedb.floecat.query.rpc.TablePin pin) {
-            throw new IllegalStateException(
-                "test-only UserObjectBundleService has no repositories to validate pins");
-          }
-        },
         engineSpecificEnabled,
         "1",
         flightHost,
@@ -938,16 +927,11 @@ public class UserObjectBundleService {
     /** One unique full build and every response slot that can share its immutable result. */
     private static final class BuildPlan {
       private final List<BuildTarget> targets;
-      private final Optional<RelationBundleBuilder.BuildError> validationError;
       private final Optional<RelationPinIdentity> payloadIdentity;
 
       private BuildPlan(
-          PendingFound source,
-          int slot,
-          Optional<RelationBundleBuilder.BuildError> validationError,
-          Optional<RelationPinIdentity> payloadIdentity) {
+          PendingFound source, int slot, Optional<RelationPinIdentity> payloadIdentity) {
         this.targets = new ArrayList<>(List.of(new BuildTarget(source, slot)));
-        this.validationError = validationError;
         this.payloadIdentity = payloadIdentity;
       }
 
@@ -968,15 +952,6 @@ public class UserObjectBundleService {
     private BuildOutcome buildOne(
         BuildPlan plan, QueryContext liveCtx, Optional<StatsProvider.TableStatsView> tableStats) {
       PendingFound found = plan.source();
-      if (plan.validationError.isPresent()) {
-        return new BuildOutcome(
-            found,
-            null,
-            buildErrorResolution(found, plan.validationError.get()),
-            0L,
-            0L,
-            new TimingAccumulator());
-      }
       long buildStartNs = System.nanoTime();
       RelationBundleBuilder.BuildResult result =
           relationBuilder.build(
@@ -1111,9 +1086,7 @@ public class UserObjectBundleService {
           slots[i] = foundResolution(found.inputIndex(), slim);
           continue;
         }
-        Optional<RelationBundleBuilder.BuildError> validationError =
-            relationBuilder.validatePin(correlationId, found.relation(), liveCtx);
-        buildPlans.add(new BuildPlan(found, i, validationError, payloadIdentity));
+        buildPlans.add(new BuildPlan(found, i, payloadIdentity));
         buildIndexByKey.put(cacheKey, buildPlans.size() - 1);
       }
 

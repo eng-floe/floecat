@@ -44,16 +44,28 @@ deterministic (not content-addressed) URIs and a re-capture may overwrite one in
 URI-keyed caching would be unsound for them.
 
 ## Deliberately live reads
-Six reads bypass every cache because their result is a detector, not content:
+These reads bypass every cache because their result is a detector, not content:
 
 | Read | Site | Why it must be live |
 |------|------|---------------------|
-| Pin-root HEAD | `PinValidator.validate` | The pin's integrity contract: one HEAD confirms the pinned root blob exists at the pinned version. The CAS GC min-age fence measures age since the blob was *written*, so a recently observed etag proves nothing about the blob still existing. |
+| Resolving-pin root guard, currency and manifest proof | `QueryContextStoreImpl.requirePinnedRootLive` | Asks whether a pinned root is still *present* before it is registered as a GC root — the bytes are immutable, but their presence is exactly what a sweep changes, so a cache hit cannot answer the question. The same read then follows a *mutable* pointer to decide whether the root is current, and proves the manifest head or chain is still live. |
 | Frozen stats-manifest read | `StatsRepository.listTargetStatsInGeneration` (per scan page) | This read *is* the scan's retention guard. A cached generation ID would let a scan page "successfully" over a reclaimed generation — empty pages, silently truncated results — exactly when the guard must fire. |
-| Pinned table + snapshot loads | `ScanBundleService.initScan` | `requirePinned*`'s contract is that a missing pinned blob fails as catalog-integrity corruption; a still-resident decode must not mask a swept blob. Once per scan session, not per page. |
-| Pinned snapshot schema load | `SnapshotHelper.schemaJsonFor` | Same pin-integrity contract for the schema read from the pinned snapshot blob. |
-| Pinned table-node load | `NodeLoader.tableFromBlob` | A query pinned to a blob must read that exact blob; a miss fails hard instead of drifting to current state. |
-| Pinned constraints load | `PlannerStatsBundleService` | Emptiness is the broken-retention detector (pinned blobs are GC-rooted for the query's lifetime); a resident decode must not suppress the warning where cache warmth is highest. |
+| Published-generation and manifest-page checks | `StatsRepository.requirePublishedGenerationLive`, `TableRootRepository.getManifestPageLive` | Same shape: emptiness is the retention verdict. |
+| Dangling-pointer verdict | `NodeLoader.reload` | Emptiness is the verdict itself: a resident decode would report a healthy node over a pointer whose blob is gone. |
+| Reusable-candidate load | `SnapshotRepository.loadReusableCandidate` | Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds. |
+| Commit funnel, pointer and blob | `TableRootCommitter` | The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector. |
+
+Pinned **blob** reads are not among them. The blob a pin names is immutable and content-addressed,
+so a resident decode of it *is* the pinned content rather than a stale view — the pinned table,
+snapshot, schema, node and constraint loads all read through the cache. For the table, snapshot,
+schema and node legs a genuinely missing pinned blob still fails as catalog-integrity corruption
+through `requirePinned*`, and still enqueues the table for the resync re-drive. The constraints leg
+does neither: it logs a broken-retention warning and degrades that relation to an `ERROR`
+resolution, with no repair report — and on a cache hit over a swept blob it does not fire at all.
+
+Nor is a pinned read preceded by a probe of its root. A pin whose blobs still read is coherent
+whatever has happened to the live pointer meanwhile, and a probe could only report what the read
+that needs the blob reports anyway.
 
 The repository API encodes the split: `getByBlobUri` serves cached content — a present result does
 **not** prove the blob still exists — while `getByBlobUriLive` bypasses the cache for reads whose

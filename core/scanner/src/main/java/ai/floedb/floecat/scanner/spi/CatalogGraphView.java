@@ -205,10 +205,9 @@ public interface CatalogGraphView {
    * thread, together with graph-view schema/name callbacks used while assembling GetUserObjects
    * relations ({@link #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId,
    * EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It does not change the
-   * caller-thread contract of separately injected stats, pin-validation, or engine-decoration
-   * collaborators. Implementations opting in must make the listed graph-view callbacks thread-safe
-   * and must not depend on custom caller-thread state that service context propagation does not
-   * capture.
+   * caller-thread contract of separately injected stats or engine-decoration collaborators.
+   * Implementations opting in must make the listed graph-view callbacks thread-safe and must not
+   * depend on custom caller-thread state that service context propagation does not capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;
@@ -289,8 +288,8 @@ public interface CatalogGraphView {
    * snapshot-sourced schema are read from those immutable blobs rather than the live pointers. A
    * concurrent {@code ALTER} advances the current table pointer, and an in-place {@code
    * UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot blob
-   * after the pin was validated; reading the pinned uris cannot drift to either. Empty uris read
-   * the current pointers.
+   * after the pin was built; reading the pinned uris cannot drift to either. Empty uris read the
+   * current pointers.
    */
   SchemaResolution schemaFor(
       String correlationId,

@@ -1231,10 +1231,13 @@ public class PlannerStatsBundleService {
                   + pinnedRef.get().uri());
         }
         Optional<SnapshotConstraints> bundle =
-            // LIVE: emptiness here is the broken-retention detector (pinned blobs are GC-rooted
-            // for the query's lifetime); a resident decode must not suppress the warning exactly
-            // where traffic — and cache warmth — is highest.
-            constraintRepository.getByBlobUriLive(pinnedRef.get().uri());
+            // Cached: pinned constraint blobs are immutable and content-addressed, so a resident
+            // decode is the pinned content rather than a stale view of it. What this gives up is
+            // DETECTION, not correctness: a swept blob whose decode is still resident serves the
+            // right bytes and logs nothing, so the warning below now fires on a miss rather than
+            // on every read. This leg reports no repair either way -- unlike the table and
+            // snapshot legs, which enqueue through PinnedReadContract.
+            constraintRepository.getByBlobUri(pinnedRef.get().uri());
         if (bundle.isEmpty()) {
           // The pin froze a bundle ref whose blob is no longer retrievable: pinned blobs are
           // GC-rooted for the query's lifetime, so this is a broken invariant, never client state.

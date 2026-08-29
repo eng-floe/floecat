@@ -274,11 +274,34 @@ class WarmRequestStoreCostIT {
    */
   private static final Cost KV = new Cost("KV round trips", 8, 1, t -> t.reads.pointerRoundTrips());
 
+  /**
+   * What the five per table and the one per request are, measured per fetch with its caller.
+   *
+   * <p>Per request: the account blob, read once by the inbound call context. Per table: the pinned
+   * root blob at registration, the root's manifest page, the published stats generation manifest,
+   * the SAME generation manifest again for the frozen token, and the target-stats record. The first
+   * four are live by design -- their emptiness is the retention verdict, so they are the reads
+   * {@code docs/caching.md} lists as deliberately uncached. The fifth is not cacheable by URI at
+   * all: target-stats blobs are written to deterministic URIs a re-capture can overwrite.
+   *
+   * <p>The generation manifest appearing twice is a duplicate, not a rounding: the
+   * published-generation guard and the frozen-token read each fetch it. Recorded as it stands --
+   * the coefficient is what the read path costs, not what it ought to cost.
+   */
   private static final Cost S3_GET =
-      new Cost("S3 objects GET", 7, 1, t -> t.reads.blobObjectGets());
+      new Cost("S3 objects GET", 5, 1, t -> t.reads.blobObjectGets());
 
-  /** Pin validation HEADs the live store per table; there is no per-request part. */
-  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 3, 0, t -> t.reads.blobHeads());
+  /**
+   * Both HEADs are pointer-meta reads of the table root: one at pin construction ({@code
+   * TableRootRepository.metaForSafe}) and one for the currency check at pin registration ({@code
+   * metaForSafeLive}). No per-request part -- a request that names no table pays none.
+   *
+   * <p>Two rather than one because {@code metaForSafeLive} invalidates the pointer cache without
+   * repopulating it, so the next request's {@code metaForSafe} always misses. A change that made
+   * the live read repopulate would drop this to 1n -- a real saving, and one that should arrive as
+   * a coefficient this test makes fall, not as a number nobody noticed moving.
+   */
+  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 2, 0, t -> t.reads.blobHeads());
 
   private static final List<Cost> COSTS = List.of(KV, S3_GET, S3_HEAD);
 

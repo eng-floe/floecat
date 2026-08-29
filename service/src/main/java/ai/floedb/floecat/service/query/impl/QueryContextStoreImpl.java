@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -58,6 +59,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 public class QueryContextStoreImpl implements QueryContextStore {
 
   @Inject TableRootRepository tableRoots;
+  @Inject RootRepairRequests repairs;
   @Inject StatsRepository statsRepository;
   @Inject TableBlobReachabilityGuard reachabilityGuard;
 
@@ -340,13 +342,12 @@ public class QueryContextStoreImpl implements QueryContextStore {
       if (uri.startsWith(manifestPrefix)) {
         continue;
       }
+      // LIVE, unlike the pinned blob reads on the query path. This is the GC handoff guard: it
+      // asks whether the pinned root is still PRESENT before registering it as a resolving root,
+      // and a cache hit cannot answer that -- the bytes are immutable, but their presence in the
+      // store is exactly what a sweep changes. Emptiness here is the verdict, not a miss.
       TableRoot root =
-          tableRoots
-              .getByBlobUriLive(uri)
-              .orElseThrow(
-                  () ->
-                      new BaseResourceRepository.CorruptionException(
-                          "pinned table root is missing: " + uri));
+          tableRoots.getByBlobUriLive(uri).orElseThrow(() -> pinnedRootMissing(tableId, uri));
       if (!root.hasTableId()
           || !root.getTableId().getAccountId().equals(tableId.getAccountId())
           || !root.getTableId().getId().equals(tableId.getId())) {
@@ -367,6 +368,18 @@ public class QueryContextStoreImpl implements QueryContextStore {
         }
       }
     }
+  }
+
+  /**
+   * The pinned root is the one leg {@code requirePinnedTableBlob} and {@code
+   * requirePinnedSnapshotBlob} do not cover: without this report, a table's committed root can name
+   * data no read can load and nothing ever re-derives it. Fire-and-forget before throwing, like
+   * every other raiser of a catalog-integrity error.
+   */
+  private BaseResourceRepository.CorruptionException pinnedRootMissing(
+      ResourceId tableId, String uri) {
+    repairs.request(tableId);
+    return new BaseResourceRepository.CorruptionException("pinned table root is missing: " + uri);
   }
 
   private void requirePinnedGenerationLive(ResourceId tableId, Set<String> roots) {

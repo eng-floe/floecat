@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.metagraph.overlay.user;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
@@ -32,7 +31,7 @@ import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
-import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.query.PinnedReadContract;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -75,7 +74,7 @@ public final class UserGraph {
   private final SnapshotHelper snapshots;
   private final EngineHintManager hints;
   private final PrincipalProvider principal;
-  private final PinValidator pinValidator;
+  private final PinnedReadContract pinnedReads;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -86,25 +85,26 @@ public final class UserGraph {
    *
    * @param catalogRepo repository for catalog operations
    * @param nsRepo repository for namespace operations
-   * @param snapshotRepo repository for snapshot operations
    * @param tableRepo repository for table operations
    * @param viewRepo repository for view operations
-   * @param snapshotStub gRPC client for snapshot service
-   * @param meter metrics registry for performance monitoring
+   * @param observability telemetry facade; here it backs the graph cache's hit/miss and
+   *     load-latency metrics
    * @param principal provider for current principal context
-   * @param cacheMaxSize maximum size of the graph cache
+   * @param cacheMaxSize maximum size of the graph cache (0 disables node caching)
+   * @param metaCacheTtlSeconds how long a cached definition pointer may be stale
    * @param engineHints manager for engine-specific hints
    * @param blobCache process-wide decoded-blob cache holding derived nodes (null disables node
    *     caching; resolution then always loads)
+   * @param pinnedReads unwraps a pinned blob read, failing loudly when the blob is gone
+   * @param snapshots pinned-snapshot reads and pin construction, container-wired so it shares one
+   *     repair queue with {@code pinnedReads}
    */
   @Inject
   public UserGraph(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
-      SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
-      TableRootRepository tableRootRepo,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
@@ -112,9 +112,9 @@ public final class UserGraph {
       @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
           long metaCacheTtlSeconds,
       EngineHintManager engineHints,
-      ai.floedb.floecat.stats.spi.StatsStore statsStore,
       ImmutableBlobCache blobCache,
-      PinValidator pinValidator) {
+      PinnedReadContract pinnedReads,
+      SnapshotHelper snapshots) {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
@@ -124,14 +124,21 @@ public final class UserGraph {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.pinValidator = pinValidator;
-    this.snapshots = new SnapshotHelper(snapshotRepo, tableRootRepo, statsStore, pinValidator);
+    this.pinnedReads = pinnedReads;
+    this.snapshots = snapshots;
     this.hints = engineHints;
     this.principal = principal;
   }
 
-  /** TEST-ONLY constructor with explicit cache knobs; no legacy-root synthesis. */
-  public UserGraph(
+  /**
+   * A graph wired without a container, for tests.
+   *
+   * <p>A factory rather than a constructor, because ONE repair channel has to sit behind both the
+   * read contract and pin construction -- that is what CDI supplies in production, a single
+   * application-scoped bean -- and a delegating {@code this(...)} cannot build a value before it
+   * delegates. No resync queue in this wiring, so repair reporting is disabled.
+   */
+  public static UserGraph forTest(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
@@ -142,57 +149,24 @@ public final class UserGraph {
       PrincipalProvider principal,
       long cacheMaxSize,
       EngineHintManager engineHints) {
-    this(
+    RootRepairRequests repairs = RootRepairRequests.disabled();
+    PinnedReadContract pins = new PinnedReadContract(repairs);
+    return new UserGraph(
         catalogRepo,
         nsRepo,
-        snapshotRepo,
         tableRepo,
         viewRepo,
-        tableRootRepo,
         observability,
         principal,
         cacheMaxSize,
         2L,
         engineHints,
-        null,
         // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
         cacheMaxSize > 0
             ? new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15))
             : null,
-        // No pointer store in this wiring, so broken-root repair reporting is disabled.
-        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
-  }
-
-  /** TEST-ONLY constructor; no legacy-root synthesis. */
-  public UserGraph(
-      CatalogRepository catalogRepo,
-      NamespaceRepository nsRepo,
-      SnapshotRepository snapshotRepo,
-      TableRepository tableRepo,
-      ViewRepository viewRepo,
-      TableRootRepository tableRootRepo,
-      Observability observability) {
-    this(
-        catalogRepo,
-        nsRepo,
-        snapshotRepo,
-        tableRepo,
-        viewRepo,
-        tableRootRepo,
-        observability,
-        new PrincipalProvider() {
-          @Override
-          public PrincipalContext get() {
-            return PrincipalContext.newBuilder().setAccountId("account").build();
-          }
-        },
-        1024L,
-        2L,
-        null,
-        null,
-        new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15)),
-        // No pointer store in this wiring, so broken-root repair reporting is disabled.
-        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
+        pins,
+        new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs));
   }
 
   // No writer-refresh here, deliberately (unlike the root-pointer cache): resolve() always
@@ -469,7 +443,7 @@ public final class UserGraph {
    * Gets the schema JSON for a table, preferring the pinned snapshot blob. When {@code
    * snapshotBlobUri} names a pinned snapshot blob, the schema is read from that immutable blob
    * rather than re-hydrating the snapshot through the live {@code (table, snapshot id)} pointer,
-   * which an in-place {@code UpdateSnapshot} can repoint after the pin was validated. Empty uri
+   * which an in-place {@code UpdateSnapshot} can repoint after the pin was built. Empty uri
    * resolves the snapshot reference against the live pointer.
    */
   public String schemaJsonFor(
@@ -518,7 +492,7 @@ public final class UserGraph {
                             cid,
                             GeneratedErrorMessages.MessageKey.TABLE,
                             Map.of("id", tblId.getId())))
-            : pinValidator.requirePinnedTableBlob(
+            : pinnedReads.requirePinnedTableBlob(
                 nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }

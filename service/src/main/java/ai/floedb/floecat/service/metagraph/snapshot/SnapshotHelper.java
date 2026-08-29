@@ -28,10 +28,11 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
-import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.query.PinnedReadContract;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -54,23 +56,30 @@ public class SnapshotHelper {
   private final SnapshotRepository snapshots;
   private final TableRootRepository roots;
   private final StatsStore statsStore;
-  private final PinValidator pins;
+  private final PinnedReadContract pins;
+  private final RootRepairRequests repairs;
 
   /**
-   * Pins are built from a just-read root blob and validated by every consumption through the {@link
-   * PinValidator} contract, so construction performs no extra validation round-trip — {@code pins}
-   * here serves the pinned schema read and reports broken roots observed during pin construction
-   * for repair.
+   * Pins are built from a just-read root blob, so construction performs no extra validation
+   * round-trip; a vanished blob surfaces at the read that needs it, through the {@link
+   * PinnedReadContract}. {@code pins} serves the pinned schema read here; {@code repairs} reports a
+   * broken root observed while BUILDING a pin, which happens before any pinned read exists for that
+   * contract to unwrap. Both reach the same repair queue, which is the container's doing rather
+   * than this constructor's: {@code RootRepairRequests} is application-scoped, so the instance
+   * inside {@code pins} and the one passed here are the same bean.
    */
+  @Inject
   public SnapshotHelper(
       SnapshotRepository snapshots,
       TableRootRepository roots,
       StatsStore statsStore,
-      PinValidator pins) {
+      PinnedReadContract pins,
+      RootRepairRequests repairs) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.statsStore = statsStore;
     this.pins = pins;
+    this.repairs = repairs;
   }
 
   /**
@@ -140,7 +149,7 @@ public class SnapshotHelper {
         // legitimate drop): every future query fails here the same way until the root is
         // re-derived, so enqueue the table for the resync re-drive (fire-and-forget) before the
         // per-pin-kind not-found handling below rejects this query.
-        pins.requestRootRepair(tableId);
+        repairs.request(tableId);
       }
     }
 
@@ -202,7 +211,7 @@ public class SnapshotHelper {
                 // invariant (removal clears currency in the same commit), never a client state —
                 // report the table for the resync re-drive to re-derive its root.
                 () -> {
-                  pins.requestRootRepair(tableId);
+                  repairs.request(tableId);
                   return GrpcErrors.internal(
                       cid,
                       QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
@@ -253,8 +262,9 @@ public class SnapshotHelper {
    * definition blob, and the snapshot blob — comes from the one immutable root, so the pin is
    * coherent by construction. A root without a definition ref cannot serve table-scoped reads and
    * fails as a catalog-integrity error rather than walking to the live pointer. No validation HEAD
-   * happens here: every leg was just read out of the root blob at exactly the pinned version, and
-   * every consumption re-validates through the {@link PinValidator} contract.
+   * happens here: every leg was just read out of the root blob at exactly the pinned version, and a
+   * leg that later turns out to be gone fails at the read that needs it, through the {@link
+   * PinnedReadContract}.
    */
   private TablePin pinFromEntry(
       String cid,
@@ -267,7 +277,7 @@ public class SnapshotHelper {
     if (!root.hasDefinitionRef() || root.getDefinitionRef().getUri().isEmpty()) {
       // A root without a definition ref is a broken invariant every query trips over: report the
       // table for the resync re-drive (which re-derives the definition ref from committed state).
-      pins.requestRootRepair(tableId);
+      repairs.request(tableId);
       throw GrpcErrors.internal(
           cid, QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", tableId.getId()));
     }
@@ -276,7 +286,7 @@ public class SnapshotHelper {
       // invariant. Failing here names the real problem instead of pinning an empty URI that a
       // downstream requirePinnedSnapshotBlob would report as a generic internal error — and the
       // repair report gives the re-drive a chance to rebuild the manifest entry.
-      pins.requestRootRepair(tableId);
+      repairs.request(tableId);
       throw GrpcErrors.internal(
           cid,
           QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
@@ -290,7 +300,6 @@ public class SnapshotHelper {
             .setPinKind(pinKind)
             .setSnapshotId(entry.getSnapshotId())
             .setRootUri(rootMeta.getBlobUri())
-            .setRootVersion(rootMeta.getEtag())
             .setTableBlobUri(root.getDefinitionRef().getUri())
             .setTableBlobVersion(root.getDefinitionRef().getVersion())
             .setSnapshotBlobUri(entry.getSnapshotRef().getUri())
@@ -341,7 +350,7 @@ public class SnapshotHelper {
    * names a pinned snapshot blob, the schema is read from that immutable, content-addressed blob
    * directly ({@code getByBlobUri}) — never re-hydrated through {@link #resolveSnapshot}, which
    * reads the live {@code (table, snapshot id)} pointer that an in-place {@code UpdateSnapshot} can
-   * repoint to a new blob after the pin was validated. Empty uri keeps the legacy behaviour of
+   * repoint to a new blob after the pin was built. Empty uri keeps the legacy behaviour of
    * resolving the reference against the live pointer.
    */
   public String schemaJsonFor(
@@ -354,9 +363,9 @@ public class SnapshotHelper {
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
       Snapshot snap =
           pins.requirePinnedSnapshotBlob(
-              // LIVE: this read's emptiness is the pin-integrity detector (requirePinned*); a
-              // still-resident decode must not mask a swept pinned blob.
-              snapshots.getByBlobUriLive(snapshotBlobUri), cid, tbl.id());
+              // Cached: the blob a pin names is immutable and content-addressed, so a resident
+              // decode IS the pinned content. Emptiness still fails through requirePinned*.
+              snapshots.getByBlobUri(snapshotBlobUri), cid, tbl.id());
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 

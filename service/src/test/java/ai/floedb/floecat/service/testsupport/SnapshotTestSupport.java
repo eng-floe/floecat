@@ -32,6 +32,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Test helpers for snapshot-related fixtures. */
 public final class SnapshotTestSupport {
@@ -82,6 +83,7 @@ public final class SnapshotTestSupport {
   public static final class FakeSnapshotRepository extends SnapshotRepository {
 
     private final Map<ResourceId, Map<Long, Snapshot>> snapshots = new HashMap<>();
+    private final AtomicInteger liveBlobReads = new AtomicInteger();
 
     public FakeSnapshotRepository() {
       this(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -140,10 +142,20 @@ public final class SnapshotTestSupport {
     /**
      * The fake keeps no resident-decode layer, so the cache-bypassing "live" read resolves through
      * the same synthesized-URI lookup: a seeded snapshot's blob is live, everything else is gone.
+     *
+     * <p>Counted, because the two arms return the same thing here: without a record of which one
+     * was taken, a read converted from live to cached (or back) would leave every test green. See
+     * {@link #liveBlobReads()}.
      */
     @Override
     public Optional<Snapshot> getByBlobUriLive(String blobUri) {
+      liveBlobReads.incrementAndGet();
       return getByBlobUri(blobUri);
+    }
+
+    /** How many reads bypassed the cache. A pinned read must not be among them. */
+    public int liveBlobReads() {
+      return liveBlobReads.get();
     }
 
     // Mirror the real repository's newest-first, id-descending-on-tie ordering (at millisecond
@@ -175,37 +187,6 @@ public final class SnapshotTestSupport {
           .setBlobUri("s3://" + tableId.getId() + "/snap-" + snapshotId + ".pb")
           .setEtag("etag-s" + snapshotId)
           .build();
-    }
-
-    /**
-     * Report the etag of a synthesized snapshot blob by its URI, mirroring {@link #metaForSafe} so
-     * pin validation (which now probes the immutable blob URI rather than the live pointer) sees
-     * the same identity. Returns {@code null} for an unknown/unstored blob, exactly like the real
-     * HEAD.
-     */
-    @Override
-    public String blobEtag(String blobUri) {
-      if (blobUri == null || !blobUri.startsWith("s3://") || !blobUri.endsWith(".pb")) {
-        return null;
-      }
-      int snapIdx = blobUri.indexOf("/snap-");
-      if (snapIdx < 0) {
-        return null;
-      }
-      String tableId = blobUri.substring("s3://".length(), snapIdx);
-      String snapPart =
-          blobUri.substring(snapIdx + "/snap-".length(), blobUri.length() - ".pb".length());
-      long snapshotId;
-      try {
-        snapshotId = Long.parseLong(snapPart);
-      } catch (NumberFormatException e) {
-        return null;
-      }
-      boolean present =
-          snapshots.entrySet().stream()
-              .anyMatch(
-                  e -> e.getKey().getId().equals(tableId) && e.getValue().containsKey(snapshotId));
-      return present ? "etag-s" + snapshotId : null;
     }
 
     private static long createdMillisOf(Snapshot snapshot) {

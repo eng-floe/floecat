@@ -29,6 +29,7 @@ public final class QueryContextStores {
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
     store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    store.repairs = ai.floedb.floecat.service.catalog.impl.RootRepairRequests.disabled();
     store.init();
     return store;
   }
@@ -42,6 +43,7 @@ public final class QueryContextStores {
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
     store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    store.repairs = ai.floedb.floecat.service.catalog.impl.RootRepairRequests.disabled();
     store.init();
     return store;
   }

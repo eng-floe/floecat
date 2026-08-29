@@ -42,8 +42,6 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -109,18 +107,6 @@ class RelationBundleBuilderTest {
           .queryDefaultCatalogId(CATALOG)
           .build();
 
-  // A PinValidator that fails loudly if reached: these tests use TABLE-kind graph nodes (not
-  // UserTableNode), so buildRelation reads schema straight from the graph view and never validates
-  // a
-  // pin. Mirrors the test-only UserObjectBundleService constructor.
-  private final PinValidator throwingPinValidator =
-      new PinValidator(null, RootRepairRequests.disabled()) {
-        @Override
-        public void validate(String correlationId, ai.floedb.floecat.query.rpc.TablePin pin) {
-          throw new IllegalStateException("pin validation not expected in this test");
-        }
-      };
-
   @BeforeEach
   void setUp() {
     graphView.clear();
@@ -164,8 +150,7 @@ class RelationBundleBuilderTest {
             graphView,
             engineRelationDecorator,
             new SystemExecutionResolver(
-                FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build()),
-            throwingPinValidator),
+                FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build())),
         engineRelationDecorator);
   }
 

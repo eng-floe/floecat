@@ -30,8 +30,6 @@ import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -67,16 +65,6 @@ class RelationPayloadPolicyTest {
 
   private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
 
-  // A PinValidator that fails loudly if reached: these tests read schema/pins straight from the
-  // fakes and never reach per-read pin validation. Mirrors the test-only service constructor.
-  private final PinValidator throwingPinValidator =
-      new PinValidator(null, RootRepairRequests.disabled()) {
-        @Override
-        public void validate(String correlationId, TablePin pin) {
-          throw new IllegalStateException("pin validation not expected in this test");
-        }
-      };
-
   private RelationPayloadPolicy policy;
 
   @BeforeEach
@@ -93,8 +81,7 @@ class RelationPayloadPolicyTest {
     EngineRelationDecorator engineRelationDecorator =
         new EngineRelationDecorator(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder builder =
-        new RelationBundleBuilder(
-            graphView, engineRelationDecorator, systemExecutionResolver, throwingPinValidator);
+        new RelationBundleBuilder(graphView, engineRelationDecorator, systemExecutionResolver);
     policy =
         new RelationPayloadPolicy(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }

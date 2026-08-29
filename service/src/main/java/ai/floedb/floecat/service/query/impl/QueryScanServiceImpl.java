@@ -30,7 +30,6 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.execution.impl.ScanBundleService;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -58,7 +57,6 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
   @Inject Authorizer authz;
   @Inject QueryContextStore queryStore;
   @Inject ScanBundleService scanBundles;
-  @Inject PinValidator pinValidator;
 
   @Override
   /**
@@ -88,7 +86,6 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
               // Build scan metadata from the pinned identity; fail hard on a bad pinned blob rather
               // than initializing a scan against drifted current catalog state.
               var pin = ctx.requireTablePin(tableId, correlationId);
-              pinValidator.validate(correlationId, pin);
               var initData = scanBundles.initScan(correlationId, pin);
               var session =
                   ScanSession.builder()
