@@ -2006,12 +2006,27 @@ drain their unversioned job trees. Start the new control plane and workers with 
 affinity, route each worker fleet only to its matching control plane, and retire the old deployment
 after its active trees have drained. A new deployment does not adopt, migrate, or lease the old
 cohort's jobs.</p>
-<p>Before deploying the affinity-qualified lease-expiry index, also drain every active lease written
-to the legacy <code>/accounts/by-id/reconcile/job-leases/by-expiry/</code> index. Stop new reconcile requests,
-wait for all non-terminal job trees and leases owned by the old deployment to finish, then remove
-any remaining legacy expiry pointers only after confirming their canonical jobs have no active
-lease. Do not start mixed-version queue sharing while legacy expiry pointers remain: an older
-deployment can still discover one of those pointers and requeue a job owned by the new deployment.</p>
+<p>Before deploying affinity-qualified maintenance indexes, stop new reconcile requests and drain the
+old deployment completely. Wait for all non-terminal trees and leases to finish, publish every
+accepted snapshot-finalize intent, complete pending stats cleanup, and allow terminal retention,
+canonical quarantine, and blob cleanup queues to drain. The replaced legacy discovery prefixes
+are:</p>
+<ul>
+<li><code>/accounts/by-id/reconcile/job-leases/by-expiry/</code></li>
+<li><code>/accounts/by-id/reconcile/jobs/by-state/</code></li>
+<li><code>/accounts/{account_id}/reconcile/jobs/terminal-retention/</code></li>
+<li><code>/accounts/{account_id}/reconcile/jobs/gc-quarantine/canonical/</code></li>
+<li><code>/accounts/{account_id}/reconcile/jobs/gc-blob-cleanup/</code></li>
+</ul>
+<p>Remove remaining legacy markers only after confirming their referenced jobs have no active lease,
+accepted publication intent, or pending cleanup. There is no fallback scan or migration between
+the old and affinity-qualified prefixes. Do not start mixed-version queue sharing until the legacy
+queues are drained: old deployments scan those prefixes without cohort checks, while new
+deployments intentionally cannot discover work stranded there.</p>
+<p>This drain is mandatory. Lease-expiry work may eventually be recreated by a planner, but terminal
+retention, canonical quarantine, and blob-cleanup rows are not recreated. Leaving those rows on a
+legacy prefix permanently leaks the corresponding job records or blobs unless they are cleaned up
+manually.</p>
 <p>Worker gRPC auth boundary:</p>
 <ul>
 <li>Remote reconcile workers authenticate to <code>ReconcileExecutorControl</code> with an explicit bearer
