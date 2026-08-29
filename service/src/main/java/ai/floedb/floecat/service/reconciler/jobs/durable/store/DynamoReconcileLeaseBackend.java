@@ -565,7 +565,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_LOOKUP,
               upsert,
               JobIndexBackendSupport.ATTR_BLOB_URI));
-      tx.add(DynamoReconcileJobLookupCompatibility.legacyCheckAbsent(table, lookupKey));
       return;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
@@ -659,14 +658,13 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
-      tx.addAll(
-          DynamoReconcileJobLookupCompatibility.ownedDeletes(
-              table,
-              lookupKey,
-              delete.expectedVersion(),
-              delete.expectedCanonicalPointerKey(),
-              delete.expectedLookupStoragePartitionKey(),
-              delete.allowAbsent()));
+      var storageKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
+      tx.add(
+          buildReferenceDelete(
+              storageKey.partitionKey(),
+              storageKey.sortKey(),
+              delete,
+              JobIndexBackendSupport.ATTR_BLOB_URI));
       return;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
@@ -752,7 +750,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       throw new IllegalArgumentException(
           "Unsupported reconcile job index check-absent key: " + pointerKey);
     }
-    tx.addAll(DynamoReconcileJobLookupCompatibility.checkAbsent(table, lookupKey));
+    var storageKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
+    tx.add(buildCheckAbsent(storageKey.partitionKey(), storageKey.sortKey()));
   }
 
   private void appendJobIndexCheck(
@@ -850,14 +849,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               Map.entry("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS),
               Map.entry("#ptr", JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS),
               Map.entry("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS),
-              Map.entry("#complete", JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE),
-              Map.entry("#scan", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_REQUIRED),
-              Map.entry("#cursor", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_CURSOR),
-              Map.entry("#drained", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_DRAINED),
-              Map.entry(
-                  "#legacyIdx", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS),
-              Map.entry(
-                  "#legacyReady", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS));
+              Map.entry("#complete", JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE));
       Map<String, AttributeValue> values = new HashMap<>();
       values.put(":kind", AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB));
       values.put(":expected", AttributeValue.fromN(Long.toString(upsert.expectedVersion())));
@@ -883,8 +875,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                   .updateExpression(
                       "SET #kind = :kind, #v = :next, #pointer = :pointer, #blob = :blob, "
                           + "#account = :account, #job = :job, #idx = :idx, #ready = :ready, "
-                          + "#ptr = :ptr, #complete = :true "
-                          + "REMOVE #scan, #cursor, #drained, #legacyIdx, #legacyReady")
+                          + "#ptr = :ptr, #complete = :true")
                   .conditionExpression("#v = :expected AND attribute_not_exists(#lock)")
                   .expressionAttributeNames(names)
                   .expressionAttributeValues(values)
@@ -965,6 +956,21 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         .build();
   }
 
+  private TransactWriteItem buildCheckAbsent(String partitionKey, String sortKey) {
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
+                .conditionExpression("attribute_not_exists(#pk)")
+                .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+                .build())
+        .build();
+  }
+
   private TransactWriteItem buildCanonicalDelete(
       String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
     Map<String, String> names = new HashMap<>();
@@ -994,14 +1000,20 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   private TransactWriteItem buildReferenceDelete(
       String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
+    return buildReferenceDelete(
+        partitionKey, sortKey, delete, JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+  }
+
+  private TransactWriteItem buildReferenceDelete(
+      String partitionKey,
+      String sortKey,
+      ReconcileJobIndexStore.JobIndexDelete delete,
+      String ownerAttribute) {
     if (delete.expectedCanonicalPointerKey().isBlank()) {
       return buildDelete(partitionKey, sortKey, delete.expectedVersion());
     }
     String condition = "#v = :expected AND #owner = :owner";
-    Map<String, String> names =
-        new HashMap<>(
-            Map.of(
-                "#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
+    Map<String, String> names = new HashMap<>(Map.of("#v", ATTR_VERSION, "#owner", ownerAttribute));
     if (delete.allowAbsent()) {
       condition = "attribute_not_exists(#pk) OR (" + condition + ")";
       names.put("#pk", ATTR_PARTITION_KEY);

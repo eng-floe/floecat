@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -50,14 +51,16 @@ class MemoryReconcileJobIndexBackendTest {
             ReconcileJobIndexStore.ReadyQueueMutation.empty());
     assertTrue(backend.compareAndSetBatch(create));
     String fence = Keys.accountDeletionMarker(accountId);
-    assertTrue(
-        pointers.compareAndSet(
+    List<PointerStore.CasOp> fenceCreates = new ArrayList<>();
+    fenceCreates.add(
+        new PointerStore.CasUpsert(
             fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L)));
-    for (String shard : Keys.accountDeletionFenceShards(accountId)) {
-      assertTrue(
-          pointers.compareAndSet(
-              shard, 0L, PointerReferences.opaqueMarkerPointer(shard, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+      fenceCreates.add(
+          new PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
     }
+    assertTrue(pointers.compareAndSetBatch(fenceCreates));
 
     assertFalse(
         backend.compareAndSetBatch(
@@ -77,7 +80,7 @@ class MemoryReconcileJobIndexBackendTest {
   }
 
   @Test
-  void clearInMemoryStateDropsCleanupMetadataAndMigrationState() {
+  void clearInMemoryStateDropsCleanupMetadata() {
     String canonicalKey = Keys.reconcileJobPointerById("acct", "job");
     String lookupKey = Keys.reconcileJobLookupPointerById("job");
     MemoryReconcileJobIndexBackend backend =
@@ -93,20 +96,9 @@ class MemoryReconcileJobIndexBackendTest {
                         PointerReferenceKind.PRK_INLINE_JSON,
                         new ReconcileJobIndexCleanupManifest(List.of(lookupKey), List.of()))),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
-    assertTrue(
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "owner", 1L, 100L)
-            .isPresent());
-
     backend.clearInMemoryState();
 
     assertTrue(backend.loadCleanupManifest(canonicalKey).isEmpty());
-    assertTrue(
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "new-owner", 2L, 100L)
-            .isPresent());
   }
 
   @Test
@@ -114,7 +106,7 @@ class MemoryReconcileJobIndexBackendTest {
     MemoryReconcileJobIndexBackend backend =
         new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());
     List<ReconcileJobIndexStore.JobIndexWriteOp> writes = new ArrayList<>();
-    for (int index = 0; index < 51; index++) {
+    for (int index = 0; index < 101; index++) {
       writes.add(
           new ReconcileJobIndexStore.JobIndexCheckAbsent(
               Keys.reconcileJobLookupPointerById("job-" + index)));
@@ -126,7 +118,7 @@ class MemoryReconcileJobIndexBackendTest {
     IllegalArgumentException thrown =
         assertThrows(IllegalArgumentException.class, () -> backend.compareAndSetBatch(batch));
 
-    assertEquals("DynamoDB transaction exceeds 100 items: 102", thrown.getMessage());
+    assertEquals("DynamoDB transaction exceeds 100 items: 101", thrown.getMessage());
   }
 
   @Test
@@ -179,98 +171,5 @@ class MemoryReconcileJobIndexBackendTest {
     var listed = backend.listCanonicalEntries(accountId, 10, "");
     assertEquals(1, listed.entries().size());
     assertTrue(listed.entries().getFirst().cleanupLocked());
-  }
-
-  @Test
-  void legacyMigrationCheckpointSurvivesLeaseTakeoverAndFencesOldOwner() {
-    MemoryReconcileJobIndexBackend backend = new MemoryReconcileJobIndexBackend();
-    assertFalse(backend.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.CLEANUP));
-    var first =
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "first", 1_000L, 100L)
-            .orElseThrow();
-    assertTrue(
-        backend.checkpointLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            "first",
-            first.fence(),
-            new ReconcileJobIndexBackend.LegacyMigrationProgress("page-2", 3, 0, 0, 0, false),
-            1_050L,
-            100L));
-
-    assertTrue(
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "second", 1_149L, 100L)
-            .isEmpty());
-    var replacement =
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "second", 1_151L, 100L)
-            .orElseThrow();
-    assertEquals("page-2", replacement.progress().pageToken());
-    assertEquals(3, replacement.progress().changed());
-    assertFalse(
-        backend.checkpointLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            "first",
-            first.fence(),
-            ReconcileJobIndexBackend.LegacyMigrationProgress.empty(),
-            1_151L,
-            100L));
-    assertFalse(
-        backend.completeLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            "second",
-            replacement.fence(),
-            1_151L));
-
-    var quiet = new ReconcileJobIndexBackend.LegacyMigrationProgress("", 0, 4, 5, 0, true);
-    assertTrue(
-        backend.checkpointLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            "second",
-            replacement.fence(),
-            quiet,
-            1_151L,
-            100L));
-    assertTrue(
-        backend.completeLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            "second",
-            replacement.fence(),
-            1_151L));
-    assertTrue(backend.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.CLEANUP));
-    assertTrue(
-        backend
-            .acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "third", 1_300L, 100L)
-            .isEmpty());
-  }
-
-  @Test
-  void legacyCleanupDiscoveryExcludesLeasePointers() {
-    String accountId = "acct-1";
-    String jobId = "job-1";
-    String canonicalKey = Keys.reconcileJobPointerById(accountId, jobId);
-    String parentKey = Keys.reconcileJobByParentPointer(accountId, "parent-1", jobId);
-    String leaseExpiryKey = Keys.reconcileJobLeaseExpiryPointer(1_000L, accountId, jobId);
-    InMemoryPointerStore pointers = new InMemoryPointerStore();
-    assertTrue(
-        pointers.compareAndSet(
-            parentKey, 0L, PointerReferences.pointerKeyPointer(parentKey, canonicalKey, 1L)));
-    assertTrue(
-        pointers.compareAndSet(
-            leaseExpiryKey,
-            0L,
-            PointerReferences.pointerKeyPointer(leaseExpiryKey, canonicalKey, 1L)));
-    MemoryReconcileJobIndexBackend backend = new MemoryReconcileJobIndexBackend(pointers);
-
-    ReconcileJobIndexCleanupManifest discovered =
-        backend.discoverLegacyCleanupManifest(canonicalKey);
-
-    assertTrue(discovered.indexPointerKeys().contains(parentKey));
-    assertFalse(discovered.indexPointerKeys().contains(leaseExpiryKey));
   }
 }

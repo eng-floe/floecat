@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.Keys;
-import java.util.List;
 
 final class JobIndexBackendSupport {
   static final String KIND_CANONICAL_JOB = "ReconcileJobCanonical";
@@ -41,12 +40,7 @@ final class JobIndexBackendSupport {
   static final String ATTR_CLEANUP_INDEX_POINTER_KEYS = "cleanup_index_pointer_keys";
   static final String ATTR_CLEANUP_READY_POINTER_KEYS = "cleanup_ready_pointer_keys";
   static final String ATTR_CLEANUP_POINTER_KEYS = "cleanup_pointer_keys";
-  static final String ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS = "cleanup_legacy_index_pointer_keys";
-  static final String ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS = "cleanup_legacy_ready_pointer_keys";
   static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
-  static final String ATTR_CLEANUP_LEGACY_SCAN_REQUIRED = "cleanup_legacy_scan_required";
-  static final String ATTR_CLEANUP_LEGACY_SCAN_CURSOR = "cleanup_legacy_scan_cursor";
-  static final String ATTR_CLEANUP_LEGACY_SCAN_DRAINED = "cleanup_legacy_scan_drained";
   static final String ATTR_CLEANUP_DELETE_IN_PROGRESS = "cleanup_delete_in_progress";
   private static final String ACCOUNT_SEGMENT_PLACEHOLDER = "__account__";
   private static final String PARENT_SEGMENT_PLACEHOLDER = "__parent__";
@@ -380,24 +374,12 @@ final class JobIndexBackendSupport {
     return "reconcile-job-lookup";
   }
 
-  static String legacyLookupPartitionKey() {
-    return "reconcile-job/by-id";
-  }
-
   static String lookupSortKey(LookupKey key) {
     return "job/" + key.jobSegment();
   }
 
   static LookupStorageKey currentLookupStorageKey(LookupKey key) {
     return new LookupStorageKey(lookupPartitionKey(), lookupSortKey(key));
-  }
-
-  static LookupStorageKey legacyLookupStorageKey(LookupKey key) {
-    return new LookupStorageKey(legacyLookupPartitionKey(), lookupSortKey(key));
-  }
-
-  static List<LookupStorageKey> lookupReadStorageKeys(LookupKey key) {
-    return List.of(currentLookupStorageKey(key), legacyLookupStorageKey(key));
   }
 
   static String parentPartitionKey(ParentKey key) {

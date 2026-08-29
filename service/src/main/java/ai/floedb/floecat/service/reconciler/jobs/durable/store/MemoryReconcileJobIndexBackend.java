@@ -23,12 +23,9 @@ import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
-import java.util.EnumMap;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Singleton
@@ -38,11 +35,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private final Map<String, ReconcileJobIndexCleanupManifest> cleanupManifests =
       new ConcurrentHashMap<>();
   private final Map<String, Long> cleanupLocks = new ConcurrentHashMap<>();
-  private final Map<LegacyMigration, LegacyMigrationState> legacyMigrationStates =
-      new EnumMap<>(LegacyMigration.class);
-  private final Set<LegacyMigration> completedLegacyMigrations =
-      EnumSet.noneOf(LegacyMigration.class);
-  private long legacyMigrationFence;
 
   @Inject
   public MemoryReconcileJobIndexBackend(PointerStore pointerStore) {
@@ -58,9 +50,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   public synchronized void clearInMemoryState() {
     cleanupManifests.clear();
     cleanupLocks.clear();
-    legacyMigrationStates.clear();
-    completedLegacyMigrations.clear();
-    legacyMigrationFence = 0L;
   }
 
   @Override
@@ -74,77 +63,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                     pointer.getBlobUri(),
                     pointer.getVersion(),
                     cleanupLocks.containsKey(pointer.getKey())));
-  }
-
-  @Override
-  public synchronized Optional<LegacyMigrationLease> acquireLegacyMigrationLease(
-      LegacyMigration migration, String ownerId, long nowMs, long leaseDurationMs) {
-    if (migration == null
-        || ownerId == null
-        || ownerId.isBlank()
-        || completedLegacyMigrations.contains(migration)) {
-      return Optional.empty();
-    }
-    LegacyMigrationState state =
-        legacyMigrationStates.computeIfAbsent(migration, ignored -> new LegacyMigrationState());
-    if (state.ownerId != null && !state.ownerId.equals(ownerId) && state.leaseExpiresAtMs > nowMs) {
-      return Optional.empty();
-    }
-    legacyMigrationFence =
-        legacyMigrationFence == Long.MAX_VALUE ? Long.MAX_VALUE : legacyMigrationFence + 1L;
-    state.ownerId = ownerId;
-    state.fence = legacyMigrationFence;
-    state.leaseExpiresAtMs = leaseExpiresAt(nowMs, Math.max(1L, leaseDurationMs));
-    return Optional.of(new LegacyMigrationLease(state.fence, state.progress));
-  }
-
-  @Override
-  public synchronized boolean checkpointLegacyMigration(
-      LegacyMigration migration,
-      String ownerId,
-      long fence,
-      LegacyMigrationProgress progress,
-      long nowMs,
-      long leaseDurationMs) {
-    LegacyMigrationState state = legacyMigrationStates.get(migration);
-    if (state == null
-        || ownerId == null
-        || !ownerId.equals(state.ownerId)
-        || fence != state.fence
-        || state.leaseExpiresAtMs < nowMs
-        || progress == null) {
-      return false;
-    }
-    state.progress = normalize(progress);
-    state.leaseExpiresAtMs = leaseExpiresAt(nowMs, Math.max(1L, leaseDurationMs));
-    return true;
-  }
-
-  @Override
-  public synchronized boolean completeLegacyMigration(
-      LegacyMigration migration, String ownerId, long fence, long nowMs) {
-    if (completedLegacyMigrations.contains(migration)) {
-      return true;
-    }
-    LegacyMigrationState state = legacyMigrationStates.get(migration);
-    if (state == null
-        || ownerId == null
-        || !ownerId.equals(state.ownerId)
-        || fence != state.fence
-        || state.leaseExpiresAtMs < nowMs
-        || !state.progress.quietPassComplete()
-        || state.progress.changed() != 0
-        || state.progress.retryable() != 0) {
-      return false;
-    }
-    completedLegacyMigrations.add(migration);
-    legacyMigrationStates.remove(migration);
-    return true;
-  }
-
-  @Override
-  public synchronized boolean legacyMigrationComplete(LegacyMigration migration) {
-    return migration != null && completedLegacyMigrations.contains(migration);
   }
 
   @Override
@@ -292,37 +210,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
-      String canonicalPointerKey) {
-    if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
-      return ReconcileJobIndexCleanupManifest.EMPTY;
-    }
-    java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
-    java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
-    if (canonicalKey != null) {
-      indexKeys.add(Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
-    }
-    String token = "";
-    do {
-      StringBuilder next = new StringBuilder();
-      for (var pointer : pointerStore.listPointersByPrefix("/", 500, token, next)) {
-        if (!canonicalPointerKey.equals(pointer.getBlobUri())) {
-          continue;
-        }
-        if (pointer.getKey().startsWith(Keys.reconcileReadyPointerPrefix())) {
-          readyKeys.add(pointer.getKey());
-        } else if (!canonicalPointerKey.equals(pointer.getKey())
-            && JobIndexBackendSupport.validCleanupIndexPointerKey(pointer.getKey())) {
-          indexKeys.add(pointer.getKey());
-        }
-      }
-      token = next.toString();
-    } while (!token.isBlank());
-    return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
-  }
-
-  @Override
   public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
     return listPointers(Keys.reconcileJobPointerByIdPrefix(accountId), limit, pageToken);
   }
@@ -386,30 +273,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                         cleanupLocks.containsKey(pointer.getKey())))
             .toList();
     return new JobIndexQueryPage(entries, nextPageToken.toString());
-  }
-
-  private static final class LegacyMigrationState {
-    private String ownerId;
-    private long fence;
-    private long leaseExpiresAtMs;
-    private LegacyMigrationProgress progress = LegacyMigrationProgress.empty();
-  }
-
-  private static LegacyMigrationProgress normalize(LegacyMigrationProgress progress) {
-    return new LegacyMigrationProgress(
-        progress.pageToken(),
-        Math.max(0, progress.changed()),
-        Math.max(0, progress.unresolvable()),
-        Math.max(0, progress.conflicted()),
-        Math.max(0, progress.retryable()),
-        progress.quietPassComplete());
-  }
-
-  private static long leaseExpiresAt(long nowMs, long leaseDurationMs) {
-    if (leaseDurationMs > 0L && nowMs > Long.MAX_VALUE - leaseDurationMs) {
-      return Long.MAX_VALUE;
-    }
-    return nowMs + leaseDurationMs;
   }
 
   private static ReconcileJobIndexCleanupManifest mergeManifests(

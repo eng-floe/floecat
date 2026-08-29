@@ -89,38 +89,21 @@ public interface ReconcileJobIndexStore {
       String pointerKey,
       long expectedVersion,
       String expectedCanonicalPointerKey,
-      String expectedLookupStoragePartitionKey,
       boolean requireCleanupLock,
       boolean allowAbsent)
       implements JobIndexWriteOp {
     public JobIndexDelete {
       expectedCanonicalPointerKey =
           expectedCanonicalPointerKey == null ? "" : expectedCanonicalPointerKey;
-      expectedLookupStoragePartitionKey =
-          expectedLookupStoragePartitionKey == null ? "" : expectedLookupStoragePartitionKey;
-    }
-
-    public JobIndexDelete(
-        String pointerKey,
-        long expectedVersion,
-        String expectedCanonicalPointerKey,
-        String expectedLookupStoragePartitionKey) {
-      this(
-          pointerKey,
-          expectedVersion,
-          expectedCanonicalPointerKey,
-          expectedLookupStoragePartitionKey,
-          false,
-          false);
     }
 
     public JobIndexDelete(
         String pointerKey, long expectedVersion, String expectedCanonicalPointerKey) {
-      this(pointerKey, expectedVersion, expectedCanonicalPointerKey, "", false, false);
+      this(pointerKey, expectedVersion, expectedCanonicalPointerKey, false, false);
     }
 
     public JobIndexDelete(String pointerKey, long expectedVersion) {
-      this(pointerKey, expectedVersion, "", "", false, false);
+      this(pointerKey, expectedVersion, "", false, false);
     }
   }
 

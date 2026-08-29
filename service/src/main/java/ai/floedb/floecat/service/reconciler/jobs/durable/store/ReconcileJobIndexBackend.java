@@ -21,122 +21,15 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ReconcileJobIndexBackend {
-  enum LegacyMigration {
-    CLEANUP,
-    LOOKUP
-  }
-
-  record LegacyMigrationProgress(
-      String pageToken,
-      int changed,
-      int unresolvable,
-      int conflicted,
-      int retryable,
-      boolean quietPassComplete) {
-    public LegacyMigrationProgress {
-      pageToken = pageToken == null ? "" : pageToken;
-    }
-
-    public static LegacyMigrationProgress empty() {
-      return new LegacyMigrationProgress("", 0, 0, 0, 0, false);
-    }
-  }
-
-  record LegacyMigrationLease(long fence, LegacyMigrationProgress progress) {
-    public LegacyMigrationLease {
-      progress = progress == null ? LegacyMigrationProgress.empty() : progress;
-    }
-  }
-
   record JobIndexQueryPage(List<JobIndexEntrySnapshot> entries, String nextPageToken) {}
 
-  record LegacyLookupMigrationPage(
-      int scanned, int migrated, int conflicted, int retryable, String nextPageToken) {}
-
-  record LegacyCleanupMigrationPage(
-      int scanned,
-      int manifestsUpdated,
-      int unresolvable,
-      int conflicted,
-      int retryable,
-      String nextPageToken,
-      List<String> canonicalPointerKeys) {
-    public LegacyCleanupMigrationPage(
-        int scanned,
-        int manifestsUpdated,
-        int unresolvable,
-        int conflicted,
-        int retryable,
-        String nextPageToken) {
-      this(
-          scanned, manifestsUpdated, unresolvable, conflicted, retryable, nextPageToken, List.of());
-    }
-
-    public LegacyCleanupMigrationPage {
-      canonicalPointerKeys =
-          canonicalPointerKeys == null ? List.of() : List.copyOf(canonicalPointerKeys);
-    }
-  }
-
-  /**
-   * A cleanup claim. {@code footprintDrained} permits a canonical-only delete after the backend has
-   * durably completed its bounded legacy-reference scan.
-   */
   record JobCleanupSession(
       CanonicalPointerSnapshot snapshot,
       ReconcileJobIndexCleanupManifest manifest,
-      boolean cleanupLocked,
-      boolean footprintDrained) {
-    public JobCleanupSession(
-        CanonicalPointerSnapshot snapshot,
-        ReconcileJobIndexCleanupManifest manifest,
-        boolean cleanupLocked) {
-      this(snapshot, manifest, cleanupLocked, false);
-    }
-  }
+      boolean cleanupLocked) {}
 
   /** Loads an index entry without modifying the backing store. */
   Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
-
-  default LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
-    return new LegacyLookupMigrationPage(0, 0, 0, 0, "");
-  }
-
-  default LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
-    return new LegacyCleanupMigrationPage(0, 0, 0, 0, 0, "");
-  }
-
-  /** Acquires or renews exclusive migration ownership and returns the durable pass checkpoint. */
-  default Optional<LegacyMigrationLease> acquireLegacyMigrationLease(
-      LegacyMigration migration, String ownerId, long nowMs, long leaseDurationMs) {
-    return Optional.empty();
-  }
-
-  /** Persists pass progress only while the caller still owns the matching lease fence. */
-  default boolean checkpointLegacyMigration(
-      LegacyMigration migration,
-      String ownerId,
-      long fence,
-      LegacyMigrationProgress progress,
-      long nowMs,
-      long leaseDurationMs) {
-    return false;
-  }
-
-  /** Writes the completion marker only for an owned, unexpired, durably quiet pass. */
-  default boolean completeLegacyMigration(
-      LegacyMigration migration, String ownerId, long fence, long nowMs) {
-    return false;
-  }
-
-  /** Returns whether the durable completion marker exists for the selected migration. */
-  default boolean legacyMigrationComplete(LegacyMigration migration) {
-    return false;
-  }
-
-  default boolean legacyCleanupMigrationComplete() {
-    return true;
-  }
 
   default Optional<JobCleanupSession> beginJobCleanup(
       CanonicalPointerSnapshot expected, ReconcileJobIndexCleanupManifest fallbackManifest) {
@@ -196,11 +89,6 @@ public interface ReconcileJobIndexBackend {
       String accountId, String connectorId, String state, int limit, String pageToken);
 
   default ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
-    return ReconcileJobIndexCleanupManifest.EMPTY;
-  }
-
-  default ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
-      String canonicalPointerKey) {
     return ReconcileJobIndexCleanupManifest.EMPTY;
   }
 

@@ -34,7 +34,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -147,35 +146,6 @@ class NativeReconcileJobIndexStorePointerSetTest {
             Keys.reconcileRootJobSummaryByConnectorPointer(
                 ACCOUNT_ID, CONNECTOR_ID, sortableToken)),
         canonicalUpsert.cleanupManifest().pointerKeys());
-  }
-
-  @Test
-  void drainedLegacyFootprintBuildsCanonicalOnlyDelete() {
-    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "legacy-drained");
-    MemoryReconcileJobIndexBackend drainedBackend =
-        new MemoryReconcileJobIndexBackend(pointers) {
-          @Override
-          public Optional<ReconcileJobIndexBackend.JobCleanupSession> beginJobCleanup(
-              CanonicalPointerSnapshot expected,
-              ReconcileJobIndexCleanupManifest fallbackManifest) {
-            return Optional.of(
-                new ReconcileJobIndexBackend.JobCleanupSession(
-                    expected, ReconcileJobIndexCleanupManifest.EMPTY, true, true));
-          }
-        };
-    NativeReconcileJobIndexStore drainedStore = new NativeReconcileJobIndexStore();
-    drainedStore.bind(
-        drainedBackend, payloadStore(), indexes, 4, (previous, current) -> {}, (a, b, op) -> {});
-
-    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
-        drainedStore.buildJobDeleteBatch(
-            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 7L));
-
-    assertEquals(1, deleteBatch.writes().size());
-    var delete = (ReconcileJobIndexStore.JobIndexDelete) deleteBatch.writes().getFirst();
-    assertEquals(canonicalKey, delete.pointerKey());
-    assertEquals(7L, delete.expectedVersion());
-    assertTrue(delete.requireCleanupLock());
   }
 
   @Test
