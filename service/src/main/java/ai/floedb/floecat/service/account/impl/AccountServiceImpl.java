@@ -406,7 +406,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
-                  var deletionMeta = accountDeletionMeta(accountId.getId());
+                  var deletionMeta = loadAndRepairAccountDeletionFence(accountId.getId());
                   MutationMeta meta;
                   try {
                     meta = accountRepo.metaFor(accountId);
@@ -471,24 +471,45 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::ok);
   }
 
-  private java.util.Optional<MutationMeta> accountDeletionMeta(String accountId) {
-    return pointerStore.get(Keys.accountDeletionMarker(accountId)).map(this::decodeDeletionMeta);
+  private java.util.Optional<MutationMeta> loadAndRepairAccountDeletionFence(String accountId) {
+    var marker = pointerStore.get(Keys.accountDeletionMarker(accountId));
+    return marker.map(
+        existing -> decodeDeletionMeta(repairAccountDeletionFence(accountId, existing).marker()));
   }
 
   private MutationMeta ensureAccountDeletionFence(String accountId, MutationMeta meta) {
     String key = Keys.accountDeletionMarker(accountId);
-    var existing = pointerStore.get(key);
-    if (existing.isPresent()) return decodeDeletionMeta(existing.get());
     String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
     Pointer marker = PointerReferences.opaqueMarkerPointer(key, payload, 1L);
-    if (pointerStore.compareAndSet(key, 0L, marker)) return meta;
-    return pointerStore
-        .get(key)
-        .map(this::decodeDeletionMeta)
-        .orElseThrow(
-            () ->
-                new BaseResourceRepository.AbortRetryableException(
-                    "account deletion fence not visible"));
+    List<String> shardKeys = Keys.accountDeletionFenceShards(accountId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      var existing = pointerStore.get(key);
+      if (existing.isPresent()) {
+        return decodeDeletionMeta(repairAccountDeletionFence(accountId, existing.get()).marker());
+      }
+
+      Map<String, Pointer> orphanedShards = pointerStore.getBatch(shardKeys);
+      if (!orphanedShards.isEmpty()) {
+        List<PointerStore.CasOp> cleanup = new ArrayList<>(orphanedShards.size() + 1);
+        cleanup.add(new PointerStore.CasCheckAbsent(key));
+        orphanedShards.forEach(
+            (shardKey, shard) ->
+                cleanup.add(new PointerStore.CasDelete(shardKey, shard.getVersion())));
+        pointerStore.compareAndSetBatch(cleanup);
+        continue;
+      }
+
+      List<PointerStore.CasOp> fenceCreates = new ArrayList<>(shardKeys.size() + 1);
+      fenceCreates.add(new PointerStore.CasUpsert(key, 0L, marker));
+      for (String shardKey : shardKeys) {
+        fenceCreates.add(
+            new PointerStore.CasUpsert(
+                shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+      }
+      if (pointerStore.compareAndSetBatch(fenceCreates)) return meta;
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "account deletion fence could not be established");
   }
 
   private MutationMeta decodeDeletionMeta(Pointer marker) {
@@ -498,6 +519,47 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       throw new BaseResourceRepository.CorruptionException(
           "invalid account deletion fence: " + marker.getKey(), e);
     }
+  }
+
+  private CompleteAccountDeletionFence repairAccountDeletionFence(
+      String accountId, Pointer initialMarker) {
+    String markerKey = Keys.accountDeletionMarker(accountId);
+    List<String> shardKeys = Keys.accountDeletionFenceShards(accountId);
+    Pointer marker = initialMarker;
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Map<String, Pointer> shards = pointerStore.getBatch(shardKeys);
+      if (shards.size() == shardKeys.size()) {
+        return new CompleteAccountDeletionFence(marker, shards);
+      }
+
+      List<PointerStore.CasOp> repair = new ArrayList<>(shardKeys.size() - shards.size() + 1);
+      repair.add(new PointerStore.CasCheck(markerKey, marker.getVersion()));
+      for (String shardKey : shardKeys) {
+        if (!shards.containsKey(shardKey)) {
+          repair.add(
+              new PointerStore.CasUpsert(
+                  shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+        }
+      }
+      if (pointerStore.compareAndSetBatch(repair)) {
+        Map<String, Pointer> completed = new java.util.LinkedHashMap<>(shards);
+        for (PointerStore.CasOp operation : repair) {
+          if (operation instanceof PointerStore.CasUpsert upsert) {
+            completed.put(upsert.key(), upsert.next());
+          }
+        }
+        return new CompleteAccountDeletionFence(marker, Map.copyOf(completed));
+      }
+      marker =
+          pointerStore
+              .get(markerKey)
+              .orElseThrow(
+                  () ->
+                      new BaseResourceRepository.AbortRetryableException(
+                          "account deletion fence disappeared while repairing"));
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "account deletion fence could not be repaired");
   }
 
   private void advanceAccountDeletionFence(
@@ -522,11 +584,25 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private void clearAccountDeletionFence(String accountId, MutationMeta expectedMeta) {
     String key = Keys.accountDeletionMarker(accountId);
-    pointerStore
-        .get(key)
-        .filter(marker -> decodeDeletionMeta(marker).equals(expectedMeta))
-        .ifPresent(marker -> pointerStore.compareAndDelete(key, marker.getVersion()));
+    Pointer marker = pointerStore.get(key).orElse(null);
+    if (marker == null) return;
+    if (!decodeDeletionMeta(marker).equals(expectedMeta)) return;
+    CompleteAccountDeletionFence fence = repairAccountDeletionFence(accountId, marker);
+    marker = fence.marker();
+    List<String> shardKeys = Keys.accountDeletionFenceShards(accountId);
+    List<PointerStore.CasOp> fenceDeletes = new ArrayList<>(shardKeys.size() + 1);
+    fenceDeletes.add(new PointerStore.CasDelete(key, marker.getVersion()));
+    for (String shardKey : shardKeys) {
+      fenceDeletes.add(
+          new PointerStore.CasDelete(shardKey, fence.shards().get(shardKey).getVersion()));
+    }
+    if (!pointerStore.compareAndSetBatch(fenceDeletes)) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "account deletion fence changed while clearing");
+    }
   }
+
+  private record CompleteAccountDeletionFence(Pointer marker, Map<String, Pointer> shards) {}
 
   private void cleanupAccountResources(ResourceId accountId) {
     var accountKey = accountId.getId();
