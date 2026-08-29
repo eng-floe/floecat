@@ -1974,6 +1974,20 @@ Per-file S3 range readers are closed by their consumers.</p>
   tenant-supplied connector URI cannot grant itself cleartext transport; this mirrors
   <code>floecat.security.allow-loopback-token-endpoints</code> for OAuth token endpoints. Private-CA HTTPS
   endpoints need no flag -- only the JVM truststore.</li>
+<li>A Unity Catalog connector URI naming a <strong>private address literal</strong> (10/8, 172.16/12, 192.168/16,
+  IPv6 unique-local) is rejected unless <code>floecat.security.allow-private-catalog-endpoints=true</code>
+  (or <code>FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS=true</code>). Set it for a catalog on an internal
+  network. Link-local, wildcard and multicast literals -- including the cloud metadata address
+  <code>169.254.169.254</code> -- are always rejected, with no opt-in. These checks apply only to address
+  <em>literals</em>: a hostname is never resolved during validation, deliberately, because a resolver in
+  the gate would disagree with the resolution the HTTP client performs at connect time. A hostname
+  pointing at a private address is therefore out of scope here and belongs to network policy.</li>
+<li><code>unity.credentials-path</code> – Route for temporary-table-credential vending. Defaults to the
+  Databricks path <code>/api/2.0/unity-catalog/temporary-table-credentials</code>. OSS Unity Catalog 0.6.0
+  and later serve the otherwise-compatible operation under
+  <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
+  endpoint -- otherwise vending returns <code>NOT_FOUND</code> against it. Every other Unity operation is 2.1
+  on both. Response-body suppression on that path follows whatever route is configured.</li>
 <li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
   AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
   metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
