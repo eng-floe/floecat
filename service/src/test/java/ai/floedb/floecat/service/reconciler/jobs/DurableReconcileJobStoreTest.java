@@ -260,11 +260,7 @@ class DurableReconcileJobStoreTest {
             .findFirst()
             .orElseThrow();
     String deletionFence = Keys.accountDeletionMarker(ACCOUNT_ID);
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            deletionFence,
-            0L,
-            PointerReferences.opaqueMarkerPointer(deletionFence, "deleting", 1L)));
+    installAccountDeletionFence(ACCOUNT_ID);
 
     assertEquals(1, store.cleanupAccount(ACCOUNT_ID));
 
@@ -357,11 +353,7 @@ class DurableReconcileJobStoreTest {
             0L,
             PointerReferences.opaqueMarkerPointer(cancellationMarkerKey, cancellationPayload, 1L)));
     String deletionFence = Keys.accountDeletionMarker(ACCOUNT_ID);
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            deletionFence,
-            0L,
-            PointerReferences.opaqueMarkerPointer(deletionFence, "deleting", 1L)));
+    installAccountDeletionFence(ACCOUNT_ID);
 
     assertEquals(2, store.cleanupAccount(ACCOUNT_ID));
 
@@ -385,10 +377,7 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    String fence = Keys.accountDeletionMarker(ACCOUNT_ID);
-    assertTrue(
-        store.pointerStore.compareAndSet(
-            fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L)));
+    installAccountDeletionFence(ACCOUNT_ID);
 
     assertTrue(store.leaseNext().isEmpty());
     assertTrue(
@@ -7897,6 +7886,18 @@ class DurableReconcileJobStoreTest {
 
   private void runCancellationMaintenance() {
     store.runCancellationMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void installAccountDeletionFence(String accountId) {
+    String marker = Keys.accountDeletionMarker(accountId);
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)));
+    for (String shard : Keys.accountDeletionFenceShards(accountId)) {
+      assertTrue(
+          store.pointerStore.compareAndSet(
+              shard, 0L, PointerReferences.opaqueMarkerPointer(shard, "deleting", 1L)));
+    }
   }
 
   private void runStatsCleanupMaintenance() {

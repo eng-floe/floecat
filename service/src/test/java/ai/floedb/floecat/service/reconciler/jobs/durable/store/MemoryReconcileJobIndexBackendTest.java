@@ -53,6 +53,11 @@ class MemoryReconcileJobIndexBackendTest {
     assertTrue(
         pointers.compareAndSet(
             fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L)));
+    for (String shard : Keys.accountDeletionFenceShards(accountId)) {
+      assertTrue(
+          pointers.compareAndSet(
+              shard, 0L, PointerReferences.opaqueMarkerPointer(shard, "deleting", 1L)));
+    }
 
     assertFalse(
         backend.compareAndSetBatch(
