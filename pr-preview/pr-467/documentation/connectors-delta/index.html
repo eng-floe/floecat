@@ -1963,6 +1963,12 @@ Per-file S3 range readers are closed by their consumers.</p>
   <em>literals</em>: a hostname is never resolved during validation, deliberately, because a resolver in
   the gate would disagree with the resolution the HTTP client performs at connect time. A hostname
   pointing at a private address is therefore out of scope here and belongs to network policy.</li>
+<li><code>unity.credentials-path</code> – Route for temporary-table-credential vending. Defaults to the
+  Databricks path <code>/api/2.0/unity-catalog/temporary-table-credentials</code>. OSS Unity Catalog 0.6.0
+  and later serve the otherwise-compatible operation under
+  <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
+  endpoint -- otherwise vending returns <code>NOT_FOUND</code> against it. Every other Unity operation is 2.1
+  on both. Response-body suppression on that path follows whatever route is configured.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
